@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+
+import ast
+import copy
+import ipaddress
+import os
+import subprocess
+import syslog
+
+import jinja2
+from sonic_py_common import device_info
+from swsssdk import ConfigDBConnector
+
+# FILE
+PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
+PAM_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/common-auth-sonic.j2"
+NSS_TACPLUS_CONF = "/etc/tacplus_nss.conf"
+NSS_TACPLUS_CONF_TEMPLATE = "/usr/share/sonic/templates/tacplus_nss.conf.j2"
+NSS_CONF = "/etc/nsswitch.conf"
+
+# TACACS+
+TACPLUS_SERVER_PASSKEY_DEFAULT = ""
+TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
+TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+
+
+def is_true(val):
+    if val == 'True' or val == 'true':
+        return True
+    else:
+        return False
+
+
+def sub(l, start, end):
+    return l[start:end]
+
+
+def obfuscate(data):
+    if data:
+        return data[0] + '*****'
+    else:
+        return data
+
+
+
+class Iptables(object):
+    def __init__(self):
+        '''
+        Default MSS to 1460 - (MTU 1500 - 40 (TCP/IP Overhead))
+        For IPv6, it would be 1440 - (MTU 1500 - 60 octects)
+        '''
+        self.tcpmss = 1460
+        self.tcp6mss = 1440
+
+    def is_ip_prefix_in_key(self, key):
+        '''
+        Function to check if IP address is present in the key. If it
+        is present, then the key would be a tuple or else, it shall be
+        be string
+        '''
+        return (isinstance(key, tuple))
+
+    def load(self, lpbk_table):
+        for row in lpbk_table:
+            self.iptables_handler(row, lpbk_table[row])
+
+    def command(self, chain, ip, ver, op):
+        cmd = 'iptables' if ver == '4' else 'ip6tables'
+        cmd += ' -t mangle --{} {} -p tcp --tcp-flags SYN SYN'.format(op, chain)
+        cmd += ' -d' if chain == 'PREROUTING' else ' -s'
+        mss = self.tcpmss if ver == '4' else self.tcp6mss
+        cmd += ' {} -j TCPMSS --set-mss {}'.format(ip, mss)
+
+        return cmd
+
+    def iptables_handler(self, key, data, add=True):
+        if not self.is_ip_prefix_in_key(key):
+            return
+
+        iface, ip = key
+        ip_str = ip.split("/")[0]
+        ip_addr = ipaddress.ip_address(ip_str)
+        if isinstance(ip_addr, ipaddress.IPv6Address):
+            ver = '6'
+        else:
+            ver = '4'
+
+        self.mangle_handler(ip_str, ver, add)
+
+    def mangle_handler(self, ip, ver, add):
+        if not add:
+            op = 'delete'
+        else:
+            op = 'check'
+
+        iptables_cmds = []
+        chains = ['PREROUTING', 'POSTROUTING']
+        for chain in chains:
+            cmd = self.command(chain, ip, ver, op)
+            if not add:
+                iptables_cmds.append(cmd)
+            else:
+                '''
+                For add case, first check if rule exists. Iptables just appends to the chain
+                as a new rule even if it is the same as an existing one. Check this and
+                do nothing if rule exists
+                '''
+                ret = subprocess.call(cmd, shell=True)
+                if ret == 0:
+                    syslog.syslog(syslog.LOG_INFO, "{} rule exists in {}".format(ip, chain))
+                else:
+                    # Modify command from Check to Append
+                    iptables_cmds.append(cmd.replace("check", "append"))
+
+        for cmd in iptables_cmds:
+            syslog.syslog(syslog.LOG_INFO, "Running cmd - {}".format(cmd))
+            try:
+                subprocess.check_call(cmd, shell=True)
+            except subprocess.CalledProcessError as err:
+                syslog.syslog(syslog.LOG_ERR, "'{}' failed. RC: {}, output: {}"
+                              .format(err.cmd, err.returncode, err.output))
+
+class AaaCfg(object):
+    def __init__(self):
+        self.auth_default = {
+            'login': 'local',
+        }
+        self.tacplus_global_default = {
+            'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
+            'timeout': TACPLUS_SERVER_TIMEOUT_DEFAULT,
+            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT
+        }
+        self.auth = {}
+        self.tacplus_global = {}
+        self.tacplus_servers = {}
+        self.debug = False
+
+    # Load conf from ConfigDb
+    def load(self, aaa_conf, tac_global_conf, tacplus_conf):
+        for row in aaa_conf:
+            self.aaa_update(row, aaa_conf[row], modify_conf=False)
+        for row in tac_global_conf:
+            self.tacacs_global_update(row, tac_global_conf[row], modify_conf=False)
+        for row in tacplus_conf:
+            self.tacacs_server_update(row, tacplus_conf[row], modify_conf=False)
+        self.modify_conf_file()
+
+    def aaa_update(self, key, data, modify_conf=True):
+        if key == 'authentication':
+            self.auth = data
+            if 'failthrough' in data:
+                self.auth['failthrough'] = is_true(data['failthrough'])
+            if 'debug' in data:
+                self.debug = is_true(data['debug'])
+        if modify_conf:
+            self.modify_conf_file()
+
+    def tacacs_global_update(self, key, data, modify_conf=True):
+        if key == 'global':
+            self.tacplus_global = data
+            if modify_conf:
+                self.modify_conf_file()
+
+    def tacacs_server_update(self, key, data, modify_conf=True):
+        if data == {}:
+            if key in self.tacplus_servers:
+                del self.tacplus_servers[key]
+        else:
+            self.tacplus_servers[key] = data
+
+        if modify_conf:
+            self.modify_conf_file()
+
+    def modify_single_file(self, filename, operations=None):
+        if operations:
+            cmd = "sed -e {0} {1} > {1}.new; mv -f {1} {1}.old; mv -f {1}.new {1}".format(' -e '.join(operations), filename)
+            os.system(cmd)
+
+    def modify_conf_file(self):
+        auth = self.auth_default.copy()
+        auth.update(self.auth)
+        tacplus_global = self.tacplus_global_default.copy()
+        tacplus_global.update(self.tacplus_global)
+        if 'src_ip' in tacplus_global:
+            src_ip = tacplus_global['src_ip']
+        else:
+            src_ip = None
+
+        servers_conf = []
+        if self.tacplus_servers:
+            for addr in self.tacplus_servers:
+                server = tacplus_global.copy()
+                server['ip'] = addr
+                server.update(self.tacplus_servers[addr])
+                servers_conf.append(server)
+            servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
+
+        template_file = os.path.abspath(PAM_AUTH_CONF_TEMPLATE)
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
+        env.filters['sub'] = sub
+        template = env.get_template(template_file)
+        pam_conf = template.render(auth=auth, src_ip=src_ip, servers=servers_conf)
+        with open(PAM_AUTH_CONF, 'w') as f:
+            f.write(pam_conf)
+
+        # Modify common-auth include file in /etc/pam.d/login and sshd
+        if os.path.isfile(PAM_AUTH_CONF):
+            self.modify_single_file('/etc/pam.d/sshd',  [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
+            self.modify_single_file('/etc/pam.d/login', [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
+        else:
+            self.modify_single_file('/etc/pam.d/sshd',  [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
+            self.modify_single_file('/etc/pam.d/login', [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
+
+        # Add tacplus in nsswitch.conf if TACACS+ enable
+        if 'tacacs+' in auth['login']:
+            if os.path.isfile(NSS_CONF):
+                self.modify_single_file(NSS_CONF, [ "'/tacplus/b'", "'/^passwd/s/compat/tacplus &/'", "'/^passwd/s/files/tacplus &/'" ])
+        else:
+            if os.path.isfile(NSS_CONF):
+                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //g'" ])
+
+        # Set tacacs+ server in nss-tacplus conf
+        template_file = os.path.abspath(NSS_TACPLUS_CONF_TEMPLATE)
+        template = env.get_template(template_file)
+        nss_tacplus_conf = template.render(debug=self.debug, src_ip=src_ip, servers=servers_conf)
+        with open(NSS_TACPLUS_CONF, 'w') as f:
+            f.write(nss_tacplus_conf)
+
+
+class HostConfigDaemon:
+    def __init__(self):
+        self.config_db = ConfigDBConnector()
+        self.config_db.connect(wait_for_init=True, retry_on=True)
+        syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
+
+        self.aaacfg = AaaCfg()
+        self.iptables = Iptables()
+        # Cache the values of 'state' field in 'FEATURE' table of each container
+        self.cached_feature_states = {}
+
+        self.is_multi_npu = device_info.is_multi_npu()
+
+
+    def load(self):
+        aaa = self.config_db.get_table('AAA')
+        tacacs_global = self.config_db.get_table('TACPLUS')
+        tacacs_server = self.config_db.get_table('TACPLUS_SERVER')
+        self.aaacfg.load(aaa, tacacs_global, tacacs_server)
+
+        lpbk_table = self.config_db.get_table('LOOPBACK_INTERFACE')
+        self.iptables.load(lpbk_table)
+
+
+    def update_feature_state(self, feature_name, state, feature_table):
+        has_timer = ast.literal_eval(feature_table[feature_name].get('has_timer', 'False'))
+        has_global_scope = ast.literal_eval(feature_table[feature_name].get('has_global_scope', 'True'))
+        has_per_asic_scope = ast.literal_eval(feature_table[feature_name].get('has_per_asic_scope', 'False'))
+
+        # Create feature name suffix depending feature is running in host or namespace or in both 
+        feature_name_suffix_list = (([feature_name] if has_global_scope or not self.is_multi_npu else []) +
+                                   ([(feature_name + '@' + str(asic_inst)) for asic_inst in range(device_info.get_num_npus()) 
+                                    if has_per_asic_scope and self.is_multi_npu]))
+
+        if not feature_name_suffix_list:
+            syslog.syslog(syslog.LOG_ERR, "Feature '{}' service not available"
+                          .format(feature_name))
+
+        feature_suffixes = ["service"] + (["timer"] if has_timer else [])
+
+        if state == "enabled":
+            start_cmds = []
+            for feature_name_suffix in feature_name_suffix_list:
+                for suffix in feature_suffixes:
+                    start_cmds.append("sudo systemctl unmask {}.{}".format(feature_name_suffix, suffix))
+                # If feature has timer associated with it, start/enable corresponding systemd .timer unit
+                # otherwise, start/enable corresponding systemd .service unit
+                start_cmds.append("sudo systemctl enable {}.{}".format(feature_name_suffix, feature_suffixes[-1]))
+                start_cmds.append("sudo systemctl start {}.{}".format(feature_name_suffix, feature_suffixes[-1]))
+                for cmd in start_cmds:
+                    syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
+                    try:
+                        subprocess.check_call(cmd, shell=True)
+                    except subprocess.CalledProcessError as err:
+                        syslog.syslog(syslog.LOG_ERR, "'{}' failed. RC: {}, output: {}"
+                                      .format(err.cmd, err.returncode, err.output))
+                        syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be  enabled and started"
+                                      .format(feature_name, feature_suffixes[-1]))
+                        return
+            syslog.syslog(syslog.LOG_INFO, "Feature '{}.{}' is enabled and started"
+                          .format(feature_name, feature_suffixes[-1]))
+        elif state == "disabled":
+            stop_cmds = []
+            for feature_name_suffix in feature_name_suffix_list:
+                for suffix in reversed(feature_suffixes):
+                    stop_cmds.append("sudo systemctl stop {}.{}".format(feature_name_suffix, suffix))
+                    stop_cmds.append("sudo systemctl disable {}.{}".format(feature_name_suffix, suffix))
+                    stop_cmds.append("sudo systemctl mask {}.{}".format(feature_name_suffix, suffix))
+                for cmd in stop_cmds:
+                    syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
+                    try:
+                        subprocess.check_call(cmd, shell=True)
+                    except subprocess.CalledProcessError as err:
+                        syslog.syslog(syslog.LOG_ERR, "'{}' failed. RC: {}, output: {}"
+                                      .format(err.cmd, err.returncode, err.output))
+                        syslog.syslog(syslog.LOG_ERR, "Feature '{}' failed to be stopped and disabled".format(feature_name))
+                        return
+            syslog.syslog(syslog.LOG_INFO, "Feature '{}' is stopped and disabled".format(feature_name))
+        else:
+            syslog.syslog(syslog.LOG_ERR, "Unexpected state value '{}' for feature '{}'"
+                          .format(state, feature_name))
+
+
+    def update_all_feature_states(self):
+        feature_table = self.config_db.get_table('FEATURE')
+        for feature_name in feature_table:
+            if not feature_name:
+                syslog.syslog(syslog.LOG_WARNING, "Feature is None")
+                continue
+
+            state = feature_table[feature_name]['state']
+            if not state:
+                syslog.syslog(syslog.LOG_WARNING, "Eanble state of feature '{}' is None".format(feature_name))
+                continue
+
+            # Store the initial value of 'state' field in 'FEATURE' table of a specific container
+            self.cached_feature_states[feature_name] = state
+
+            self.update_feature_state(feature_name, state, feature_table)
+
+    def aaa_handler(self, key, data):
+        self.aaacfg.aaa_update(key, data)
+
+    def tacacs_server_handler(self, key, data):
+        self.aaacfg.tacacs_server_update(key, data)
+        log_data = copy.deepcopy(data)
+        if 'passkey' in log_data:
+            log_data['passkey'] = obfuscate(log_data['passkey'])
+        syslog.syslog(syslog.LOG_INFO, 'value of {} changed to {}'.format(key, log_data))
+
+    def tacacs_global_handler(self, key, data):
+        self.aaacfg.tacacs_global_update(key, data)
+        log_data = copy.deepcopy(data)
+        if 'passkey' in log_data:
+            log_data['passkey'] = obfuscate(log_data['passkey'])
+        syslog.syslog(syslog.LOG_INFO, 'value of {} changed to {}'.format(key, log_data))
+
+    def lpbk_handler(self, key, data):
+        key = ConfigDBConnector.deserialize_key(key)
+        # Check if delete operation by fetch existing keys
+        keys = self.config_db.get_keys('LOOPBACK_INTERFACE')
+        if key in keys:
+            add = True
+        else:
+            add = False
+
+        self.iptables.iptables_handler(key, data, add)
+
+    def feature_state_handler(self, key, data):
+        feature_name = key
+        feature_table = self.config_db.get_table('FEATURE')
+        if feature_name not in feature_table:
+            syslog.syslog(syslog.LOG_WARNING, "Feature '{}' not in FEATURE table".format(feature_name))
+            return
+
+        state = feature_table[feature_name]['state']
+        if not state:
+            syslog.syslog(syslog.LOG_WARNING, "Enable state of feature '{}' is None".format(feature_name))
+            return
+
+        self.cached_feature_states.setdefault(feature_name, 'disabled')
+
+        # Enable/disable the container service if the feature state was changed from its previous state.
+        if self.cached_feature_states[feature_name] != state:
+            self.cached_feature_states[feature_name] = state
+            self.update_feature_state(feature_name, state, feature_table)
+
+    def start(self):
+
+        self.config_db.subscribe('AAA', lambda table, key, data: self.aaa_handler(key, data))
+        self.config_db.subscribe('TACPLUS_SERVER', lambda table, key, data: self.tacacs_server_handler(key, data))
+        self.config_db.subscribe('TACPLUS', lambda table, key, data: self.tacacs_global_handler(key, data))
+        self.config_db.subscribe('LOOPBACK_INTERFACE', lambda table, key, data: self.lpbk_handler(key, data))
+        self.config_db.subscribe('FEATURE', lambda table, key, data: self.feature_state_handler(key, data))
+
+        # Update all feature states once upon starting
+        self.update_all_feature_states()
+
+        # Defer load until subscribe
+        self.load()
+
+        self.config_db.listen()
+
+
+def main():
+    daemon = HostConfigDaemon()
+    daemon.start()
+
+
+if __name__ == "__main__":
+    main()
