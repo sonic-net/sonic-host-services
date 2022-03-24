@@ -7,6 +7,7 @@ from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 
+from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB
 from .test_vectors import HOSTCFGD_TEST_VECTOR, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 
@@ -357,3 +358,35 @@ class TestHostcfgdDaemon(TestCase):
                         call('sonic-kdump-config --num_dumps 3', shell=True),
                         call('sonic-kdump-config --memory 0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M', shell=True)]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+
+    def test_devicemeta_event(self):
+        """
+        Test handling DEVICE_METADATA events.
+        1) Hostname reload
+        """
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
+                                    'localhost')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.aaacfg = mock.MagicMock()
+        daemon.iptables = mock.MagicMock()
+        daemon.passwcfg = mock.MagicMock()
+        daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call('sudo service hostname-config restart', shell=True),
+                call('sudo monit reload', shell=True)
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected,
+                                                          any_order=True)

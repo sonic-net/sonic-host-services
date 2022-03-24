@@ -12,6 +12,7 @@ import re
 import jinja2
 from sonic_py_common import device_info
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
+from swsscommon import swsscommon
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -1253,6 +1254,51 @@ class PamLimitsCfg(object):
                     "modify pam_limits config file failed with exception: {}"
                     .format(e))
 
+class DeviceMetaCfg(object):
+    """
+    DeviceMetaCfg Config Daemon
+    Handles changes in DEVICE_METADATA table.
+    1) Handle hostname change
+    """
+
+    def __init__(self):
+        self.hostname = ''
+
+    def load(self, dev_meta={}):
+        # Get hostname initial
+        self.hostname = dev_meta.get('localhost', {}).get('hostname', '')
+        syslog.syslog(syslog.LOG_DEBUG, f'Initial hostname: {self.hostname}')
+
+    def hostname_update(self, data):
+        """
+        Apply hostname handler.
+
+        Args:
+            data: Read table's key's data.
+        """
+        syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: hostname update')
+        new_hostname = data.get('hostname')
+
+        # Restart hostname-config service when hostname was changed.
+        # Empty not allowed
+        if new_hostname and new_hostname != self.hostname:
+            syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Set new hostname: {}'
+                                           .format(new_hostname))
+            self.hostname = new_hostname
+            try:
+                run_cmd('sudo service hostname-config restart', True, True)
+            except subprocess.CalledProcessError as e:
+                syslog.syslog(syslog.LOG_ERR, 'DeviceMetaCfg: Failed to set new'
+                                              ' hostname: {}'.format(e))
+                return
+
+            run_cmd('sudo monit reload')
+        else:
+            msg = 'Hostname was not updated: '
+            msg += 'Already set up' if new_hostname else 'Empty not allowed'
+            syslog.syslog(syslog.LOG_ERR, msg)
+
+
 class HostConfigDaemon:
     def __init__(self):
         # Just a sanity check to verify if the CONFIG_DB has been initialized
@@ -1284,7 +1330,6 @@ class HostConfigDaemon:
         self.is_multi_npu = device_info.is_multi_npu()
 
         # Initialize AAACfg
-        self.hostname_cache=""
         self.aaacfg = AaaCfg()
 
         # Initialize PasswHardening
@@ -1293,6 +1338,9 @@ class HostConfigDaemon:
         # Initialize PamLimitsCfg
         self.pamLimitsCfg = PamLimitsCfg(self.config_db)
         self.pamLimitsCfg.update_config_file()
+
+        # Initialize DeviceMetaCfg
+        self.devmetacfg = DeviceMetaCfg()
 
     def load(self, init_data):
         features = init_data['FEATURE']
@@ -1306,6 +1354,7 @@ class HostConfigDaemon:
         ntp_global = init_data['NTP']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
+        dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
 
         self.feature_handler.sync_state_field(features)
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
@@ -1313,14 +1362,10 @@ class HostConfigDaemon:
         self.ntpcfg.load(ntp_global, ntp_server)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
-
-        dev_meta = self.config_db.get_table('DEVICE_METADATA')
-        if 'localhost' in dev_meta:
-            if 'hostname' in dev_meta['localhost']:
-                self.hostname_cache = dev_meta['localhost']['hostname']
+        self.devmetacfg.load(dev_meta)
 
         # Update AAA with the hostname
-        self.aaacfg.hostname_update(self.hostname_cache)
+        self.aaacfg.hostname_update(self.devmetacfg.hostname)
 
     def __get_intf_name(self, key):
         if isinstance(key, tuple) and key:
@@ -1409,6 +1454,10 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
 
+    def device_metadata_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
+        self.devmetacfg.hostname_update(data)
+
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
         # flag
@@ -1448,6 +1497,10 @@ class HostConfigDaemon:
         self.config_db.subscribe('PORTCHANNEL_INTERFACE', make_callback(self.portchannel_intf_handler))
         self.config_db.subscribe('INTERFACE', make_callback(self.phy_intf_handler))
         
+        # Handle DEVICE_MEATADATA changes
+        self.config_db.subscribe(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
+                                 make_callback(self.device_metadata_handler))
+
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
         self.wait_till_system_init_done()

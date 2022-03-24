@@ -507,6 +507,28 @@ HOSTCFGD_TEST_VECTOR = [
     ]
 ]
 
+HOSTCFG_DAEMON_INIT_CFG_DB = {
+    "FEATURE": {},
+    "AAA": {},
+    "TACPLUS": {},
+    "TACPLUS_SERVER": {},
+    "RADIUS": {},
+    "RADIUS_SERVER": {},
+    "PASSW_HARDENING": {},
+    "KDUMP": {},
+    "NTP": {},
+    "NTP_SERVER": {},
+    "LOOPBACK_INTERFACE": {},
+    "DEVICE_METADATA": {
+        "localhost": {
+            "hostname": "old-hostname"
+        }
+    },
+    "MGMT_INTERFACE": {},
+    "MGMT_VRF_CONFIG": {}
+}
+
+
 HOSTCFG_DAEMON_CFG_DB = {
     "FEATURE": {
         "dhcp_relay": {
@@ -538,6 +560,12 @@ HOSTCFG_DAEMON_CFG_DB = {
             "status": "enabled"
         },
     },
+    "AAA": {},
+    "TACPLUS": {},
+    "TACPLUS_SERVER": {},
+    "RADIUS": {},
+    "RADIUS_SERVER": {},
+    "PASSW_HARDENING": {},
     "KDUMP": {
         "config": {
 
@@ -562,6 +590,7 @@ HOSTCFG_DAEMON_CFG_DB = {
         "localhost": {
             "subtype": "DualToR",
             "type": "ToRRouter",
+            "hostname": "SomeNewHostname"
         }
     }
 }
