@@ -19,7 +19,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -118,7 +118,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -235,7 +235,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -331,7 +331,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -431,7 +431,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -591,6 +591,14 @@ HOSTCFG_DAEMON_CFG_DB = {
             "subtype": "DualToR",
             "type": "ToRRouter",
             "hostname": "SomeNewHostname"
+        }
+    },
+    "MGMT_INTERFACE": {
+        "eth0|1.2.3.4/24": {}
+    },
+    "MGMT_VRF_CONFIG": {
+        "vrf_global": {
+            'mgmtVrfEnabled': 'true'
         }
     }
 }
