@@ -8,9 +8,9 @@ trigger:
 
 resources:
   repositories:
-  - repository: sonic-host-services-data
+  - repository: sonic-buildimage
     type: github
-    name: Azure/sonic-buildimage/src/sonic-host-services-data
+    name: Azure/sonic-buildimage
     endpoint: build
 
 stages:
@@ -29,10 +29,15 @@ stages:
       image: sonicdev-microsoft.azurecr.io:443/sonic-slave-buster:latest
 
     steps:
-    - checkout: sonic-host-services-data
+    - checkout: sonic-buildimage
       clean: true
       submodules: recursive
       displayName: 'Checkout code'
+  
+    - task: CopyFiles@2
+      inputs:
+        contents: '$(System.DefaultWorkingDirectory)/sonic-buildimage/src/sonic-host-services-data/**'
+        targetFolder: $(System.DefaultWorkingDirectory)/sonic-host-services-data/
 
     - script: |
         sourceBranch=$(Build.SourceBranchName)
