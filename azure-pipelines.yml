@@ -6,13 +6,6 @@
 trigger:
 - master
 
-resources:
-  repositories:
-  - repository: sonic-swss
-    type: github
-    name: Azure/sonic-swss
-    endpoint: build
-
 stages:
 - stage: Build
 
@@ -49,6 +42,12 @@ stages:
 
     - script: |
         set -xe
+        sudo apt-get -y purge libhiredis-dev libnl-3-dev libnl-route-3-dev
+        sudo dpkg -i libnl-3-200_*.deb
+        sudo dpkg -i libnl-genl-3-200_*.deb
+        sudo dpkg -i libnl-route-3-200_*.deb
+        sudo dpkg -i libnl-nf-3-200_*.deb
+        sudo dpkg -i libhiredis0.14_*.deb
       workingDirectory: $(Pipeline.Workspace)/target/debs/bullseye/
       displayName: 'Install Debian dependencies'
 
