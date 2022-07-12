@@ -6,6 +6,13 @@
 trigger:
 - master
 
+resources:
+  repositories:
+  - repository: sonic-host-services-data
+    type: github
+    name: Azure/sonic-buildimage/src/sonic-host-services-data
+    endpoint: build
+
 stages:
 - stage: Build
 
