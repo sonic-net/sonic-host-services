@@ -19,7 +19,7 @@ stages:
       vmImage: ubuntu-20.04
 
     container:
-      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bullseye:latest
+      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-buster:latest
 
     steps:
     - script: |
@@ -48,7 +48,7 @@ stages:
         sudo dpkg -i libnl-route-3-200_*.deb
         sudo dpkg -i libnl-nf-3-200_*.deb
         sudo dpkg -i libhiredis0.14_*.deb
-      workingDirectory: $(Pipeline.Workspace)/target/debs/bullseye/
+      workingDirectory: $(Pipeline.Workspace)/target/debs/buster/
       displayName: 'Install Debian dependencies'
 
     - task: DownloadPipelineArtifact@2
@@ -72,14 +72,14 @@ stages:
         set -xe
         sudo pip3 install swsssdk-2.0.1-py3-none-any.whl
         sudo pip3 install sonic_py_common-1.0-py3-none-any.whl
-      workingDirectory: $(Pipeline.Workspace)/target/python-wheels/bullseye/
+      workingDirectory: $(Pipeline.Workspace)/target/python-wheels/buster/
       displayName: 'Install Python dependencies'
 
     - script: |
         set -ex
         # Install .NET CORE
         curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-        sudo apt-add-repository https://packages.microsoft.com/debian/11/prod
+        sudo apt-add-repository https://packages.microsoft.com/debian/10/prod
         sudo apt-get update
         sudo apt-get install -y dotnet-sdk-5.0
       displayName: "Install .NET CORE"
