@@ -22,6 +22,11 @@ stages:
       image: sonicdev-microsoft.azurecr.io:443/sonic-slave-buster:latest
 
     steps:
+    - checkout: sonic-host-services-data
+      clean: true
+      submodules: recursive
+      displayName: 'Checkout code'
+
     - script: |
         sourceBranch=$(Build.SourceBranchName)
         if [[ "$(Build.Reason)" == "PullRequest" ]];then
@@ -48,7 +53,6 @@ stages:
         sudo dpkg -i libnl-route-3-200_*.deb
         sudo dpkg -i libnl-nf-3-200_*.deb
         sudo dpkg -i libhiredis0.14_*.deb
-        sudo dpkg -i sonic-host-services-data_1.0-1_all.deb
       workingDirectory: $(Pipeline.Workspace)/target/debs/buster/
       displayName: 'Install Debian dependencies'
 
