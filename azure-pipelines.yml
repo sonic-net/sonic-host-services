@@ -1,1 +1,115 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- master
+
+resources:
+  repositories:
+  - repository: sonic-swss
+    type: github
+    name: Azure/sonic-swss
+    endpoint: build
+
+stages:
+- stage: Build
+
+  jobs:
+  - job:
+    displayName: "Python3"
+    variables:
+      DIFF_COVER_CHECK_THRESHOLD: 50
+      DIFF_COVER_ENABLE: 'true'
+    pool:
+      vmImage: ubuntu-20.04
+
+    container:
+      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bullseye:latest
+
+    steps:
+    - script: |
+        sourceBranch=$(Build.SourceBranchName)
+        if [[ "$(Build.Reason)" == "PullRequest" ]];then
+          sourceBranch=$(System.PullRequest.TargetBranch)
+        fi
+        echo "Download artifact branch: $sourceBranch"
+        echo "##vso[task.setvariable variable=sourceBranch]$sourceBranch"
+      displayName: "Get correct artifact downloading branch"
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        source: specific
+        project: build
+        pipeline: 142
+        artifact: sonic-buildimage.vs
+        runVersion: 'latestFromBranch'
+        runBranch: 'refs/heads/$(sourceBranch)'
+      displayName: "Download artifacts from latest sonic-buildimage build"
+
+    - script: |
+        set -xe
+      workingDirectory: $(Pipeline.Workspace)/target/debs/bullseye/
+      displayName: 'Install Debian dependencies'
+
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        source: specific
+        project: build
+        pipeline: 9
+        artifact: sonic-swss-common
+        runVersion: 'latestFromBranch'
+        runBranch: 'refs/heads/master'
+      displayName: "Download sonic swss common deb packages"
+
+    - script: |
+        set -xe
+        sudo dpkg -i libswsscommon_1.0.0_amd64.deb
+        sudo dpkg -i python3-swsscommon_1.0.0_amd64.deb
+      workingDirectory: $(Pipeline.Workspace)/
+      displayName: 'Install swss-common dependencies'
+
+    - script: |
+        set -xe
+        sudo pip3 install swsssdk-2.0.1-py3-none-any.whl
+        sudo pip3 install sonic_py_common-1.0-py3-none-any.whl
+      workingDirectory: $(Pipeline.Workspace)/target/python-wheels/bullseye/
+      displayName: 'Install Python dependencies'
+
+    - script: |
+        set -ex
+        # Install .NET CORE
+        curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+        sudo apt-add-repository https://packages.microsoft.com/debian/11/prod
+        sudo apt-get update
+        sudo apt-get install -y dotnet-sdk-5.0
+      displayName: "Install .NET CORE"
+
+    - script: |
+        python3 setup.py test
+      displayName: 'Test Python 3'
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '$(System.DefaultWorkingDirectory)/test-results.xml'
+        testRunTitle: Python 3
+        failTaskOnFailedTests: true
+      condition: succeededOrFailed()
+      displayName: 'Publish Python 3 test results'
+
+    - task: PublishCodeCoverageResults@1
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
+        reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov/'
+      displayName: 'Publish Python 3 test coverage'
+
+    - script: |
+        set -e
+        python3 setup.py bdist_wheel
+      displayName: 'Build Python 3 wheel'
+
+    - publish: '$(System.DefaultWorkingDirectory)/dist/'
+      artifact: wheels
+      displayName: "Publish Python wheels"
 
