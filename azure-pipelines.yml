@@ -107,7 +107,6 @@ stages:
       displayName: "Install .NET CORE"
 
     - script: |
-        ls -l
         pushd sonic-host-services
 
         python3 setup.py test
@@ -130,6 +129,7 @@ stages:
 
     - script: |
         set -e
+        pushd sonic-host-services
         python3 setup.py bdist_wheel
       displayName: 'Build Python 3 wheel'
 
