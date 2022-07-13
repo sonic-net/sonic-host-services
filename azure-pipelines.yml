@@ -40,7 +40,8 @@ stages:
   
     - task: CopyFiles@2
       inputs:
-        contents: '$(System.DefaultWorkingDirectory)/sonic-buildimage/src/sonic-host-services-data/**'
+        SourceFolder: '$(System.DefaultWorkingDirectory)/sonic-buildimage/src/sonic-host-services-data/'
+        contents: '**'
         targetFolder: $(System.DefaultWorkingDirectory)/sonic-host-services-data/
 
     - script: |
