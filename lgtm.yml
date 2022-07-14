@@ -1,0 +1,9 @@
+path_classifiers:
+  test: "tests"
+
+extraction:
+  python:
+    index:
+      filters:
+      - include: "host_modules/*.py"
+      - include: "scripts/*"
