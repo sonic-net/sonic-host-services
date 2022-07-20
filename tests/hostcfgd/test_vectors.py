@@ -19,7 +19,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -118,7 +118,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -235,7 +235,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -331,7 +331,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -431,7 +431,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                    }
                 },
                 "FEATURE": {
                     "dhcp_relay": {
@@ -507,6 +507,28 @@ HOSTCFGD_TEST_VECTOR = [
     ]
 ]
 
+HOSTCFG_DAEMON_INIT_CFG_DB = {
+    "FEATURE": {},
+    "AAA": {},
+    "TACPLUS": {},
+    "TACPLUS_SERVER": {},
+    "RADIUS": {},
+    "RADIUS_SERVER": {},
+    "PASSW_HARDENING": {},
+    "KDUMP": {},
+    "NTP": {},
+    "NTP_SERVER": {},
+    "LOOPBACK_INTERFACE": {},
+    "DEVICE_METADATA": {
+        "localhost": {
+            "hostname": "old-hostname"
+        }
+    },
+    "MGMT_INTERFACE": {},
+    "MGMT_VRF_CONFIG": {}
+}
+
+
 HOSTCFG_DAEMON_CFG_DB = {
     "FEATURE": {
         "dhcp_relay": {
@@ -538,6 +560,12 @@ HOSTCFG_DAEMON_CFG_DB = {
             "status": "enabled"
         },
     },
+    "AAA": {},
+    "TACPLUS": {},
+    "TACPLUS_SERVER": {},
+    "RADIUS": {},
+    "RADIUS_SERVER": {},
+    "PASSW_HARDENING": {},
     "KDUMP": {
         "config": {
 
@@ -562,6 +590,15 @@ HOSTCFG_DAEMON_CFG_DB = {
         "localhost": {
             "subtype": "DualToR",
             "type": "ToRRouter",
+            "hostname": "SomeNewHostname"
+        }
+    },
+    "MGMT_INTERFACE": {
+        "eth0|1.2.3.4/24": {}
+    },
+    "MGMT_VRF_CONFIG": {
+        "vrf_global": {
+            'mgmtVrfEnabled': 'true'
         }
     }
 }

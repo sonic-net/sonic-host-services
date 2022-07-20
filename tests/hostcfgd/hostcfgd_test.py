@@ -7,6 +7,7 @@ from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 
+from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB
 from .test_vectors import HOSTCFGD_TEST_VECTOR, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 
@@ -357,3 +358,77 @@ class TestHostcfgdDaemon(TestCase):
                         call('sonic-kdump-config --num_dumps 3', shell=True),
                         call('sonic-kdump-config --memory 0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M', shell=True)]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+
+    def test_devicemeta_event(self):
+        """
+        Test handling DEVICE_METADATA events.
+        1) Hostname reload
+        """
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
+                                    'localhost')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.aaacfg = mock.MagicMock()
+        daemon.iptables = mock.MagicMock()
+        daemon.passwcfg = mock.MagicMock()
+        daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call('sudo service hostname-config restart', shell=True),
+                call('sudo monit reload', shell=True)
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected,
+                                                          any_order=True)
+
+    def test_mgmtiface_event(self):
+        """
+        Test handling mgmt events.
+        1) Management interface setup 
+        2) Management vrf setup
+        """
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [
+            (swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, 'eth0|1.2.3.4/24'),
+            (swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, 'vrf_global')
+        ]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        daemon.aaacfg = mock.MagicMock()
+        daemon.iptables = mock.MagicMock()
+        daemon.passwcfg = mock.MagicMock()
+        daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call('sudo systemctl restart interfaces-config', shell=True),
+                call('sudo systemctl restart ntp-config', shell=True),
+                call('service ntp stop', shell=True),
+                call('systemctl restart interfaces-config', shell=True),
+                call('service ntp start', shell=True),
+                call('cat /proc/net/route | grep -E \\"eth0\\s+00000000'
+                     '\\s+[0-9A-Z]+\\s+[0-9]+\\s+[0-9]+\\s+[0-9]+\\s+202\\" | '
+                     'wc -l', shell=True),
+                call('ip -4 route del default dev eth0 metric 202', shell=True)
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected,
+                                                          any_order=True)
