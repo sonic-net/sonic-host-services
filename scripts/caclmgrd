@@ -641,10 +641,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # Add iptables commands to block ip2me traffic
         iptables_cmds += self.generate_block_ip2me_traffic_iptables_commands(namespace)
 
-        # Add iptables/ip6tables commands to allow all incoming packets with TTL of 0 or 1
-        # This allows the device to respond to tools like tcptraceroute
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -m ttl --ttl-lt 2 -j ACCEPT")
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p tcp -m hl --hl-lt 2 -j ACCEPT")
+        # Add iptables/ip6tables commands to allow traceroute.
+        # traceroute doesn't need to be accepted, it just needs a reply.
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p udp --dport 33434:33523 -j REJECT --reject-with icmp-port-unreachable")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p udp --dport 33434:33523 -j REJECT --reject-with icmp6-port-unreachable")
 
         # Finally, if the device has control plane ACLs configured,
         # add iptables/ip6tables commands to drop all other incoming packets
