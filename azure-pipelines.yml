@@ -20,8 +20,9 @@ stages:
   - job:
     displayName: "Python3"
     variables:
-      DIFF_COVER_CHECK_THRESHOLD: 50
+      DIFF_COVER_CHECK_THRESHOLD: 80
       DIFF_COVER_ENABLE: 'true'
+      DIFF_COVER_WORKING_DIRECTORY: $(System.DefaultWorkingDirectory)/sonic-host-services
     pool:
       vmImage: ubuntu-20.04
 
