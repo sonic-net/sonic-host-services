@@ -215,7 +215,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
     def generate_block_ip2me_traffic_iptables_commands(self, namespace):
         INTERFACE_TABLE_NAME_LIST = [
             "LOOPBACK_INTERFACE",
-            "MGMT_INTERFACE",
             "VLAN_INTERFACE",
             "PORTCHANNEL_INTERFACE",
             "INTERFACE"
