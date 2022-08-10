@@ -393,8 +393,9 @@ class FeatureHandler(object):
 
             for suffix in reversed(feature_suffixes):
                 cmds.append("sudo systemctl stop {}.{}".format(feature_name, suffix))
-                cmds.append("sudo systemctl disable {}.{}".format(feature_name, feature_suffixes[-1]))
-                cmds.append("sudo systemctl mask {}.{}".format(feature_name, feature_suffixes[-1]))
+            
+            cmds.append("sudo systemctl disable {}.{}".format(feature_name, feature_suffixes[-1]))
+            cmds.append("sudo systemctl mask {}.{}".format(feature_name, feature_suffixes[-1]))
             for cmd in cmds:
                 syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
                 try:
