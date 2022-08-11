@@ -357,9 +357,9 @@ class FeatureHandler(object):
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
             # Check if it is already enabled, if yes skip the system call
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state == "enabled":
-                continue
+            # unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
+            # if unit_file_state == "enabled":
+            #    continue
 
             for suffix in feature_suffixes:
                 cmds.append("sudo systemctl unmask {}.{}".format(feature_name, suffix))
@@ -387,9 +387,9 @@ class FeatureHandler(object):
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
             # Check if it is already disabled, if yes skip the system call
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state in ("disabled", "masked"):
-                continue
+            # unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
+            # if unit_file_state in ("disabled", "masked"):
+            #    continue
 
             for suffix in reversed(feature_suffixes):
                 cmds.append("sudo systemctl stop {}.{}".format(feature_name, suffix))
