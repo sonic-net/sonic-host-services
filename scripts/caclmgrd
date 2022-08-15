@@ -80,6 +80,11 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             "dst_ports": ["22"],
             "multi_asic_ns_to_host_fwd":True
         },
+        "EXTERNAL_CLIENT": {
+            "ip_protocols": ["tcp"],
+            "dst_ports": ["8081"],
+            "multi_asic_ns_to_host_fwd":True
+        },
         "ANY": {
             "ip_protocols": ["any"],
             "dst_ports": ["0"],
