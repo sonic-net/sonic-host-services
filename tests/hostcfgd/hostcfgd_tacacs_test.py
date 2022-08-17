@@ -129,12 +129,11 @@ class TestHostcfgdTACACS(TestCase):
         def mock_run_cmd(cmd, log_err=True, raise_exception=False):
             command = cmd
 
-        host_config_daemon.run_cmd = mock_run_cmd
+        with mock.patch("hostcfgd.run_cmd") as mock_run_cmd:
+            # check enable authentication will also enable accounting
+            config_data = {
+                'login': 'tacacs+'
+            }
+            host_config_daemon.aaacfg.aaa_update("authentication",config_data)
 
-        # check enable authentication will also enable accounting
-        config_data = {
-            'login': 'tacacs+'
-        }
-        host_config_daemon.aaacfg.aaa_update("authentication",config_data)
-
-        self.assertEqual(command, "config aaa accounting 'tacacs+ local'")
+            self.assertEqual(command, "config aaa accounting 'tacacs+ local'")
