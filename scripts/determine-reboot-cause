@@ -158,25 +158,7 @@ def get_reboot_cause_dict(previous_reboot_cause, comment, gen_time):
  
     return reboot_cause_dict
 
-
-def main():
-    # Configure logger to log all messages INFO level and higher
-    sonic_logger.set_min_log_priority_info()
-
-    sonic_logger.log_info("Starting up...")
-
-    if not os.geteuid() == 0:
-        sonic_logger.log_error("User {} does not have permission to execute".format(pwd.getpwuid(os.getuid()).pw_name))
-        sys.exit("This utility must be run as root")
-
-    # Create REBOOT_CAUSE_DIR if it doesn't exist
-    if not os.path.exists(REBOOT_CAUSE_DIR):
-        os.makedirs(REBOOT_CAUSE_DIR)
-
-    # Remove stale PREVIOUS_REBOOT_CAUSE_FILE if it exists
-    if os.path.exists(PREVIOUS_REBOOT_CAUSE_FILE):
-        os.remove(PREVIOUS_REBOOT_CAUSE_FILE)
-
+def determin_reboot_cause():
     # This variable is kept for future-use purpose. When proc_cmd_line/vendor/software provides
     # any additional_reboot_info it will be stored as a "comment" in REBOOT_CAUSE_HISTORY_FILE
     additional_reboot_info = "N/A"
@@ -216,6 +198,29 @@ def main():
     else:
         # Get the reboot cause from REBOOT_CAUSE_FILE
         previous_reboot_cause = software_reboot_cause
+
+    return previous_reboot_cause, additional_reboot_info
+
+
+def main():
+    # Configure logger to log all messages INFO level and higher
+    sonic_logger.set_min_log_priority_info()
+
+    sonic_logger.log_info("Starting up...")
+
+    if not os.geteuid() == 0:
+        sonic_logger.log_error("User {} does not have permission to execute".format(pwd.getpwuid(os.getuid()).pw_name))
+        sys.exit("This utility must be run as root")
+
+    # Create REBOOT_CAUSE_DIR if it doesn't exist
+    if not os.path.exists(REBOOT_CAUSE_DIR):
+        os.makedirs(REBOOT_CAUSE_DIR)
+
+    # Remove stale PREVIOUS_REBOOT_CAUSE_FILE if it exists
+    if os.path.exists(PREVIOUS_REBOOT_CAUSE_FILE):
+        os.remove(PREVIOUS_REBOOT_CAUSE_FILE)
+
+    previous_reboot_cause, additional_reboot_info = determin_reboot_cause()
 
     # Current time
     reboot_cause_gen_time = str(datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S'))
