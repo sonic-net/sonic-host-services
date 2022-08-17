@@ -34,6 +34,8 @@ hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 
+hostcfgd_command = None
+
 class TestHostcfgdTACACS(TestCase):
     """
         Test hostcfd daemon - TACACS
@@ -122,10 +124,9 @@ class TestHostcfgdTACACS(TestCase):
             Returns:
                 None
         """
-        command = None
         def mock_run_cmd(cmd, log_err=True, raise_exception=False):
-            global command
-            command = cmd
+            global hostcfgd_command
+            hostcfgd_command = cmd
 
         hostcfgd.run_cmd = mock_run_cmd
 
@@ -136,4 +137,4 @@ class TestHostcfgdTACACS(TestCase):
         host_config_daemon = hostcfgd.HostConfigDaemon()
         host_config_daemon.aaacfg.aaa_update("authentication",config_data)
 
-        self.assertEqual(command, "config aaa accounting 'tacacs+ local'")
+        self.assertEqual(hostcfgd_command, "config aaa accounting 'tacacs+ local'")
