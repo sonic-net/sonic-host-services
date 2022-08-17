@@ -549,7 +549,7 @@ class AaaCfg(object):
                 self.authentication['failthrough'] = is_true(data['failthrough'])
             if 'debug' in data:
                 self.debug = is_true(data['debug'])
-            if 'login' in data and 'tacacs+' in data['login']
+            if 'login' in data and 'tacacs+' in data['login']:
                 # enable tacacs+ accounting when enable tacacs+ authentication
                 run_cmd("config aaa accounting 'tacacs+ local'")
         if key == 'authorization':
