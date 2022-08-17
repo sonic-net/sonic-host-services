@@ -175,28 +175,29 @@ def determine_reboot_cause():
     software_reboot_cause = find_software_reboot_cause()
 
     # The main decision logic of the reboot cause:
-    # If there is a reboot cause indicated by /proc/cmdline, it should be warmreboot/fastreboot
+    # If there is a valid hardware reboot cause indicated by platform API, 
+    #    check the software reboot cause to add additional rebot cause.
+    # If there is a reboot cause indicated by /proc/cmdline, and/or warmreboot/fastreboot/softreboot
     #   the software_reboot_cause which is the content of /hosts/reboot-cause/reboot-cause.txt
-    #   will be treated as the reboot cause
-    # Elif there is a reboot cause indicated by platform API,
-    #   the hardware_reboot_cause will be treated as the reboot cause
+    #   will be treated as the additional reboot cause
+    # Elif there is a cmdline reboot cause, 
+    #   the software_reboot_cause will be treated as the reboot cause if it's not unknown
+    #   otherwise, the cmdline_reboot_cause will be treated as the reboot cause if it's not none
     # Else the software_reboot_cause will be treated as the reboot cause
-    if proc_cmdline_reboot_cause is not None:
-        if not hardware_reboot_cause.startswith(REBOOT_CAUSE_NON_HARDWARE):
-            # Add the hardware_reboot_cause as actual reboot cause
-            previous_reboot_cause = hardware_reboot_cause
-            additional_reboot_info = software_reboot_cause
-        else:
-            previous_reboot_cause = software_reboot_cause
-    elif hardware_reboot_cause is not None:
+    if not hardware_reboot_cause.startswith(REBOOT_CAUSE_NON_HARDWARE):
+        previous_reboot_cause = hardware_reboot_cause
         # Check if any software reboot was issued before this hardware reboot happened
         if software_reboot_cause is not REBOOT_CAUSE_UNKNOWN:
-            previous_reboot_cause = hardware_reboot_cause
             additional_reboot_info = software_reboot_cause
+        elif proc_cmdline_reboot_cause is not None:
+            additional_reboot_info = proc_cmdline_reboot_cause
+    elif proc_cmdline_reboot_cause is not None:
+        if software_reboot_cause is not REBOOT_CAUSE_UNKNOWN:
+            # Get the reboot cause from REBOOT_CAUSE_FILE
+            previous_reboot_cause = software_reboot_cause
         else:
-            previous_reboot_cause = hardware_reboot_cause
+            previous_reboot_cause = proc_cmdline_reboot_cause
     else:
-        # Get the reboot cause from REBOOT_CAUSE_FILE
         previous_reboot_cause = software_reboot_cause
 
     return previous_reboot_cause, additional_reboot_info
