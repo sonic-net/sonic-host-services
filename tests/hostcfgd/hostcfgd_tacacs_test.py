@@ -124,6 +124,7 @@ class TestHostcfgdTACACS(TestCase):
         """
         command = None
         def mock_run_cmd(cmd, log_err=True, raise_exception=False):
+            global command
             command = cmd
 
         hostcfgd.run_cmd = mock_run_cmd
