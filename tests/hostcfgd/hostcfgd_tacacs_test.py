@@ -34,8 +34,6 @@ hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 
-hostcfgd_command = None
-
 class TestHostcfgdTACACS(TestCase):
     """
         Test hostcfd daemon - TACACS
@@ -116,25 +114,3 @@ class TestHostcfgdTACACS(TestCase):
         self.check_config(test_name, test_data, "config_db_local_and_tacacs")
         # test disable accounting
         self.check_config(test_name, test_data, "config_db_disable_accounting")
-
-    def test_hostcfgd_tacacs_enable_accounting(self):
-        """
-            Test TACACS hostcfd daemon enable accounting when enable authentication
-
-            Returns:
-                None
-        """
-        def mock_run_cmd(cmd, log_err=True, raise_exception=False):
-            global hostcfgd_command
-            hostcfgd_command = cmd
-
-        hostcfgd.run_cmd = mock_run_cmd
-
-        # check enable authentication will also enable accounting
-        config_data = {
-            'login': 'tacacs+'
-        }
-        host_config_daemon = hostcfgd.HostConfigDaemon()
-        host_config_daemon.aaacfg.aaa_update("authentication",config_data)
-
-        self.assertEqual(hostcfgd_command, "config aaa accounting 'tacacs+ local'")
