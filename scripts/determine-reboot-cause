@@ -184,7 +184,7 @@ def determine_reboot_cause():
     #   the software_reboot_cause will be treated as the reboot cause if it's not unknown
     #   otherwise, the cmdline_reboot_cause will be treated as the reboot cause if it's not none
     # Else the software_reboot_cause will be treated as the reboot cause
-    if not hardware_reboot_cause.startswith(REBOOT_CAUSE_NON_HARDWARE):
+    if REBOOT_CAUSE_NON_HARDWARE not in hardware_reboot_cause:
         previous_reboot_cause = hardware_reboot_cause
         # Check if any software reboot was issued before this hardware reboot happened
         if software_reboot_cause is not REBOOT_CAUSE_UNKNOWN:
