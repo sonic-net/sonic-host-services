@@ -109,7 +109,12 @@ class TestDetermineRebootCause(object):
     def test_find_hardware_reboot_cause(self):
         with mock.patch("determine_reboot_cause.get_reboot_cause_from_platform", return_value=("Powerloss", None)):
             result = determine_reboot_cause.find_hardware_reboot_cause()
-            assert result == "Powerloss (None)"
+            assert result == "Powerloss"
+
+    def test_find_hardware_reboot_cause_with_minor(self):
+        with mock.patch("determine_reboot_cause.get_reboot_cause_from_platform", return_value=("Powerloss", "under-voltage")):
+            result = determine_reboot_cause.find_hardware_reboot_cause()
+            assert result == "Powerloss (under-voltage)"
 
     def test_get_reboot_cause_dict_watchdog(self):
         reboot_cause_dict = determine_reboot_cause.get_reboot_cause_dict(REBOOT_CAUSE_WATCHDOG, "", GEN_TIME_WATCHDOG)
