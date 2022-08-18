@@ -122,7 +122,12 @@ def find_hardware_reboot_cause():
     else:
         sonic_logger.log_info("No reboot cause found from platform api")
 
-    hardware_reboot_cause = "{} ({})".format(hardware_reboot_cause_major, hardware_reboot_cause_minor)
+    hardware_reboot_cause_minor_str = ""
+    if hardware_reboot_cause_minor:
+        hardware_reboot_cause_minor_str = " ({})".format(hardware_reboot_cause_minor)
+
+    hardware_reboot_cause = hardware_reboot_cause_major + hardware_reboot_cause_minor_str
+
     return hardware_reboot_cause
 
 
