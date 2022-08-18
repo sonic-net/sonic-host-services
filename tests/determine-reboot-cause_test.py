@@ -168,6 +168,6 @@ class TestDetermineRebootCause(object):
             with mock.patch("determine_reboot_cause.find_software_reboot_cause", return_value=EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_USER):
                 with mock.patch("determine_reboot_cause.find_hardware_reboot_cause", return_value=EXPECTED_HARDWARE_REBOOT_CAUSE):
                     previous_reboot_cause, additional_info = determine_reboot_cause.determine_reboot_cause()
-                    assert previous_reboot_cause == REBOOT_CAUSE_WATCHDOG
+                    assert previous_reboot_cause == EXPECTED_HARDWARE_REBOOT_CAUSE
                     assert additional_info == EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_USER
 
