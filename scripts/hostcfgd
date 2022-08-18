@@ -497,7 +497,7 @@ class AaaCfg(object):
             'login': 'local',
         }
         self.accounting_default = {
-            'login': 'disable',
+            'login': 'tacacs+,local',
         }
         self.tacplus_global_default = {
             'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
@@ -549,9 +549,6 @@ class AaaCfg(object):
                 self.authentication['failthrough'] = is_true(data['failthrough'])
             if 'debug' in data:
                 self.debug = is_true(data['debug'])
-            if 'login' in data and 'tacacs+' in data['login']:
-                # enable tacacs+ accounting when enable tacacs+ authentication
-                run_cmd("config aaa accounting 'tacacs+ local'")
         if key == 'authorization':
             self.authorization = data
         if key == 'accounting':
