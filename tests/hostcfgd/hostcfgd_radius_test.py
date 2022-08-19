@@ -98,6 +98,6 @@ class TestHostcfgdRADIUS(TestCase):
             diff_output += \
                 "Diff: file: {} expected: {} output: {}\n".format(\
                     name, dcmp.left, dcmp.right)
-            diff_output += self.run_diff( dcmp.left + "/" + name,\
-                dcmp.right + "/" + name)
+            diff_output += self.run_diff( sop_path + "/" + name,\
+                op_path + "/" + name)
         self.assertTrue(len(diff_output) == 0, diff_output)
