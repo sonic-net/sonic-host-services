@@ -40,7 +40,7 @@ class TestHostcfgdRADIUS(TestCase):
         Test hostcfd daemon - RADIUS
     """
     def run_diff(self, file1, file2):
-        return subprocess.check_output('diff -uR {} {} || true'.format(file1, file2), shell=True)
+        return subprocess.check_output('diff -u {} {} || true'.format(file1, file2), shell=True)
 
 
     @parameterized.expand(HOSTCFGD_TEST_RADIUS_VECTOR)
