@@ -10,7 +10,7 @@ resources:
   repositories:
   - repository: sonic-buildimage
     type: github
-    name: Azure/sonic-buildimage
+    name: sonic-net/sonic-buildimage
     endpoint: build
 
 stages:
