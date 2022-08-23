@@ -414,7 +414,7 @@ class FeatureHandler(object):
         self.set_feature_state(feature, self.FEATURE_STATE_DISABLED)
 
     def resync_feature_state(self, feature):
-        syslog.syslog(syslog.LOG_INFO, "Modifying config db feature table for {}".format(feature_name)
+        syslog.syslog(syslog.LOG_INFO, "Modifying config db feature table for {}".format(feature_name))
         self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
 
     def set_feature_state(self, feature, state):
