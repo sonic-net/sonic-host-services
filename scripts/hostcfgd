@@ -216,16 +216,16 @@ class FeatureHandler(object):
         # again the auto restart will kick-in. Another order may leave it in failed state
         # and not auto restart.
         if self._cached_config[feature_name].auto_restart != feature.auto_restart:
+            self.update_systemd_config(feature)
             syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
                           .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
-            self.update_systemd_config(feature)
             self._cached_config[feature_name].auto_restart = feature.auto_restart
 
         # Enable/disable the container service if the feature state was changed from its previous state.
         if self._cached_config[feature_name].state != feature.state:
             if self.update_feature_state(feature):
                 syslog.syslog(syslog.LOG_INFO, "Status of feature '{}' is changed from '{}' to '{}' ..."
-                          .format(feature_name, self._cached_config[feature_name].state, feature.state))
+                              .format(feature_name, self._cached_config[feature_name].state, feature.state))
                 self._cached_config[feature_name].state = feature.state
             else:
                 self.resync_feature_state(self._cached_config[feature_name])
@@ -240,13 +240,17 @@ class FeatureHandler(object):
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
                 continue
-            syslog.syslog(syslog.LOG_INFO, "Re-sync the state field for feature:{} as the state field \
-                        might have been rendered based on DEVICE_METADATA table".format(feature_name))
+            syslog.syslog(syslog.LOG_INFO, "Re-sync state field for feature:{} as the state field \
+                          might have been rendered based on DEVICE_METADATA table".format(feature_name))
             feature = Feature(feature_name, feature_table[feature_name], self._device_config)
             
             self._cached_config.setdefault(feature_name, feature)
             self.update_systemd_config(feature)
+            syslog.syslog(syslog.LOG_INFO, "Re-sync state field: Status of feature '{}' is changed from '{}' to '{}' ..."
+                          .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
             self.update_feature_state(feature)
+            syslog.syslog(syslog.LOG_INFO, "Re-sync state field: Status of feature '{}' is changed from '{}' to '{}' ..."
+                          .format(feature_name, self._cached_config[feature_name].state, feature.state))
             self.resync_feature_state(feature)
 
     def update_feature_state(self, feature):
