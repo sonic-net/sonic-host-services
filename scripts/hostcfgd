@@ -12,6 +12,7 @@ import re
 import jinja2
 from sonic_py_common import device_info
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
+from swsscommon import swsscommon
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -1253,6 +1254,143 @@ class PamLimitsCfg(object):
                     "modify pam_limits config file failed with exception: {}"
                     .format(e))
 
+class DeviceMetaCfg(object):
+    """
+    DeviceMetaCfg Config Daemon
+    Handles changes in DEVICE_METADATA table.
+    1) Handle hostname change
+    """
+
+    def __init__(self):
+        self.hostname = ''
+
+    def load(self, dev_meta={}):
+        # Get hostname initial
+        self.hostname = dev_meta.get('localhost', {}).get('hostname', '')
+        syslog.syslog(syslog.LOG_DEBUG, f'Initial hostname: {self.hostname}')
+
+    def hostname_update(self, data):
+        """
+        Apply hostname handler.
+
+        Args:
+            data: Read table's key's data.
+        """
+        syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: hostname update')
+        new_hostname = data.get('hostname')
+
+        # Restart hostname-config service when hostname was changed.
+        # Empty not allowed
+        if new_hostname and new_hostname != self.hostname:
+            syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Set new hostname: {}'
+                                           .format(new_hostname))
+            self.hostname = new_hostname
+            try:
+                run_cmd('sudo service hostname-config restart', True, True)
+            except subprocess.CalledProcessError as e:
+                syslog.syslog(syslog.LOG_ERR, 'DeviceMetaCfg: Failed to set new'
+                                              ' hostname: {}'.format(e))
+                return
+
+            run_cmd('sudo monit reload')
+        else:
+            msg = 'Hostname was not updated: '
+            msg += 'Already set up' if new_hostname else 'Empty not allowed'
+            syslog.syslog(syslog.LOG_ERR, msg)
+
+
+class MgmtIfaceCfg(object):
+    """
+    MgmtIfaceCfg Config Daemon
+    Handles changes in MGMT_INTERFACE, MGMT_VRF_CONFIG tables.
+    1) Handle change of interface ip
+    2) Handle change of management VRF state
+    """
+
+    def __init__(self):
+        self.iface_config_data = {}
+        self.mgmt_vrf_enabled = ''
+
+    def load(self, mgmt_iface={}, mgmt_vrf={}):
+        # Get initial data
+        self.iface_config_data = mgmt_iface
+        self.mgmt_vrf_enabled = mgmt_vrf.get('mgmtVrfEnabled', '')
+        syslog.syslog(syslog.LOG_DEBUG,
+                      f'Initial mgmt interface conf: {self.iface_config_data}')
+        syslog.syslog(syslog.LOG_DEBUG,
+                      f'Initial mgmt VRF state: {self.mgmt_vrf_enabled}')
+
+    def update_mgmt_iface(self, iface, key, data):
+        """Handle update management interface config
+        """
+        syslog.syslog(syslog.LOG_DEBUG, 'MgmtIfaceCfg: mgmt iface update')
+
+        # Restart management interface service when config was changed
+        if data != self.iface_config_data.get(key):
+            cfg = {key: data}
+            syslog.syslog(syslog.LOG_INFO, f'MgmtIfaceCfg: Set new interface '
+                                           f'config {cfg} for {iface}')
+            try:
+                run_cmd('sudo systemctl restart interfaces-config', True, True)
+                run_cmd('sudo systemctl restart ntp-config', True, True)
+            except subprocess.CalledProcessError:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to restart management '
+                              'interface services')
+                return
+
+            self.iface_config_data[key] = data
+
+    def update_mgmt_vrf(self, data):
+        """Handle update management VRF state
+        """
+        syslog.syslog(syslog.LOG_DEBUG, 'MgmtIfaceCfg: mgmt vrf state update')
+
+        # Restart mgmt vrf services when mgmt vrf config was changed.
+        # Empty not allowed.
+        enabled = data.get('mgmtVrfEnabled', '')
+        if not enabled or enabled == self.mgmt_vrf_enabled:
+            return
+
+        syslog.syslog(syslog.LOG_INFO, f'Set mgmt vrf state {enabled}')
+
+        # Restart related vrfs services
+        try:
+            run_cmd('service ntp stop', True, True)
+            run_cmd('systemctl restart interfaces-config', True, True)
+            run_cmd('service ntp start', True, True)
+        except subprocess.CalledProcessError:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to restart management vrf '
+                          'services')
+            return
+
+        # Remove mgmt if route
+        if enabled == 'true':
+            """
+            The regular expression for grep in below cmd is to match eth0 line
+            in /proc/net/route, sample file:
+            $ cat /proc/net/route
+            Iface   Destination     Gateway         Flags   RefCnt  Use
+            eth0    00000000        01803B0A        0003    0       0
+            #################### Line break here ####################
+            Metric  Mask            MTU     Window  IRTT
+            202     00000000        0       0       0
+            """
+            try:
+                run_cmd(r"""cat /proc/net/route | grep -E \"eth0\s+"""
+                        r"""00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+"""
+                        r"""\s+202\" | wc -l""",
+                        True, True)
+            except subprocess.CalledProcessError:
+                syslog.syslog(syslog.LOG_ERR, 'MgmtIfaceCfg: Could not delete '
+                                              'eth0 route')
+                return
+
+            run_cmd("ip -4 route del default dev eth0 metric 202", False)
+
+        # Update cache
+        self.mgmt_vrf_enabled = enabled
+
+
 class HostConfigDaemon:
     def __init__(self):
         # Just a sanity check to verify if the CONFIG_DB has been initialized
@@ -1284,7 +1422,6 @@ class HostConfigDaemon:
         self.is_multi_npu = device_info.is_multi_npu()
 
         # Initialize AAACfg
-        self.hostname_cache=""
         self.aaacfg = AaaCfg()
 
         # Initialize PasswHardening
@@ -1293,6 +1430,12 @@ class HostConfigDaemon:
         # Initialize PamLimitsCfg
         self.pamLimitsCfg = PamLimitsCfg(self.config_db)
         self.pamLimitsCfg.update_config_file()
+
+        # Initialize DeviceMetaCfg
+        self.devmetacfg = DeviceMetaCfg()
+
+        # Initialize MgmtIfaceCfg
+        self.mgmtifacecfg = MgmtIfaceCfg()
 
     def load(self, init_data):
         features = init_data['FEATURE']
@@ -1306,6 +1449,9 @@ class HostConfigDaemon:
         ntp_global = init_data['NTP']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
+        dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
+        mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
+        mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
 
         self.feature_handler.sync_state_field(features)
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
@@ -1313,14 +1459,11 @@ class HostConfigDaemon:
         self.ntpcfg.load(ntp_global, ntp_server)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
-
-        dev_meta = self.config_db.get_table('DEVICE_METADATA')
-        if 'localhost' in dev_meta:
-            if 'hostname' in dev_meta['localhost']:
-                self.hostname_cache = dev_meta['localhost']['hostname']
+        self.devmetacfg.load(dev_meta)
+        self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
 
         # Update AAA with the hostname
-        self.aaacfg.hostname_update(self.hostname_cache)
+        self.aaacfg.hostname_update(self.devmetacfg.hostname)
 
     def __get_intf_name(self, key):
         if isinstance(key, tuple) and key:
@@ -1370,6 +1513,10 @@ class HostConfigDaemon:
         mgmt_intf_name = self.__get_intf_name(key)
         self.aaacfg.handle_radius_source_intf_ip_chg(mgmt_intf_name)
         self.aaacfg.handle_radius_nas_ip_chg(mgmt_intf_name)
+        self.mgmtifacecfg.update_mgmt_iface(mgmt_intf_name, key, data)
+
+    def mgmt_vrf_handler(self, key, op, data):
+        self.mgmtifacecfg.update_mgmt_vrf(data)
 
     def lpbk_handler(self, key, op, data):
         key = ConfigDBConnector.deserialize_key(key)
@@ -1408,6 +1555,10 @@ class HostConfigDaemon:
     def kdump_handler (self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
+
+    def device_metadata_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
+        self.devmetacfg.hostname_update(data)
 
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
@@ -1448,6 +1599,14 @@ class HostConfigDaemon:
         self.config_db.subscribe('PORTCHANNEL_INTERFACE', make_callback(self.portchannel_intf_handler))
         self.config_db.subscribe('INTERFACE', make_callback(self.phy_intf_handler))
         
+        # Handle DEVICE_MEATADATA changes
+        self.config_db.subscribe(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
+                                 make_callback(self.device_metadata_handler))
+
+        # Handle MGMT_VRF_CONFIG changes
+        self.config_db.subscribe(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME,
+                                 make_callback(self.mgmt_vrf_handler))
+
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
         self.wait_till_system_init_done()
