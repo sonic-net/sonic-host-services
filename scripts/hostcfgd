@@ -10,6 +10,7 @@ import syslog
 import signal
 import re
 import jinja2
+import time
 from sonic_py_common import device_info
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
