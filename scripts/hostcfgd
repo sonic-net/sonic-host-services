@@ -243,7 +243,7 @@ class FeatureHandler(object):
             syslog.syslog(syslog.LOG_INFO, "Re-sync state field for feature:{} as the state field 
                           might have been rendered based on DEVICE_METADATA table".format(feature_name))
             feature = Feature(feature_name, feature_table[feature_name], self._device_config)
-            
+
             self._cached_config.setdefault(feature_name, feature)
             self.update_systemd_config(feature)
             syslog.syslog(syslog.LOG_INFO, "Re-sync state field: Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
@@ -361,10 +361,36 @@ class FeatureHandler(object):
         props = dict([line.split("=") for line in stdout.decode().strip().splitlines()])
         return props["UnitFileState"]
 
+    def is_systemctl_status_stable(self, service):
+        """
+        Returns:
+            True: if service status is stable
+            False: if service status is transitioning: Activating, Deactivating
+        """
+        cmd = "sudo systemctl status {}".format(service)
+        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate()
+        for line in stdout.decode().strip().split('\n'):
+            if "Active" in line:
+                syslog.syslog(syslog.LOG_INFO, "is_systemctl_status_stable: Active State for feature {} is: {}".format(service, line))
+                if "inactive (dead)" in line or "active (running)" in line: 
+                    return True
+        return False
+
     def enable_feature(self, feature):
         cmds = []
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
+            # Make sure service/feature state is stable before doing any change
+            # There is chance that the other flow, systemd will bring up/down the service
+            # systemd is acting slow, hostcfgd needs to wait till the service/feature become
+            # stable before enabling feature, ow feature will be left on a 'failed' state
+            if not self.is_systemctl_status_stable(feature_name):
+                syslog.syslog(syslog.LOG_WARNING, "service {} is transitioning, sleep 10 sec before disabling!"
+                              .format(feature_name))
+                # 10 seconds come from worst senario: on a multi-asic platform,
+                # where systemd start feature takes ~5sec, systemd stop takes ~8sec
+                time.sleep(10)
             # Check if it is already enabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
             if unit_file_state == "enabled":
@@ -395,6 +421,16 @@ class FeatureHandler(object):
         cmds = []
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
+            # Make sure service/feature state is stable before doing any change
+            # There is chance that the other flow, systemd will bring up/down the service
+            # systemd is acting slow, hostcfgd needs to wait till the service/feature become
+            # stable before disabling feature, ow feature will be left on a 'failed' state
+            if not self.is_systemctl_status_stable(feature_name):
+                syslog.syslog(syslog.LOG_WARNING, "service {} is transitioning, sleep 10 sec before disabling!"
+                              .format(feature_name))
+                # 10 seconds come from worst senario: on a multi-asic platform,
+                # where systemd start feature takes ~5sec, systemd stop takes ~8sec
+                time.sleep(10)
             # Check if it is already disabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
             if unit_file_state in ("disabled", "masked"):
