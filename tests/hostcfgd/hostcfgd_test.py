@@ -134,6 +134,8 @@ class TestFeatureHandler(TestCase):
 
                         device_config = {}
                         device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
+                        device_config.update(config_data['device_runtime_metadata'])
+
                         feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
 
                         feature_table = MockConfigDb.CONFIG_DB['FEATURE']
@@ -141,7 +143,7 @@ class TestFeatureHandler(TestCase):
 
                         feature_systemd_name_map = {}
                         for feature_name in feature_table.keys():
-                            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config | config_data['device_runtime_metadata'])
+                            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config)
                             feature_names, _ = feature_handler.get_multiasic_feature_instances(feature)
                             feature_systemd_name_map[feature_name] = feature_names
 
@@ -188,6 +190,7 @@ class TestFeatureHandler(TestCase):
 
                         device_config = {}
                         device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
+                        device_config.update(config_data['device_runtime_metadata'])
                         feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
 
                         feature_table = MockConfigDb.CONFIG_DB['FEATURE']
@@ -195,7 +198,7 @@ class TestFeatureHandler(TestCase):
                         feature_systemd_name_map = {}
                         for feature_name, feature_config in feature_table.items():
                             feature_handler.handler(feature_name, 'SET', feature_config)
-                            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config | config_data['device_runtime_metadata'])
+                            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config)
                             feature_names, _ = feature_handler.get_multiasic_feature_instances(feature)
                             feature_systemd_name_map[feature_name] = feature_names
 

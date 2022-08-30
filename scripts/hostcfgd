@@ -208,7 +208,11 @@ class FeatureHandler(object):
             self._feature_state_table._del(feature_name)
             return
 
-        feature = Feature(feature_name, feature_cfg, self._device_config | self._device_running_config)
+        device_config = {}
+        device_config.update(self._device_config)
+        device_config.update(self._device_running_config)
+
+        feature = Feature(feature_name, feature_cfg, device_config)
         self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
 
         # Change auto-restart configuration first.
@@ -239,8 +243,12 @@ class FeatureHandler(object):
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
                 continue
+            
+            device_config = {}
+            device_config.update(self._device_config)
+            device_config.update(self._device_running_config)
 
-            feature = Feature(feature_name, feature_table[feature_name], self._device_config | self._device_running_config)
+            feature = Feature(feature_name, feature_table[feature_name], device_config)
 
             self._cached_config.setdefault(feature_name, feature)
             self.update_systemd_config(feature)
