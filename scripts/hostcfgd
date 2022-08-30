@@ -233,7 +233,7 @@ class FeatureHandler(object):
         """
         Summary:
         Updates the state field in the FEATURE|* tables as the state field
-        might have to be rendere dbased on DEVICE_METADATA table and generated Device Running Metadata
+        might have to be rendered based on DEVICE_METADATA table and generated Device Running Metadata
         """
         for feature_name in feature_table.keys():
             if not feature_name:
@@ -326,9 +326,7 @@ class FeatureHandler(object):
                         self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
                         return
         self._config_db.mod_entry('FEATURE', feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
-
-
-
+    
     def update_systemd_config(self, feature_config):
         """Updates `Restart=` field in feature's systemd configuration file
         according to the value of `auto_restart` field in `FEATURE` table of `CONFIG_DB`.
