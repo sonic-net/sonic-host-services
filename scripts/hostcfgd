@@ -218,12 +218,16 @@ class FeatureHandler(object):
         # and not auto restart.
         if self._cached_config[feature_name].auto_restart != feature.auto_restart:
             self.update_systemd_config(feature)
+            syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
+                          .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
             self._cached_config[feature_name].auto_restart = feature.auto_restart
 
         # Enable/disable the container service if the feature state was changed from its previous state.
         if self._cached_config[feature_name].state != feature.state:
             if self.update_feature_state(feature):
                 self._cached_config[feature_name].state = feature.state
+                syslog.syslog(syslog.LOG_INFO, "Status of feature '{}' is changed from '{}' to '{}' ..."
+                              .format(feature_name, self._cached_config[feature_name].state, feature.state))
             else:
                 self.resync_feature_state(self._cached_config[feature_name])
 
@@ -243,10 +247,10 @@ class FeatureHandler(object):
 
             self._cached_config.setdefault(feature_name, feature)
             self.update_systemd_config(feature)
-            syslog.syslog(syslog.LOG_INFO, "Re-sync state field: Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
+            syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
                           .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
             self.update_feature_state(feature)
-            syslog.syslog(syslog.LOG_INFO, "Re-sync state field: Status of feature '{}' is changed from '{}' to '{}' ..."
+            syslog.syslog(syslog.LOG_INFO, "Status of feature '{}' is changed from '{}' to '{}' ..."
                           .format(feature_name, self._cached_config[feature_name].state, feature.state))
             self.resync_feature_state(feature)
 
