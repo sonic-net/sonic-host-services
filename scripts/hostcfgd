@@ -218,15 +218,11 @@ class FeatureHandler(object):
         # and not auto restart.
         if self._cached_config[feature_name].auto_restart != feature.auto_restart:
             self.update_systemd_config(feature)
-            syslog.syslog(syslog.LOG_INFO, "featureHandler - Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
-                          .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
             self._cached_config[feature_name].auto_restart = feature.auto_restart
 
         # Enable/disable the container service if the feature state was changed from its previous state.
         if self._cached_config[feature_name].state != feature.state:
             if self.update_feature_state(feature):
-                syslog.syslog(syslog.LOG_INFO, "featureHandler - Status of feature '{}' is changed from '{}' to '{}' ..."
-                              .format(feature_name, self._cached_config[feature_name].state, feature.state))
                 self._cached_config[feature_name].state = feature.state
             else:
                 self.resync_feature_state(self._cached_config[feature_name])
@@ -455,7 +451,6 @@ class FeatureHandler(object):
         self.set_feature_state(feature, self.FEATURE_STATE_DISABLED)
 
     def resync_feature_state(self, feature):
-        syslog.syslog(syslog.LOG_INFO, "Modifying config db for feature {}, state changed to {}".format(feature.name, feature.state))
         self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
 
     def set_feature_state(self, feature, state):
