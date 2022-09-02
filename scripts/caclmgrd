@@ -141,15 +141,15 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             self.update_thread[back_asic_namespace] = None
             self.lock[back_asic_namespace] = threading.Lock()
             self.num_changes[back_asic_namespace] = 0
-            self.update_docket_mgmt_ip_acl(back_asic_namespace)
+            self.update_docker_mgmt_ip_acl(back_asic_namespace)
        
         for fabric_asic_namespace in namespaces['fabric_ns']:
             self.update_thread[fabric_asic_namespace] = None
             self.lock[fabric_asic_namespace] = threading.Lock()
             self.num_changes[fabric_asic_namespace] = 0
-            self.update_docket_mgmt_ip_acl(fabric_asic_namespace)
+            self.update_docker_mgmt_ip_acl(fabric_asic_namespace)
 
-    def update_docket_mgmt_ip_acl(self, namespace):
+    def update_docker_mgmt_ip_acl(self, namespace):
             self.iptables_cmd_ns_prefix[namespace] = "ip netns exec " + namespace + " "
             self.namespace_docker_mgmt_ip[namespace] = self.get_namespace_mgmt_ip(self.iptables_cmd_ns_prefix[namespace],
                                                                                              namespace)
