@@ -551,6 +551,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 ip_protocols = self.ACL_SERVICES[acl_service]["ip_protocols"]
                 if "dst_ports" in self.ACL_SERVICES[acl_service]:
                     dst_ports = self.ACL_SERVICES[acl_service]["dst_ports"]
+                else:
+                    dst_ports = []
 
                 acl_rules = {}
 
@@ -602,6 +604,12 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 # IPv4 or IPv6 rules, log a message and skip processing this table.
                 if not table_ip_version:
                     self.log_warning("Unable to determine if ACL table '{}' contains IPv4 or IPv6 rules. Skipping table..."
+                                     .format(table_name))
+                    continue
+                # If no destination port found for this ACL table,
+                # log a message and skip processing this table.
+                if len(dst_ports) == 0:
+                    self.log_warning("Required destination port not found for ACL table '{}'. Skipping table..."
                                      .format(table_name))
                     continue
                 ipv4_src_ip_set = set()
