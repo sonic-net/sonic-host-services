@@ -11,7 +11,7 @@ import signal
 import re
 import jinja2
 from sonic_py_common import device_info
-from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
+from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
 from swsscommon import swsscommon
 
 # FILE
@@ -197,6 +197,7 @@ class FeatureHandler(object):
         self._config_db = config_db
         self._feature_state_table = feature_state_table
         self._device_config = device_config
+        self._device_macsec_support = device_info.get_macsec_support_metadata()
         self._cached_config = {}
         self.is_multi_npu = device_info.is_multi_npu()
         self._device_running_config = device_info.get_device_runtime_metadata()
@@ -211,6 +212,7 @@ class FeatureHandler(object):
         device_config = {}
         device_config.update(self._device_config)
         device_config.update(self._device_running_config)
+        device_config.update(self._device_macsec_support)
 
         feature = Feature(feature_name, feature_cfg, device_config)
         self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
@@ -247,7 +249,7 @@ class FeatureHandler(object):
             device_config = {}
             device_config.update(self._device_config)
             device_config.update(self._device_running_config)
-
+            device_config.update(self._device_macsec_support)
             feature = Feature(feature_name, feature_table[feature_name], device_config)
 
             self._cached_config.setdefault(feature_name, feature)
@@ -460,9 +462,22 @@ class FeatureHandler(object):
     def resync_feature_state(self, feature):
         self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
 
+        # resync the feature state in CONFIG_DB in namespaces in multi-asic platform
+        namespaces = device_info.get_namespaces()
+        for namespace in namespaces:
+            db = ConfigDBConnector(namespace=namespace)
+            db.connect()
+            db.mod_entry('FEATURE', feature.name, {'state': feature.state})
+
     def set_feature_state(self, feature, state):
         self._feature_state_table.set(feature.name, [('state', state)])
 
+        # Update the feature state in STATE_DB in namespaces in multi-asic platform
+        namespaces = device_info.get_namespaces()
+        for namespace in namespaces:
+            db_conn = DBConnector(STATE_DB, 0, False, namespace);
+            feature_state_tbl = Table(db_conn, 'FEATURE')
+            feature_state_tbl.set(feature.name, [('state', state)])
 
 class Iptables(object):
     def __init__(self):
@@ -1469,6 +1484,10 @@ class HostConfigDaemon:
         self.ntpcfg = NtpCfg()
 
         self.is_multi_npu = device_info.is_multi_npu()
+
+        # Initlaize Global config that loads all database*.json
+        if self.is_multi_npu:
+            SonicDBConfig.initializeGlobalConfig()
 
         # Initialize AAACfg
         self.aaacfg = AaaCfg()
