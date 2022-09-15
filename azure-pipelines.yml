@@ -71,6 +71,7 @@ stages:
         sudo dpkg -i libnl-route-3-200_*.deb
         sudo dpkg -i libnl-nf-3-200_*.deb
         sudo dpkg -i libhiredis0.14_*.deb
+        sudo dpkg -i libyang_1.0.73_*.deb
       workingDirectory: $(Pipeline.Workspace)/target/debs/buster/
       displayName: 'Install Debian dependencies'
 
