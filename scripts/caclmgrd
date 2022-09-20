@@ -139,22 +139,26 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
             self.config_db_map[front_asic_namespace] = swsscommon.ConfigDBConnector(use_unix_socket_path=True, namespace=front_asic_namespace)
             self.config_db_map[front_asic_namespace].connect()
-            self.iptables_cmd_ns_prefix[front_asic_namespace] = "ip netns exec " + front_asic_namespace + " "
-            self.namespace_docker_mgmt_ip[front_asic_namespace] = self.get_namespace_mgmt_ip(self.iptables_cmd_ns_prefix[front_asic_namespace],
-                                                                                              front_asic_namespace)
-            self.namespace_docker_mgmt_ipv6[front_asic_namespace] = self.get_namespace_mgmt_ipv6(self.iptables_cmd_ns_prefix[front_asic_namespace],
-                                                                                              front_asic_namespace)
+            self.update_docker_mgmt_ip_acl(front_asic_namespace)
 
         for back_asic_namespace in namespaces['back_ns']:
             self.update_thread[back_asic_namespace] = None
             self.lock[back_asic_namespace] = threading.Lock()
             self.num_changes[back_asic_namespace] = 0
+            self.update_docker_mgmt_ip_acl(back_asic_namespace)
+       
+        for fabric_asic_namespace in namespaces['fabric_ns']:
+            self.update_thread[fabric_asic_namespace] = None
+            self.lock[fabric_asic_namespace] = threading.Lock()
+            self.num_changes[fabric_asic_namespace] = 0
+            self.update_docker_mgmt_ip_acl(fabric_asic_namespace)
 
-            self.iptables_cmd_ns_prefix[back_asic_namespace] = "ip netns exec " + back_asic_namespace + " "
-            self.namespace_docker_mgmt_ip[back_asic_namespace] = self.get_namespace_mgmt_ip(self.iptables_cmd_ns_prefix[back_asic_namespace],
-                                                                                             back_asic_namespace)
-            self.namespace_docker_mgmt_ipv6[back_asic_namespace] = self.get_namespace_mgmt_ipv6(self.iptables_cmd_ns_prefix[back_asic_namespace],
-                                                                                             back_asic_namespace)
+    def update_docker_mgmt_ip_acl(self, namespace):
+            self.iptables_cmd_ns_prefix[namespace] = "ip netns exec " + namespace + " "
+            self.namespace_docker_mgmt_ip[namespace] = self.get_namespace_mgmt_ip(self.iptables_cmd_ns_prefix[namespace],
+                                                                                             namespace)
+            self.namespace_docker_mgmt_ipv6[namespace] = self.get_namespace_mgmt_ipv6(self.iptables_cmd_ns_prefix[namespace],
+                                                                                             namespace)
 
     def get_namespace_mgmt_ip(self, iptable_ns_cmd_prefix, namespace):
         ip_address_get_command = iptable_ns_cmd_prefix + "ip -4 -o addr show " + ("eth0" if namespace else "docker0") +\
@@ -551,6 +555,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 ip_protocols = self.ACL_SERVICES[acl_service]["ip_protocols"]
                 if "dst_ports" in self.ACL_SERVICES[acl_service]:
                     dst_ports = self.ACL_SERVICES[acl_service]["dst_ports"]
+                else:
+                    dst_ports = []
 
                 acl_rules = {}
 
@@ -602,6 +608,12 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 # IPv4 or IPv6 rules, log a message and skip processing this table.
                 if not table_ip_version:
                     self.log_warning("Unable to determine if ACL table '{}' contains IPv4 or IPv6 rules. Skipping table..."
+                                     .format(table_name))
+                    continue
+                # If no destination port found for this ACL table,
+                # log a message and skip processing this table.
+                if len(dst_ports) == 0:
+                    self.log_warning("Required destination port not found for ACL table '{}'. Skipping table..."
                                      .format(table_name))
                     continue
                 ipv4_src_ip_set = set()
