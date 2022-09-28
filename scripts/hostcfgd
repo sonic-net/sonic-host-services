@@ -435,7 +435,7 @@ class FeatureHandler(object):
             # Make sure service/feature state is stable before doing any change
             # There is chance that the other flow, systemd will bring up/down the service
             # systemd is acting slow, hostcfgd needs to wait till the service/feature become
-            # stable before enabling feature, ow feature will be left on a 'failed' state
+            # stable before enabling feature, otherwise feature will be left on a 'failed' state
             if not self.is_systemctl_status_stable(feature_name):
                 syslog.syslog(syslog.LOG_WARNING, "service {} is transitioning, sleep 10 sec before disabling!"
                               .format(feature_name))
