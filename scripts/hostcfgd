@@ -200,7 +200,6 @@ class FeatureHandler(object):
         self._cached_config = {}
         self.is_multi_npu = device_info.is_multi_npu()
         self._device_running_config = device_info.get_device_runtime_metadata()
-        self._device_macsec_support = device_info.get_macsec_support_metadata()
         self.ns_cfg_db = {}
         self.ns_feature_state_tbl = {}
 
@@ -227,7 +226,6 @@ class FeatureHandler(object):
         device_config = {}
         device_config.update(self._device_config)
         device_config.update(self._device_running_config)
-        device_config.update(self._device_macsec_support)
 
         feature = Feature(feature_name, feature_cfg, device_config)
         self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
@@ -264,7 +262,6 @@ class FeatureHandler(object):
             device_config = {}
             device_config.update(self._device_config)
             device_config.update(self._device_running_config)
-            device_config.update(self._device_macsec_support)
             feature = Feature(feature_name, feature_table[feature_name], device_config)
 
             self._cached_config.setdefault(feature_name, feature)
