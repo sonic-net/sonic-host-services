@@ -1,12 +1,14 @@
 import os
 import sys
 import swsscommon as swsscommon_package
+from sonic_py_common import device_info
 from swsscommon import swsscommon
 
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 
+from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB
 from .test_vectors import HOSTCFGD_TEST_VECTOR, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 
@@ -45,7 +47,7 @@ class TestFeatureHandler(TestCase):
 
         return True if not ddiff else False
 
-    def checks_systemd_config_file(self, feature_table):
+    def checks_systemd_config_file(self, feature_table, feature_systemd_name_map=None):
         """Checks whether the systemd configuration file of each feature was created or not
         and whether the `Restart=` field in the file is set correctly or not.
 
@@ -68,13 +70,16 @@ class TestFeatureHandler(TestCase):
             elif "disabled" in auto_restart_status:
                 auto_restart_status = "disabled"
 
-            feature_systemd_config_file_path = systemd_config_file_path.format(feature_name)
-            is_config_file_existing = os.path.exists(feature_systemd_config_file_path)
-            assert is_config_file_existing, "Systemd configuration file of feature '{}' does not exist!".format(feature_name)
+            feature_systemd_list = feature_systemd_name_map[feature_name] if feature_systemd_name_map else [feature_name]
 
-            with open(feature_systemd_config_file_path) as systemd_config_file:
-                status = systemd_config_file.read().strip()
-            assert status == '[Service]\nRestart={}'.format(truth_table[auto_restart_status])
+            for feature_systemd in feature_systemd_list:
+                feature_systemd_config_file_path = systemd_config_file_path.format(feature_systemd)
+                is_config_file_existing = os.path.exists(feature_systemd_config_file_path)
+                assert is_config_file_existing, "Systemd configuration file of feature '{}' does not exist!".format(feature_systemd)
+
+                with open(feature_systemd_config_file_path) as systemd_config_file:
+                    status = systemd_config_file.read().strip()
+                assert status == '[Service]\nRestart={}'.format(truth_table[auto_restart_status])
 
     def get_state_db_set_calls(self, feature_table):
         """Returns a Mock call objects which recorded the `set` calls to `FEATURE` table in `STATE_DB`.
@@ -119,31 +124,42 @@ class TestFeatureHandler(TestCase):
         MockConfigDb.set_config_db(config_data['config_db'])
         feature_state_table_mock = mock.Mock()
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = config_data['popen_attributes']
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            with mock.patch("sonic_py_common.device_info.get_device_runtime_metadata", return_value=config_data['device_runtime_metadata']):
+                with mock.patch("sonic_py_common.device_info.is_multi_npu", return_value=True if 'num_npu' in config_data else False):
+                    with mock.patch("sonic_py_common.device_info.get_num_npus", return_value=config_data['num_npu'] if 'num_npu' in config_data else 1):
+                        popen_mock = mock.Mock()
+                        attrs = config_data['popen_attributes']
+                        popen_mock.configure_mock(**attrs)
+                        mocked_subprocess.Popen.return_value = popen_mock
 
-            device_config = {}
-            device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
-            feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+                        device_config = {}
+                        device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
+                        device_config.update(config_data['device_runtime_metadata'])
 
-            feature_table = MockConfigDb.CONFIG_DB['FEATURE']
-            feature_handler.sync_state_field(feature_table)
+                        feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
 
-            is_any_difference = self.checks_config_table(MockConfigDb.get_config_db()['FEATURE'],
-                                                         config_data['expected_config_db']['FEATURE'])
-            assert is_any_difference, "'FEATURE' table in 'CONFIG_DB' is modified unexpectedly!"
+                        feature_table = MockConfigDb.CONFIG_DB['FEATURE']
+                        feature_handler.sync_state_field(feature_table)
 
-            feature_table_state_db_calls = self.get_state_db_set_calls(feature_table)
+                        feature_systemd_name_map = {}
+                        for feature_name in feature_table.keys():
+                            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config)
+                            feature_names, _ = feature_handler.get_multiasic_feature_instances(feature)
+                            feature_systemd_name_map[feature_name] = feature_names
 
-            self.checks_systemd_config_file(config_data['config_db']['FEATURE'])
-            mocked_subprocess.check_call.assert_has_calls(config_data['enable_feature_subprocess_calls'],
-                                                          any_order=True)
-            mocked_subprocess.check_call.assert_has_calls(config_data['daemon_reload_subprocess_call'],
-                                                          any_order=True)
-            feature_state_table_mock.set.assert_has_calls(feature_table_state_db_calls)
-            self.checks_systemd_config_file(config_data['config_db']['FEATURE'])
+                        is_any_difference = self.checks_config_table(MockConfigDb.get_config_db()['FEATURE'],
+                                                                     config_data['expected_config_db']['FEATURE'])
+                        assert is_any_difference, "'FEATURE' table in 'CONFIG_DB' is modified unexpectedly!"
+
+                        feature_table_state_db_calls = self.get_state_db_set_calls(feature_table)
+
+                        self.checks_systemd_config_file(config_data['config_db']['FEATURE'], feature_systemd_name_map)
+                        mocked_subprocess.check_call.assert_has_calls(config_data['enable_feature_subprocess_calls'],
+                                                                      any_order=True)
+                        mocked_subprocess.check_call.assert_has_calls(config_data['daemon_reload_subprocess_call'],
+                                                                      any_order=True)
+                        feature_state_table_mock.set.assert_has_calls(feature_table_state_db_calls)
+                        self.checks_systemd_config_file(config_data['config_db']['FEATURE'], feature_systemd_name_map)
 
     @parameterized.expand(HOSTCFGD_TEST_VECTOR)
     @patchfs
@@ -164,25 +180,33 @@ class TestFeatureHandler(TestCase):
         MockConfigDb.set_config_db(config_data['config_db'])
         feature_state_table_mock = mock.Mock()
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = config_data['popen_attributes']
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            with mock.patch("sonic_py_common.device_info.get_device_runtime_metadata", return_value=config_data['device_runtime_metadata']):
+                with mock.patch("sonic_py_common.device_info.is_multi_npu", return_value=True if 'num_npu' in config_data else False):
+                    with mock.patch("sonic_py_common.device_info.get_num_npus", return_value=config_data['num_npu'] if 'num_npu' in config_data else 1):
+                        popen_mock = mock.Mock()
+                        attrs = config_data['popen_attributes']
+                        popen_mock.configure_mock(**attrs)
+                        mocked_subprocess.Popen.return_value = popen_mock
 
-            device_config = {}
-            device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
-            feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+                        device_config = {}
+                        device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
+                        device_config.update(config_data['device_runtime_metadata'])
+                        feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
 
-            feature_table = MockConfigDb.CONFIG_DB['FEATURE']
+                        feature_table = MockConfigDb.CONFIG_DB['FEATURE']
 
-            for feature_name, feature_config in feature_table.items():
-                feature_handler.handler(feature_name, 'SET', feature_config)
+                        feature_systemd_name_map = {}
+                        for feature_name, feature_config in feature_table.items():
+                            feature_handler.handler(feature_name, 'SET', feature_config)
+                            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config)
+                            feature_names, _ = feature_handler.get_multiasic_feature_instances(feature)
+                            feature_systemd_name_map[feature_name] = feature_names
 
-            self.checks_systemd_config_file(config_data['config_db']['FEATURE'])
-            mocked_subprocess.check_call.assert_has_calls(config_data['enable_feature_subprocess_calls'],
-                                                          any_order=True)
-            mocked_subprocess.check_call.assert_has_calls(config_data['daemon_reload_subprocess_call'],
-                                                          any_order=True)
+                        self.checks_systemd_config_file(config_data['config_db']['FEATURE'], feature_systemd_name_map)
+                        mocked_subprocess.check_call.assert_has_calls(config_data['enable_feature_subprocess_calls'],
+                                                                      any_order=True)
+                        mocked_subprocess.check_call.assert_has_calls(config_data['daemon_reload_subprocess_call'],
+                                                                      any_order=True)
 
     def test_feature_config_parsing(self):
         swss_feature = hostcfgd.Feature('swss', {
@@ -357,3 +381,77 @@ class TestHostcfgdDaemon(TestCase):
                         call('sonic-kdump-config --num_dumps 3', shell=True),
                         call('sonic-kdump-config --memory 0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M', shell=True)]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+
+    def test_devicemeta_event(self):
+        """
+        Test handling DEVICE_METADATA events.
+        1) Hostname reload
+        """
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
+                                    'localhost')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.aaacfg = mock.MagicMock()
+        daemon.iptables = mock.MagicMock()
+        daemon.passwcfg = mock.MagicMock()
+        daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call('sudo service hostname-config restart', shell=True),
+                call('sudo monit reload', shell=True)
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected,
+                                                          any_order=True)
+
+    def test_mgmtiface_event(self):
+        """
+        Test handling mgmt events.
+        1) Management interface setup 
+        2) Management vrf setup
+        """
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [
+            (swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, 'eth0|1.2.3.4/24'),
+            (swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, 'vrf_global')
+        ]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        daemon.aaacfg = mock.MagicMock()
+        daemon.iptables = mock.MagicMock()
+        daemon.passwcfg = mock.MagicMock()
+        daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call('sudo systemctl restart interfaces-config', shell=True),
+                call('sudo systemctl restart ntp-config', shell=True),
+                call('service ntp stop', shell=True),
+                call('systemctl restart interfaces-config', shell=True),
+                call('service ntp start', shell=True),
+                call('cat /proc/net/route | grep -E \\"eth0\\s+00000000'
+                     '\\s+[0-9A-Z]+\\s+[0-9]+\\s+[0-9]+\\s+[0-9]+\\s+202\\" | '
+                     'wc -l', shell=True),
+                call('ip -4 route del default dev eth0 metric 202', shell=True)
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected,
+                                                          any_order=True)
