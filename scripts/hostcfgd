@@ -424,9 +424,9 @@ class FeatureHandler(object):
         for line in stdout.strip().split('\n'):
             if "Active" in line:
                 syslog.syslog(syslog.LOG_INFO, "is_systemctl_status_stable: Active State for feature {} is: {}".format(service, line))
-                if "inactive (dead)" in line or "active (running)" in line: 
-                    return True
-        return False
+                if "activating" in line or "deactivating" in line: 
+                    return False
+        return True
 
     def enable_feature(self, feature):
         cmds = []
