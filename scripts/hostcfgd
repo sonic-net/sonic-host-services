@@ -348,6 +348,10 @@ class FeatureHandler(object):
                         self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
                         return
         self._config_db.mod_entry('FEATURE', feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
+
+        # sync has_per_asic_scope to CONFIG_DB in namespaces in multi-asic platform
+        for ns, db in self.ns_cfg_db.items():
+            db.mod_entry('FEATURE', feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
     
     def update_systemd_config(self, feature_config):
         """Updates `Restart=` field in feature's systemd configuration file
@@ -474,14 +478,14 @@ class FeatureHandler(object):
     def resync_feature_state(self, feature):
         self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
 
-        # resync the feature state in CONFIG_DB in namespaces in multi-asic platform
+        # resync the feature state to CONFIG_DB in namespaces in multi-asic platform
         for ns, db in self.ns_cfg_db.items():
             db.mod_entry('FEATURE', feature.name, {'state': feature.state})
 
     def set_feature_state(self, feature, state):
         self._feature_state_table.set(feature.name, [('state', state)])
 
-        # Update the feature state in STATE_DB in namespaces in multi-asic platform
+        # Update the feature state to STATE_DB in namespaces in multi-asic platform
         for ns, tbl in self.ns_feature_state_tbl.items():
             tbl.set(feature.name, [('state', state)])
 
