@@ -458,9 +458,9 @@ class TestHostcfgdDaemon(TestCase):
 
 class TestSyslogHandler:
     @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.SyslogCfg.parse_syslog_conf', mock.MagicMock(return_value=('100', '200')))
     def test_syslog_update(self, mock_run_cmd):
         syslog_cfg = hostcfgd.SyslogCfg()
-        syslog_cfg.parse_syslog_conf = mock.MagicMock(return_value=('100', '200'))
         data = {
             'rate_limit_interval': '100',
             'rate_limit_burst': '200'

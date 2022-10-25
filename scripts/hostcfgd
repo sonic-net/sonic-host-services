@@ -1492,17 +1492,21 @@ class SyslogCfg:
         interval = '0'
         burst = '0'
 
-        with open(self.SYSLOG_CONF_PATH, 'r') as f:
-            content = f.read()
-            pattern = re.compile(self.INTERVAL_PATTERN)
-            for match in pattern.finditer(content):
-                interval = match.group(1)
-                break
+        try:
+            with open(self.SYSLOG_CONF_PATH, 'r') as f:
+                content = f.read()
+                pattern = re.compile(self.INTERVAL_PATTERN)
+                for match in pattern.finditer(content):
+                    interval = match.group(1)
+                    break
 
-            pattern = re.compile(self.BURST_PATTERN)
-            for match in pattern.finditer(content):
-                burst = match.group(1)
-                break
+                pattern = re.compile(self.BURST_PATTERN)
+                for match in pattern.finditer(content):
+                    burst = match.group(1)
+                    break
+        except OSError:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to read file {self.SYSLOG_CONF_PATH}')
+            return None, None
         return interval, burst
 
 
@@ -1570,7 +1574,7 @@ class HostConfigDaemon:
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
-        syslog = init_data['SYSLOG_CONFIG']
+        syslog = init_data.get('SYSLOG_CONFIG', {})
 
         self.feature_handler.sync_state_field(features)
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
