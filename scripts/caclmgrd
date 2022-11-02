@@ -323,18 +323,19 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 nat_source_ipv6_set = acl_source_ip_map[acl_service]["ipv6"] if acl_source_ip_map and acl_source_ip_map[acl_service]["ipv6"] else { "::/0" }
 
                 for ip_protocol in self.ACL_SERVICES[acl_service]["ip_protocols"]:
-                    for dst_port in  self.ACL_SERVICES[acl_service]["dst_ports"]: 
-                        for ipv4_src_ip in nat_source_ipv4_set:
-                            # IPv4 rules
-                            fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    if "dst_ports" in self.ACL_SERVICES[acl_service]:
+                        for dst_port in  self.ACL_SERVICES[acl_service]["dst_ports"]:
+                            for ipv4_src_ip in nat_source_ipv4_set:
+                                # IPv4 rules
+                                fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                                                ['iptables', '-t', 'nat', '-A', 'PREROUTING', '-p', ip_protocol, '-s', ipv4_src_ip, '--dport', dst_port, '-j', 'DNAT', '--to-destination', self.namespace_mgmt_ip])
-                            fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                                                ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-p', ip_protocol, '-s', ipv4_src_ip, '--dport', dst_port, '-j', 'SNAT', '--to-source', self.namespace_docker_mgmt_ip[namespace]])
-                        for ipv6_src_ip in nat_source_ipv6_set:
-                            # IPv6 rules
-                            fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                            for ipv6_src_ip in nat_source_ipv6_set:
+                                # IPv6 rules
+                                fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                                                ['ip6tables', '-t', 'nat', '-A', 'PREROUTING', '-p', ip_protocol, '-s', ipv6_src_ip, '--dport', dst_port, '-j', 'DNAT', '--to-destination', self.namespace_mgmt_ipv6])
-                            fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                                                ['ip6tables', '-t', 'nat', '-A', 'POSTROUTING', '-p', ip_protocol, '-s', ipv6_src_ip, '--dport', dst_port, '-j', 'SNAT', '--to-source', self.namespace_docker_mgmt_ipv6[namespace]])
 
         return fwd_traffic_from_namespace_to_host_cmds
