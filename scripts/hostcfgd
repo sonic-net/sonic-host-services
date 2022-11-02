@@ -12,7 +12,7 @@ import re
 import jinja2
 from shlex import split
 from sonic_py_common import device_info
-from sonic_py_common.general import check_output_pipe, getstatusoutput_noshell_pipe
+from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 
