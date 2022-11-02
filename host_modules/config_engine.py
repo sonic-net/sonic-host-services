@@ -19,14 +19,13 @@ class Config(host_service.HostModule):
         if config_file and config_file != DEFAULT_CONFIG:
             if not os.path.exists(config_file):
                 return -1, "Can't find %s"%config_file
-            # Persistent Config
-            shutil.move(config_file, DEFAULT_CONFIG)
+            cmd.append(config_file)
 
         result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ''
         if result.returncode:
             lines = result.stderr.decode().split('\n')
-            for line in lines[::-1]:
+            for line in lines:
                 if 'Error' in line:
                     msg = line
                     break
@@ -43,13 +42,13 @@ class Config(host_service.HostModule):
         msg = ''
         if result.returncode:
             lines = result.stderr.decode().split('\n')
-            for line in lines[::-1]:
+            for line in lines:
                 if 'Error' in line:
                     msg = line
                     break
         return result.returncode, msg
 
 def register():
-    """Return the class name"""
+    """Return class and module name"""
     return Config, MOD_NAME
 

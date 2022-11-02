@@ -23,7 +23,7 @@ class TestConfigEngine(object):
                 ret, msg = config_stub.reload(config_file)
                 call_args = mock_run.call_args[0][0]
                 assert "reload" in call_args
-                assert config_file not in call_args
+                assert config_file in call_args
                 assert ret == test_ret, "Return value is wrong"
                 assert msg == "", "Return message is wrong"
             with mock.patch("subprocess.run") as mock_run:
@@ -38,7 +38,7 @@ class TestConfigEngine(object):
                 ret, msg = config_stub.reload(config_file)
                 call_args = mock_run.call_args[0][0]
                 assert "reload" in call_args
-                assert config_file not in call_args
+                assert config_file in call_args
                 assert ret == test_ret, "Return value is wrong"
                 assert msg == "Error: this is the test message", "Return message is wrong"
 
