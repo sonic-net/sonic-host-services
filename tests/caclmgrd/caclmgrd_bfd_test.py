@@ -44,6 +44,8 @@ class TestCaclmgrdBfd(TestCase):
             call_rc = test_data["call_rc"]
             mocked_subprocess.call.return_value = call_rc
 
+            self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
+            self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
             caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
             caclmgrd_daemon.allow_bfd_protocol('')
             mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)

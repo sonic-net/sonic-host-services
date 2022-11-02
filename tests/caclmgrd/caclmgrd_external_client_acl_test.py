@@ -41,4 +41,6 @@ class TestCaclmgrdExternalClientAcl(TestCase):
         caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
 
         iptables_rules_ret, _ = caclmgrd_daemon.get_acl_rules_and_translate_to_iptables_commands('')
+        test_data['return'] = [tuple(i) for i in test_data['return']]
+        iptables_rules_ret = [tuple(i) for i in iptables_rules_ret]
         self.assertEqual(set(test_data["return"]).issubset(set(iptables_rules_ret)), True)

@@ -4,13 +4,13 @@ import filecmp
 import shutil
 import os
 import sys
-import subprocess
 from swsscommon import swsscommon
 
 from parameterized import parameterized
 from unittest import TestCase, mock
 from tests.hostcfgd.test_radius_vectors import HOSTCFGD_TEST_RADIUS_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from sonic_py_common.general import getstatusoutput_noshell
 
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +40,8 @@ class TestHostcfgdRADIUS(TestCase):
         Test hostcfd daemon - RADIUS
     """
     def run_diff(self, file1, file2):
-        return subprocess.check_output('diff -uR {} {} || true'.format(file1, file2), shell=True)
+        _, output = getstatusoutput_noshell(['diff', '-uR', file1, file2])
+        return output
 
 
     @parameterized.expand(HOSTCFGD_TEST_RADIUS_VECTOR)

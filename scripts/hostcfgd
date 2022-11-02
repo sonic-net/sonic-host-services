@@ -10,7 +10,9 @@ import syslog
 import signal
 import re
 import jinja2
+from shlex import split
 from sonic_py_common import device_info
+from sonic_py_common.general import check_output_pipe, getstatusoutput_noshell_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 
@@ -86,7 +88,17 @@ def signal_handler(sig, frame):
 
 def run_cmd(cmd, log_err=True, raise_exception=False):
     try:
-        subprocess.check_call(cmd, shell=True)
+        subprocess.check_call(cmd)
+    except Exception as err:
+        if log_err:
+            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+                  .format(err.cmd, err.returncode, err.output))
+        if raise_exception:
+            raise
+
+def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
+    try:
+        check_output_pipe(cmd0, cmd1, cmd2)
     except Exception as err:
         if log_err:
             syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
@@ -321,9 +333,9 @@ class FeatureHandler(object):
                 continue
             if unit_file_state != "disabled" and not feature_config.has_per_asic_scope:
                 for suffix in reversed(feature_suffixes):
-                    cmds.append("sudo systemctl stop {}.{}".format(feature_name, suffix))
-                    cmds.append("sudo systemctl disable {}.{}".format(feature_name, feature_suffixes[-1]))
-                    cmds.append("sudo systemctl mask {}.{}".format(feature_name, feature_suffixes[-1]))
+                    cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])
+                    cmds.append(["sudo", "systemctl", "disable", "{}.{}".format(feature_name, feature_suffixes[-1])])
+                    cmds.append(["sudo", "systemctl", "mask", "{}.{}".format(feature_name, feature_suffixes[-1])])
                 for cmd in cmds:
                     syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
                     try:
@@ -368,7 +380,7 @@ class FeatureHandler(object):
 
         try:
             syslog.syslog(syslog.LOG_INFO, "Reloading systemd configuration files ...")
-            run_cmd("sudo systemctl daemon-reload", raise_exception=True)
+            run_cmd(["sudo", "systemctl", "daemon-reload"], raise_exception=True)
             syslog.syslog(syslog.LOG_INFO, "Systemd configuration files are reloaded!")
         except Exception as err:
             syslog.syslog(syslog.LOG_ERR, "Failed to reload systemd configuration files!")
@@ -392,8 +404,8 @@ class FeatureHandler(object):
     def get_systemd_unit_state(self, unit):
         """ Returns service configuration """
 
-        cmd = "sudo systemctl show {} --property UnitFileState".format(unit)
-        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cmd = ["sudo", "systemctl", "show", unit, "--property", "UnitFileState"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
             syslog.syslog(syslog.LOG_ERR, "Failed to get status of {}: rc={} stderr={}".format(unit, proc.returncode, stderr))
@@ -412,13 +424,13 @@ class FeatureHandler(object):
                 continue
 
             for suffix in feature_suffixes:
-                cmds.append("sudo systemctl unmask {}.{}".format(feature_name, suffix))
+                cmds.append(["sudo", "systemctl", "unmask", "{}.{}".format(feature_name, suffix)])
 
             # If feature has timer associated with it, start/enable corresponding systemd .timer unit
             # otherwise, start/enable corresponding systemd .service unit
 
-            cmds.append("sudo systemctl enable {}.{}".format(feature_name, feature_suffixes[-1]))
-            cmds.append("sudo systemctl start {}.{}".format(feature_name, feature_suffixes[-1]))
+            cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
+            cmds.append(["sudo", "systemctl", "start", "{}.{}".format(feature_name, feature_suffixes[-1])])
 
             for cmd in cmds:
                 syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
@@ -442,9 +454,9 @@ class FeatureHandler(object):
                 continue
 
             for suffix in reversed(feature_suffixes):
-                cmds.append("sudo systemctl stop {}.{}".format(feature_name, suffix))
-                cmds.append("sudo systemctl disable {}.{}".format(feature_name, feature_suffixes[-1]))
-                cmds.append("sudo systemctl mask {}.{}".format(feature_name, feature_suffixes[-1]))
+                cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])
+                cmds.append(["sudo", "systemctl", "disable", "{}.{}".format(feature_name, feature_suffixes[-1])])
+                cmds.append(["sudo", "systemctl", "mask", "{}.{}".format(feature_name, feature_suffixes[-1])])
             for cmd in cmds:
                 syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
                 try:
@@ -486,11 +498,11 @@ class Iptables(object):
             self.iptables_handler(row, lpbk_table[row])
 
     def command(self, chain, ip, ver, op):
-        cmd = 'iptables' if ver == '4' else 'ip6tables'
-        cmd += ' -t mangle --{} {} -p tcp --tcp-flags SYN SYN'.format(op, chain)
-        cmd += ' -d' if chain == 'PREROUTING' else ' -s'
-        mss = self.tcpmss if ver == '4' else self.tcp6mss
-        cmd += ' {} -j TCPMSS --set-mss {}'.format(ip, mss)
+        cmd = ['iptables'] if ver == '4' else ['ip6tables']
+        cmd += ['-t', 'mangle', '--{}'.format(op), chain, "-p", "tcp", "--tcp-flags", 'SYN', 'SYN']
+        cmd += ['-d'] if chain == 'PREROUTING' else ['-s']
+        mss = str(self.tcpmss) if ver == '4' else str(self.tcp6mss)
+        cmd += [ip, "-j", "TCPMSS", "--set-mss", mss]
 
         return cmd
 
@@ -526,12 +538,12 @@ class Iptables(object):
                 as a new rule even if it is the same as an existing one. Check this and
                 do nothing if rule exists
                 '''
-                ret = subprocess.call(cmd, shell=True)
+                ret = subprocess.call(cmd)
                 if ret == 0:
                     syslog.syslog(syslog.LOG_INFO, "{} rule exists in {}".format(ip, chain))
                 else:
                     # Modify command from Check to Append
-                    iptables_cmds.append(cmd.replace("check", "append"))
+                    iptables_cmds.append([word if word != "--check" else "--append" for word in cmd])
 
         for cmd in iptables_cmds:
             syslog.syslog(syslog.LOG_INFO, "Running cmd - {}".format(cmd))
@@ -759,8 +771,12 @@ class AaaCfg(object):
 
     def modify_single_file(self, filename, operations=None):
         if operations:
-            cmd = "sed -e {0} {1} > {1}.new; mv -f {1} {1}.old; mv -f {1}.new {1}".format(' -e '.join(operations), filename)
-            os.system(cmd)
+            e_operations_str = ' -e '.join(operations)
+            e_operations_list = split(e_operations_str)
+            with open(filename+'new', 'w') as f:
+                subprocess.call(["sed", "-e"] + e_operations_list, stdout=f)
+            subprocess.call(["mv", '-f', filename, filename+'.old'])
+            subprocess.call(['mv', '-f', filename+'.new', filename])
 
     def modify_conf_file(self):
         authentication = self.authentication_default.copy()
@@ -919,12 +935,12 @@ class AaaCfg(object):
         # Start the statistics service. Only RADIUS implemented
         if ('radius' in authentication['login']) and ('statistics' in radius_global) and \
                 radius_global['statistics']:
-            cmd = 'service aaastatsd start'
+            cmd = ['service', 'aaastatsd', 'start']
         else:
-            cmd = 'service aaastatsd stop'
+            cmd = ['service', 'aaastatsd', 'stop']
         syslog.syslog(syslog.LOG_INFO, "cmd - {}".format(cmd))
         try:
-            subprocess.check_call(cmd, shell=True)
+            subprocess.check_call(cmd)
         except subprocess.CalledProcessError as err:
             syslog.syslog(syslog.LOG_ERR,
                     "{} - failed: return code - {}, output:\n{}"
@@ -971,9 +987,11 @@ class PasswHardening(object):
 
     def modify_single_file_inplace(self, filename, operations=None):
         if operations:
-            cmd = "sed -i {0} {1}".format(' -i '.join(operations), filename)
+            i_operations_str = ' -i '.join(operations)
+            i_operations_list = split(i_operations_str)
+            cmd = ["sed", '-i'] + i_operations_list + [filename]
             syslog.syslog(syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - {}".format(cmd))
-            os.system(cmd)
+            subprocess.call(cmd)
 
     def set_passw_hardening_policies(self, passw_policies):
         # Password Hardening flow
@@ -1144,21 +1162,21 @@ class KdumpCfg(object):
             else:
                 enabled = False
             if enabled:
-                run_cmd("sonic-kdump-config --enable")
+                run_cmd(["sonic-kdump-config", "--enable"])
             else:
-                run_cmd("sonic-kdump-config --disable")
+                run_cmd(["sonic-kdump-config", "--disable"])
 
             # Memory configuration
             memory = self.kdump_defaults["memory"]
             if data.get("memory") is not None:
                 memory = data.get("memory")
-            run_cmd("sonic-kdump-config --memory " + memory)
+            run_cmd(["sonic-kdump-config", "--memory", memory])
 
             # Num dumps
             num_dumps = self.kdump_defaults["num_dumps"]
             if data.get("num_dumps") is not None:
                 num_dumps = data.get("num_dumps")
-            run_cmd("sonic-kdump-config --num_dumps " + num_dumps)
+            run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
 
 class NtpCfg(object):
     """
@@ -1191,7 +1209,7 @@ class NtpCfg(object):
             return
         else:
             # just restart ntp config
-            cmd = 'systemctl restart ntp-config'
+            cmd = ['systemctl', 'restart', 'ntp-config']
             run_cmd(cmd)
 
     def ntp_global_update(self, key, data, is_load=False):
@@ -1218,12 +1236,12 @@ class NtpCfg(object):
         if orig_src_set != new_src_set:
             syslog.syslog(syslog.LOG_INFO, "ntp global update for source intf old {} new {}, restarting ntp-config"
                           .format(orig_src_set, new_src_set))
-            cmd = 'systemctl restart ntp-config'
+            cmd = ['systemctl', 'restart', 'ntp-config']
             run_cmd(cmd)
         elif new_vrf != orig_vrf:
             syslog.syslog(syslog.LOG_INFO, "ntp global update for vrf old {} new {}, restarting ntp service"
                             .format(orig_vrf, new_vrf))
-            cmd = 'service ntp restart'
+            cmd = ['service', 'ntp', 'restart']
             run_cmd(cmd)
 
     def ntp_server_update(self, key, op, is_load=False):
@@ -1241,7 +1259,7 @@ class NtpCfg(object):
             restart_config = True
 
         if restart_config:
-            cmd = 'systemctl restart ntp-config'
+            cmd = ['systemctl', 'restart', 'ntp-config']
             syslog.syslog(syslog.LOG_INFO, 'ntp server update, restarting ntp-config, ntp servers configured {}'.format(self.ntp_servers))
             run_cmd(cmd)
 
@@ -1335,13 +1353,13 @@ class DeviceMetaCfg(object):
                                            .format(new_hostname))
             self.hostname = new_hostname
             try:
-                run_cmd('sudo service hostname-config restart', True, True)
+                run_cmd(['sudo', 'service', 'hostname-config', 'restart'], True, True)
             except subprocess.CalledProcessError as e:
                 syslog.syslog(syslog.LOG_ERR, 'DeviceMetaCfg: Failed to set new'
                                               ' hostname: {}'.format(e))
                 return
 
-            run_cmd('sudo monit reload')
+            run_cmd(['sudo', 'monit', 'reload'])
         else:
             msg = 'Hostname was not updated: '
             msg += 'Already set up' if new_hostname else 'Empty not allowed'
@@ -1380,8 +1398,8 @@ class MgmtIfaceCfg(object):
             syslog.syslog(syslog.LOG_INFO, f'MgmtIfaceCfg: Set new interface '
                                            f'config {cfg} for {iface}')
             try:
-                run_cmd('sudo systemctl restart interfaces-config', True, True)
-                run_cmd('sudo systemctl restart ntp-config', True, True)
+                run_cmd(['sudo', 'systemctl', 'restart', 'interfaces-config'], True, True)
+                run_cmd(['sudo', 'systemctl', 'restart', 'ntp-config'], True, True)
             except subprocess.CalledProcessError:
                 syslog.syslog(syslog.LOG_ERR, f'Failed to restart management '
                               'interface services')
@@ -1404,9 +1422,9 @@ class MgmtIfaceCfg(object):
 
         # Restart related vrfs services
         try:
-            run_cmd('service ntp stop', True, True)
-            run_cmd('systemctl restart interfaces-config', True, True)
-            run_cmd('service ntp start', True, True)
+            run_cmd(['service', 'ntp', 'stop'], True, True)
+            run_cmd(['systemctl', 'restart', 'interfaces-config'], True, True)
+            run_cmd(['service', 'ntp', 'start'], True, True)
         except subprocess.CalledProcessError:
             syslog.syslog(syslog.LOG_ERR, f'Failed to restart management vrf '
                           'services')
@@ -1425,16 +1443,16 @@ class MgmtIfaceCfg(object):
             202     00000000        0       0       0
             """
             try:
-                run_cmd(r"""cat /proc/net/route | grep -E \"eth0\s+"""
-                        r"""00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+"""
-                        r"""\s+202\" | wc -l""",
-                        True, True)
+                cmd0 = ['cat', '/proc/net/route']
+                cmd1 = ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"]
+                cmd2 = ['wc', '-l']
+                run_cmd_pipe(cmd0, cmd1, cmd2, True, True)
             except subprocess.CalledProcessError:
                 syslog.syslog(syslog.LOG_ERR, 'MgmtIfaceCfg: Could not delete '
                                               'eth0 route')
                 return
 
-            run_cmd("ip -4 route del default dev eth0 metric 202", False)
+            run_cmd(["ip", "-4", "route", "del", "default", "dev", "eth0", "metric", "202"], False)
 
         # Update cache
         self.mgmt_vrf_enabled = enabled
@@ -1612,8 +1630,8 @@ class HostConfigDaemon:
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
         # flag
-        systemctl_cmd = "sudo systemctl is-system-running --wait --quiet"
-        subprocess.call(systemctl_cmd, shell=True)
+        systemctl_cmd = ["sudo", "systemctl", "is-system-running", "--wait", "--quiet"]
+        subprocess.call(systemctl_cmd)
 
     def register_callbacks(self):
 

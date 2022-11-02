@@ -44,6 +44,8 @@ class TestCaclmgrdDhcp(TestCase):
 
             mark = test_data["mark"]
 
+            self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
+            self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
             caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
             mux_update = test_data["mux_update"]
 
