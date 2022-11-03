@@ -199,7 +199,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             commands: List of strings, each string is a shell command
         """
         exitcodes, stdout = getstatusoutput_noshell_pipe(cmd0, cmd1, cmd2, cmd3)
-        if exitcodes != [0, 0, 0, 0]:
+        if not exitcodes.any():
             self.log_error("Error running command", cmd0, cmd1, cmd2, cmd3)
         elif stdout:
             return stdout

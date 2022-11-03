@@ -773,8 +773,8 @@ class AaaCfg(object):
         if operations:
             e_operations_str = ' -e '.join(operations)
             e_operations_list = split(e_operations_str)
-            with open(filename+'new', 'w') as f:
-                subprocess.call(["sed", "-e"] + e_operations_list, stdout=f)
+            with open(filename+'.new', 'w') as f:
+                subprocess.call(["sed", "-e"] + e_operations_list + [filename], stdout=f)
             subprocess.call(["mv", '-f', filename, filename+'.old'])
             subprocess.call(['mv', '-f', filename+'.new', filename])
 
