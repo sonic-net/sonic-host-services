@@ -179,7 +179,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         """
         Given a list of shell commands, run them in order
         Args:
-            commands: List of strings, each string is a shell command
+            commands: List of List of Strings, each string is a shell command
         """
         for cmd in commands:
             proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
@@ -194,12 +194,13 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
     def run_commands_pipe(self, cmd0, cmd1, cmd2, cmd3):
         """
-        Given a list of shell commands, run them in order
+        Run commands connected by shell pipes in a secure way without invoking shell injections.
+        Return empty string and log error if not success. Otherwise, return the command output.
         Args:
-            commands: List of strings, each string is a shell command
+            cmd0, cmd1, cmd2, cmd3: List of strings
         """
         exitcodes, stdout = getstatusoutput_noshell_pipe(cmd0, cmd1, cmd2, cmd3)
-        if not exitcodes.any():
+        if not any(exitcodes):
             self.log_error("Error running command", cmd0, cmd1, cmd2, cmd3)
         elif stdout:
             return stdout
