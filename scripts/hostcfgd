@@ -10,7 +10,6 @@ import syslog
 import signal
 import re
 import jinja2
-from shlex import split
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
@@ -796,10 +795,8 @@ class AaaCfg(object):
 
     def modify_single_file(self, filename, operations=None):
         if operations:
-            e_operations_str = ' -e '.join(operations)
-            e_operations_list = split(e_operations_str)
             with open(filename+'.new', 'w') as f:
-                subprocess.call(["sed", "-e"] + e_operations_list + [filename], stdout=f)
+                subprocess.call(["sed", "-e"] + operations + [filename], stdout=f)
             subprocess.call(["mv", '-f', filename, filename+'.old'])
             subprocess.call(['mv', '-f', filename+'.new', filename])
 
@@ -883,25 +880,25 @@ class AaaCfg(object):
         # /etc/pam.d/sudo is not handled, because it would change the existing
         # behavior. It can be modified once a config knob is added for sudo.
         if os.path.isfile(PAM_AUTH_CONF):
-            self.modify_single_file(ETC_PAMD_SSHD,  [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
-            self.modify_single_file(ETC_PAMD_LOGIN, [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
+            self.modify_single_file(ETC_PAMD_SSHD,  [ "/^@include/s/common-auth$/common-auth-sonic/" ])
+            self.modify_single_file(ETC_PAMD_LOGIN, [ "/^@include/s/common-auth$/common-auth-sonic/" ])
         else:
-            self.modify_single_file(ETC_PAMD_SSHD,  [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
-            self.modify_single_file(ETC_PAMD_LOGIN, [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
+            self.modify_single_file(ETC_PAMD_SSHD,  [ "/^@include/s/common-auth-sonic$/common-auth/" ])
+            self.modify_single_file(ETC_PAMD_LOGIN, [ "/^@include/s/common-auth-sonic$/common-auth/" ])
 
         # Add tacplus/radius in nsswitch.conf if TACACS+/RADIUS enable
         if 'tacacs+' in authentication['login']:
             if os.path.isfile(NSS_CONF):
-                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/ radius//'" ])
-                self.modify_single_file(NSS_CONF, [ "'/tacplus/b'", "'/^passwd/s/compat/tacplus &/'", "'/^passwd/s/files/tacplus &/'" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
+                self.modify_single_file(NSS_CONF, [ "/tacplus/b", '-e', "/^passwd/s/compat/tacplus &/", '-e', "/^passwd/s/files/tacplus &/" ])
         elif 'radius' in authentication['login']:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //'" ])
-                self.modify_single_file(NSS_CONF, [ "'/radius/b'", "'/^passwd/s/compat/& radius/'", "'/^passwd/s/files/& radius/'" ])
+                self.modify_single_file(NSS_CONF, [ "/radius/b", '-e', "/^passwd/s/compat/& radius/", '-e', "/^passwd/s/files/& radius/" ])
         else:
             if os.path.isfile(NSS_CONF):
-                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //g'" ])
-                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/ radius//'" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //g" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
 
         # Add tacplus authorization configration in nsswitch.conf
         tacacs_authorization_conf = None
@@ -1012,9 +1009,7 @@ class PasswHardening(object):
 
     def modify_single_file_inplace(self, filename, operations=None):
         if operations:
-            i_operations_str = ' -i '.join(operations)
-            i_operations_list = split(i_operations_str)
-            cmd = ["sed", '-i'] + i_operations_list + [filename]
+            cmd = ["sed", '-i'] + operations + [filename]
             syslog.syslog(syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - {}".format(cmd))
             subprocess.call(cmd)
 
@@ -1061,14 +1056,14 @@ class PasswHardening(object):
             self.passwd_aging_expire_modify(curr_expiration, 'MAX_DAYS')
 
             # Aging policy for new users
-            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)+"\'"])
+            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)])
 
         if self.is_passwd_aging_expire_update(curr_expiration_warning, 'WARN_DAYS'):
             # Aging policy for existing users
             self.passwd_aging_expire_modify(curr_expiration_warning, 'WARN_DAYS')
 
             # Aging policy for new users
-            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)+"\'"])
+            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)])
 
     def passwd_aging_expire_modify(self, curr_expiration, age_type):
         normal_accounts = self.get_normal_accounts()

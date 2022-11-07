@@ -175,6 +175,12 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         ipv6_address_cmd3 = ['head', '-1']
         return self.run_commands_pipe(ipv6_address_cmd0, ipv6_address_cmd1, ipv6_address_cmd2, ipv6_address_cmd3)
 
+    def log_output(self, exitcodes, stdout):
+        if not any(exitcodes):
+            self.log_error("Error running command '{}'".format(cmd))
+        elif stdout:
+            return stdout.rstrip('\n')
+
     def run_commands(self, commands):
         """
         Given a list of shell commands, run them in order
@@ -185,11 +191,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
 
             (stdout, stderr) = proc.communicate()
-
-            if proc.returncode != 0:
-                self.log_error("Error running command '{}'".format(cmd))
-            elif stdout:
-                return stdout.rstrip('\n')
+            self.log_output([proc.returncode], stdout)
         return ""
 
     def run_commands_pipe(self, cmd0, cmd1, cmd2, cmd3):
@@ -200,11 +202,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             cmd0, cmd1, cmd2, cmd3: List of strings
         """
         exitcodes, stdout = getstatusoutput_noshell_pipe(cmd0, cmd1, cmd2, cmd3)
-        if not any(exitcodes):
-            self.log_error("Error running command", cmd0, cmd1, cmd2, cmd3)
-        elif stdout:
-            return stdout
-        return ""
+        return self.log_output(exitcodes, stdout)
 
     def parse_int_to_tcp_flags(self, hex_value):
         tcp_flags_str = ""
@@ -375,8 +373,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         self.run_commands(iptables_cmds)
 
     def get_chain_list(self, iptable_ns_cmd_prefix, exclude_list):
-        command = iptable_ns_cmd_prefix + "iptables -L -v -n | grep Chain | awk '{print $2}'"
-        chain_list = self.run_commands([command]).splitlines()
+        cmd0 = iptable_ns_cmd_prefix + ['iptables', '-L', '-v', '-n']
+        cmd1 = ['grep', 'Chain']
+        cmd2 = ['awk', '{print $2}']
+        chain_list = self.run_commands_pipe(cmd0, cmd1, cmd2).splitlines()
 
         for chain in exclude_list:
             if chain in chain_list:
