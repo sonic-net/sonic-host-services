@@ -45,8 +45,6 @@ class TestFeature(TestCase):
                 call_rc = test_data["call_rc"]
                 mocked_subprocess.call.return_value = call_rc
 
-                self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
-                self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
                 caclmgrd_daemon.update_feature_present()
                 self.assertTrue("bgp" in caclmgrd_daemon.feature_present)
