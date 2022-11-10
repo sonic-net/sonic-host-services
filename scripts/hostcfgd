@@ -1469,22 +1469,24 @@ class SyslogCfg:
             new_burst = data.get(self.SYSLOG_RATE_LIMIT_BURST, '0')
 
         if new_interval == self.current_interval and new_burst == self.current_burst:
-            syslog.syslog(syslog.LOG_INFO, 'Syslog rate limit configuration does not change, ignore it')
             return
 
-        syslog.syslog(syslog.LOG_INFO, f'Configure syslog rate limit interval={new_interval}, burst={new_burst}')
+        syslog.syslog(syslog.LOG_INFO, f'Configure syslog rate limit interval={new_interval} (old:{self.current_interval}), burst={new_burst} (old:{self.current_burst})')
 
-        run_cmd('systemctl reset-failed rsyslog-config rsyslog')
-        run_cmd('systemctl restart rsyslog-config')
-        self.current_interval = new_interval
-        self.current_burst = new_burst
+        try:
+            run_cmd('systemctl reset-failed rsyslog-config rsyslog', raise_exception=True)
+            run_cmd('systemctl restart rsyslog-config', raise_exception=True)
+            self.current_interval = new_interval
+            self.current_burst = new_burst
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to configure syslog rate limit for host - {e}')
 
     def load(self, data):
         if self.HOST_KEY in data:
             self.syslog_update(data[self.HOST_KEY])
 
     def parse_syslog_conf(self):
-        """Passe existing syslog conf and extract config values
+        """Parse existing syslog conf and extract config values
 
         Returns:
             tuple: interval,burst,target_ip
@@ -1506,7 +1508,7 @@ class SyslogCfg:
                     break
         except OSError:
             syslog.syslog(syslog.LOG_ERR, f'Failed to read file {self.SYSLOG_CONF_PATH}')
-            return None, None
+            return interval, burst
         return interval, burst
 
 
@@ -1585,11 +1587,6 @@ class HostConfigDaemon:
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
         self.syslogcfg.load(syslog)
-
-        dev_meta = self.config_db.get_table('DEVICE_METADATA')
-        if 'localhost' in dev_meta:
-            if 'hostname' in dev_meta['localhost']:
-                self.hostname_cache = dev_meta['localhost']['hostname']
 
         # Update AAA with the hostname
         self.aaacfg.hostname_update(self.devmetacfg.hostname)

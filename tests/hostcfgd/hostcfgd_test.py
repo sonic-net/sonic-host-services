@@ -477,6 +477,16 @@ class TestSyslogHandler:
                     call('systemctl restart rsyslog-config')]
         mock_run_cmd.assert_has_calls(expected)
 
+        data = {
+            'rate_limit_interval': '100',
+            'rate_limit_burst': '100'
+        }
+        mock_run_cmd.side_effect = Exception()
+        syslog_cfg.syslog_update(data)
+        # when exception occurs, interval and burst should not be updated
+        assert syslog_cfg.current_interval == '200'
+        assert syslog_cfg.current_burst == '200'
+
     def test_load(self):
         syslog_cfg = hostcfgd.SyslogCfg()
         syslog_cfg.syslog_update = mock.MagicMock()
@@ -499,5 +509,5 @@ class TestSyslogHandler:
 
         syslog_cfg.SYSLOG_CONF_PATH = os.path.join(test_path, 'hostcfgd', 'mock_empty_rsyslog.conf')
         interval, burst = syslog_cfg.parse_syslog_conf()
-        assert interval is '0'
-        assert burst is '0'
+        assert interval == '0'
+        assert burst == '0'
