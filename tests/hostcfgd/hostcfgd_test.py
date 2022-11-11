@@ -479,8 +479,8 @@ class TestSyslogHandler:
             'rate_limit_burst': '200'
         }
         syslog_cfg.syslog_update(data)
-        expected = [call('systemctl reset-failed rsyslog-config rsyslog'),
-                    call('systemctl restart rsyslog-config')]
+        expected = [call('systemctl reset-failed rsyslog-config rsyslog', raise_exception=True),
+                    call('systemctl restart rsyslog-config', raise_exception=True)]
         mock_run_cmd.assert_has_calls(expected)
 
         data = {
