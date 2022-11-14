@@ -11,16 +11,10 @@ class GCU(host_service.HostModule):
     """
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
     def apply_patch_db(self, patch_text):
-        patch_file_path = '/tmp/config_db.patch'
-        try:
-            with open(patch_file_path, 'w') as fp:
-                fp.write(patch_text)
-        except Exception as err:
-            return -1, "Fail to create patch file: %s"%str(err)
+        input_bytes = (patch_text + '\n').encode('utf-8')
+        cmd = ['/usr/local/bin/config', 'apply-patch', '-f', 'CONFIGDB', '/dev/stdin']
 
-        cmd = ['/usr/local/bin/config', 'apply-patch', '-f', 'CONFIGDB', patch_file_path]
-
-        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, input=input_bytes, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ''
         if result.returncode:
             lines = result.stderr.decode().split('\n')
@@ -32,16 +26,10 @@ class GCU(host_service.HostModule):
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
     def apply_patch_yang(self, patch_text):
-        patch_file_path = '/tmp/config_yang.patch'
-        try:
-            with open(patch_file_path, 'w') as fp:
-                fp.write(patch_text)
-        except Exception as err:
-            return -1, "Fail to create patch file: %s"%str(err)
+        input_bytes = (patch_text + '\n').encode('utf-8')
+        cmd = ['/usr/local/bin/config', 'apply-patch', '-f', 'SONICYANG', '/dev/stdin']
 
-        cmd = ['/usr/local/bin/config', 'apply-patch', '-f', 'SONICYANG', patch_file_path]
-
-        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, input=input_bytes, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ''
         if result.returncode:
             lines = result.stderr.decode().split('\n')

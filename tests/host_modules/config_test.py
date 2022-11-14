@@ -9,7 +9,6 @@ class TestConfigEngine(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     def test_reload(self, MockInit, MockBusName, MockSystemBus):
-        config_file = "/tmp/config_db.json"
         with mock.patch("subprocess.run") as mock_run:
             res_mock = mock.Mock()
             test_ret = 0
@@ -22,7 +21,7 @@ class TestConfigEngine(object):
             ret, msg = config_stub.reload(config_db_json)
             call_args = mock_run.call_args[0][0]
             assert "reload" in call_args
-            assert config_file in call_args
+            assert "/dev/stdin" in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
         with mock.patch("subprocess.run") as mock_run:
@@ -37,7 +36,7 @@ class TestConfigEngine(object):
             ret, msg = config_stub.reload(config_db_json)
             call_args = mock_run.call_args[0][0]
             assert "reload" in call_args
-            assert config_file in call_args
+            assert "/dev/stdin" in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
 

@@ -2,7 +2,6 @@
 
 from host_modules import host_service
 import subprocess
-import os
 
 MOD_NAME = 'config'
 DEFAULT_CONFIG = '/etc/sonic/config_db.json'
@@ -15,19 +14,12 @@ class Config(host_service.HostModule):
     def reload(self, config_db_json):
 
         cmd = ['/usr/local/bin/config', 'reload', '-y']
-        config_db_json = config_db_json.strip()
-        if config_db_json and len(config_db_json):
-            config_file = '/tmp/config_db.json'
-            try:
-                if (os.path.exists(config_file)):
-                    os.remove(config_file)
-                with open(config_file, 'w') as fp:
-                    fp.write(config_db_json)
-            except Exception as err:
-                return -1, "Fail to create config file: %s"%str(err)
-            cmd.append(config_file)
-
-        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if config_db_json and len(config_db_json.strip()):
+            cmd.append('/dev/stdin')
+            input_bytes = (config_db_json + '\n').encode('utf-8')
+            result = subprocess.run(cmd, input=input_bytes, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        else:
+            result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ''
         if result.returncode:
             lines = result.stderr.decode().split('\n')
