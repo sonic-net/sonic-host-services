@@ -19,6 +19,8 @@ class Config(host_service.HostModule):
         if config_db_json and len(config_db_json):
             config_file = '/tmp/config_db.json'
             try:
+                if (os.path.exists(config_file)):
+                    os.remove(config_file)
                 with open(config_file, 'w') as fp:
                     fp.write(config_db_json)
             except Exception as err:
