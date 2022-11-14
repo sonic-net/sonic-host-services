@@ -795,8 +795,10 @@ class AaaCfg(object):
 
     def modify_single_file(self, filename, operations=None):
         if operations:
+            e_list = ['-e'] * len(operations)
+            e_operations = [item for sublist in zip(e_list, operations) for item in sublist]
             with open(filename+'.new', 'w') as f:
-                subprocess.call(["sed", "-e"] + operations + [filename], stdout=f)
+                subprocess.call(["sed"] + e_operations + [filename], stdout=f)
             subprocess.call(["mv", '-f', filename, filename+'.old'])
             subprocess.call(['mv', '-f', filename+'.new', filename])
 
@@ -890,11 +892,11 @@ class AaaCfg(object):
         if 'tacacs+' in authentication['login']:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
-                self.modify_single_file(NSS_CONF, [ "/tacplus/b", '-e', "/^passwd/s/compat/tacplus &/", '-e', "/^passwd/s/files/tacplus &/" ])
+                self.modify_single_file(NSS_CONF, [ "/tacplus/b", "/^passwd/s/compat/tacplus &/", "/^passwd/s/files/tacplus &/" ])
         elif 'radius' in authentication['login']:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //'" ])
-                self.modify_single_file(NSS_CONF, [ "/radius/b", '-e', "/^passwd/s/compat/& radius/", '-e', "/^passwd/s/files/& radius/" ])
+                self.modify_single_file(NSS_CONF, [ "/radius/b", "/^passwd/s/compat/& radius/", "/^passwd/s/files/& radius/" ])
         else:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //g" ])
