@@ -16,13 +16,13 @@ class TestGCU(object):
             attrs = {"returncode": test_ret, "stderr": test_msg}
             res_mock.configure_mock(**attrs)
             mock_run.return_value = res_mock
-            patch_file = "test.patch"
+            patch_text = "{}"
             gcu_stub = gcu.GCU(gcu.MOD_NAME)
-            ret, msg = gcu_stub.apply_patch_db(patch_file)
+            ret, msg = gcu_stub.apply_patch_db(patch_text)
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "CONFIGDB" in call_args
-            assert patch_file in call_args
+            assert '/tmp/config_db.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
         with mock.patch("subprocess.run") as mock_run:
@@ -32,13 +32,13 @@ class TestGCU(object):
             attrs = {"returncode": test_ret, "stderr": test_msg}
             res_mock.configure_mock(**attrs)
             mock_run.return_value = res_mock
-            patch_file = "test.patch"
+            patch_text = "{}"
             gcu_stub = gcu.GCU(gcu.MOD_NAME)
-            ret, msg = gcu_stub.apply_patch_db(patch_file)
+            ret, msg = gcu_stub.apply_patch_db(patch_text)
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "CONFIGDB" in call_args
-            assert patch_file in call_args
+            assert '/tmp/config_db.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
 
@@ -53,13 +53,13 @@ class TestGCU(object):
             attrs = {"returncode": test_ret, "stderr": test_msg}
             res_mock.configure_mock(**attrs)
             mock_run.return_value = res_mock
-            patch_file = "test.patch"
+            patch_text = "{}"
             gcu_stub = gcu.GCU(gcu.MOD_NAME)
-            ret, msg = gcu_stub.apply_patch_yang(patch_file)
+            ret, msg = gcu_stub.apply_patch_yang(patch_text)
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "SONICYANG" in call_args
-            assert patch_file in call_args
+            assert '/tmp/config_yang.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
         with mock.patch("subprocess.run") as mock_run:
@@ -69,13 +69,13 @@ class TestGCU(object):
             attrs = {"returncode": test_ret, "stderr": test_msg}
             res_mock.configure_mock(**attrs)
             mock_run.return_value = res_mock
-            patch_file = "test.patch"
+            patch_text = "{}"
             gcu_stub = gcu.GCU(gcu.MOD_NAME)
-            ret, msg = gcu_stub.apply_patch_yang(patch_file)
+            ret, msg = gcu_stub.apply_patch_yang(patch_text)
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "SONICYANG" in call_args
-            assert patch_file in call_args
+            assert '/tmp/config_yang.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
 

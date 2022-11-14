@@ -10,7 +10,13 @@ class GCU(host_service.HostModule):
     DBus endpoint that executes the generic config updater command
     """
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
-    def apply_patch_db(self, patch_file_path):
+    def apply_patch_db(self, patch_text):
+        patch_file_path = '/tmp/config_db.patch'
+        try:
+            with open(patch_file_path, 'w') as fp:
+                fp.write(patch_text)
+        except Exception as err:
+            return -1, "Fail to create patch file: %s"%str(err)
 
         cmd = ['/usr/local/bin/config', 'apply-patch', '-f', 'CONFIGDB', patch_file_path]
 
@@ -25,7 +31,13 @@ class GCU(host_service.HostModule):
         return result.returncode, msg
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
-    def apply_patch_yang(self, patch_file_path):
+    def apply_patch_yang(self, patch_text):
+        patch_file_path = '/tmp/config_yang.patch'
+        try:
+            with open(patch_file_path, 'w') as fp:
+                fp.write(patch_text)
+        except Exception as err:
+            return -1, "Fail to create patch file: %s"%str(err)
 
         cmd = ['/usr/local/bin/config', 'apply-patch', '-f', 'SONICYANG', patch_file_path]
 
