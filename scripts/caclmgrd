@@ -175,8 +175,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         ipv6_address_cmd3 = ['head', '-1']
         return self.run_commands_pipe(ipv6_address_cmd0, ipv6_address_cmd1, ipv6_address_cmd2, ipv6_address_cmd3)
 
-    def log_output(self, exitcodes, stdout):
-        if not any(exitcodes):
+    def log_output(self, cmd, exitcodes, stdout):
+        if any(exitcodes):
             self.log_error("Error running command '{}'".format(cmd))
         elif stdout:
             return stdout.rstrip('\n')
@@ -191,7 +191,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
 
             (stdout, stderr) = proc.communicate()
-            self.log_output([proc.returncode], stdout)
+            self.log_output(cmd, [proc.returncode], stdout)
         return ""
 
     def run_commands_pipe(self, *args):
@@ -202,7 +202,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             args: List of strings
         """
         exitcodes, stdout = getstatusoutput_noshell_pipe(*args)
-        return self.log_output(exitcodes, stdout)
+        cmd_list = [' '.join(arg) for arg in args]
+        cmd = '|'.join(cmd_list)
+        return self.log_output(cmd, exitcodes, stdout)
 
     def parse_int_to_tcp_flags(self, hex_value):
         tcp_flags_str = ""
@@ -368,7 +370,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         self.log_info("Issuing the following iptables commands for DHCP chain:")
         for cmd in iptables_cmds:
-            self.log_info("  " + cmd)
+            self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
 
@@ -409,7 +411,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
             if execute == 1:
                 subprocess.call(update_cmd)
-                self.log_info("Update DHCP chain: {}".format(update_cmd))
+                self.log_info("Update DHCP chain: {}".format(' '.join(update_cmd)))
 
     def update_dhcp_acl(self, key, op, data, mark):
         if "state" not in data:
@@ -442,9 +444,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 insert_cmd = self.dhcp_acl_rule(self.iptables_cmd_ns_prefix[namespace], "insert", key, cur_mark)
 
                 subprocess.call(delete_cmd)
-                self.log_info("Update DHCP chain: {}".format(delete_cmd))
+                self.log_info("Update DHCP chain: {}".format(' '.join(delete_cmd)))
                 subprocess.call(insert_cmd)
-                self.log_info("Update DHCP chain: {}".format(insert_cmd))
+                self.log_info("Update DHCP chain: {}".format(' '.join(insert_cmd)))
 
     def get_acl_rules_and_translate_to_iptables_commands(self, namespace):
         """
@@ -695,7 +697,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds, service_to_source_ip_map  = self.get_acl_rules_and_translate_to_iptables_commands(namespace)
         self.log_info("Issuing the following iptables commands:")
         for cmd in iptables_cmds:
-            self.log_info("  " + cmd)
+            self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
 
@@ -713,7 +715,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         self.log_info("Issuing the following iptables commands:")
         for cmd in iptables_cmds:
-            self.log_info("  " + cmd)
+            self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
 

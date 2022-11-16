@@ -137,7 +137,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
 
     def update_processstats_command(self):
         cmd = "ps -eo uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd --sort -%cpu | head -1024"
-        cmd0 = ["ps", "-eo uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"]
+        cmd0 = ["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"]
         cmd1 = ["head", "-1024"]
         exitcode, data = getstatusoutput_noshell_pipe(cmd0, cmd1)
         if not any(exitcode):
