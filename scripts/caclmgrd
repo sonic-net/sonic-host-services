@@ -166,14 +166,14 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         ip_address_cmd2 = ['cut', '-d', '/', '-f1']
         ip_address_cmd3 = ['head', '-1']
 
-        return self.run_commands_pipe(ip_address_cmd0, ip_address_cmd1, ip_address_cmd2, ip_address_cmd3)
+        return self.run_commands(ip_address_cmd0, ip_address_cmd1, ip_address_cmd2, ip_address_cmd3)
 
     def get_namespace_mgmt_ipv6(self, iptable_ns_cmd_prefix, namespace):
         ipv6_address_cmd0 = iptable_ns_cmd_prefix + ['ip', '-6', '-o', 'addr', 'show', 'scope', 'global', ("eth0" if namespace else "docker0")]
         ipv6_address_cmd1 = ['awk', '{print $4}']
         ipv6_address_cmd2 = ['cut', '-d', '/', '-f1']
         ipv6_address_cmd3 = ['head', '-1']
-        return self.run_commands_pipe(ipv6_address_cmd0, ipv6_address_cmd1, ipv6_address_cmd2, ipv6_address_cmd3)
+        return self.run_commands(ipv6_address_cmd0, ipv6_address_cmd1, ipv6_address_cmd2, ipv6_address_cmd3)
 
     def log_output(self, cmd, exitcodes, stdout):
         if any(exitcodes):
@@ -181,30 +181,25 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         elif stdout:
             return stdout.rstrip('\n')
 
-    def run_commands(self, commands):
+    def run_commands(self, *args):
         """
-        Given a list of shell commands, run them in order
+        Given a list of shell commands (connected by shell pipes), run them in order
         Args:
-            commands: List of List of Strings, each string is a shell command
+            args: List of List of Strings, each string is a shell command
+                  or List of strings, connected by shell pipes
         """
-        for cmd in commands:
-            proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
+        if isinstance(args[0], list):
+            for cmd in args[0]:
+                proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
 
-            (stdout, stderr) = proc.communicate()
+                (stdout, stderr) = proc.communicate()
+                self.log_output(cmd, [proc.returncode], stdout)
+        else:
+            exitcodes, stdout = getstatusoutput_noshell_pipe(*args)
+            cmd_list = [' '.join(arg) for arg in args]
+            cmd = '|'.join(cmd_list)
             self.log_output(cmd, [proc.returncode], stdout)
         return ""
-
-    def run_commands_pipe(self, *args):
-        """
-        Run commands connected by shell pipes in a secure way without invoking shell injections.
-        Return empty string and log error if not success. Otherwise, return the command output.
-        Args:
-            args: List of strings
-        """
-        exitcodes, stdout = getstatusoutput_noshell_pipe(*args)
-        cmd_list = [' '.join(arg) for arg in args]
-        cmd = '|'.join(cmd_list)
-        return self.log_output(cmd, exitcodes, stdout)
 
     def parse_int_to_tcp_flags(self, hex_value):
         tcp_flags_str = ""
