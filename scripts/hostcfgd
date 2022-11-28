@@ -1369,8 +1369,12 @@ class DeviceMetaCfg(object):
             run_cmd('sudo monit reload')
         else:
             msg = 'Hostname was not updated: '
-            msg += 'Already set up' if new_hostname else 'Empty not allowed'
-            syslog.syslog(syslog.LOG_ERR, msg)
+            if new_hostname:
+                msg += 'Already set up'
+                syslog.syslog(syslog.LOG_INFO, msg)
+            else:
+                msg += 'Empty not allowed'
+                syslog.syslog(syslog.LOG_ERR, msg)
 
 
 class MgmtIfaceCfg(object):
