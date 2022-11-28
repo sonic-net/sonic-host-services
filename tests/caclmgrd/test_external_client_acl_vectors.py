@@ -5,6 +5,29 @@ from unittest.mock import call
 """
 EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
     [
+        "Test for EXTERNAL_CLIENT_ACL with no services configured.",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": [
+                            "EXTERNAL_CLIENT"
+                        ]
+                    }
+                },
+                "DEVICE_METADATA": {
+                    "localhost": {
+                    }
+                },
+                "FEATURE": {},
+            },
+            "return": [
+            ],
+        }
+    ],
+    [
         "Test for EXTERNAL_CLIENT_ACL with no dest port configured.",
         {
             "config_db": {
