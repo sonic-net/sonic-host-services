@@ -11,10 +11,7 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                 "ACL_TABLE": {
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
-                        "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "type": "CTRLPLANE"
                     }
                 },
                 "ACL_RULE": {
