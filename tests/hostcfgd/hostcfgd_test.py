@@ -447,7 +447,7 @@ class TestHostcfgdDaemon(TestCase):
                 pass
 
             expected = [
-                call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up')
+                call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
             ]
             mocked_syslog.syslog.assert_has_calls(expected)
 
