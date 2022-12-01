@@ -420,6 +420,37 @@ class TestHostcfgdDaemon(TestCase):
             mocked_subprocess.check_call.assert_has_calls(expected,
                                                           any_order=True)
 
+        # Mock empty name
+        HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["hostname"] = ""
+        original_syslog = hostcfgd.syslog
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call(original_syslog.LOG_ERR, 'Hostname was not updated: Empty not allowed')
+            ]
+            mocked_syslog.syslog.assert_has_calls(expected)
+
+        daemon.devmetacfg.hostname = "SameHostName"
+        HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["hostname"] = daemon.devmetacfg.hostname
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
+            ]
+            mocked_syslog.syslog.assert_has_calls(expected)
+
     def test_mgmtiface_event(self):
         """
         Test handling mgmt events.

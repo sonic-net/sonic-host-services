@@ -1355,7 +1355,13 @@ class DeviceMetaCfg(object):
 
         # Restart hostname-config service when hostname was changed.
         # Empty not allowed
-        if new_hostname and new_hostname != self.hostname:
+        if not new_hostname:
+            syslog.syslog(syslog.LOG_ERR,
+                          'Hostname was not updated: Empty not allowed')
+        elif new_hostname == self.hostname:
+            syslog.syslog(syslog.LOG_INFO,
+                          'Hostname was not updated: Already set up with the same name: {}'.format(self.hostname))
+        else:
             syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Set new hostname: {}'
                                            .format(new_hostname))
             self.hostname = new_hostname
@@ -1367,11 +1373,6 @@ class DeviceMetaCfg(object):
                 return
 
             run_cmd('sudo monit reload')
-        else:
-            msg = 'Hostname was not updated: '
-            msg += 'Already set up' if new_hostname else 'Empty not allowed'
-            syslog.syslog(syslog.LOG_ERR, msg)
-
 
 class MgmtIfaceCfg(object):
     """
