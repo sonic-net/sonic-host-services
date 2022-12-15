@@ -178,6 +178,60 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             self.namespace_docker_mgmt_ipv6[namespace] = self.get_namespace_mgmt_ipv6(self.iptables_cmd_ns_prefix[namespace],
                                                                                              namespace)
 
+    def pick_src_intf_ipaddrs(self, keys, src_intf):
+        new_ipv4_addr = ""
+        new_ipv6_addr = ""
+
+        for it in keys:
+            if not it[0].startswith(src_intf) or (isinstance(it, tuple) == False):
+                continue
+            if new_ipv4_addr != "" and new_ipv6_addr != "":
+                break
+            ip_str = it[1].split("/")[0]
+            ip_addr = ipaddress.ip_address(ip_str)
+            # Pick the first IP address from the table that matches the source interface
+            if isinstance(ip_addr, ipaddress.IPv6Address):
+                if new_ipv6_addr != "":
+                    continue
+                new_ipv6_addr = ip_addr
+            elif isinstance(ip_addr, ipaddress.IPv4Address):
+                if new_ipv4_addr != "":
+                    continue
+                new_ipv4_addr = ip_addr
+
+        return(new_ipv4_addr, new_ipv6_addr)
+
+    def get_interface_ip(self, source, config_db, addr=None):
+        keys = None
+        try:
+            if source.startswith("Eth"):
+                if is_vlan_sub_interface(source):
+                    keys = config_db.get_keys('VLAN_SUB_INTERFACE')
+                else:
+                    keys = config_db.get_keys('INTERFACE')
+            elif source.startswith("Vlan"):
+                keys = config_db.get_keys('VLAN_INTERFACE')
+                self.log_warning("got keys ")
+
+            elif source.startswith("Loopback"):
+                keys = config_db.get_keys('LOOPBACK_INTERFACE')
+            elif source == "eth0":
+                keys = config_db.get_keys('MGMT_INTERFACE')
+        except Exception as e:
+            pass
+
+        interface_ip = ""
+        if keys != None:
+            ipv4_addr, ipv6_addr = self.pick_src_intf_ipaddrs(keys, source)
+            # Based on the type of addr, return v4 or v6
+            if addr and isinstance(addr, ipaddress.IPv6Address):
+                interface_ip = ipv6_addr
+            else:
+                # This could be tuned, but that involves a DNS query, so
+                # offline configuration might trip (or cause delays).
+                interface_ip = ipv4_addr
+        return interface_ip
+
     def get_namespace_mgmt_ip(self, iptable_ns_cmd_prefix, namespace):
         ip_address_get_command = iptable_ns_cmd_prefix + "ip -4 -o addr show " + ("eth0" if namespace else "docker0") +\
                                  " | awk '{print $4}' | cut -d'/' -f1 | head -1"
@@ -317,6 +371,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             loopback_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.LOOPBACK_TABLE)
             loopback_name = 'Loopback3'
             loopback_address = get_ip_from_interface_table(loopback_table, loopback_name)
+            vlan_address = self.get_interface_ip("Vlan", self.config_db_map[DEFAULT_NAMESPACE])
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
                     "iptables -t nat --flush POSTROUTING")
             
@@ -327,7 +382,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     kvp = mux_table.get(key)
                     if 'cable_type' in kvp and kvp['cable_type'] == 'active-active':
                         fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                                "iptables -t nat -A POSTROUTING --destination {} -j SNAT --to-source {}".format(kvp['soc_ipv4'], loopback_address))
+                                "iptables -t nat -A POSTROUTING --destination {} --source {} -j SNAT --to-source {}".format(kvp['soc_ipv4'], vlan_address, loopback_address))
 
         return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
