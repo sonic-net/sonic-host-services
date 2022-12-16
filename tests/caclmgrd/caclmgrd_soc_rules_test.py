@@ -29,7 +29,6 @@ class TestCaclmgrdSoc(TestCase):
     @parameterized.expand(CACLMGRD_SOC_TEST_VECTOR)
     @patchfs
     @patch('caclmgrd.get_ip_from_interface_table', MagicMock(return_value="10.10.10.10"))
-    @patch('caclmgrd.ControlPlaneAclManager.get_interface_ip', MagicMock(return_value="10.10.2.2"))
     def test_caclmgrd_soc(self, test_name, test_data, fs):
         if not os.path.exists(DBCONFIG_PATH):
             fs.create_file(DBCONFIG_PATH) # fake database_config.json
