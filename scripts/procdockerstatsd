@@ -140,7 +140,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
         cmd0 = ["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"]
         cmd1 = ["head", "-1024"]
         exitcode, data = getstatusoutput_noshell_pipe(cmd0, cmd1)
-        if not any(exitcode):
+        if any(exitcode):
             self.log_error("Error running command '{}'".format(cmd))
             data = None
         processdata = self.format_process_cmd_output(data)

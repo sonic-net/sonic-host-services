@@ -191,7 +191,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
 
             (stdout, stderr) = proc.communicate()
-            self.log_output(cmd, [proc.returncode], stdout)
+            output = self.log_output(cmd, [proc.returncode], stdout)
+            if output is not None: return output
         return ""
 
     def run_commands_pipe(self, *args):
@@ -204,7 +205,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         exitcodes, stdout = getstatusoutput_noshell_pipe(*args)
         cmd_list = [' '.join(arg) for arg in args]
         cmd = '|'.join(cmd_list)
-        return self.log_output(cmd, exitcodes, stdout)
+        output = self.log_output(cmd, exitcodes, stdout)
+        if output is not None: return output
+        return ""
 
     def parse_int_to_tcp_flags(self, hex_value):
         tcp_flags_str = ""
