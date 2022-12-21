@@ -1513,8 +1513,8 @@ class SyslogCfg:
         syslog.syslog(syslog.LOG_INFO, f'Configure syslog rate limit interval={new_interval} (old:{self.current_interval}), burst={new_burst} (old:{self.current_burst})')
 
         try:
-            run_cmd('systemctl reset-failed rsyslog-config rsyslog', raise_exception=True)
-            run_cmd('systemctl restart rsyslog-config', raise_exception=True)
+            run_cmd(['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], raise_exception=True)
+            run_cmd(['systemctl', 'restart', 'rsyslog-config'], raise_exception=True)
             self.current_interval = new_interval
             self.current_burst = new_burst
         except Exception as e:
