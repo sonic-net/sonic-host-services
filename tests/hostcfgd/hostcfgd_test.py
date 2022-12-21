@@ -29,7 +29,7 @@ hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 
 class TestFeatureHandler(TestCase):
-    """Test methods of `FeatureHandler` class. 
+    """Test methods of `FeatureHandler` class.
     """
     def checks_config_table(self, feature_table, expected_table):
         """Compares `FEATURE` table in `CONFIG_DB` with expected output table.
@@ -420,10 +420,41 @@ class TestHostcfgdDaemon(TestCase):
             mocked_subprocess.check_call.assert_has_calls(expected,
                                                           any_order=True)
 
+        # Mock empty name
+        HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["hostname"] = ""
+        original_syslog = hostcfgd.syslog
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call(original_syslog.LOG_ERR, 'Hostname was not updated: Empty not allowed')
+            ]
+            mocked_syslog.syslog.assert_has_calls(expected)
+
+        daemon.devmetacfg.hostname = "SameHostName"
+        HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["hostname"] = daemon.devmetacfg.hostname
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+
+            expected = [
+                call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
+            ]
+            mocked_syslog.syslog.assert_has_calls(expected)
+
     def test_mgmtiface_event(self):
         """
         Test handling mgmt events.
-        1) Management interface setup 
+        1) Management interface setup
         2) Management vrf setup
         """
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
@@ -463,3 +494,58 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
+class TestSyslogHandler:
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.SyslogCfg.parse_syslog_conf', mock.MagicMock(return_value=('100', '200')))
+    def test_syslog_update(self, mock_run_cmd):
+        syslog_cfg = hostcfgd.SyslogCfg()
+        data = {
+            'rate_limit_interval': '100',
+            'rate_limit_burst': '200'
+        }
+        syslog_cfg.syslog_update(data)
+        mock_run_cmd.assert_not_called()
+
+        data = {
+            'rate_limit_interval': '200',
+            'rate_limit_burst': '200'
+        }
+        syslog_cfg.syslog_update(data)
+        expected = [call('systemctl reset-failed rsyslog-config rsyslog', raise_exception=True),
+                    call('systemctl restart rsyslog-config', raise_exception=True)]
+        mock_run_cmd.assert_has_calls(expected)
+
+        data = {
+            'rate_limit_interval': '100',
+            'rate_limit_burst': '100'
+        }
+        mock_run_cmd.side_effect = Exception()
+        syslog_cfg.syslog_update(data)
+        # when exception occurs, interval and burst should not be updated
+        assert syslog_cfg.current_interval == '200'
+        assert syslog_cfg.current_burst == '200'
+
+    def test_load(self):
+        syslog_cfg = hostcfgd.SyslogCfg()
+        syslog_cfg.syslog_update = mock.MagicMock()
+
+        data = {}
+        syslog_cfg.load(data)
+        syslog_cfg.syslog_update.assert_not_called()
+
+        data = {syslog_cfg.HOST_KEY: {}}
+        syslog_cfg.load(data)
+        syslog_cfg.syslog_update.assert_called_once()
+
+    def test_parse_syslog_conf(self):
+        syslog_cfg = hostcfgd.SyslogCfg()
+
+        syslog_cfg.SYSLOG_CONF_PATH = os.path.join(test_path, 'hostcfgd', 'mock_rsyslog.conf')
+        interval, burst = syslog_cfg.parse_syslog_conf()
+        assert interval == '50'
+        assert burst == '10002'
+
+        syslog_cfg.SYSLOG_CONF_PATH = os.path.join(test_path, 'hostcfgd', 'mock_empty_rsyslog.conf')
+        interval, burst = syslog_cfg.parse_syslog_conf()
+        assert interval == '0'
+        assert burst == '0'

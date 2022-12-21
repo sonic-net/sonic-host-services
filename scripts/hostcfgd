@@ -269,7 +269,7 @@ class FeatureHandler(object):
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
                 continue
-            
+
             device_config = {}
             device_config.update(self._device_config)
             device_config.update(self._device_running_config)
@@ -326,7 +326,7 @@ class FeatureHandler(object):
     def sync_feature_asic_scope(self, feature_config):
         """Updates the has_per_asic_scope field in the FEATURE|* tables as the field
         might have to be rendered based on DEVICE_METADATA table or Device Running configuration.
-        Disable the ASIC instance service unit file it the render value is False and update config 
+        Disable the ASIC instance service unit file it the render value is False and update config
 
         Args:
             feature: An object represents a feature's configuration in `FEATURE`
@@ -336,7 +336,7 @@ class FeatureHandler(object):
             None.
         """
 
-        cmds = []
+
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config, True)
         for feature_name in feature_names:
             if '@' not in feature_name:
@@ -345,6 +345,7 @@ class FeatureHandler(object):
             if not unit_file_state:
                 continue
             if unit_file_state != "disabled" and not feature_config.has_per_asic_scope:
+                cmds = []
                 for suffix in reversed(feature_suffixes):
                     cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])
                     cmds.append(["sudo", "systemctl", "disable", "{}.{}".format(feature_name, feature_suffixes[-1])])
@@ -432,14 +433,13 @@ class FeatureHandler(object):
         return props["UnitFileState"]
 
     def enable_feature(self, feature):
-        cmds = []
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
             # Check if it is already enabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
             if unit_file_state == "enabled" or not unit_file_state:
                 continue
-
+            cmds = []    
             for suffix in feature_suffixes:
                 cmds.append(["sudo", "systemctl", "unmask", "{}.{}".format(feature_name, suffix)])
 
@@ -462,14 +462,13 @@ class FeatureHandler(object):
         self.set_feature_state(feature, self.FEATURE_STATE_ENABLED)
 
     def disable_feature(self, feature):
-        cmds = []
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
             # Check if it is already disabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
             if unit_file_state in ("disabled", "masked") or not unit_file_state:
                 continue
-
+            cmds = []
             for suffix in reversed(feature_suffixes):
                 cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])
                 cmds.append(["sudo", "systemctl", "disable", "{}.{}".format(feature_name, feature_suffixes[-1])])
@@ -975,7 +974,7 @@ class PasswHardening(object):
     def __init__(self):
         self.passw_policies_default = {}
         self.passw_policies = {}
-        
+
         self.debug = False
         self.trace = False
 
@@ -1149,7 +1148,7 @@ class PasswHardening(object):
     def modify_passw_conf_file(self):
         passw_policies = self.passw_policies_default.copy()
         passw_policies.update(self.passw_policies)
-        
+
         # set new Password Hardening policies.
         self.set_passw_hardening_policies(passw_policies)
 
@@ -1343,6 +1342,7 @@ class PamLimitsCfg(object):
                     "modify pam_limits config file failed with exception: {}"
                     .format(e))
 
+
 class DeviceMetaCfg(object):
     """
     DeviceMetaCfg Config Daemon
@@ -1370,7 +1370,13 @@ class DeviceMetaCfg(object):
 
         # Restart hostname-config service when hostname was changed.
         # Empty not allowed
-        if new_hostname and new_hostname != self.hostname:
+        if not new_hostname:
+            syslog.syslog(syslog.LOG_ERR,
+                          'Hostname was not updated: Empty not allowed')
+        elif new_hostname == self.hostname:
+            syslog.syslog(syslog.LOG_INFO,
+                          'Hostname was not updated: Already set up with the same name: {}'.format(self.hostname))
+        else:
             syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Set new hostname: {}'
                                            .format(new_hostname))
             self.hostname = new_hostname
@@ -1380,13 +1386,7 @@ class DeviceMetaCfg(object):
                 syslog.syslog(syslog.LOG_ERR, 'DeviceMetaCfg: Failed to set new'
                                               ' hostname: {}'.format(e))
                 return
-
             run_cmd(['sudo', 'monit', 'reload'])
-        else:
-            msg = 'Hostname was not updated: '
-            msg += 'Already set up' if new_hostname else 'Empty not allowed'
-            syslog.syslog(syslog.LOG_ERR, msg)
-
 
 class MgmtIfaceCfg(object):
     """
@@ -1480,6 +1480,77 @@ class MgmtIfaceCfg(object):
         self.mgmt_vrf_enabled = enabled
 
 
+class SyslogCfg:
+    SYSLOG_RATE_LIMIT_INTERVAL = 'rate_limit_interval'
+    SYSLOG_RATE_LIMIT_BURST = 'rate_limit_burst'
+    HOST_KEY = 'GLOBAL'
+
+    # syslog conf file path in docker
+    SYSLOG_CONF_PATH = '/etc/rsyslog.conf'
+
+    # Regular expressions to extract value from rsyslog.conf
+    INTERVAL_PATTERN = '.*SystemLogRateLimitInterval\s+(\d+).*'
+    BURST_PATTERN = '.*SystemLogRateLimitBurst\s+(\d+).*'
+
+    def __init__(self):
+        self.current_interval, self.current_burst = self.parse_syslog_conf()
+
+    def syslog_update(self, data):
+        """Update syslog related configuration
+
+        Args:
+            data (dict): CONFIG DB data: {<field_name>: <field_value>}
+        """
+        new_interval = '0'
+        new_burst = '0'
+        if data:
+            new_interval = data.get(self.SYSLOG_RATE_LIMIT_INTERVAL, '0')
+            new_burst = data.get(self.SYSLOG_RATE_LIMIT_BURST, '0')
+
+        if new_interval == self.current_interval and new_burst == self.current_burst:
+            return
+
+        syslog.syslog(syslog.LOG_INFO, f'Configure syslog rate limit interval={new_interval} (old:{self.current_interval}), burst={new_burst} (old:{self.current_burst})')
+
+        try:
+            run_cmd('systemctl reset-failed rsyslog-config rsyslog', raise_exception=True)
+            run_cmd('systemctl restart rsyslog-config', raise_exception=True)
+            self.current_interval = new_interval
+            self.current_burst = new_burst
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to configure syslog rate limit for host - {e}')
+
+    def load(self, data):
+        if self.HOST_KEY in data:
+            self.syslog_update(data[self.HOST_KEY])
+
+    def parse_syslog_conf(self):
+        """Parse existing syslog conf and extract config values
+
+        Returns:
+            tuple: interval,burst,target_ip
+        """
+        interval = '0'
+        burst = '0'
+
+        try:
+            with open(self.SYSLOG_CONF_PATH, 'r') as f:
+                content = f.read()
+                pattern = re.compile(self.INTERVAL_PATTERN)
+                for match in pattern.finditer(content):
+                    interval = match.group(1)
+                    break
+
+                pattern = re.compile(self.BURST_PATTERN)
+                for match in pattern.finditer(content):
+                    burst = match.group(1)
+                    break
+        except OSError:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to read file {self.SYSLOG_CONF_PATH}')
+            return interval, burst
+        return interval, burst
+
+
 class HostConfigDaemon:
     def __init__(self):
         # Just a sanity check to verify if the CONFIG_DB has been initialized
@@ -1526,6 +1597,9 @@ class HostConfigDaemon:
         # Initialize MgmtIfaceCfg
         self.mgmtifacecfg = MgmtIfaceCfg()
 
+        # Initialize SyslogCfg
+        self.syslogcfg = SyslogCfg()
+
     def load(self, init_data):
         features = init_data['FEATURE']
         aaa = init_data['AAA']
@@ -1541,6 +1615,7 @@ class HostConfigDaemon:
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
+        syslog = init_data.get('SYSLOG_CONFIG', {})
 
         self.feature_handler.sync_state_field(features)
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
@@ -1550,6 +1625,7 @@ class HostConfigDaemon:
         self.passwcfg.load(passwh)
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
+        self.syslogcfg.load(syslog)
 
         # Update AAA with the hostname
         self.aaacfg.hostname_update(self.devmetacfg.hostname)
@@ -1649,6 +1725,9 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
 
+    def syslog_handler(self, key, op, data):
+        self.syslogcfg.syslog_update(data)
+
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
         # flag
@@ -1687,7 +1766,7 @@ class HostConfigDaemon:
         self.config_db.subscribe('VLAN_SUB_INTERFACE', make_callback(self.vlan_sub_intf_handler))
         self.config_db.subscribe('PORTCHANNEL_INTERFACE', make_callback(self.portchannel_intf_handler))
         self.config_db.subscribe('INTERFACE', make_callback(self.phy_intf_handler))
-        
+
         # Handle DEVICE_MEATADATA changes
         self.config_db.subscribe(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
                                  make_callback(self.device_metadata_handler))
@@ -1695,6 +1774,8 @@ class HostConfigDaemon:
         # Handle MGMT_VRF_CONFIG changes
         self.config_db.subscribe(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME,
                                  make_callback(self.mgmt_vrf_handler))
+
+        self.config_db.subscribe('SYSLOG_CONFIG', make_callback(self.syslog_handler))
 
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
