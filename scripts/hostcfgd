@@ -566,7 +566,7 @@ class Iptables(object):
                     syslog.syslog(syslog.LOG_INFO, "{} rule exists in {}".format(ip, chain))
                 else:
                     # Modify command from Check to Append
-                    iptables_cmds.append([word if word != "--check" else "--append" for word in cmd])
+                    iptables_cmds.append([word.replace('check', 'append') for word in cmd])
 
         for cmd in iptables_cmds:
             syslog.syslog(syslog.LOG_INFO, "Running cmd - {}".format(cmd))
