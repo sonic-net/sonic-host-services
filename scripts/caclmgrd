@@ -180,6 +180,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             self.log_error("Error running command '{}'".format(cmd))
         elif stdout:
             return stdout.rstrip('\n')
+        return None
 
     def run_commands(self, commands):
         """
