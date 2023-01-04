@@ -337,7 +337,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             vlan_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.VLAN_INTF_TABLE)
             vlan_address = get_ip_from_interface_table(vlan_table, vlan_name)
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                    "iptables -t nat --flush POSTROUTING")
+                    ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
             
             if loopback_address is not None:
                 mux_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.CONFIG_MUX_CABLE)
@@ -346,7 +346,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     kvp = mux_table.get(key)
                     if 'cable_type' in kvp and kvp['cable_type'] == 'active-active':
                         fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                                "iptables -t nat -A POSTROUTING --destination {} --source {} -j SNAT --to-source {}".format(kvp['soc_ipv4'], vlan_address, loopback_address))
+                                ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '--destination', kvp['soc_ipv4'], '--source', vlan_address, '-j', 'SNAT', '--to-source', loopback_address])
 
         return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
@@ -771,7 +771,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         if self.DualToR:
             dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace)
             for cmd in dualtor_iptables_cmds:
-                self.log_info("  " + cmd)
+                self.log_info("  " + ' '.join(cmd))
             self.run_commands(dualtor_iptables_cmds)
 
 
