@@ -22,7 +22,7 @@ class TestGCU(object):
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "CONFIGDB" in call_args
-            assert '/dev/stdin' in call_args
+            assert '/tmp/config_db.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
         with mock.patch("subprocess.run") as mock_run:
@@ -38,7 +38,7 @@ class TestGCU(object):
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "CONFIGDB" in call_args
-            assert '/dev/stdin' in call_args
+            assert '/tmp/config_db.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
 
@@ -59,7 +59,7 @@ class TestGCU(object):
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "SONICYANG" in call_args
-            assert '/dev/stdin' in call_args
+            assert '/tmp/config_yang.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
         with mock.patch("subprocess.run") as mock_run:
@@ -75,7 +75,7 @@ class TestGCU(object):
             call_args = mock_run.call_args[0][0]
             assert "apply-patch" in call_args
             assert "SONICYANG" in call_args
-            assert '/dev/stdin' in call_args
+            assert '/tmp/config_yang.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
 
