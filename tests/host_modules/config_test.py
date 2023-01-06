@@ -40,6 +40,12 @@ class TestConfigEngine(object):
             assert config_file in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
+        with mock.patch("builtins.open") as mock_open:
+            mock_open.side_effect = Exception('Boom!')
+            config_db_json = "{}"
+            config_stub = config_engine.Config(config_engine.MOD_NAME)
+            ret, msg = config_stub.reload(config_db_json)
+            assert ret != 0, "Should fail for exception"
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")

@@ -41,6 +41,12 @@ class TestGCU(object):
             assert '/tmp/config_db.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
+        with mock.patch("builtins.open") as mock_open:
+            mock_open.side_effect = Exception('Boom!')
+            patch_text = "{}"
+            gcu_stub = gcu.GCU(gcu.MOD_NAME)
+            ret, msg = gcu_stub.apply_patch_db(patch_text)
+            assert ret != 0, "Should fail for exception"
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
@@ -78,6 +84,12 @@ class TestGCU(object):
             assert '/tmp/config_yang.patch' in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "Error: this is the test message", "Return message is wrong"
+        with mock.patch("builtins.open") as mock_open:
+            mock_open.side_effect = Exception('Boom!')
+            patch_text = "{}"
+            gcu_stub = gcu.GCU(gcu.MOD_NAME)
+            ret, msg = gcu_stub.apply_patch_db(patch_text)
+            assert ret != 0, "Should fail for exception"
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
