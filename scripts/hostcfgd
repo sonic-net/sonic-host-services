@@ -19,6 +19,7 @@ PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
 PAM_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/common-auth-sonic.j2"
 PAM_PASSWORD_CONF = "/etc/pam.d/common-password"
 PAM_PASSWORD_CONF_TEMPLATE = "/usr/share/sonic/templates/common-password.j2"
+SSH_CONFG = "/etc/ssh/sshd_config"
 NSS_TACPLUS_CONF = "/etc/tacplus_nss.conf"
 NSS_TACPLUS_CONF_TEMPLATE = "/usr/share/sonic/templates/tacplus_nss.conf.j2"
 NSS_RADIUS_CONF = "/etc/radius_nss.conf"
@@ -32,6 +33,11 @@ ETC_LOGIN_DEF = "/etc/login.defs"
 # Linux login.def default values (password hardening disable)
 LINUX_DEFAULT_PASS_MAX_DAYS = 99999
 LINUX_DEFAULT_PASS_WARN_AGE = 7
+
+# Ssh min-max values
+SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1}
+SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600, "ports": 65535}
+SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "ClientAliveInterval", "ports": "Port"}
 
 ACCOUNT_NAME = 0 # index of account name
 AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
@@ -954,6 +960,12 @@ class AaaCfg(object):
                     "{} - failed: return code - {}, output:\n{}"
                     .format(err.cmd, err.returncode, err.output))
 
+def modify_single_file_inplace(filename, operations=None):
+    if operations:
+        cmd = "sed -i {0} {1}".format(' -i '.join(operations), filename)
+        syslog.syslog(syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - {}".format(cmd))
+        os.system(cmd)
+
 
 class PasswHardening(object):
     def __init__(self):
@@ -1042,14 +1054,14 @@ class PasswHardening(object):
             self.passwd_aging_expire_modify(curr_expiration, 'MAX_DAYS')
 
             # Aging policy for new users
-            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)+"\'"])
+            modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)+"\'"])
 
         if self.is_passwd_aging_expire_update(curr_expiration_warning, 'WARN_DAYS'):
             # Aging policy for existing users
             self.passwd_aging_expire_modify(curr_expiration_warning, 'WARN_DAYS')
 
             # Aging policy for new users
-            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)+"\'"])
+            modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)+"\'"])
 
     def passwd_aging_expire_modify(self, curr_expiration, age_type):
         normal_accounts = self.get_normal_accounts()
@@ -1136,6 +1148,101 @@ class PasswHardening(object):
 
         # set new Password Hardening policies.
         self.set_passw_hardening_policies(passw_policies)
+
+class SshServer(object):
+    def __init__(self):
+        self.policies = {}
+
+    def load(self, policies_conf):
+        for row in policies_conf:
+            self.policies_update(row, policies_conf[row], modify_conf=False)
+
+        self.modify_conf_file()
+
+    def modify_conf_file(self):
+        ssh_policies = {}
+        ssh_policies.update(self.policies)
+
+        # set new SSH server policies.
+        self.set_policies(ssh_policies)
+
+    def policies_update(self, key, data, modify_conf=True):
+        syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - key: {}".format(key))
+        syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - data: {}".format(data))
+
+        if data == {}:
+            self.policies = {}
+        else:
+            if 'ports' in data:
+                data['ports'] = data['ports'].split(',')
+            if key == 'POLICIES':
+                self.policies = data
+
+        if modify_conf:
+            self.modify_conf_file()
+
+    # return first line apperience of pattern - else return number of lines in the file
+    def get_line_num_of_pattern(self, pattern, file_path, find_commented=False):
+        syslog.syslog(syslog.LOG_DEBUG, "looking for pattern {} line in file {}".format(pattern, file_path))
+        return_value = -1
+        with open(file_path, 'r') as f:
+            for (i, line) in enumerate(f):
+                if re.match(pattern, line):
+                    syslog.syslog(syslog.LOG_DEBUG, "found pattern {} in line {}".format(pattern, str(i)))
+                    return i + 1
+                if find_commented and re.match('#' + pattern, line):
+                    syslog.syslog(syslog.LOG_DEBUG, "found pattern {} in line {}".format('#' + pattern, str(i)))
+                    return i + 1
+                return_value = i
+        return return_value
+
+    def handle_ports_set(self, values_list):
+        set_values=len(values_list) > 0
+        if not set_values:
+            return True
+        key='ports'
+        for port_num in values_list:
+            if isinstance(port_num, int):
+                syslog.syslog(syslog.LOG_ERR, "port num value {} in wrong format".format(port_num))
+                set_values=False
+            if int(port_num) < SSH_MIN_VALUES[key] or SSH_MAX_VALUES[key] < int(port_num):
+               syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format('port', port_num))
+               set_values=False
+        if not set_values:
+            syslog.syslog(syslog.LOG_ERR, "unable to set ports for ssh server")
+            return False
+        port_line_num = self.get_line_num_of_pattern("Port", SSH_CONFG, True)
+        run_cmd("sed -i -E '/^#?Port '[1-9]'/d' " + SSH_CONFG) # remove all lines start with Port or #Port
+        if port_line_num < 0: # in case Port does not exist in sshd_config file
+            return False
+        for port_num in values_list:
+            run_cmd(f"sed -i ' {str(port_line_num)} i Port {str(port_num)}' {SSH_CONFG}") # add port in original line
+        return True
+
+    def set_policies(self, ssh_policies):
+        # Ssh server flow
+        # The ssh_policies from CONFIG_DB will be set in the ssh config files /etc/ssh/sshd_config
+
+        for k, value in ssh_policies.items():
+            key = k.replace('-', '_')
+            if key == 'ports':
+                if not self.handle_ports_set(value):
+                    syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
+                    return
+            elif int(value) < SSH_MIN_VALUES[key] or SSH_MAX_VALUES[key] < int(value):
+                syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format(key, value))
+            elif key in SSH_CONFIG_NAMES:
+                # search replace configuration - if not in config file - append
+                kv_str = "{} {}".format(SSH_CONFIG_NAMES[key], str(value)) # name +' '+ value format
+                modify_single_file_inplace(SSH_CONFG,["-E \'/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
+                 kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}\'"])
+            else:
+                syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
+
+        try:
+            run_cmd('sudo systemctl restart ssh')
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
 
 
 class KdumpCfg(object):
@@ -1583,6 +1690,9 @@ class HostConfigDaemon:
         # Initialize MgmtIfaceCfg
         self.mgmtifacecfg = MgmtIfaceCfg()
 
+        # Initialize SshServer
+        self.sshscfg = SshServer()
+
         # Initialize SyslogCfg
         self.syslogcfg = SyslogCfg()
 
@@ -1598,6 +1708,7 @@ class HostConfigDaemon:
         ntp_global = init_data['NTP']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
+        ssh_server = init_data['SSH_SERVER']
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
@@ -1609,6 +1720,7 @@ class HostConfigDaemon:
         self.ntpcfg.load(ntp_global, ntp_server)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
+        self.sshscfg.load(ssh_server)
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
         self.syslogcfg.load(syslog)
@@ -1630,6 +1742,10 @@ class HostConfigDaemon:
     def passwh_handler(self, key, op, data):
         self.passwcfg.passw_policies_update(key, data)
         syslog.syslog(syslog.LOG_INFO, 'PASSW_HARDENING Update: key: {}, op: {}, data: {}'.format(key, op, data))
+
+    def ssh_handler(self, key, op, data):
+        self.sshscfg.policies_update(key, data)
+        syslog.syslog(syslog.LOG_INFO, 'SSH Update: key: {}, op: {}, data: {}'.format(key, op, data))
 
     def tacacs_server_handler(self, key, op, data):
         self.aaacfg.tacacs_server_update(key, data)
@@ -1741,6 +1857,7 @@ class HostConfigDaemon:
         self.config_db.subscribe('RADIUS', make_callback(self.radius_global_handler))
         self.config_db.subscribe('RADIUS_SERVER', make_callback(self.radius_server_handler))
         self.config_db.subscribe('PASSW_HARDENING', make_callback(self.passwh_handler))
+        self.config_db.subscribe('SSH_SERVER', make_callback(self.ssh_handler))
         # Handle IPTables configuration
         self.config_db.subscribe('LOOPBACK_INTERFACE', make_callback(self.lpbk_handler))
         # Handle NTP & NTP_SERVER updates
