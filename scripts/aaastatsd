@@ -151,7 +151,7 @@ class RadiusStatistics:
                 os.unlink(stats_file)
         else:
             open(stats_file, 'a').close()
-            os.chmod(stats_file, 0o666) # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+            os.chmod(stats_file, 0o666) # nosemgrep: insecure-file-permissions
             self.handle_update(addr)
 
     def handle_clear(self):
