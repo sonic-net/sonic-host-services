@@ -111,7 +111,7 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                 },
             },
             "expected_subprocess_calls": [
-                call(["service", "aaastatsd", "start"]),
+                call("service aaastatsd start", shell=True),
             ],
         }
     ],
@@ -174,7 +174,7 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                 },
             },
             "expected_subprocess_calls": [
-                call(["service", "aaastatsd", "start"]),
+                call("service aaastatsd start", shell=True),
             ],
         },
     ],

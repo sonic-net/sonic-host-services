@@ -22,10 +22,3 @@ class MockConnector(object):
 
     def get_all(self, db_id, key):
         return MockConnector.data[key]
-
-    def delete_all_by_pattern(self, db_id, pattern):
-        match = pattern.split('*')[0]
-        for key in MockConnector.data.keys():
-            if match in key:
-                del MockConnector.data[key]
-

@@ -9,7 +9,6 @@ import re
 
 from parameterized import parameterized
 from unittest import TestCase, mock
-from sonic_py_common.general import getstatusoutput_noshell
 from tests.hostcfgd.test_passwh_vectors import HOSTCFGD_TEST_PASSWH_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 
@@ -45,7 +44,7 @@ class TestHostcfgdPASSWH(TestCase):
     """
     def run_diff(self, file1, file2):
         try:
-            _, diff_out = getstatusoutput_noshell(['diff', '-ur', file1, file2])
+            diff_out = subprocess.check_output('diff -ur {} {} || true'.format(file1, file2), shell=True)
             return diff_out
         except subprocess.CalledProcessError as err:
             syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}".format(err.cmd, err.returncode, err.output))
