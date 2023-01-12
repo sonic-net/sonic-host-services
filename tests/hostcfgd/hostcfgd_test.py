@@ -276,7 +276,7 @@ class TesNtpCfgd(TestCase):
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.ntp_global_update('global', MockConfigDb.CONFIG_DB['NTP']['global'])
             ntpcfgd.ntp_server_update('0.debian.pool.ntp.org', 'SET')
-            mocked_subprocess.check_call.assert_has_calls([call(['systemctl', 'restart', 'ntp-config'])])
+            mocked_subprocess.check_call.assert_has_calls([call('systemctl restart ntp-config', shell=True)])
 
     def test_loopback_update(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -290,7 +290,7 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_servers.add('0.debian.pool.ntp.org')
 
             ntpcfgd.handle_ntp_source_intf_chg('eth0')
-            mocked_subprocess.check_call.assert_has_calls([call(['systemctl', 'restart', 'ntp-config'])])
+            mocked_subprocess.check_call.assert_has_calls([call('systemctl restart ntp-config', shell=True)])
 
 
 class TestHostcfgdDaemon(TestCase):
@@ -318,19 +318,19 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
-                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
-                        call(['sudo', 'systemctl', 'start', 'mux.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'enable', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'start', 'telemetry.timer'])]
+            expected = [call('sudo systemctl daemon-reload', shell=True),
+                        call('sudo systemctl unmask dhcp_relay.service', shell=True),
+                        call('sudo systemctl enable dhcp_relay.service', shell=True),
+                        call('sudo systemctl start dhcp_relay.service', shell=True),
+                        call('sudo systemctl daemon-reload', shell=True),
+                        call('sudo systemctl unmask mux.service', shell=True),
+                        call('sudo systemctl enable mux.service', shell=True),
+                        call('sudo systemctl start mux.service', shell=True),
+                        call('sudo systemctl daemon-reload', shell=True),
+                        call('sudo systemctl unmask telemetry.service', shell=True),
+                        call('sudo systemctl unmask telemetry.timer', shell=True),
+                        call('sudo systemctl enable telemetry.timer', shell=True),
+                        call('sudo systemctl start telemetry.timer', shell=True)]
             mocked_subprocess.check_call.assert_has_calls(expected)
 
             # Change the state to disabled
@@ -340,12 +340,12 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['sudo', 'systemctl', 'stop', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'disable', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'mask', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'stop', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'disable', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'mask', 'telemetry.timer'])]
+            expected = [call('sudo systemctl stop telemetry.timer', shell=True),
+                        call('sudo systemctl disable telemetry.timer', shell=True),
+                        call('sudo systemctl mask telemetry.timer', shell=True),
+                        call('sudo systemctl stop telemetry.service', shell=True),
+                        call('sudo systemctl disable telemetry.timer', shell=True),
+                        call('sudo systemctl mask telemetry.timer', shell=True)]
             mocked_subprocess.check_call.assert_has_calls(expected)
 
     def test_loopback_events(self):
@@ -364,9 +364,9 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['systemctl', 'restart', 'ntp-config']),
-            call(['iptables', '-t', 'mangle', '--append', 'PREROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-d', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460']),
-            call(['iptables', '-t', 'mangle', '--append', 'POSTROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-s', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460'])]
+            expected = [call('systemctl restart ntp-config', shell=True),
+            call('iptables -t mangle --append PREROUTING -p tcp --tcp-flags SYN SYN -d 10.184.8.233 -j TCPMSS --set-mss 1460', shell=True),
+            call('iptables -t mangle --append POSTROUTING -p tcp --tcp-flags SYN SYN -s 10.184.8.233 -j TCPMSS --set-mss 1460', shell=True)]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
     def test_kdump_event(self):
@@ -383,9 +383,9 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['sonic-kdump-config', '--disable']),
-                        call(['sonic-kdump-config', '--num_dumps', '3']),
-                        call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])]
+            expected = [call('sonic-kdump-config --disable', shell=True),
+                        call('sonic-kdump-config --num_dumps 3', shell=True),
+                        call('sonic-kdump-config --memory 0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M', shell=True)]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
     def test_devicemeta_event(self):
@@ -414,8 +414,8 @@ class TestHostcfgdDaemon(TestCase):
                 pass
 
             expected = [
-                call(['sudo', 'service', 'hostname-config', 'restart']),
-                call(['sudo', 'monit', 'reload'])
+                call('sudo service hostname-config restart', shell=True),
+                call('sudo monit reload', shell=True)
             ]
             mocked_subprocess.check_call.assert_has_calls(expected,
                                                           any_order=True)
@@ -468,31 +468,30 @@ class TestHostcfgdDaemon(TestCase):
         daemon.iptables = mock.MagicMock()
         daemon.passwcfg = mock.MagicMock()
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
-        with mock.patch('hostcfgd.check_output_pipe') as mocked_check_output:
-            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-                popen_mock = mock.Mock()
-                attrs = {'communicate.return_value': ('output', 'error')}
-                popen_mock.configure_mock(**attrs)
-                mocked_subprocess.Popen.return_value = popen_mock
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
 
-                try:
-                    daemon.start()
-                except TimeoutError:
-                    pass
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
 
-                expected = [
-                    call(['sudo', 'systemctl', 'restart', 'interfaces-config']),
-                    call(['sudo', 'systemctl', 'restart', 'ntp-config']),
-                    call(['service', 'ntp', 'stop']),
-                    call(['systemctl', 'restart', 'interfaces-config']),
-                    call(['service', 'ntp', 'start']),
-                    call(['ip', '-4', 'route', 'del', 'default', 'dev', 'eth0', 'metric', '202'])
-                ]
-                mocked_subprocess.check_call.assert_has_calls(expected)
-                expected = [
-                    call(['cat', '/proc/net/route'], ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"], ['wc', '-l'])
-                ]
-                mocked_check_output.assert_has_calls(expected)
+            expected = [
+                call('sudo systemctl restart interfaces-config', shell=True),
+                call('sudo systemctl restart ntp-config', shell=True),
+                call('service ntp stop', shell=True),
+                call('systemctl restart interfaces-config', shell=True),
+                call('service ntp start', shell=True),
+                call('cat /proc/net/route | grep -E \\"eth0\\s+00000000'
+                     '\\s+[0-9A-Z]+\\s+[0-9]+\\s+[0-9]+\\s+[0-9]+\\s+202\\" | '
+                     'wc -l', shell=True),
+                call('ip -4 route del default dev eth0 metric 202', shell=True)
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected,
+                                                          any_order=True)
 
 class TestSyslogHandler:
     @mock.patch('hostcfgd.run_cmd')
@@ -511,8 +510,8 @@ class TestSyslogHandler:
             'rate_limit_burst': '200'
         }
         syslog_cfg.syslog_update(data)
-        expected = [call(['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], raise_exception=True),
-                    call(['systemctl', 'restart', 'rsyslog-config'], raise_exception=True)]
+        expected = [call('systemctl reset-failed rsyslog-config rsyslog', raise_exception=True),
+                    call('systemctl restart rsyslog-config', raise_exception=True)]
         mock_run_cmd.assert_has_calls(expected)
 
         data = {
