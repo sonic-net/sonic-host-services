@@ -22,10 +22,10 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet8", {"state": "active"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --delete DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
-                call("iptables --delete DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--delete', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
+                call(['iptables', '--delete', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -51,8 +51,8 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet4", {"state": "active"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m mark --mark 0x67004 -j DROP", shell=True),
-                call("iptables --delete DHCP -m mark --mark 0x67004 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
+                call(['iptables', '--delete', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -79,8 +79,8 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet8", {"state": "active"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -106,7 +106,7 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet4", {"state": "active"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m mark --mark 0x67004 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -133,8 +133,8 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet8", {"state": "standby"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -160,7 +160,7 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet4", {"state": "standby"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m mark --mark 0x67004 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -187,10 +187,10 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet8", {"state": "standby"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --insert DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
-                call("iptables --insert DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--insert', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
+                call(['iptables', '--insert', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -216,8 +216,8 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet4", {"state": "standby"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m mark --mark 0x67004 -j DROP", shell=True),
-                call("iptables --insert DHCP -m mark --mark 0x67004 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
+                call(['iptables', '--insert', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -244,10 +244,10 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet8", {"state": "unknown"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --delete DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
-                call("iptables --delete DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--delete', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
+                call(['iptables', '--delete', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -273,8 +273,8 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet4", {"state": "unknown"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m mark --mark 0x67004 -j DROP", shell=True),
-                call("iptables --delete DHCP -m mark --mark 0x67004 -j DROP", shell=True),
+                call(['iptables', '--check',  'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
+                call(['iptables', '--delete', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -301,8 +301,8 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet8", {"state": "unknown"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet4 -j DROP", shell=True),
-                call("iptables --check DHCP -m physdev --physdev-in Ethernet8 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet4', '-j', 'DROP']),
+                call(['iptables', '--check', 'DHCP', '-m', 'physdev', '--physdev-in', 'Ethernet8', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
@@ -328,7 +328,7 @@ CACLMGRD_DHCP_TEST_VECTOR = [
                 ("Ethernet4", {"state": "unknown"}),
             ],
             "expected_subprocess_calls": [
-                call("iptables --check DHCP -m mark --mark 0x67004 -j DROP", shell=True),
+                call(['iptables', '--check', 'DHCP', '-m', 'mark', '--mark', '0x67004', '-j', 'DROP']),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
