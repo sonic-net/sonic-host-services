@@ -46,3 +46,7 @@ class Config(host_service.HostModule):
                     break
         return result.returncode, msg
 
+def register():
+    """Return class and module name"""
+    return Config, MOD_NAME
+
