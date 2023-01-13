@@ -794,24 +794,25 @@ class AaaCfg(object):
 
 
     def check_file_integrity(self, filename):
-        syslog.syslog(syslog.LOG_INFO, "check {} integrity".format(filename))
-        rc, out = exec_cmd(cmd="du -b /etc/pam.d/sshd", verbose=False)
+        rc, out = exec_cmd(cmd="du -b {}".format(filename), verbose=False)
         if rc != 0:
-            syslog.syslog(syslog.LOG_ERR, "{} is missing".format(filename))
+            syslog.syslog(syslog.LOG_ERR, "file integrity check failed: {} is missing".format(filename))
+            return
 
         # du command result is: 'size\tpath'
         size = int(out.split('\t')[0])
         if size == 0:
-            syslog.syslog(syslog.LOG_ERR, "{} is empty, file corrupted".format(filename))
+            syslog.syslog(syslog.LOG_ERR, "file integrity check failed: {} is empty, file corrupted".format(filename))
+            return
 
-        syslog.syslog(syslog.LOG_INFO, "file integrity check: {} size is ({}) bytes".format(size))
+        syslog.syslog(syslog.LOG_INFO, "file integrity check pass: {} size is ({}) bytes".format(filename, size))
 
 
     def modify_single_file(self, filename, operations=None):
         if operations:
             cmd = "sed -e {0} {1} > {1}.new; mv -f {1} {1}.old; mv -f {1}.new {1}".format(' -e '.join(operations), filename)
             os.system(cmd)
-        # check if the file is empty or missing
+
         self.check_file_integrity(filename)
 
     def modify_conf_file(self):
