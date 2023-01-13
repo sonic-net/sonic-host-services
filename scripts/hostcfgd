@@ -134,6 +134,17 @@ def get_pid(procname):
     return ""
 
 
+def exec_cmd(cmd, verbose=True):
+    p = subprocess.Popen(cmd, shell=True, executable='/bin/bash', stdout=subprocess.PIPE)
+    outs, errs = p.communicate()
+    msg = outs.decode('utf8')
+    if outs and verbose:
+        syslog.syslog(syslog.LOG_INFO, "exec_cmd {} stdout = {}".format(cmd, msg))
+    if errs:
+        syslog.syslog(syslog.LOG_ERR, "exec_cmd {} stderr = {}".format(cmd, msg))
+    return (p.returncode, msg)
+
+
 class Feature(object):
     """ Represents a feature configuration from CONFIG_DB data. """
 
@@ -781,10 +792,27 @@ class AaaCfg(object):
                 interface_ip = ipv4_addr
         return interface_ip
 
+
+    def check_file_integrity(self, filename):
+        syslog.syslog(syslog.LOG_INFO, "check {} integrity".format(filename))
+        rc, out = exec_cmd(cmd="du -b /etc/pam.d/sshd", verbose=False)
+        if rc != 0:
+            syslog.syslog(syslog.LOG_ERR, "{} is missing".format(filename))
+
+        # du command result is: 'size\tpath'
+        size = int(out.split('\t')[0])
+        if size == 0:
+            syslog.syslog(syslog.LOG_ERR, "{} is empty, file corrupted".format(filename))
+
+        syslog.syslog(syslog.LOG_INFO, "file integrity check: {} size is ({}) bytes".format(size))
+
+
     def modify_single_file(self, filename, operations=None):
         if operations:
             cmd = "sed -e {0} {1} > {1}.new; mv -f {1} {1}.old; mv -f {1}.new {1}".format(' -e '.join(operations), filename)
             os.system(cmd)
+        # check if the file is empty or missing
+        self.check_file_integrity(filename)
 
     def modify_conf_file(self):
         authentication = self.authentication_default.copy()
