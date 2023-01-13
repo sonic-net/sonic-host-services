@@ -44,7 +44,3 @@ class Showtech(host_service.HostModule):
         output_filename = output_file_match.group()
         return result.returncode, output_filename
 
-def register():
-    """Return the class name"""
-    return Showtech, MOD_NAME
-
