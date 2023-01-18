@@ -8,7 +8,6 @@ import subprocess
 from swsscommon import swsscommon
 
 from parameterized import parameterized
-from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 from tests.hostcfgd.test_tacacs_vectors import HOSTCFGD_TEST_TACACS_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
@@ -24,7 +23,11 @@ sys.path.insert(0, modules_path)
 
 # Load the file under test
 hostcfgd_path = os.path.join(scripts_path, 'hostcfgd')
-hostcfgd = load_module_from_source('hostcfgd', hostcfgd_path)
+loader = importlib.machinery.SourceFileLoader('hostcfgd', hostcfgd_path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+hostcfgd = importlib.util.module_from_spec(spec)
+loader.exec_module(hostcfgd)
+sys.modules['hostcfgd'] = hostcfgd
 
 # Mock swsscommon classes
 hostcfgd.ConfigDBConnector = MockConfigDb
@@ -125,9 +128,9 @@ class TestHostcfgdTACACS(TestCase):
         self.check_config(test_name, test_data, "config_db_disable_accounting")
 
     @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
-    def test_hostcfgd_sshd_integrity(self, test_name, test_data):
+    def test_hostcfgd_sshd_not_empty(self, test_name, test_data):
         """
-            Test hostcfd sshd config file integrity check
+            Test hostcfd sshd config file not empty check
 
             Args:
                 test_name(str): test name
@@ -153,7 +156,7 @@ class TestHostcfgdTACACS(TestCase):
 
             # check sys log
             expected = [
-                mock.call(mocked_syslog.LOG_ERR, "file integrity check failed: {} is empty, file corrupted".format(hostcfgd.ETC_PAMD_SSHD))
+                mock.call(mocked_syslog.LOG_ERR, "file size check failed: {} is empty, file corrupted".format(hostcfgd.ETC_PAMD_SSHD))
             ]
             mocked_syslog.assert_has_calls(expected)
 
@@ -165,11 +168,27 @@ class TestHostcfgdTACACS(TestCase):
 
             # missing file can't test by render config file,
             # because missing file case difficult to reproduce: code always generate a empty file.
-            host_config_daemon.aaacfg.check_file_integrity(hostcfgd.ETC_PAMD_SSHD)
+            host_config_daemon.aaacfg.check_file_not_empty(hostcfgd.ETC_PAMD_SSHD)
 
             # check sys log
             expected = [
-                mock.call(mocked_syslog.LOG_ERR, "file integrity check failed: {} is missing".format(hostcfgd.ETC_PAMD_SSHD))
+                mock.call(mocked_syslog.LOG_ERR, "file size check failed: {} is missing".format(hostcfgd.ETC_PAMD_SSHD))
+            ]
+            mocked_syslog.assert_has_calls(expected)
+
+        # test sshd exist and not empty case
+        hostcfgd.ETC_PAMD_SSHD = op_path + "/sshd_not_empty"
+        shutil.copyfile( sop_path + "/sshd_not_empty.old", op_path + "/sshd_not_empty")
+
+        # render with empty sshd config file and check error log
+        original_syslog = hostcfgd.syslog
+        with mock.patch('hostcfgd.syslog.syslog') as mocked_syslog:
+            mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+            self.render_config_file(host_config_daemon)
+
+            # check sys log
+            expected = [
+                mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is ({}) bytes".format(hostcfgd.ETC_PAMD_SSHD, 21))
             ]
             mocked_syslog.assert_has_calls(expected)
 

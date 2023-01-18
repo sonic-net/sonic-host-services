@@ -134,7 +134,7 @@ def get_pid(procname):
     return ""
 
 
-def exec_cmd(cmd, verbose=True):
+def exec_cmd(cmd, verbose=False):
     p = subprocess.Popen(cmd, shell=True, executable='/bin/bash', stdout=subprocess.PIPE)
     outs, errs = p.communicate()
     msg = outs.decode('utf8')
@@ -793,19 +793,19 @@ class AaaCfg(object):
         return interface_ip
 
 
-    def check_file_integrity(self, filename):
-        rc, out = exec_cmd(cmd="du -b {}".format(filename), verbose=False)
-        if rc != 0:
-            syslog.syslog(syslog.LOG_ERR, "file integrity check failed: {} is missing".format(filename))
+    def check_file_not_empty(self, filename):
+        exists = os.path.exists(filename)
+        if not exists:
+            syslog.syslog(syslog.LOG_ERR, "file size check failed: {} is missing".format(filename))
             return
 
         # du command result is: 'size\tpath'
-        size = int(out.split('\t')[0])
+        size = os.path.getsize(filename)
         if size == 0:
-            syslog.syslog(syslog.LOG_ERR, "file integrity check failed: {} is empty, file corrupted".format(filename))
+            syslog.syslog(syslog.LOG_ERR, "file size check failed: {} is empty, file corrupted".format(filename))
             return
 
-        syslog.syslog(syslog.LOG_INFO, "file integrity check pass: {} size is ({}) bytes".format(filename, size))
+        syslog.syslog(syslog.LOG_INFO, "file size check pass: {} size is ({}) bytes".format(filename, size))
 
 
     def modify_single_file(self, filename, operations=None):
@@ -813,7 +813,7 @@ class AaaCfg(object):
             cmd = "sed -e {0} {1} > {1}.new; mv -f {1} {1}.old; mv -f {1}.new {1}".format(' -e '.join(operations), filename)
             os.system(cmd)
 
-        self.check_file_integrity(filename)
+        self.check_file_not_empty(filename)
 
     def modify_conf_file(self):
         authentication = self.authentication_default.copy()
