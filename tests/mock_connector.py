@@ -24,11 +24,11 @@ class MockConnector(object):
         return MockConnector.data[key]
 
     def delete(self, db_id, key):
-        return MockConnector.data.delete(db_id, key)
+        return MockConnector.data.delete(key)
 
     def delete_all_by_pattern(self, db_id, pattern):
-        client = MockConnector.data
-        keys = client.keys()
+        keys = self.keys(db_id, pattern)
         for key in keys:
-            client.delete(db_id, key)
+            self.delete(db_id, key)
+
 

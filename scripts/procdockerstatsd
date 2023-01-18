@@ -138,9 +138,9 @@ class ProcDockerStats(daemon_base.DaemonBase):
     def update_processstats_command(self):
         cmd0 = ["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"]
         cmd1 = ["head", "-1024"]
-        cmd = ' | '.join([' '.join(cmd0), ' '.join(cmd1)])
         exitcode, data = getstatusoutput_noshell_pipe(cmd0, cmd1)
         if any(exitcode):
+            cmd = ' | '.join([' '.join(cmd0), ' '.join(cmd1)])
             self.log_error("Error running command '{}'".format(cmd))
             data = None
         processdata = self.format_process_cmd_output(data)
