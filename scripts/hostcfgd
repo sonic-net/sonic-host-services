@@ -859,7 +859,7 @@ class AaaCfg(object):
         # Use rename(), which is atomic (on the same fs) to avoid empty file
         with open(PAM_AUTH_CONF + ".tmp", 'w') as f:
             f.write(pam_conf)
-        os.chmod(PAM_AUTH_CONF + ".tmp", 0o644)
+        os.chmod(PAM_AUTH_CONF + ".tmp", 0o600)
         os.rename(PAM_AUTH_CONF + ".tmp", PAM_AUTH_CONF)
 
         # Modify common-auth include file in /etc/pam.d/login, sshd.
@@ -1016,7 +1016,7 @@ class PasswHardening(object):
         # Use rename(), which is atomic (on the same fs) to avoid empty file
         with open(PAM_PASSWORD_CONF + ".tmp", 'w') as f:
             f.write(pam_passwh_conf)
-        os.chmod(PAM_PASSWORD_CONF + ".tmp", 0o644)
+        os.chmod(PAM_PASSWORD_CONF + ".tmp", 0o600)
         os.rename(PAM_PASSWORD_CONF + ".tmp", PAM_PASSWORD_CONF)
 
         # Age policy
