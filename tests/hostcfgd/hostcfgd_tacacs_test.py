@@ -4,11 +4,11 @@ import filecmp
 import shutil
 import os
 import sys
-import subprocess
 from swsscommon import swsscommon
 
 from parameterized import parameterized
 from unittest import TestCase, mock
+from sonic_py_common.general import getstatusoutput_noshell
 from tests.hostcfgd.test_tacacs_vectors import HOSTCFGD_TEST_TACACS_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 
@@ -39,7 +39,8 @@ class TestHostcfgdTACACS(TestCase):
         Test hostcfd daemon - TACACS
     """
     def run_diff(self, file1, file2):
-        return subprocess.check_output('diff -uR {} {} || true'.format(file1, file2), shell=True)
+        _, output = getstatusoutput_noshell(['diff', '-uR', file1, file2])
+        return output
 
     """
         Check different config

@@ -53,9 +53,9 @@ CACLMGRD_IP2ME_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                "iptables -A INPUT -d 10.10.10.10/32 -j DROP",
-                "iptables -A INPUT -d 10.10.11.10/32 -j DROP",
-                "iptables -A INPUT -d 10.10.12.10/32 -j DROP",
+                ['iptables', '-A', 'INPUT', '-d', '10.10.10.10/32', '-j', 'DROP'],
+                ['iptables', '-A', 'INPUT', '-d', '10.10.11.10/32', '-j', 'DROP'],
+                ['iptables', '-A', 'INPUT', '-d', '10.10.12.10/32', '-j', 'DROP'],
             ],
         },
     ],
@@ -81,7 +81,7 @@ CACLMGRD_IP2ME_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                "iptables -A INPUT -d 10.10.11.1/32 -j DROP",
+                ['iptables', '-A', 'INPUT', '-d', '10.10.11.1/32', '-j', 'DROP'],
             ],
         },
     ],
@@ -113,11 +113,11 @@ CACLMGRD_IP2ME_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                "ip6tables -A INPUT -d 2001:db8:10::/128 -j DROP",
-                "ip6tables -A INPUT -d 2001:db8:11::1/128 -j DROP",
-                "ip6tables -A INPUT -d 2001:db8:12::/128 -j DROP",
-                "ip6tables -A INPUT -d 2001:db8:13::/128 -j DROP"
-            ],
+                ['ip6tables', '-A', 'INPUT', '-d', '2001:db8:10::/128', '-j', 'DROP'],
+                ['ip6tables', '-A', 'INPUT', '-d', '2001:db8:11::1/128', '-j', 'DROP'],
+                ['ip6tables', '-A', 'INPUT', '-d', '2001:db8:12::/128', '-j', 'DROP'],
+                ['ip6tables', '-A', 'INPUT', '-d', '2001:db8:13::/128', '-j', 'DROP']
+            ],  
         },
     ]
 ]
