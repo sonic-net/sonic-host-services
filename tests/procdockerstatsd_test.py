@@ -42,6 +42,14 @@ class TestProcDockerStatsDaemon(object):
             res = pdstatsd.convert_to_bytes(test_input)
             assert res == expected_output
 
+    def test_run_command(self):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        output = pdstatsd.run_command(['echo', 'pdstatsd'])
+        assert output == 'pdstatsd\n'
+
+        output = pdstatsd.run_command([sys.executable, "-c", "import sys; sys.exit(6)"])
+        assert output is None
+
     def test_update_processstats_command(self):
         expected_calls = [call(["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"], ["head", "-1024"])]
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
