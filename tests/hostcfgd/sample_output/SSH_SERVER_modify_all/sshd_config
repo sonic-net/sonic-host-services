@@ -10,6 +10,7 @@
 # possible, but leave them commented.  Uncommented options override the
 # default value.
 
+Port 222
 Port 22
 #AddressFamily any
 #ListenAddress 0.0.0.0
@@ -28,9 +29,9 @@ Port 22
 
 # Authentication:
 
-#LoginGraceTime 2m
+LoginGraceTime 140 
 #StrictModes yes
-MaxAuthTries 6
+MaxAuthTries 16
 #MaxSessions 10
 
 #PubkeyAuthentication yes

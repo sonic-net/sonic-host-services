@@ -37,7 +37,7 @@ LINUX_DEFAULT_PASS_WARN_AGE = 7
 # Ssh min-max values
 SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1}
 SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600, "ports": 65535}
-SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "ClientAliveInterval", "ports": "Port"}
+SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "LoginGraceTime", "ports": "Port"}
 
 ACCOUNT_NAME = 0 # index of account name
 AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},

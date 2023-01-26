@@ -28,7 +28,7 @@ Port 22
 
 # Authentication:
 
-#LoginGraceTime 2m
+LoginGraceTime 60 
 #StrictModes yes
 MaxAuthTries 6
 #MaxSessions 10
@@ -118,4 +118,4 @@ Subsystem	sftp	/usr/lib/openssh/sftp-server
 #	PermitTTY no
 #	ForceCommand cvs server
 PermitRootLogin yes
-ClientAliveInterval 60
+ClientAliveInterval 120 

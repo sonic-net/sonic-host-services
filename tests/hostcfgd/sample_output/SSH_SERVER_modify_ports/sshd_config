@@ -10,7 +10,8 @@
 # possible, but leave them commented.  Uncommented options override the
 # default value.
 
-Port 222
+Port 24
+Port 23
 Port 22
 #AddressFamily any
 #ListenAddress 0.0.0.0
@@ -29,9 +30,9 @@ Port 22
 
 # Authentication:
 
-#LoginGraceTime 2m
+LoginGraceTime 120 
 #StrictModes yes
-MaxAuthTries 16
+MaxAuthTries 6
 #MaxSessions 10
 
 #PubkeyAuthentication yes
@@ -119,4 +120,4 @@ Subsystem	sftp	/usr/lib/openssh/sftp-server
 #	PermitTTY no
 #	ForceCommand cvs server
 PermitRootLogin yes
-ClientAliveInterval 140
+ClientAliveInterval 120
