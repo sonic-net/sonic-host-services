@@ -69,7 +69,3 @@ class GCU(host_service.HostModule):
                     break
         return result.returncode, msg
 
-def register():
-    """Return class and module name"""
-    return GCU, MOD_NAME
-

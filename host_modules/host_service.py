@@ -30,5 +30,3 @@ class HostModule(dbus.service.Object):
         self.bus_name = dbus.service.BusName(bus_name(mod_name), self.bus)
         super(HostModule, self).__init__(self.bus_name, bus_path(mod_name))
 
-def register():
-    return HostService, "host_service"
