@@ -72,8 +72,8 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                "iptables -A INPUT -p tcp -s 20.0.0.55/32 --dport 8081 -j ACCEPT",
-                "iptables -A INPUT -p tcp --dport 8081 -j DROP"
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8081', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
             ],
         }
     ],
@@ -110,12 +110,12 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                "iptables -A INPUT -p tcp -s 20.0.0.55/32 --dport 8081 -j ACCEPT",
-                "iptables -A INPUT -p tcp -s 20.0.0.55/32 --dport 8082 -j ACCEPT",
-                "iptables -A INPUT -p tcp -s 20.0.0.55/32 --dport 8083 -j ACCEPT",
-                "iptables -A INPUT -p tcp --dport 8081 -j DROP",
-                "iptables -A INPUT -p tcp --dport 8082 -j DROP",
-                "iptables -A INPUT -p tcp --dport 8083 -j DROP",
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8081', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8082', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8083', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8082', '-j', 'DROP'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8083', '-j', 'DROP'],
             ],
         }
     ],
@@ -152,8 +152,8 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                "iptables -A INPUT -p tcp -s 2001::2/128 --dport 8081 -j ACCEPT",
-                "iptables -A INPUT -p tcp --dport 8081 -j DROP"
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8081', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
             ],
         }
     ],
@@ -190,12 +190,12 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                "iptables -A INPUT -p tcp -s 2001::2/128 --dport 8081 -j ACCEPT",
-                "iptables -A INPUT -p tcp -s 2001::2/128 --dport 8082 -j ACCEPT",
-                "iptables -A INPUT -p tcp -s 2001::2/128 --dport 8083 -j ACCEPT",
-                "iptables -A INPUT -p tcp --dport 8081 -j DROP",
-                "iptables -A INPUT -p tcp --dport 8082 -j DROP",
-                "iptables -A INPUT -p tcp --dport 8083 -j DROP",
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8081', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8082', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8083', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8082', '-j', 'DROP'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8083', '-j', 'DROP'],
             ],
         }
     ]

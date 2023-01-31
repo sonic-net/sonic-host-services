@@ -1,6 +1,6 @@
 """Show techsupport command handler"""
 
-import host_service
+from host_modules import host_service
 import subprocess
 import re
 
@@ -43,8 +43,4 @@ class Showtech(host_service.HostModule):
         output_file_match = re.search('\/var\/.*dump.*\.gz', result.stdout)
         output_filename = output_file_match.group()
         return result.returncode, output_filename
-
-def register():
-    """Return the class name"""
-    return Showtech, MOD_NAME
 

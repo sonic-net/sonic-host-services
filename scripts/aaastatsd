@@ -151,7 +151,7 @@ class RadiusStatistics:
                 os.unlink(stats_file)
         else:
             open(stats_file, 'a').close()
-            os.chmod(stats_file, 0o666)
+            os.chmod(stats_file, 0o644)
             self.handle_update(addr)
 
     def handle_clear(self):

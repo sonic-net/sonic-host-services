@@ -34,17 +34,18 @@ class TestCaclmgrdBfd(TestCase):
 
         MockConfigDb.set_config_db(test_data["config_db"])
 
-        with mock.patch("caclmgrd.subprocess") as mocked_subprocess:
-            popen_mock = mock.Mock()
-            popen_attrs = test_data["popen_attributes"]
-            popen_mock.configure_mock(**popen_attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
-            mocked_subprocess.PIPE = -1
+        with mock.patch("caclmgrd.ControlPlaneAclManager.run_commands_pipe", return_value='sonic'):
+            with mock.patch("caclmgrd.subprocess") as mocked_subprocess:
+                popen_mock = mock.Mock()
+                popen_attrs = test_data["popen_attributes"]
+                popen_mock.configure_mock(**popen_attrs)
+                mocked_subprocess.Popen.return_value = popen_mock
+                mocked_subprocess.PIPE = -1
 
-            call_rc = test_data["call_rc"]
-            mocked_subprocess.call.return_value = call_rc
+                call_rc = test_data["call_rc"]
+                mocked_subprocess.call.return_value = call_rc
 
-            caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-            caclmgrd_daemon.allow_bfd_protocol('')
-            mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
+                caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+                caclmgrd_daemon.allow_bfd_protocol('')
+                mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
 

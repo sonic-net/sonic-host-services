@@ -4,18 +4,19 @@ import swsscommon
 
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
+from ipaddress import IPv4Address
 from unittest import TestCase, mock
 from pyfakefs.fake_filesystem_unittest import patchfs
 
-from .test_bfd_vectors import CACLMGRD_BFD_TEST_VECTOR
+from .test_soc_rules_vectors import CACLMGRD_SOC_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
 from unittest.mock import MagicMock, patch
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
-class TestFeature(TestCase):
+class TestCaclmgrdSoc(TestCase):
     """
-        Test caclmgrd feature present 
+        Test caclmgrd soc
     """
     def setUp(self):
         swsscommon.swsscommon.ConfigDBConnector = MockConfigDb
@@ -25,10 +26,11 @@ class TestFeature(TestCase):
         sys.path.insert(0, modules_path)
         caclmgrd_path = os.path.join(scripts_path, 'caclmgrd')
         self.caclmgrd = load_module_from_source('caclmgrd', caclmgrd_path)
-
-    @parameterized.expand(CACLMGRD_BFD_TEST_VECTOR)
+        
+    @parameterized.expand(CACLMGRD_SOC_TEST_VECTOR)
     @patchfs
-    def test_feature_present(self, test_name, test_data, fs):
+    @patch('caclmgrd.get_ip_from_interface_table', MagicMock(return_value="10.10.10.10"))
+    def test_caclmgrd_soc(self, test_name, test_data, fs):
         if not os.path.exists(DBCONFIG_PATH):
             fs.create_file(DBCONFIG_PATH) # fake database_config.json
 
@@ -46,6 +48,14 @@ class TestFeature(TestCase):
                 mocked_subprocess.call.return_value = call_rc
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-                caclmgrd_daemon.update_feature_present()
-                self.assertTrue("bgp" in caclmgrd_daemon.feature_present)
-                self.assertEqual(caclmgrd_daemon.feature_present["bgp"], True)
+                caclmgrd_daemon.update_control_plane_nat_acls('', {})
+                mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
+
+    def test_get_ip_from_interface_table(self):
+        if not os.path.exists(DBCONFIG_PATH):
+            fs.create_file(DBCONFIG_PATH) # fake database_config.json
+
+        table = {("Vlan1000","10.10.10.1/32"): "val"}
+        ip_addr = self.caclmgrd.get_ip_from_interface_table(table, "Vlan")
+
+        assert (ip_addr == IPv4Address('10.10.10.1'))
