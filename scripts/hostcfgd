@@ -229,6 +229,7 @@ class FeatureHandler(object):
                 self.ns_feature_state_tbl[ns] = Table(db_conn, 'FEATURE')
 
     def handler(self, feature_name, op, feature_cfg):
+        syslog.syslog(syslog.LOG_INFO, "Feature handler for feature {}".format(feature_name))
         if not feature_cfg:
             syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
             self._cached_config.pop(feature_name, None)
@@ -257,6 +258,8 @@ class FeatureHandler(object):
         if self._cached_config[feature_name].state != feature.state:
             if self.update_feature_state(feature):
                 self._cached_config[feature_name].state = feature.state
+                syslog.syslog(syslog.LOG_INFO, "Status of feature '{}' is changed from '{}' to '{}' ..."
+                              .format(feature_name, self._cached_config[feature_name].state, feature.state))
             else:
                 self.resync_feature_state(self._cached_config[feature_name])
 
@@ -270,6 +273,8 @@ class FeatureHandler(object):
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
                 continue
+            syslog.syslog(syslog.LOG_INFO, "Re-sync state field for feature:{} based on DEVICE_METADATA table"
+                          .format(feature_name))
 
             device_config = {}
             device_config.update(self._device_config)
@@ -278,7 +283,11 @@ class FeatureHandler(object):
 
             self._cached_config.setdefault(feature_name, feature)
             self.update_systemd_config(feature)
+            syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
+                          .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
             self.update_feature_state(feature)
+            syslog.syslog(syslog.LOG_INFO, "Status of feature '{}' is changed from '{}' to '{}' ..."
+                          .format(feature_name, self._cached_config[feature_name].state, feature.state))
             self.resync_feature_state(feature)
 
     def update_feature_state(self, feature):
