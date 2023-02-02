@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+
+import copy
+import os
+import sys
+import subprocess
+import jinja2
+import click
+
+# FILE
+PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
+#PAM_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/common-auth-sonic.j2"
+PAM_AUTH_CONF_TEMPLATE = "/home/xichenlin/common-auth-sonic.j2"
+NSS_TACPLUS_CONF = "/etc/tacplus_nss.conf"
+NSS_TACPLUS_CONF_TEMPLATE = "/home/xichenlin/tacplus_nss.conf.j2"
+NSS_CONF = "/etc/nsswitch.conf"
+ETC_PAMD_SSHD = "/etc/pam.d/sshd"
+ETC_PAMD_LOGIN = "/etc/pam.d/login"
+ETC_LOGIN_DEF = "/etc/login.defs"
+
+# Linux login.def default values (password hardening disable)
+LINUX_DEFAULT_PASS_MAX_DAYS = 99999
+LINUX_DEFAULT_PASS_WARN_AGE = 7
+
+ACCOUNT_NAME = 0 # index of account name
+AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
+            'WARN_DAYS': {'REGEX_DAYS': r'^PASS_WARN_AGE[ \t]*(?P<warn_days>\d*)', 'DAYS': 'warn_days', 'CHAGE_FLAG': '-W '}
+            }
+PAM_LIMITS_CONF = "/etc/pam.d/pam-limits-conf"
+LIMITS_CONF = "/etc/security/limits.conf"
+
+# TACACS+
+TACPLUS_SERVER_PASSKEY_DEFAULT = ""
+TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
+TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+
+def run_cmd(cmd, log_err=True, raise_exception=False):
+    try:
+        subprocess.check_call(cmd, shell=True)
+    except Exception as err:
+        if log_err:
+            print("{} - failed: return code - {}, output:\n{}"
+                  .format(err.cmd, err.returncode, err.output),
+                  file=sys.stderr)
+        if raise_exception:
+            raise
+
+def is_true(val):
+    if val == 'True' or val == 'true':
+        return True
+    elif val == 'False' or val == 'false':
+        return False
+    print("Failed to get bool value, instead val= {}".format(val), file=sys.stderr)
+    return False
+
+def is_vlan_sub_interface(ifname):
+    ifname_split = ifname.split(".")
+    return (len(ifname_split) == 2)
+
+def sub(l, start, end):
+    return l[start:end]
+
+def obfuscate(data):
+    if data:
+        return data[0] + '*****'
+    else:
+        return data
+
+def get_pid(procname):
+    for dirname in os.listdir('/proc'):
+        if dirname == 'curproc':
+            continue
+        try:
+            with open('/proc/{}/cmdline'.format(dirname), mode='r') as fd:
+                content = fd.read()
+        except Exception as ex:
+            continue
+        if procname in content:
+            return dirname
+    return ""
+
+class AaaCfg(object):
+    def __init__(self):
+        self.authentication_default = {
+            'login': 'local',
+        }
+        self.authorization_default = {
+            'login': 'local',
+        }
+        self.accounting_default = {
+            'login': 'disable',
+        }
+        self.tacplus_global_default = {
+            'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
+            'timeout': TACPLUS_SERVER_TIMEOUT_DEFAULT,
+            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT
+        }
+        self.tacplus_global = {}
+        self.tacplus_servers = {}
+
+        self.authentication = {}
+        self.authorization = {}
+        self.accounting = {}
+        self.debug = False
+        self.trace = False
+
+    # Load conf from ConfigDb
+    def load(self, aaa_conf, tac_global_conf, tacplus_conf):
+        for row in aaa_conf:
+            self.aaa_update(row, aaa_conf[row], modify_conf=False)
+        for row in tac_global_conf:
+            self.tacacs_global_update(row, tac_global_conf[row], modify_conf=False)
+        for row in tacplus_conf:
+            self.tacacs_server_update(row, tacplus_conf[row], modify_conf=False)
+        self.modify_conf_file()
+
+    def aaa_update(self, key, data, modify_conf=True):
+        if key == 'authentication':
+            self.authentication = data
+            if 'failthrough' in data:
+                self.authentication['failthrough'] = is_true(data['failthrough'])
+            if 'debug' in data:
+                self.debug = is_true(data['debug'])
+        if key == 'authorization':
+            self.authorization = data
+        if key == 'accounting':
+            self.accounting = data
+        if modify_conf:
+            self.modify_conf_file()
+
+    def tacacs_global_update(self, key, data, modify_conf=True):
+        if key == 'global':
+            self.tacplus_global = data
+            if modify_conf:
+                self.modify_conf_file()
+
+    def tacacs_server_update(self, key, data, modify_conf=True):
+        if data == {}:
+            if key in self.tacplus_servers:
+                del self.tacplus_servers[key]
+        else:
+            self.tacplus_servers[key] = data
+
+        if modify_conf:
+            self.modify_conf_file()
+
+    def notify_audisp_tacplus_reload_config(self):
+        pid = get_pid("/sbin/audisp-tacplus")
+        print("Found audisp-tacplus PID: {}".format(pid), file=sys.stderr)
+        if pid == "":
+            return
+
+        # audisp-tacplus will reload TACACS+ config when receive SIGHUP
+        try:
+            os.kill(int(pid), signal.SIGHUP)
+        except Exception as ex:
+            syslog.syslog(syslog.LOG_WARNING, "Send SIGHUP to audisp-tacplus failed with exception: {}".format(ex))
+
+    def modify_single_file(self, filename, operations=None):
+        if operations:
+            cmd = "sed -e {0} {1} > {1}.new; mv -f {1} {1}.old; mv -f {1}.new {1}".format(' -e '.join(operations), filename)
+            os.system(cmd)
+
+    def modify_conf_file(self):
+        authentication = self.authentication_default.copy()
+        authentication.update(self.authentication)
+        authorization = self.authorization_default.copy()
+        authorization.update(self.authorization)
+        accounting = self.accounting_default.copy()
+        accounting.update(self.accounting)
+        tacplus_global = self.tacplus_global_default.copy()
+        tacplus_global.update(self.tacplus_global)
+        if 'src_ip' in tacplus_global:
+            src_ip = tacplus_global['src_ip']
+        else:
+            src_ip = None
+
+        servers_conf = []
+        if self.tacplus_servers:
+            for addr in self.tacplus_servers:
+                server = tacplus_global.copy()
+                server['ip'] = addr
+                server.update(self.tacplus_servers[addr])
+                servers_conf.append(server)
+            servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
+
+        template_file = os.path.abspath(PAM_AUTH_CONF_TEMPLATE)
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
+        env.filters['sub'] = sub
+        template = env.get_template(template_file)
+        pam_conf = template.render(auth=authentication, src_ip=src_ip, servers=servers_conf)
+
+        # Use rename(), which is atomic (on the same fs) to avoid empty file
+        with open(PAM_AUTH_CONF + ".tmp", 'w') as f:
+            f.write(pam_conf)
+        os.chmod(PAM_AUTH_CONF + ".tmp", 0o644)
+        os.rename(PAM_AUTH_CONF + ".tmp", PAM_AUTH_CONF)
+
+        # Modify common-auth include file in /etc/pam.d/login, sshd.
+        # /etc/pam.d/sudo is not handled, because it would change the existing
+        # behavior. It can be modified once a config knob is added for sudo.
+        if os.path.isfile(PAM_AUTH_CONF):
+            self.modify_single_file(ETC_PAMD_SSHD,  [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
+            self.modify_single_file(ETC_PAMD_LOGIN, [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
+        else:
+            self.modify_single_file(ETC_PAMD_SSHD,  [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
+            self.modify_single_file(ETC_PAMD_LOGIN, [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
+
+        # Add tacplus/radius in nsswitch.conf if TACACS+/RADIUS enable
+        if 'tacacs+' in authentication['login']:
+            if os.path.isfile(NSS_CONF):
+                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/ radius//'" ])
+                self.modify_single_file(NSS_CONF, [ "'/tacplus/b'", "'/^passwd/s/compat/tacplus &/'", "'/^passwd/s/files/tacplus &/'" ])
+        else:
+            if os.path.isfile(NSS_CONF):
+                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //g'" ])
+                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/ radius//'" ])
+
+        # Add tacplus authorization configration in nsswitch.conf
+        tacacs_authorization_conf = None
+        local_authorization_conf = None
+        if 'tacacs+' in authorization['login']:
+            tacacs_authorization_conf = "on"
+        if 'local' in authorization['login']:
+            local_authorization_conf = "on"
+
+        # Add tacplus accounting configration in nsswitch.conf
+        tacacs_accounting_conf = None
+        local_accounting_conf = None
+        if 'tacacs+' in accounting['login']:
+            tacacs_accounting_conf = "on"
+        if 'local' in accounting['login']:
+            local_accounting_conf = "on"
+
+        # Set tacacs+ server in nss-tacplus conf
+        template_file = os.path.abspath(NSS_TACPLUS_CONF_TEMPLATE)
+        template = env.get_template(template_file)
+        nss_tacplus_conf = template.render(
+                                        debug=self.debug,
+                                        src_ip=src_ip,
+                                        servers=servers_conf,
+                                        local_accounting=local_accounting_conf,
+                                        tacacs_accounting=tacacs_accounting_conf,
+                                        local_authorization=local_authorization_conf,
+                                        tacacs_authorization=tacacs_authorization_conf)
+        with open(NSS_TACPLUS_CONF, 'w') as f:
+            f.write(nss_tacplus_conf)
+
+        # Notify auditd plugin to reload tacacs config.
+        self.notify_audisp_tacplus_reload_config()
+
+@click.group()
+def main():
+    pass
+
+@click.command()
+def off():
+    aaacfg = AaaCfg()
+    aaacfg.aaa_update('authentication', {'login': 'local'})
+
+@click.command()
+@click.argument('ip')
+@click.option('--passkey', default='', help='passkey to tacacs+ server')
+@click.option('--tcp_port', default=49, help='tcp port tacacs+ server is listening to')
+def set_tacacs_on(ip, passkey, tcp_port):
+    aaacfg = AaaCfg()
+    aaacfg.aaa_update('authentication', {'login': 'tacacs+'}, modify_conf=False)
+    aaacfg.tacacs_server_update(ip, {'passkey': passkey, 'tcp_port': tcp_port, 'priority': 1})
+
+main.add_command(off)
+main.add_command(set_tacacs_on)
+
+if __name__ == "__main__":
+    main()
