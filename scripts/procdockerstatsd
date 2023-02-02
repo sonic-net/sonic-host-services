@@ -13,6 +13,7 @@ from datetime import datetime
 
 from sonic_py_common import daemon_base
 from swsscommon import swsscommon
+from sonic_py_common.general import getstatusoutput_noshell_pipe
 
 VERSION = '1.0'
 
@@ -29,7 +30,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
         self.state_db.connect("STATE_DB")
 
     def run_command(self, cmd):
-        proc = subprocess.Popen(cmd, shell=True, universal_newlines=True, stdout=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
         (stdout, stderr) = proc.communicate()
         if proc.returncode != 0:
             self.log_error("Error running command '{}'".format(cmd))
@@ -118,7 +119,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
         return dockerdict
 
     def update_dockerstats_command(self):
-        cmd = "docker stats --no-stream -a"
+        cmd = ["docker", "stats", "--no-stream", "-a"]
         data = self.run_command(cmd)
         if not data:
             self.log_error("'{}' returned null output".format(cmd))
@@ -135,7 +136,13 @@ class ProcDockerStats(daemon_base.DaemonBase):
         return True
 
     def update_processstats_command(self):
-        data = self.run_command("ps -eo uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd --sort -%cpu | head -1024")
+        cmd0 = ["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"]
+        cmd1 = ["head", "-1024"]
+        exitcode, data = getstatusoutput_noshell_pipe(cmd0, cmd1)
+        if any(exitcode):
+            cmd = ' | '.join([' '.join(cmd0), ' '.join(cmd1)])
+            self.log_error("Error running command '{}'".format(cmd))
+            data = None
         processdata = self.format_process_cmd_output(data)
         value = ""
         # wipe out all data before updating with new values

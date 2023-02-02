@@ -1,7 +1,7 @@
 import sys
 import os
 import pytest
-
+from unittest.mock import call, patch
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
 
@@ -41,3 +41,19 @@ class TestProcDockerStatsDaemon(object):
         for test_input, expected_output in test_data:
             res = pdstatsd.convert_to_bytes(test_input)
             assert res == expected_output
+
+    def test_run_command(self):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        output = pdstatsd.run_command(['echo', 'pdstatsd'])
+        assert output == 'pdstatsd\n'
+
+        output = pdstatsd.run_command([sys.executable, "-c", "import sys; sys.exit(6)"])
+        assert output is None
+
+    def test_update_processstats_command(self):
+        expected_calls = [call(["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"], ["head", "-1024"])]
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        with patch("procdockerstatsd.getstatusoutput_noshell_pipe", return_value=([0, 0], 'output')) as mock_cmd:
+            pdstatsd.update_processstats_command()
+            mock_cmd.assert_has_calls(expected_calls)
+
