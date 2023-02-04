@@ -10,7 +10,7 @@ from unittest import TestCase, mock
 
 from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB
 from .test_vectors import HOSTCFGD_TEST_VECTOR, HOSTCFG_DAEMON_CFG_DB
-from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_configdb import MockConfigDb, MockDBConnector, MockSubscriberStateTable, MockSelect
 
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
@@ -27,6 +27,8 @@ hostcfgd = load_module_from_source('hostcfgd', hostcfgd_path)
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+swsscommon.Select = MockSelect
+swsscommon.SubscriberStateTable = MockSubscriberStateTable
 
 class TestFeatureHandler(TestCase):
     """Test methods of `FeatureHandler` class.
@@ -137,6 +139,7 @@ class TestFeatureHandler(TestCase):
                             device_config.update(config_data['device_runtime_metadata'])
 
                             feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+                            feature_handler.enable_delayed_service = True
                             feature_table = MockConfigDb.CONFIG_DB['FEATURE']
                             feature_handler.sync_state_field(feature_table)
 
@@ -198,6 +201,7 @@ class TestFeatureHandler(TestCase):
                         device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
                         device_config.update(config_data['device_runtime_metadata'])
                         feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+                        feature_handler.enable_delayed_service = True
 
                         feature_table = MockConfigDb.CONFIG_DB['FEATURE']
 
@@ -218,7 +222,7 @@ class TestFeatureHandler(TestCase):
         swss_feature = hostcfgd.Feature('swss', {
             'state': 'enabled',
             'auto_restart': 'enabled',
-            'has_timer': 'True',
+            'delayed': 'True',
             'has_global_scope': 'False',
             'has_per_asic_scope': 'True',
         })
@@ -226,7 +230,7 @@ class TestFeatureHandler(TestCase):
         assert swss_feature.name == 'swss'
         assert swss_feature.state == 'enabled'
         assert swss_feature.auto_restart == 'enabled'
-        assert swss_feature.has_timer
+        assert swss_feature.delayed
         assert not swss_feature.has_global_scope
         assert swss_feature.has_per_asic_scope
 
@@ -238,7 +242,7 @@ class TestFeatureHandler(TestCase):
         assert swss_feature.name == 'swss'
         assert swss_feature.state == 'enabled'
         assert swss_feature.auto_restart == 'disabled'
-        assert not swss_feature.has_timer
+        assert not swss_feature.delayed
         assert swss_feature.has_global_scope
         assert not swss_feature.has_per_asic_scope
 
@@ -308,6 +312,7 @@ class TestHostcfgdDaemon(TestCase):
                                 ('FEATURE', 'mux'),
                                 ('FEATURE', 'telemetry')]
         daemon = hostcfgd.HostConfigDaemon()
+        daemon.feature_handler.enable_delayed_service = True
         daemon.register_callbacks()
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
             popen_mock = mock.Mock()
@@ -328,9 +333,8 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sudo', 'systemctl', 'start', 'mux.service']),
                         call(['sudo', 'systemctl', 'daemon-reload']),
                         call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'enable', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'start', 'telemetry.timer'])]
+                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service'])]
             mocked_subprocess.check_call.assert_has_calls(expected)
 
             # Change the state to disabled
@@ -340,12 +344,43 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['sudo', 'systemctl', 'stop', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'disable', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'mask', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'stop', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'disable', 'telemetry.timer']),
-                        call(['sudo', 'systemctl', 'mask', 'telemetry.timer'])]
+            expected = [call(['sudo', 'systemctl', 'stop', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'disable', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'mask', 'telemetry.service'])]
+            mocked_subprocess.check_call.assert_has_calls(expected)
+
+    @patchfs
+    def test_delayed_service(self, fs):
+        fs.create_dir(hostcfgd.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        MockConfigDb.event_queue = [('FEATURE', 'dhcp_relay'),
+                                ('FEATURE', 'mux'),
+                                ('FEATURE', 'telemetry')]
+        MockConfigDb.CONFIG_DB['PORT_TABLE'] = {'PortInitDone': {'lanes': '0'}, 'PortConfigDone': {'val': 'true'}}
+        MockSelect.event_queue = [('PORT_TABLE', 'PortInitDone')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
+                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
+                        call(['sudo', 'systemctl', 'start', 'mux.service']),
+                        call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service'])]
+
             mocked_subprocess.check_call.assert_has_calls(expected)
 
     def test_loopback_events(self):

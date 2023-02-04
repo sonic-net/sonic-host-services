@@ -235,22 +235,13 @@ class FeatureHandler(object):
                     self.enableDelayedServices()
                 continue
 
-            # Get the redisselect object from selectable object
-            redisSelectObj = swsscommon.CastSelectableToRedisSelectObj(selectableObj)
-
-            # Get the corresponding namespace and db_id from redisselect
-            namespace = redisSelectObj.getDbConnector().getNamespace()
-            db_id = redisSelectObj.getDbConnector().getDbId()
-
-            if db_id == appl_db_id:
-                while True:
-                    key, op, fvs = subscribe_port.pop()
-                    if not key:
-                        break
-                    if op == 'SET' and key == 'PortInitDone':
-                        syslog.syslog(syslog.LOG_INFO, "Updating delayed features " \
-                                                  + " after port initialization")
-                        self.enableDelayedServices()
+            key, op, fvs = subscribe_port.pop()
+            syslog.syslog(syslog.LOG_INFO, "Received key PORT " + key)
+            if not key:
+                break
+            if op == 'SET' and key == 'PortInitDone':
+                syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
+                self.enableDelayedServices()
 
     def __init__(self, config_db, feature_state_table, device_config, is_advanced_boot):
         self._config_db = config_db
@@ -261,8 +252,9 @@ class FeatureHandler(object):
         self.enable_delayed_service = False
         self.is_advanced_boot = is_advanced_boot
         self.lock = threading.Lock()
-        t1 = threading.Thread(target=self.portListener, name='t1')
-        t1.start()
+        self.port_listener_thread = threading.Thread(target=self.portListener, name='port_listener_thread')
+        self.port_listener_thread.daemon = True
+        port_listener_thread.start()
         self._device_running_config = device_info.get_device_runtime_metadata()
         self.ns_cfg_db = {}
         self.ns_feature_state_tbl = {}
