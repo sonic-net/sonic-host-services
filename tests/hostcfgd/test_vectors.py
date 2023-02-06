@@ -3,6 +3,39 @@ from unittest.mock import call
 """
     hostcfgd test vector
 """
+HOSTCFGD_SIMPLE_TEST_VECTOR = [
+    [
+        "SingleTorCase", 
+        {
+            "config_db": {
+                "DEVICE_METADATA": {
+                    "localhost": {
+                        "subtype": "DualToR",
+                        "type": "ToRRouter",
+                    }
+                },
+                "KDUMP": {
+                    "config": {
+                        "enabled": "false",
+                        "num_dumps": "3",
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                    }
+                },
+                "FEATURE": {
+                    "dhcp_relay": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "has_timer": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "kube",
+                        "state": "{% if not (DEVICE_METADATA is defined and DEVICE_METADATA['localhost'] is defined and DEVICE_METADATA['localhost']['type'] is defined and DEVICE_METADATA['localhost']['type'] != 'ToRRouter') %}enabled{% else %}disabled{% endif %}"
+                    }
+                }
+            }
+        }
+    ]
+]
 HOSTCFGD_TEST_VECTOR = [
     [
         "DualTorCase",
