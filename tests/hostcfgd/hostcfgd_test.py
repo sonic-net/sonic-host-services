@@ -128,7 +128,8 @@ class TestFeatureHandler(TestCase):
 
         # test unstable
         feature_handler.is_systemctl_status_stable = self.systemctl_status_unstable
-        feature_handler.disable_feature(feature) 
+        feature_handler.disable_feature(feature)
+        feature_handler.enable_feature(feature)
 
     @parameterized.expand(HOSTCFGD_TEST_VECTOR)
     @patchfs
