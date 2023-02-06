@@ -104,6 +104,26 @@ class TestFeatureHandler(TestCase):
 
         return set_call_list
 
+    def systemctl_status_stable(self, feature):
+        return True
+
+    @parameterized.expand(HOSTCFGD_TEST_VECTOR)
+    def test_systemctl_status(self, test_scenario_name, config_data):
+        MockConfigDb.set_config_db(config_data['config_db'])
+        feature_state_table_mock = mock.Mock()
+
+        device_config = {}
+        device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
+        device_config.update(config_data['device_runtime_metadata'])
+
+        feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+        feature_handler.is_systemctl_status_stable = self.systemctl_status_stable
+        feature_table = MockConfigDb.CONFIG_DB['FEATURE']
+
+        for feature_name in feature_table.keys():
+            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config)
+            feature_handler.enable_feature(feature)
+
     @parameterized.expand(HOSTCFGD_TEST_VECTOR)
     @patchfs
     def test_sync_state_field(self, test_scenario_name, config_data, fs):
