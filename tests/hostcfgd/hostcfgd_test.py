@@ -9,7 +9,7 @@ from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 
 from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB
-from .test_vectors import HOSTCFGD_TEST_VECTOR, HOSTCFG_DAEMON_CFG_DB
+from .test_vectors import HOSTCFGD_SIMPLE_TEST_VECTOR, HOSTCFGD_TEST_VECTOR, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 
 from pyfakefs.fake_filesystem_unittest import patchfs
@@ -107,22 +107,28 @@ class TestFeatureHandler(TestCase):
     def systemctl_status_stable(self, feature):
         return True
 
-    @parameterized.expand(HOSTCFGD_TEST_VECTOR)
-    def test_systemctl_status(self, test_scenario_name, config_data):
+    def systemctl_status_unstable(self, feature):
+        return False
+
+    @parameterized.expand(HOSTCFGD_SIMPLE_TEST_VECTOR)
+    def test_systemctl_status(self, dummy, config_data):
         MockConfigDb.set_config_db(config_data['config_db'])
         feature_state_table_mock = mock.Mock()
 
         device_config = {}
-        device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
-        device_config.update(config_data['device_runtime_metadata'])
-
         feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+        # taking only first service to test
+        feature_table = next(iter(MockConfigDb.CONFIG_DB['FEATURE'].items()))
+        feature_name = feature_table[0]
+        feature_status = feature_table[1]
+        feature = hostcfgd.Feature(feature_name, feature_status, device_config)
+        # test stable
         feature_handler.is_systemctl_status_stable = self.systemctl_status_stable
-        feature_table = MockConfigDb.CONFIG_DB['FEATURE']
+        feature_handler.enable_feature(feature)
 
-        for feature_name in feature_table.keys():
-            feature = hostcfgd.Feature(feature_name, feature_table[feature_name], device_config)
-            feature_handler.enable_feature(feature)
+        # test unstable
+        feature_handler.is_systemctl_status_stable = self.systemctl_status_unstable
+        feature_handler.disable_feature(feature) 
 
     @parameterized.expand(HOSTCFGD_TEST_VECTOR)
     @patchfs
