@@ -451,7 +451,10 @@ class FeatureHandler(object):
         cmd = "sudo systemctl status {}".format(service)
         process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = process.communicate()
-        for line in stdout.strip().split('\n'):
+        if process.returncode != 0:
+            syslog.syslog(syslog.LOG_ERR, "Failed to get systemctl status of {}: rc={} stderr={}".format(service, process.returncode, stderr))
+            return 'invalid'  # same as systemd's "invalid indicates that it could not be determined whether the service is stable".
+        for line in stdout.decode().strip().split('\n'):
             if "Active" in line:
                 syslog.syslog(syslog.LOG_INFO, "is_systemctl_status_stable: Active State for feature {} is: {}".format(service, line))
                 if "activating" in line or "deactivating" in line: 
@@ -466,7 +469,7 @@ class FeatureHandler(object):
             # systemd is acting slow, hostcfgd needs to wait till the service/feature become
             # stable before enabling feature, otherwise feature will be left on a 'failed' state
             if not self.is_systemctl_status_stable(feature_name):
-                syslog.syslog(syslog.LOG_WARNING, "service {} is transitioning, sleep 10 sec before disabling!"
+                syslog.syslog(syslog.LOG_WARNING, "service {} is transitioning, sleep 10 sec before enabling!"
                               .format(feature_name))
                 # 10 seconds come from worst senario: on a multi-asic platform,
                 # where systemd start feature takes ~5sec, systemd stop takes ~8sec
