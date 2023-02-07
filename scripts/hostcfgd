@@ -455,10 +455,9 @@ class FeatureHandler(object):
             syslog.syslog(syslog.LOG_ERR, "Failed to get systemctl status of {}: rc={} stderr={}".format(service, process.returncode, stderr))
             return 'invalid'  # same as systemd's "invalid indicates that it could not be determined whether the service is stable".
         for line in stdout.decode().strip().split('\n'):
-            if "Active" in line:
-                syslog.syslog(syslog.LOG_INFO, "is_systemctl_status_stable: Active State for feature {} is: {}".format(service, line))
-                if "activating" in line or "deactivating" in line: 
-                    return False
+            if "Active" in line and ("activating" in line or "deactivating" in line):
+                syslog.syslog(syslog.LOG_WARNING, "is_systemctl_status_stable: Active State for feature {} is: {}".format(service, line))
+                return False
         return True
 
     def enable_feature(self, feature):
@@ -469,8 +468,6 @@ class FeatureHandler(object):
             # systemd is acting slow, hostcfgd needs to wait till the service/feature become
             # stable before enabling feature, otherwise feature will be left on a 'failed' state
             if not self.is_systemctl_status_stable(feature_name):
-                syslog.syslog(syslog.LOG_WARNING, "service {} is transitioning, sleep 10 sec before enabling!"
-                              .format(feature_name))
                 # 10 seconds come from worst senario: on a multi-asic platform,
                 # where systemd start feature takes ~5sec, systemd stop takes ~8sec
                 time.sleep(10)
@@ -508,8 +505,6 @@ class FeatureHandler(object):
             # systemd is acting slow, hostcfgd needs to wait till the service/feature become
             # stable before disabling feature, ow feature will be left on a 'failed' state
             if not self.is_systemctl_status_stable(feature_name):
-                syslog.syslog(syslog.LOG_WARNING, "service {} is transitioning, sleep 10 sec before disabling!"
-                              .format(feature_name))
                 # 10 seconds come from worst senario: on a multi-asic platform,
                 # where systemd start feature takes ~5sec, systemd stop takes ~8sec
                 time.sleep(10)
