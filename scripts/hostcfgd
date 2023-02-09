@@ -236,7 +236,6 @@ class FeatureHandler(object):
                 continue
 
             key, op, fvs = subscribe_port.pop()
-            syslog.syslog(syslog.LOG_INFO, "Received key PORT " + key)
             if not key:
                 break
             if op == 'SET' and key == 'PortInitDone':
@@ -448,7 +447,7 @@ class FeatureHandler(object):
             with open(feature_systemd_config_file_path, 'w') as feature_systemd_config_file_handler:
                 feature_systemd_config_file_handler.write(feature_systemd_config)
 
-            syslog.syslog(syslog.LOG_INFO, "Feautre '{}' systemd config file related to auto-restart is updated!"
+            syslog.syslog(syslog.LOG_INFO, "Feature '{}' systemd config file related to auto-restart is updated!"
                           .format(feature_name))
 
         try:
