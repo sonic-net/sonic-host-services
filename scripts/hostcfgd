@@ -254,7 +254,7 @@ class FeatureHandler(object):
         self.lock = threading.Lock()
         self.port_listener_thread = threading.Thread(target=self.portListener, name='port_listener_thread')
         self.port_listener_thread.daemon = True
-        port_listener_thread.start()
+        self.port_listener_thread.start()
         self._device_running_config = device_info.get_device_runtime_metadata()
         self.ns_cfg_db = {}
         self.ns_feature_state_tbl = {}
