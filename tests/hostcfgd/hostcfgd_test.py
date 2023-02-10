@@ -11,6 +11,7 @@ from unittest import TestCase, mock
 from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB
 from .test_vectors import HOSTCFGD_TEST_VECTOR, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector, MockSubscriberStateTable, MockSelect
+from tests.common.mock_restart_waiter import MockRestartWaiter
 
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
@@ -29,6 +30,7 @@ hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 swsscommon.Select = MockSelect
 swsscommon.SubscriberStateTable = MockSubscriberStateTable
+swsscommon.RestartWaiter = MockRestartWaiter
 
 class TestFeatureHandler(TestCase):
     """Test methods of `FeatureHandler` class.
@@ -138,7 +140,8 @@ class TestFeatureHandler(TestCase):
                             device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
                             device_config.update(config_data['device_runtime_metadata'])
 
-                            feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+                            feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock,
+                                                                      device_config, False)
                             feature_handler.enable_delayed_service = True
                             feature_table = MockConfigDb.CONFIG_DB['FEATURE']
                             feature_handler.sync_state_field(feature_table)
@@ -200,7 +203,8 @@ class TestFeatureHandler(TestCase):
                         device_config = {}
                         device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
                         device_config.update(config_data['device_runtime_metadata'])
-                        feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_config)
+                        feature_handler = hostcfgd.FeatureHandler(MockConfigDb(), feature_state_table_mock,
+                                                                  device_config, False)
                         feature_handler.enable_delayed_service = True
 
                         feature_table = MockConfigDb.CONFIG_DB['FEATURE']
@@ -333,8 +337,8 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sudo', 'systemctl', 'start', 'mux.service']),
                         call(['sudo', 'systemctl', 'daemon-reload']),
                         call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'enable', 'telemetry.service'])]
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
             mocked_subprocess.check_call.assert_has_calls(expected)
 
             # Change the state to disabled
@@ -378,8 +382,8 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sudo', 'systemctl', 'start', 'mux.service']),
                         call(['sudo', 'systemctl', 'daemon-reload']),
                         call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'enable', 'telemetry.service'])]
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
 
             mocked_subprocess.check_call.assert_has_calls(expected)
 
