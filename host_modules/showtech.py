@@ -1,6 +1,6 @@
 """Show techsupport command handler"""
 
-import host_service
+from host_modules import host_service
 import subprocess
 import re
 
