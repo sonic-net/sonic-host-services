@@ -5,6 +5,8 @@
 
 trigger:
 - master
+- 202205
+- 202211
 
 resources:
   repositories:
@@ -82,7 +84,7 @@ stages:
         pipeline: 9
         artifact: sonic-swss-common
         runVersion: 'latestFromBranch'
-        runBranch: 'refs/heads/master'
+        runBranch: 'refs/heads/$(sourceBranch)'
       displayName: "Download sonic swss common deb packages"
 
     - script: |
