@@ -1,9 +1,9 @@
 """
     hostcfgd test password hardening vector
 """
-HOSTCFGD_TEST_SSHS_VECTOR = [
+HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
     [
-        "SSH_S",
+        "SSH_SERVER",
         {
             "default_values":{
                 "SSH_SERVER": {

@@ -9,7 +9,7 @@ import re
 
 from parameterized import parameterized
 from unittest import TestCase, mock
-from tests.hostcfgd.test_sshs_vectors import HOSTCFGD_TEST_SSHS_VECTOR
+from tests.hostcfgd.test_ssh_server_vectors import HOSTCFGD_TEST_SSH_SERVER_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -91,7 +91,7 @@ class TestHostcfgdSSHServer(TestCase):
 
         self.assertTrue(len(diff_output) == 0, diff_output)
 
-    @parameterized.expand(HOSTCFGD_TEST_SSHS_VECTOR)
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
     def test_hostcfgd_sshs_default_values(self, test_name, test_data):
         """
             Test SSHS hostcfd daemon initialization
@@ -106,7 +106,7 @@ class TestHostcfgdSSHServer(TestCase):
 
         self.check_config(test_name, test_data, "default_values")
 
-    @parameterized.expand(HOSTCFGD_TEST_SSHS_VECTOR)
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
     def test_hostcfgd_sshs_login_timeout(self, test_name, test_data):
         """
             Test SSHS hostcfd daemon initialization
@@ -122,7 +122,7 @@ class TestHostcfgdSSHServer(TestCase):
         self.check_config(test_name, test_data, "modify_login_timeout")
 
 
-    @parameterized.expand(HOSTCFGD_TEST_SSHS_VECTOR)
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
     def test_hostcfgd_sshs_authentication_retries(self, test_name, test_data):
         """
             Test SSHS hostcfd daemon initialization
@@ -137,7 +137,7 @@ class TestHostcfgdSSHServer(TestCase):
 
         self.check_config(test_name, test_data, "modify_authentication_retries")
 
-    @parameterized.expand(HOSTCFGD_TEST_SSHS_VECTOR)
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
     def test_hostcfgd_sshs_ports(self, test_name, test_data):
         """
             Test SSHS hostcfd daemon initialization
@@ -152,7 +152,7 @@ class TestHostcfgdSSHServer(TestCase):
 
         self.check_config(test_name, test_data, "modify_ports")
 
-    @parameterized.expand(HOSTCFGD_TEST_SSHS_VECTOR)
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
     def test_hostcfgd_sshs_all(self, test_name, test_data):
         """
             Test SSHS hostcfd daemon initialization
