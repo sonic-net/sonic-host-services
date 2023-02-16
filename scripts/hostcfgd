@@ -206,42 +206,6 @@ class FeatureHandler(object):
     FEATURE_STATE_DISABLED = "disabled"
     FEATURE_STATE_FAILED = "failed"
 
-    def enableDelayedServices(self):
-        self.lock.acquire()
-        self.enable_delayed_service = True
-        for feature_name in self._cached_config:
-            if self._cached_config[feature_name].delayed:
-                self.update_feature_state(self._cached_config[feature_name])
-        self.lock.release()
-
-    def portListener(self):
-        syslog.syslog(syslog.LOG_INFO, "Starting port listener")
-        appl_db_connector = DBConnector("APPL_DB", 0)
-        appl_db_id = SonicDBConfig.getDbId("APPL_DB")
-        subscribe_port = swsscommon.SubscriberStateTable(appl_db_connector, "PORT_TABLE")
-        sel = swsscommon.Select()
-        sel.addSelectable(subscribe_port)
-
-        if (self.is_advanced_boot):
-             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after warm/fast boot")
-             self.enableDelayedServices()
-
-        while True:
-            (state, selectableObj) = sel.select(PORT_INIT_TIMEOUT_SEC*1000)
-            # Continue if select is timeout or selectable object is not return
-            if state != swsscommon.Select.OBJECT:
-                if not self.enable_delayed_service:
-                    syslog.syslog(syslog.LOG_INFO, "Updating delayed features after timeout")
-                    self.enableDelayedServices()
-                continue
-
-            key, op, fvs = subscribe_port.pop()
-            if not key:
-                break
-            if op == 'SET' and key == 'PortInitDone':
-                syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
-                self.enableDelayedServices()
-
     def __init__(self, config_db, feature_state_table, device_config, is_advanced_boot):
         self._config_db = config_db
         self._feature_state_table = feature_state_table
@@ -251,7 +215,7 @@ class FeatureHandler(object):
         self.enable_delayed_service = False
         self.is_advanced_boot = is_advanced_boot
         self.lock = threading.Lock()
-        self.port_listener_thread = threading.Thread(target=self.portListener, name='port_listener_thread')
+        self.port_listener_thread = threading.Thread(target=self._portListener, name='port_listener_thread')
         self.port_listener_thread.daemon = True
         self.port_listener_thread.start()
         self._device_running_config = device_info.get_device_runtime_metadata()
@@ -271,42 +235,78 @@ class FeatureHandler(object):
                 db_conn = DBConnector(STATE_DB, 0, False, ns);
                 self.ns_feature_state_tbl[ns] = Table(db_conn, 'FEATURE')
 
+    def _enableDelayedServices(self):
+        with self.lock:
+            self.enable_delayed_service = True
+            for feature_name in self._cached_config:
+                if self._cached_config[feature_name].delayed:
+                    self.update_feature_state(self._cached_config[feature_name])
+
+    def _portListener(self):
+        syslog.syslog(syslog.LOG_INFO, "Starting port listener")
+        appl_db_connector = DBConnector("APPL_DB", 0)
+        subscribe_port = swsscommon.SubscriberStateTable(appl_db_connector, "PORT_TABLE")
+        sel = swsscommon.Select()
+        sel.addSelectable(subscribe_port)
+
+        if self.is_advanced_boot:
+             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after warm/fast boot")
+             self._enableDelayedServices()
+
+        while True:
+            (state, selectableObj) = sel.select(PORT_INIT_TIMEOUT_SEC*1000)
+            # Continue if select is timeout or selectable object is not return
+            if state == swsscommon.Select.ERROR:
+                if not self.enable_delayed_service:
+                    syslog.syslog(syslog.LOG_ERR, "Received unexpected error in waiting for port init. Restarting services")
+                    self._enableDelayedServices()
+                continue
+            if state != swsscommon.Select.OBJECT:
+                if not self.enable_delayed_service:
+                    syslog.syslog(syslog.LOG_INFO, "Updating delayed features after timeout")
+                    self._enableDelayedServices()
+                continue
+
+            key, op, fvs = subscribe_port.pop()
+            if not key:
+                break
+            if op == 'SET' and key == 'PortInitDone':
+                syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
+                self._enableDelayedServices()
+
     def handler(self, feature_name, op, feature_cfg):
-        if not feature_cfg:
-            syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
-            self.lock.acquire()
-            self._cached_config.pop(feature_name, None)
-            self._feature_state_table._del(feature_name)
-            self.lock.release()
-            return
+        with self.lock:
+            if not feature_cfg:
+                syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
+                self._cached_config.pop(feature_name, None)
+                self._feature_state_table._del(feature_name)
+                return
 
-        device_config = {}
-        device_config.update(self._device_config)
-        device_config.update(self._device_running_config)
+            device_config = {}
+            device_config.update(self._device_config)
+            device_config.update(self._device_running_config)
 
-        feature = Feature(feature_name, feature_cfg, device_config)
-        self.lock.acquire()
-        self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
+            feature = Feature(feature_name, feature_cfg, device_config)
+            self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
 
-        # Change auto-restart configuration first.
-        # If service reached failed state before this configuration applies (e.g. on boot)
-        # the next called self.update_feature_state will start it again. If it will fail
-        # again the auto restart will kick-in. Another order may leave it in failed state
-        # and not auto restart.
-        if self._cached_config[feature_name].auto_restart != feature.auto_restart:
-            syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
-                          .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
-            self.update_systemd_config(feature)
-            self._cached_config[feature_name].auto_restart = feature.auto_restart
+            # Change auto-restart configuration first.
+            # If service reached failed state before this configuration applies (e.g. on boot)
+            # the next called self.update_feature_state will start it again. If it will fail
+            # again the auto restart will kick-in. Another order may leave it in failed state
+            # and not auto restart.
+            if self._cached_config[feature_name].auto_restart != feature.auto_restart:
+                syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
+                              .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
+                self.update_systemd_config(feature)
+                self._cached_config[feature_name].auto_restart = feature.auto_restart
 
-        # Enable/disable the container service if the feature state was changed from its previous state.
-        if self._cached_config[feature_name].state != feature.state:
-            if self.update_feature_state(feature):
-                self.sync_feature_asic_scope(feature)
-                self._cached_config[feature_name].state = feature.state
-            else:
-                self.resync_feature_state(self._cached_config[feature_name])
-        self.lock.release()
+            # Enable/disable the container service if the feature state was changed from its previous state.
+            if self._cached_config[feature_name].state != feature.state:
+                if self.update_feature_state(feature):
+                    self.sync_feature_asic_scope(feature)
+                    self._cached_config[feature_name].state = feature.state
+                else:
+                    self.resync_feature_state(self._cached_config[feature_name])
 
     def sync_state_field(self, feature_table):
         """
@@ -314,23 +314,22 @@ class FeatureHandler(object):
         Updates the state field in the FEATURE|* tables as the state field
         might have to be rendered based on DEVICE_METADATA table and generated Device Running Metadata
         """
-        self.lock.acquire()
-        for feature_name in feature_table.keys():
-            if not feature_name:
-                syslog.syslog(syslog.LOG_WARNING, "Feature is None")
-                continue
+        with self.lock:
+            for feature_name in feature_table.keys():
+                if not feature_name:
+                    syslog.syslog(syslog.LOG_WARNING, "Feature is None")
+                    continue
 
-            device_config = {}
-            device_config.update(self._device_config)
-            device_config.update(self._device_running_config)
-            feature = Feature(feature_name, feature_table[feature_name], device_config)
+                device_config = {}
+                device_config.update(self._device_config)
+                device_config.update(self._device_running_config)
+                feature = Feature(feature_name, feature_table[feature_name], device_config)
 
-            self._cached_config.setdefault(feature_name, feature)
-            self.update_systemd_config(feature)
-            self.update_feature_state(feature)
-            self.sync_feature_asic_scope(feature)
-            self.resync_feature_state(feature)
-        self.lock.release()
+                self._cached_config.setdefault(feature_name, feature)
+                self.update_systemd_config(feature)
+                self.update_feature_state(feature)
+                self.sync_feature_asic_scope(feature)
+                self.resync_feature_state(feature)
 
     def update_feature_state(self, feature):
         cached_feature = self._cached_config[feature.name]
@@ -1846,7 +1845,6 @@ class HostConfigDaemon:
 
 
 def main():
-    state_db_connector = DBConnector(STATE_DB, 0)
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGHUP, signal_handler)
