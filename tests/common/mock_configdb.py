@@ -59,6 +59,7 @@ class MockSelect():
 
     event_queue = []
     OBJECT = "OBJECT"
+    ERROR = ""
 
     @staticmethod
     def set_event_queue(Q):
