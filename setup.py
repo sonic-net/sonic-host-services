@@ -7,7 +7,7 @@ def setup_fake(**kwargs):
         packages = kwargs.get(keyword)
         if packages:
             for package in packages:
-                r = subprocess.call([sys.executable, '-m', 'pip', 'show', package.split("==")[0]])
+                r = subprocess.call([sys.executable, '-m', 'pip', 'show', package.split("==")[0]], stdout=sys.stderr.fileno())
                 if r != 0:
                     print("\033[33mPlease build and install SONiC python wheels dependencies from github.com/sonic-net/sonic-buildimage\033[0m", file=sys.stderr)
                     print("\033[33mThen install other dependencies from Pypi\033[0m", file=sys.stderr)
