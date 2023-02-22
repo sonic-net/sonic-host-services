@@ -1,6 +1,6 @@
 from sonic_py_common.secure_setup import secure_setup
 
-safe_setup(
+secure_setup(
     name = 'sonic-host-services',
     version = '1.0',
     description = 'Python services which run in the SONiC host OS',
