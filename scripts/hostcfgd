@@ -1408,84 +1408,141 @@ class NtpCfg(object):
     1) ntp-config.service handles the configuration updates and then starts ntp.service
     2) Both of them start after all the feature services start
     3) Purpose of this daemon is to propagate runtime config changes in
-       NTP, NTP_SERVER and LOOPBACK_INTERFACE
+       NTP, NTP_SERVER, NTP_KEY, and LOOPBACK_INTERFACE
     """
+    NTP_CONF_RESTART = ['service', 'ntp-config', 'restart']
+
     def __init__(self):
-        self.ntp_global = {}
-        self.ntp_servers = set()
+        self.cache = {}
 
-    def load(self, ntp_global_conf, ntp_server_conf):
-        syslog.syslog(syslog.LOG_INFO, "NtpCfg load ...")
+    def load(self, ntp_global_conf: dict, ntp_server_conf: dict,
+                   ntp_key_conf: dict):
+        """Load initial NTP configuration
 
-        for row in ntp_global_conf:
-            self.ntp_global_update(row, ntp_global_conf[row], is_load=True)
+        Force load cache on init. NTP config should be taken at boot-time by
+        ntp and ntp-config services. So loading whole config here.
 
-        # Force reload on init
-        self.ntp_server_update(0, None, is_load=True)
+        Args:
+            ntp_global_conf:    Global configuration
+            ntp_server_conf:    Servers configuration
+            ntp_key_conf:       Keys configuration
+        """
+
+        syslog.syslog(syslog.LOG_INFO, "NtpCfg: load initial")
+
+        if ntp_global_conf is None:
+            ntp_global_conf = {}
+
+        # Force load cache on init.
+        # NTP config should be taken at boot-time by ntp and ntp-config
+        # services.
+        self.cache = {
+            'global': ntp_global_conf.get('global', {}),
+            'servers': ntp_server_conf,
+            'keys': ntp_key_conf
+        }
 
     def handle_ntp_source_intf_chg(self, intf_name):
-        # if no ntp server configured, do nothing
-        if not self.ntp_servers:
+        # If no ntp server configured, do nothing. Source interface will be
+        # taken once any server will be configured.
+        if not self.cache.get('servers'):
             return
 
         # check only the intf configured as source interface
-        if intf_name not in self.ntp_global.get('src_intf', '').split(';'):
+        ifs = self.cache.get('global', {}).get('src_intf', '').split(';')
+        if intf_name not in ifs:
             return
-        else:
-            # just restart ntp config
-            cmd = ['systemctl', 'restart', 'ntp-config']
-            run_cmd(cmd)
 
-    def ntp_global_update(self, key, data, is_load=False):
-        syslog.syslog(syslog.LOG_INFO, 'NTP GLOBAL Update')
-        orig_src = self.ntp_global.get('src_intf', '')
-        orig_src_set = set(orig_src.split(";"))
-        orig_vrf = self.ntp_global.get('vrf', '')
+        # Just restart ntp config
+        try:
+            run_cmd(self.NTP_CONF_RESTART, True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
+                                          'ntp-config service')
+            return
 
-        new_src = data.get('src_intf', '')
-        new_src_set = set(new_src.split(";"))
-        new_vrf = data.get('vrf', '')
+    def ntp_global_update(self, key: str, data: dict):
+        """Update NTP global configuration
+
+        The table holds NTP global configuration. It has some configs that
+        require reloading only but some other require restarting ntp daemon.
+        Handle each of them accordingly.
+
+        Args:
+            key:        Triggered table's key. Should be always "global"
+            data:       Global configuration data
+        """
+
+        syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Global configuration update')
+        if key != 'global' or self.cache.get('global', {}) == data:
+            syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Nothing to update')
+            return
+
+        syslog.syslog(syslog.LOG_INFO, f'NtpCfg: Set global config: {data}')
+
+        old_dhcp = self.cache.get(key, {}).get('dhcp')
+        old_vrf = self.cache.get(key, {}).get('vrf')
+        new_dhcp = data.get('dhcp')
+        new_vrf = data.get('vrf')
+
+        restart_ntpd = False
+        if new_dhcp != old_dhcp or new_vrf != old_vrf:
+            restart_ntpd = True
+
+        # Restarting the service
+        try:
+            run_cmd(self.NTP_CONF_RESTART, True, True)
+            if restart_ntpd:
+                run_cmd(['service', 'ntp', 'restart'], True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart ntp '
+                                          'services')
+            return
 
         # Update the Local Cache
-        self.ntp_global = data
+        self.cache[key] = data
 
-        # If initial load don't restart daemon
-        if is_load: return
+    def ntp_srv_key_update(self, ntp_servers: dict, ntp_keys: dict):
+        """Update NTP server/key configuration
 
-        # check if ntp server configured, if not, do nothing
-        if not self.ntp_servers:
-            syslog.syslog(syslog.LOG_INFO, "No ntp server when global config change, do nothing")
+        The tables holds only NTP servers config and/or NTP authentication keys 
+        config, so any change to those tables should cause NTP config reload.
+        It does not make sense to handle each of the separately. NTP config
+        reload takes whole configuration, so once got to this handler - cache
+        whole config.
+
+        Args:
+            ntp_servers:    Servers config table
+            ntp_keys:       Keys config table
+        """
+
+        syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Server/key configuration '
+                                         'update')
+
+        if (self.cache.get('servers', {}) == ntp_servers and
+            self.cache.get('keys', {}) == ntp_keys):
+            syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Nothing to update')
             return
 
-        if orig_src_set != new_src_set:
-            syslog.syslog(syslog.LOG_INFO, "ntp global update for source intf old {} new {}, restarting ntp-config"
-                          .format(orig_src_set, new_src_set))
-            cmd = ['systemctl', 'restart', 'ntp-config']
-            run_cmd(cmd)
-        elif new_vrf != orig_vrf:
-            syslog.syslog(syslog.LOG_INFO, "ntp global update for vrf old {} new {}, restarting ntp service"
-                            .format(orig_vrf, new_vrf))
-            cmd = ['service', 'ntp', 'restart']
-            run_cmd(cmd)
+        # Pop keys values to print
+        ntp_keys_print = copy.deepcopy(ntp_keys)
+        for key in ntp_keys_print:
+            ntp_keys_print[key].pop('value', None)
 
-    def ntp_server_update(self, key, op, is_load=False):
-        syslog.syslog(syslog.LOG_INFO, 'ntp server update key {}'.format(key))
+        syslog.syslog(syslog.LOG_INFO, f'NtpCfg: Set servers: {ntp_servers}')
+        syslog.syslog(syslog.LOG_INFO, f'NtpCfg: Set keys: {ntp_keys_print}')
 
-        restart_config = False
-        if not is_load:
-            if op == "SET" and key not in self.ntp_servers:
-                restart_config = True
-                self.ntp_servers.add(key)
-            elif op == "DEL" and key in self.ntp_servers:
-                restart_config = True
-                self.ntp_servers.remove(key)
-        else:
-            restart_config = True
+        # Restarting the service
+        try:
+            run_cmd(self.NTP_CONF_RESTART, True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart '
+                                          'ntp-config service')
+            return
 
-        if restart_config:
-            cmd = ['systemctl', 'restart', 'ntp-config']
-            syslog.syslog(syslog.LOG_INFO, 'ntp server update, restarting ntp-config, ntp servers configured {}'.format(self.ntp_servers))
-            run_cmd(cmd)
+        # Updating the cache
+        self.cache['servers'] = ntp_servers
+        self.cache['keys'] = ntp_keys
 
 class PamLimitsCfg(object):
     """
@@ -1843,8 +1900,6 @@ class HostConfigDaemon:
         radius_global = init_data['RADIUS']
         radius_server = init_data['RADIUS_SERVER']
         lpbk_table = init_data['LOOPBACK_INTERFACE']
-        ntp_server = init_data['NTP_SERVER']
-        ntp_global = init_data['NTP']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
@@ -1854,11 +1909,13 @@ class HostConfigDaemon:
         syslog_cfg = init_data.get(swsscommon.CFG_SYSLOG_CONFIG_TABLE_NAME, {})
         syslog_srv = init_data.get(swsscommon.CFG_SYSLOG_SERVER_TABLE_NAME, {})
         dns = init_data.get('DNS_NAMESERVER', {})
+        ntp_global = init_data.get(swsscommon.CFG_NTP_GLOBAL_TABLE_NAME)
+        ntp_servers = init_data.get(swsscommon.CFG_NTP_SERVER_TABLE_NAME)
+        ntp_keys = init_data.get(swsscommon.CFG_NTP_KEY_TABLE_NAME)
 
         self.feature_handler.sync_state_field(features)
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
         self.iptables.load(lpbk_table)
-        self.ntpcfg.load(ntp_global, ntp_server)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
         self.sshscfg.load(ssh_server)
@@ -1867,6 +1924,7 @@ class HostConfigDaemon:
 
         self.rsyslogcfg.load(syslog_cfg, syslog_srv)
         self.dnscfg.load(dns)
+        self.ntpcfg.load(ntp_global, ntp_servers, ntp_keys)
 
         # Update AAA with the hostname
         self.aaacfg.hostname_update(self.devmetacfg.hostname)
@@ -1956,11 +2014,15 @@ class HostConfigDaemon:
         key = ConfigDBConnector.deserialize_key(key)
         self.aaacfg.handle_radius_source_intf_ip_chg(key)
 
-    def ntp_server_handler(self, key, op, data):
-        self.ntpcfg.ntp_server_update(key, op)
-
     def ntp_global_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_NOTICE, 'Handling NTP global config')
         self.ntpcfg.ntp_global_update(key, data)
+
+    def ntp_srv_key_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_NOTICE, 'Handling NTP server/key config')
+        self.ntpcfg.ntp_srv_key_update(
+            self.config_db.get_table(swsscommon.CFG_NTP_SERVER_TABLE_NAME),
+            self.config_db.get_table(swsscommon.CFG_NTP_KEY_TABLE_NAME))
 
     def kdump_handler (self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
@@ -2020,9 +2082,6 @@ class HostConfigDaemon:
         self.config_db.subscribe('SSH_SERVER', make_callback(self.ssh_handler))
         # Handle IPTables configuration
         self.config_db.subscribe('LOOPBACK_INTERFACE', make_callback(self.lpbk_handler))
-        # Handle NTP & NTP_SERVER updates
-        self.config_db.subscribe('NTP', make_callback(self.ntp_global_handler))
-        self.config_db.subscribe('NTP_SERVER', make_callback(self.ntp_server_handler))
         # Handle updates to src intf changes in radius
         self.config_db.subscribe('MGMT_INTERFACE', make_callback(self.mgmt_intf_handler))
         self.config_db.subscribe('VLAN_INTERFACE', make_callback(self.vlan_intf_handler))
@@ -2045,6 +2104,14 @@ class HostConfigDaemon:
                                  make_callback(self.rsyslog_server_handler))
 
         self.config_db.subscribe('DNS_NAMESERVER', make_callback(self.dns_nameserver_handler))
+
+        # Handle NTP, NTP_SERVER, and NTP_KEY updates
+        self.config_db.subscribe(swsscommon.CFG_NTP_GLOBAL_TABLE_NAME,
+                                 make_callback(self.ntp_global_handler))
+        self.config_db.subscribe(swsscommon.CFG_NTP_SERVER_TABLE_NAME,
+                                 make_callback(self.ntp_srv_key_handler))
+        self.config_db.subscribe(swsscommon.CFG_NTP_KEY_TABLE_NAME,
+                                 make_callback(self.ntp_srv_key_handler))
 
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
