@@ -8,6 +8,13 @@ trigger:
 - 202205
 - 202211
 
+pr:
+  branches:
+    include:
+    - master
+    - 202205
+    - 202211
+
 resources:
   repositories:
   - repository: sonic-buildimage
