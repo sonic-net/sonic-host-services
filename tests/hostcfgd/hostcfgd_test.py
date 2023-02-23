@@ -318,13 +318,16 @@ class TesNtpCfgd(TestCase):
         Test hostcfd daemon - NtpCfgd
     """
     def setUp(self):
-        MockConfigDb.CONFIG_DB['NTP'] = {'global': {'vrf': 'mgmt', 'src_intf': 'eth0'}}
+        MockConfigDb.CONFIG_DB['NTP'] = {
+            'global': {'vrf': 'mgmt', 'src_intf': 'eth0'}
+        }
         MockConfigDb.CONFIG_DB['NTP_SERVER'] = {'0.debian.pool.ntp.org': {}}
+        MockConfigDb.CONFIG_DB['NTP_KEY'] = {'42': {'value': 'theanswer'}}
 
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
 
-    def test_ntp_global_update_with_no_servers(self):
+    def test_ntp_update_ntp_keys(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
             popen_mock = mock.Mock()
             attrs = {'communicate.return_value': ('output', 'error')}
@@ -332,9 +335,18 @@ class TesNtpCfgd(TestCase):
             mocked_subprocess.Popen.return_value = popen_mock
 
             ntpcfgd = hostcfgd.NtpCfg()
-            ntpcfgd.ntp_global_update('global', MockConfigDb.CONFIG_DB['NTP']['global'])
+            ntpcfgd.ntp_global_update(
+                'global', MockConfigDb.CONFIG_DB['NTP']['global'])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['service', 'ntp-config', 'restart']),
+                call(['service', 'ntp', 'restart'])
+            ])
 
-            mocked_subprocess.check_call.assert_not_called()
+            mocked_subprocess.check_call.reset_mock()
+            ntpcfgd.ntp_srv_key_update({}, MockConfigDb.CONFIG_DB['NTP_KEY'])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['service', 'ntp-config', 'restart'])
+            ])
 
     def test_ntp_global_update_ntp_servers(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -344,9 +356,37 @@ class TesNtpCfgd(TestCase):
             mocked_subprocess.Popen.return_value = popen_mock
 
             ntpcfgd = hostcfgd.NtpCfg()
-            ntpcfgd.ntp_global_update('global', MockConfigDb.CONFIG_DB['NTP']['global'])
-            ntpcfgd.ntp_server_update('0.debian.pool.ntp.org', 'SET')
-            mocked_subprocess.check_call.assert_has_calls([call(['systemctl', 'restart', 'ntp-config'])])
+            ntpcfgd.ntp_global_update(
+                'global', MockConfigDb.CONFIG_DB['NTP']['global'])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['service', 'ntp-config', 'restart']),
+                call(['service', 'ntp', 'restart'])
+            ])
+
+            mocked_subprocess.check_call.reset_mock()
+            ntpcfgd.ntp_srv_key_update({'0.debian.pool.ntp.org': {}}, {})
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['service', 'ntp-config', 'restart'])
+            ])
+
+    def test_ntp_is_caching_config(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            ntpcfgd = hostcfgd.NtpCfg()
+            ntpcfgd.cache['global'] = MockConfigDb.CONFIG_DB['NTP']['global']
+            ntpcfgd.cache['servers'] = MockConfigDb.CONFIG_DB['NTP_SERVER']
+            ntpcfgd.cache['keys'] = MockConfigDb.CONFIG_DB['NTP_KEY']
+
+            ntpcfgd.ntp_global_update(
+                'global', MockConfigDb.CONFIG_DB['NTP']['global'])
+            ntpcfgd.ntp_srv_key_update(MockConfigDb.CONFIG_DB['NTP_SERVER'],
+                                       MockConfigDb.CONFIG_DB['NTP_KEY'])
+
+            mocked_subprocess.check_call.assert_not_called()
 
     def test_loopback_update(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -356,11 +396,13 @@ class TesNtpCfgd(TestCase):
             mocked_subprocess.Popen.return_value = popen_mock
 
             ntpcfgd = hostcfgd.NtpCfg()
-            ntpcfgd.ntp_global = MockConfigDb.CONFIG_DB['NTP']['global']
-            ntpcfgd.ntp_servers.add('0.debian.pool.ntp.org')
+            ntpcfgd.cache['global'] = MockConfigDb.CONFIG_DB['NTP']['global']
+            ntpcfgd.cache['servers'] = {'0.debian.pool.ntp.org': {}}
 
             ntpcfgd.handle_ntp_source_intf_chg('eth0')
-            mocked_subprocess.check_call.assert_has_calls([call(['systemctl', 'restart', 'ntp-config'])])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['service', 'ntp-config', 'restart'])
+            ])
 
 
 class TestHostcfgdDaemon(TestCase):
@@ -541,7 +583,7 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['systemctl', 'restart', 'ntp-config']),
+            expected = [call(['service', 'ntp-config', 'restart']),
             call(['iptables', '-t', 'mangle', '--append', 'PREROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-d', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460']),
             call(['iptables', '-t', 'mangle', '--append', 'POSTROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-s', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
