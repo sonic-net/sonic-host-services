@@ -1,3 +1,4 @@
+import time
 class MockConfigDb(object):
     """
         Mock Config DB which responds to data tables requests and store updates to the data table
@@ -83,13 +84,11 @@ class MockSelect():
 
     def select(self, TIMEOUT):
         if not MockSelect.get_event_queue():
-            print("Sleeping")
             time.sleep(TIMEOUT/1000)
             return "TIMEOUT", {}
         table, key = MockSelect.get_event_queue().pop(0)
         self.sub_map[table].nextKey(key)
         self.reset_event_queue()
-        print("Returning object")
         return "OBJECT", self.sub_map[table]
 
 

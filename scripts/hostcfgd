@@ -304,7 +304,7 @@ class FeatureHandler(object):
             if self._cached_config[feature_name].state != feature.state:
                 if self.update_feature_state(feature):
                     self.sync_feature_asic_scope(feature)
-                    self._cached_config[feature_name].state = feature.state
+                    self._cached_config[feature_name] = feature
                 else:
                     self.resync_feature_state(self._cached_config[feature_name])
 
@@ -1602,7 +1602,6 @@ class SyslogCfg:
             syslog.syslog(syslog.LOG_ERR, f'Failed to read file {self.SYSLOG_CONF_PATH}')
             return interval, burst
         return interval, burst
-
 
 class HostConfigDaemon:
     def __init__(self):

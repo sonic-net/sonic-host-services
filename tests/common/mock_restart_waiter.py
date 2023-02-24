@@ -1,4 +1,5 @@
 class MockRestartWaiter(object):
+    advancedReboot = False
     """
         Mock Config DB which responds to data tables requests and store updates to the data table
     """
@@ -12,7 +13,7 @@ class MockRestartWaiter(object):
         return False
 
     def isAdvancedBootInProgress(stateDb):
-        return False
+        return MockRestartWaiter.advancedReboot
 
     def isFastBootInProgress(stateDb):
         return False

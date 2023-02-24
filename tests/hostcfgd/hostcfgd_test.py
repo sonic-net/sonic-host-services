@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
@@ -352,6 +353,7 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sudo', 'systemctl', 'disable', 'telemetry.service']),
                         call(['sudo', 'systemctl', 'mask', 'telemetry.service'])]
             mocked_subprocess.check_call.assert_has_calls(expected)
+            MockConfigDb.CONFIG_DB['FEATURE']['telemetry']['state'] = 'enabled'
 
     @patchfs
     def test_delayed_service(self, fs):
@@ -386,6 +388,76 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
 
             mocked_subprocess.check_call.assert_has_calls(expected)
+
+    @patchfs
+    def test_advanced_reboot(self, fs):
+        fs.create_dir(hostcfgd.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        MockConfigDb.event_queue = [('FEATURE', 'dhcp_relay'),
+                                ('FEATURE', 'mux'),
+                                ('FEATURE', 'telemetry')]
+        MockRestartWaiter.advancedReboot = True
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
+                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
+                        call(['sudo', 'systemctl', 'start', 'mux.service']),
+                        call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
+
+            mocked_subprocess.check_call.assert_has_calls(expected)
+        MockRestartWaiter.advancedReboot = False
+
+    @patchfs
+    def test_portinit_timeout(self, fs):
+        fs.create_dir(hostcfgd.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        old_timeout = hostcfgd.PORT_INIT_TIMEOUT_SEC
+        MockConfigDb.event_queue = [('FEATURE', 'dhcp_relay'),
+                                    ('FEATURE', 'mux'),
+                                    ('FEATURE', 'telemetry')]
+        hostcfgd.PORT_INIT_TIMEOUT_SEC = 0.1
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            time.sleep(hostcfgd.PORT_INIT_TIMEOUT_SEC * 2)
+            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
+                        call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
+                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
+                        call(['sudo', 'systemctl', 'start', 'mux.service']),
+                        call(['sudo', 'systemctl', 'daemon-reload']),
+                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service']),
+                        call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
+
+            mocked_subprocess.check_call.assert_has_calls(expected)
+        hostcfgd.PORT_INIT_TIMEOUT_SEC = old_timeout
 
     def test_loopback_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
