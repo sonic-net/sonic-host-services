@@ -12,8 +12,7 @@ pr:
   branches:
     include:
     - master
-    - 202205
-    - 202211
+    - 202???
 
 resources:
   repositories:
