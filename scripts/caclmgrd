@@ -297,7 +297,16 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         return block_ip2me_cmds
 
     def check_chassis_midplane_interface_exist(self):
-        return self.run_commands(["ip link show" + " | grep -w 'eth1-midplane'" ])
+        ip_link_cmd0 = ['ip', 'link', 'show']
+        ip_link_cmd1 = ['grep', '-w', "eth1-midplane"]
+
+        return self.run_commands_pipe(ip_link_cmd0, ip_link_cmd1)
+
+    def generate_allow_internal_chasis_midplane_traffic(self, namespace):
+        if not namespace and self.check_chassis_midplane_interface_exist():
+            return [['iptables', '-A', 'INPUT', '-i', 'eth1-midplane', '-j', 'ACCEPT']]
+        else:
+            return []
 
     def generate_allow_internal_docker_ip_traffic_commands(self, namespace):
         allow_internal_docker_ip_cmds = []
@@ -539,10 +548,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # Add iptables commands to allow internal docker traffic
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
 
-        # Add iptable rules to allow traffic coming on eth1-midplane for chassis.
-        # Internal traffic is all IPv4.
-        if not namespace and self.check_chassis_midplane_interface_exist():
-            iptables_cmds.append("iptables -A INPUT -i eth1-midplane -j ACCEPT")
+        # Add iptables commands to allow internal chasiss midplane traffic
+        iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace)
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections
