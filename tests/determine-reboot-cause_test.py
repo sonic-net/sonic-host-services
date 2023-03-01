@@ -176,3 +176,12 @@ class TestDetermineRebootCause(object):
                     assert previous_reboot_cause == EXPECTED_HARDWARE_REBOOT_CAUSE
                     assert additional_info == EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_USER
 
+    @mock.patch('determine_reboot_cause.REBOOT_CAUSE_DIR', os.path.join(os.getcwd(), 'host/reboot-cause/'))
+    @mock.patch('determine_reboot_cause.REBOOT_CAUSE_HISTORY_DIR', os.path.join(os.getcwd(), 'host/reboot-cause/history/'))
+    @mock.patch('determine_reboot_cause.PREVIOUS_REBOOT_CAUSE_FILE', os.path.join(os.getcwd(), 'host/reboot-cause/previous-reboot-cause.json'))
+    @mock.patch('determine_reboot_cause.REBOOT_CAUSE_FILE', os.path.join(os.getcwd(),'host/reboot-cause/reboot-cause.txt'))
+    def test_determine_reboot_cause_main(self):
+        with mock.patch("os.geteuid", return_value=0):
+            determine_reboot_cause.main()
+            assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
+            assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True
