@@ -466,7 +466,7 @@ class FeatureHandler(object):
         for feature_name in feature_names:
             # Check if it is already disabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state in ("disabled", "masked") or not unit_file_state:
+            if unit_file_state == "masked" or not unit_file_state:
                 continue
             cmds = []
             for suffix in reversed(feature_suffixes):
