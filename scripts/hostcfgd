@@ -158,6 +158,9 @@ class Feature(object):
             feature_cfg (dict): Feature CONFIG_DB configuration
             deviec_config (dict): DEVICE_METADATA section of CONFIG_DB
         """
+        if 'has_timer' in feature_cfg:
+            syslog.syslog(syslog.LOG_ERR, "Invalid obsolete field 'has_timer' in FEATURE table. Please update configuration schema version")
+            raise Exception("Obsolte field 'has_timer' in FEATURE table")
 
         self.name = feature_name
         self.state = self._get_feature_table_key_render_value(feature_cfg.get('state'), device_config or {}, ['enabled', 'disabled', 'always_enabled', 'always_disabled'])
