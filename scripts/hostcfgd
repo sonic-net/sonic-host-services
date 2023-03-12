@@ -1216,7 +1216,7 @@ class SshServer(object):
     # return first line apperience of pattern - else return number of lines in the file
     def get_line_num_of_pattern(self, pattern, file_path, find_commented=False):
         syslog.syslog(syslog.LOG_DEBUG, "looking for pattern {} line in file {}".format(pattern, file_path))
-        return_value = -1
+        return_value = 0
         with open(file_path, 'r') as f:
             for (i, line) in enumerate(f):
                 if re.match(pattern, line):
@@ -1229,24 +1229,18 @@ class SshServer(object):
         return return_value
 
     def handle_ports_set(self, values_list):
-        set_values=len(values_list) > 0
-        if not set_values:
+        if not len(values_list) > 0:
             return True
         key='ports'
         for port_num in values_list:
             if isinstance(port_num, int):
                 syslog.syslog(syslog.LOG_ERR, "port num value {} in wrong format".format(port_num))
-                set_values=False
+                return False
             if int(port_num) < SSH_MIN_VALUES[key] or SSH_MAX_VALUES[key] < int(port_num):
-               syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format('port', port_num))
-               set_values=False
-        if not set_values:
-            syslog.syslog(syslog.LOG_ERR, "unable to set ports for ssh server")
-            return False
+                syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format('port', port_num))
+                return False
         port_line_num = self.get_line_num_of_pattern("Port", SSH_CONFG, True)
         run_cmd("sed -i -E '/^#?Port '[1-9]'/d' " + SSH_CONFG) # remove all lines start with Port or #Port
-        if port_line_num < 0: # in case Port does not exist in sshd_config file
-            return False
         for port_num in values_list:
             run_cmd(f"sed -i ' {str(port_line_num)} i Port {str(port_num)}' {SSH_CONFG}") # add port in original line
         return True
@@ -1255,8 +1249,7 @@ class SshServer(object):
         # Ssh server flow
         # The ssh_policies from CONFIG_DB will be set in the ssh config files /etc/ssh/sshd_config
 
-        for k, value in ssh_policies.items():
-            key = k.replace('-', '_')
+        for key, value in ssh_policies.items():
             if key == 'ports':
                 if not self.handle_ports_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
