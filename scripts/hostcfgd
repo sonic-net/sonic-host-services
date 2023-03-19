@@ -1369,11 +1369,15 @@ class DeviceMetaCfg(object):
 
     def __init__(self):
         self.hostname = ''
+        self.timezone = None
 
     def load(self, dev_meta={}):
         # Get hostname initial
         self.hostname = dev_meta.get('localhost', {}).get('hostname', '')
         syslog.syslog(syslog.LOG_DEBUG, f'Initial hostname: {self.hostname}')
+
+        # Load appropriate config
+        self.timezone = dev_meta.get('localhost', {}).get('timezone')
 
     def hostname_update(self, data):
         """
@@ -1413,11 +1417,22 @@ class DeviceMetaCfg(object):
             data: Read table's key's data.
         """
         new_timezone = data.get('timezone')
-        syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: timezone update to {new_timezone}')
+        syslog.syslog(syslog.LOG_DEBUG,
+                      f'DeviceMetaCfg: timezone update to {new_timezone}')
 
-        #run command will print out log error in case of error (no need to raise additional exception)
+        if new_timezone is None:
+            syslog.syslog(syslog.LOG_DEBUG,
+                          f'DeviceMetaCfg: Recieved empty timezone')
+            return
+
+        if new_timezone == self.timezone:
+            syslog.syslog(syslog.LOG_DEBUG,
+                          f'DeviceMetaCfg: No change in timezone')
+            return
+
+        # run command will print out log error in case of error
         run_cmd(['timedatectl', 'set-timezone', new_timezone])
-
+        self.timezone = new_timezone
 
 class MgmtIfaceCfg(object):
     """
