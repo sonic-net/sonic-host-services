@@ -779,6 +779,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
 
         self.run_commands(iptables_cmds)
+        self.log_info("Enabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanAllowed = True
 
     def block_vxlan_port(self, namespace):
@@ -796,6 +797,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         self.run_commands(iptables_cmds)
         self.VxlanAllowed = False
+        self.log_info("Disabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanSrcIP = ""
 
     def run(self):
@@ -929,7 +931,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         break
                     if op == 'SET' and not self.VxlanAllowed:
                         self.allow_vxlan_port(namespace, fvs)
-                    if op == 'DEL' and self.VxlanAllowed:
+                    elif op == 'DEL' and self.VxlanAllowed:
                         self.block_vxlan_port(namespace)
 
             ctrl_plane_acl_notification = set()
