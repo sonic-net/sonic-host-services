@@ -28,7 +28,7 @@ Port 22
 
 # Authentication:
 
-LoginGraceTime 120 
+LoginGraceTime 120
 #StrictModes yes
 MaxAuthTries 12
 #MaxSessions 10

@@ -1240,9 +1240,12 @@ class SshServer(object):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format('port', port_num))
                 return False
         port_line_num = self.get_line_num_of_pattern("Port", SSH_CONFG, True)
-        run_cmd("sed -i -E '/^#?Port '[1-9]'/d' " + SSH_CONFG) # remove all lines start with Port or #Port
+        remove_ports_cmd = "sed -i -E '/^#?Port '[1-9]'/d' " + SSH_CONFG # remove all lines start with Port or #Port
+        os.system(remove_ports_cmd)
         for port_num in values_list:
-            run_cmd(f"sed -i ' {str(port_line_num)} i Port {str(port_num)}' {SSH_CONFG}") # add port in original line
+            # add port in original line
+            add_port_cmd = f"sed -i ' {str(port_line_num)} i Port {str(port_num)}' {SSH_CONFG}"
+            os.system(add_port_cmd)
         return True
 
     def set_policies(self, ssh_policies):
