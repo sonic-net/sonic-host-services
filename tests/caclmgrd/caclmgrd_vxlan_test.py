@@ -46,6 +46,10 @@ class TestCaclmgrdVxlan(TestCase):
                 mocked_subprocess.call.return_value = call_rc
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+                ret = caclmgrd_daemon.allow_vxlan_port('', [])
+                assert ret == False
+                caclmgrd_daemon.block_vxlan_port('')
+                assert ret == False
                 data = test_data["input"]
                 caclmgrd_daemon.allow_vxlan_port('', data)
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
