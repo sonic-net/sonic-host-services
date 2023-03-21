@@ -833,14 +833,18 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds = []
 
         # Add iptables/ip6tables commands to allow VxLAN packets
-        if ":" in self.VxlanSrcIP:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
-        else:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+        ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
+        if isinstance(ip_addr, ipaddress.IPv6Address):
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    ['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+        elif isinstance(ip_addr, ipaddress.IPv4Address):
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
 
         self.run_commands(iptables_cmds)
         self.log_info("Enabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanAllowed = True
+        return True
 
     def block_vxlan_port(self, namespace):
         if not self.VxlanSrcIP:
@@ -850,15 +854,19 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds = []
 
         # Remove iptables/ip6tables commands that allow VxLAN packets
-        if ":" in self.VxlanSrcIP:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
-        else:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+        ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
+        if isinstance(ip_addr, ipaddress.IPv6Address):
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    ['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+        elif isinstance(ip_addr, ipaddress.IPv4Address):
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    ['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
 
         self.run_commands(iptables_cmds)
         self.VxlanAllowed = False
         self.log_info("Disabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanSrcIP = ""
+        return True
 
     def run(self):
         # Set select timeout to 1 second
