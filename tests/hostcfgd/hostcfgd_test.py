@@ -296,10 +296,15 @@ class TesNtpCfgd(TestCase):
 class TestHostcfgdDaemon(TestCase):
 
     def setUp(self):
+        self.get_dev_meta = mock.patch(
+            'sonic_py_common.device_info.get_device_runtime_metadata',
+            return_value={'DEVICE_RUNTIME_METADATA': {}})
+        self.get_dev_meta.start()
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
 
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
+        self.get_dev_meta.stop()
 
     @patchfs
     def test_feature_events(self, fs):
@@ -392,6 +397,7 @@ class TestHostcfgdDaemon(TestCase):
         """
         Test handling DEVICE_METADATA events.
         1) Hostname reload
+        1) Timezone reload
         """
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
@@ -403,11 +409,6 @@ class TestHostcfgdDaemon(TestCase):
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
         daemon.register_callbacks()
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
-
             try:
                 daemon.start()
             except TimeoutError:
@@ -415,7 +416,8 @@ class TestHostcfgdDaemon(TestCase):
 
             expected = [
                 call(['sudo', 'service', 'hostname-config', 'restart']),
-                call(['sudo', 'monit', 'reload'])
+                call(['sudo', 'monit', 'reload']),
+                call(['timedatectl', 'set-timezone', 'Europe/Kyiv'])
             ]
             mocked_subprocess.check_call.assert_has_calls(expected,
                                                           any_order=True)
@@ -425,31 +427,33 @@ class TestHostcfgdDaemon(TestCase):
         original_syslog = hostcfgd.syslog
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         with mock.patch('hostcfgd.syslog') as mocked_syslog:
-            mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
-            try:
-                daemon.start()
-            except TimeoutError:
-                pass
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
+                try:
+                    daemon.start()
+                except TimeoutError:
+                    pass
 
-            expected = [
-                call(original_syslog.LOG_ERR, 'Hostname was not updated: Empty not allowed')
-            ]
-            mocked_syslog.syslog.assert_has_calls(expected)
+                expected = [
+                    call(original_syslog.LOG_ERR, 'Hostname was not updated: Empty not allowed')
+                ]
+                mocked_syslog.syslog.assert_has_calls(expected)
 
         daemon.devmetacfg.hostname = "SameHostName"
         HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["hostname"] = daemon.devmetacfg.hostname
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         with mock.patch('hostcfgd.syslog') as mocked_syslog:
-            mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
-            try:
-                daemon.start()
-            except TimeoutError:
-                pass
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+                try:
+                    daemon.start()
+                except TimeoutError:
+                    pass
 
-            expected = [
-                call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
-            ]
-            mocked_syslog.syslog.assert_has_calls(expected)
+                expected = [
+                    call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
+                ]
+                mocked_syslog.syslog.assert_has_calls(expected)
 
     def test_mgmtiface_event(self):
         """

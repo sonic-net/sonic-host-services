@@ -1416,7 +1416,7 @@ class DeviceMetaCfg(object):
         syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: timezone update to {new_timezone}')
 
         #run command will print out log error in case of error (no need to raise additional exception)
-        run_cmd(f'timedatectl set-timezone {new_timezone}', True, False)
+        run_cmd(['timedatectl', 'set-timezone', new_timezone])
 
 
 class MgmtIfaceCfg(object):
