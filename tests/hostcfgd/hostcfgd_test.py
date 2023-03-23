@@ -417,7 +417,8 @@ class TestHostcfgdDaemon(TestCase):
             expected = [
                 call(['sudo', 'service', 'hostname-config', 'restart']),
                 call(['sudo', 'monit', 'reload']),
-                call(['timedatectl', 'set-timezone', 'Europe/Kyiv'])
+                call(['timedatectl', 'set-timezone', 'Europe/Kyiv']),
+                call(['systemctl', 'restart', 'rsyslog']),
             ]
             mocked_subprocess.check_call.assert_has_calls(expected,
                                                           any_order=True)

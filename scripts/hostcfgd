@@ -1434,6 +1434,10 @@ class DeviceMetaCfg(object):
         run_cmd(['timedatectl', 'set-timezone', new_timezone])
         self.timezone = new_timezone
 
+        run_cmd(['systemctl', 'restart', 'rsyslog'], True, False)
+        syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog after '
+                      'changing timezone')
+
 class MgmtIfaceCfg(object):
     """
     MgmtIfaceCfg Config Daemon
