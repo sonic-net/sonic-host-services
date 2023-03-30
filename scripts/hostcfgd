@@ -383,6 +383,10 @@ class FeatureHandler(object):
         # On multi-ASIC device, creates systemd configuration file for each feature instance
         # residing in difference namespace.
         for feature_name in feature_names:
+            # As to syncd service, swss will monitor its stop and restart it, don't need systemd to auto-restart it.
+            if "syncd" in feature_name:
+                continue
+
             syslog.syslog(syslog.LOG_INFO, "Updating feature '{}' systemd config file related to auto-restart ..."
                           .format(feature_name))
             feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
