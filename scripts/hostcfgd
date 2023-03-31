@@ -375,7 +375,6 @@ class FeatureHandler(object):
             if "syncd" in feature_name:
                 continue
 
-
             syslog.syslog(syslog.LOG_INFO, "Updating feature '{}' systemd config file related to auto-restart ..."
                           .format(feature_name))
             feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
