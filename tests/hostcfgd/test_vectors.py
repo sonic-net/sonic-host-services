@@ -31,7 +31,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "{% if not (DEVICE_METADATA is defined and DEVICE_METADATA['localhost'] is defined and DEVICE_METADATA['localhost']['type'] is defined and DEVICE_METADATA['localhost']['type'] != 'ToRRouter') %}enabled{% else %}disabled{% endif %}"
@@ -40,7 +40,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
@@ -49,7 +49,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -63,7 +63,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
@@ -72,7 +72,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "enabled"
@@ -81,7 +81,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -97,9 +97,8 @@ HOSTCFGD_TEST_VECTOR = [
                 call(["sudo", "systemctl", "enable", "mux.service"]),
                 call(["sudo", "systemctl", "start", "mux.service"]),
                 call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.timer"]),
-                call(["sudo", "systemctl", "enable", "telemetry.timer"]),
-                call(["sudo", "systemctl", "start", "telemetry.timer"]),
+                call(["sudo", "systemctl", "enable", "telemetry.service"]),
+                call(["sudo", "systemctl", "start", "telemetry.service"]),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"]),
@@ -135,7 +134,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "{% if not (DEVICE_METADATA is defined and DEVICE_METADATA['localhost'] is defined and DEVICE_METADATA['localhost']['type'] is defined and DEVICE_METADATA['localhost']['type'] != 'ToRRouter') %}enabled{% else %}disabled{% endif %}"
@@ -144,7 +143,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
@@ -153,7 +152,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -163,7 +162,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "always_enabled"
@@ -176,7 +175,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "disabled"
@@ -185,7 +184,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "always_disabled"
@@ -194,7 +193,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -204,7 +203,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "always_enabled"
@@ -216,9 +215,8 @@ HOSTCFGD_TEST_VECTOR = [
                 call(["sudo", "systemctl", "disable", "mux.service"]),
                 call(["sudo", "systemctl", "mask", "mux.service"]),
                 call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.timer"]),
-                call(["sudo", "systemctl", "enable", "telemetry.timer"]),
-                call(["sudo", "systemctl", "start", "telemetry.timer"]),
+                call(["sudo", "systemctl", "enable", "telemetry.service"]),
+                call(["sudo", "systemctl", "start", "telemetry.service"]),
                 call(["sudo", "systemctl", "unmask", "sflow.service"]),
                 call(["sudo", "systemctl", "enable", "sflow.service"]),
                 call(["sudo", "systemctl", "start", "sflow.service"]),
@@ -257,7 +255,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "{% if not (DEVICE_METADATA is defined and DEVICE_METADATA['localhost'] is defined and DEVICE_METADATA['localhost']['type'] is defined and DEVICE_METADATA['localhost']['type'] != 'ToRRouter') %}enabled{% else %}disabled{% endif %}"
@@ -266,7 +264,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
@@ -275,7 +273,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -289,7 +287,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "disabled"
@@ -298,7 +296,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "always_disabled"
@@ -307,7 +305,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -320,9 +318,8 @@ HOSTCFGD_TEST_VECTOR = [
                 call(["sudo", "systemctl", "disable", "mux.service"]),
                 call(["sudo", "systemctl", "mask", "mux.service"]),
                 call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.timer"]),
-                call(["sudo", "systemctl", "enable", "telemetry.timer"]),
-                call(["sudo", "systemctl", "start", "telemetry.timer"]),
+                call(["sudo", "systemctl", "enable", "telemetry.service"]),
+                call(["sudo", "systemctl", "start", "telemetry.service"]),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"]),
@@ -358,7 +355,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
@@ -367,7 +364,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
@@ -376,7 +373,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -390,7 +387,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
@@ -399,7 +396,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "always_disabled"
@@ -408,7 +405,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -424,9 +421,8 @@ HOSTCFGD_TEST_VECTOR = [
                 call(["sudo", "systemctl", "disable", "mux.service"]),
                 call(["sudo", "systemctl", "mask", "mux.service"]),
                 call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.timer"]),
-                call(["sudo", "systemctl", "enable", "telemetry.timer"]),
-                call(["sudo", "systemctl", "start", "telemetry.timer"]),
+                call(["sudo", "systemctl", "enable", "telemetry.service"]),
+                call(["sudo", "systemctl", "start", "telemetry.service"]),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"]),
@@ -463,7 +459,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "{% if not (DEVICE_METADATA is defined and DEVICE_METADATA['localhost'] is defined and DEVICE_METADATA['localhost']['type'] is defined and DEVICE_METADATA['localhost']['type'] != 'ToRRouter') %}enabled{% else %}disabled{% endif %}"
@@ -472,7 +468,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
@@ -481,7 +477,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -495,7 +491,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
@@ -504,7 +500,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "enabled"
@@ -513,7 +509,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "True",
+                        "delayed": "True",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled",
@@ -558,7 +554,7 @@ HOSTCFGD_TEST_VECTOR = [
                 "FEATURE": {
                     "bgp": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -566,7 +562,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "teamd": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -574,7 +570,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "lldp": {
                         "state": "enabled",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
@@ -590,7 +586,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "disabled"
                     },
@@ -598,7 +594,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -606,7 +602,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -653,7 +649,7 @@ HOSTCFGD_TEST_VECTOR = [
                 "FEATURE": {
                     "bgp": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -661,7 +657,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "teamd": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -669,7 +665,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "lldp": {
                         "state": "enabled",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
@@ -685,7 +681,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "disabled"
                     },
@@ -693,7 +689,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "disabled"
                     },
@@ -701,7 +697,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -748,7 +744,7 @@ HOSTCFGD_TEST_VECTOR = [
                 "FEATURE": {
                     "bgp": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -756,7 +752,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "teamd": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -764,7 +760,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "lldp": {
                         "state": "enabled",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
@@ -780,7 +776,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -788,7 +784,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -796,7 +792,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -847,7 +843,7 @@ HOSTCFGD_TEST_VECTOR = [
                 "FEATURE": {
                     "bgp": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -855,7 +851,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "teamd": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -863,7 +859,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "lldp": {
                         "state": "enabled",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
@@ -879,7 +875,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -887,7 +883,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -895,7 +891,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -947,7 +943,7 @@ HOSTCFGD_TEST_VECTOR = [
                 "FEATURE": {
                     "bgp": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -955,7 +951,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "teamd": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -963,7 +959,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "lldp": {
                         "state": "enabled",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
@@ -979,7 +975,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "disabled"
                     },
@@ -987,7 +983,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -995,7 +991,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -1060,7 +1056,7 @@ HOSTCFGD_TEST_VECTOR = [
                 "FEATURE": {
                     "bgp": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -1068,7 +1064,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "teamd": {
                         "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] %}disabled{% else %}enabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -1076,7 +1072,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "lldp": {
                         "state": "enabled",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
@@ -1084,7 +1080,7 @@ HOSTCFGD_TEST_VECTOR = [
                     },
                     "macsec": {
                         "state": "{% if 'type' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['type'] == 'SpineRouter' and DEVICE_RUNTIME_METADATA['MACSEC_SUPPORTED'] %}enabled{% else %}disabled{% endif %}",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -1098,7 +1094,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -1106,7 +1102,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -1114,7 +1110,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
@@ -1122,7 +1118,7 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     }
@@ -1196,7 +1192,7 @@ HOSTCFG_DAEMON_CFG_DB = {
             "auto_restart": "enabled",
             "has_global_scope": "True",
             "has_per_asic_scope": "False",
-            "has_timer": "False",
+            "delayed": "False",
             "high_mem_alert": "disabled",
             "set_owner": "kube",
             "state": "{% if not (DEVICE_METADATA is defined and DEVICE_METADATA['localhost'] is defined and DEVICE_METADATA['localhost']['type'] is defined and DEVICE_METADATA['localhost']['type'] != 'ToRRouter') %}enabled{% else %}disabled{% endif %}"
@@ -1205,7 +1201,7 @@ HOSTCFG_DAEMON_CFG_DB = {
             "auto_restart": "enabled",
             "has_global_scope": "True",
             "has_per_asic_scope": "False",
-            "has_timer": "False",
+            "delayed": "False",
             "high_mem_alert": "disabled",
             "set_owner": "local",
             "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
@@ -1214,7 +1210,7 @@ HOSTCFG_DAEMON_CFG_DB = {
             "auto_restart": "enabled",
             "has_global_scope": "True",
             "has_per_asic_scope": "False",
-            "has_timer": "True",
+            "delayed": "True",
             "high_mem_alert": "disabled",
             "set_owner": "kube",
             "state": "enabled",
