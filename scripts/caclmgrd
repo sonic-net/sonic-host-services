@@ -299,6 +299,24 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         return block_ip2me_cmds
 
+    def get_chassis_midplane_interface_ip(self):
+        ip_address_cmd0 = ['ip', '-4', '-o', 'addr', 'show', "eth1-midplane"]
+        ip_address_cmd1 = ['awk', '{print $4}']
+        ip_address_cmd2 = ['cut', '-d', '/', '-f1']
+        ip_address_cmd3 = ['head', '-1']
+        return self.run_commands_pipe(ip_address_cmd0, ip_address_cmd1, ip_address_cmd2, ip_address_cmd3)
+
+    def generate_allow_internal_chasis_midplane_traffic(self, namespace):
+        allow_internal_chassis_midplane_traffic = []
+        if not namespace:
+            chassis_midplane_ip = self.get_chassis_midplane_interface_ip()
+            if not chassis_midplane_ip:
+                return allow_internal_chassis_midplane_traffic
+            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-s', chassis_midplane_ip, '-d', chassis_midplane_ip, '-j', 'ACCEPT'])
+            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-i', 'eth1-midplane', '-j', 'ACCEPT'])
+
+        return allow_internal_chassis_midplane_traffic
+
     def generate_allow_internal_docker_ip_traffic_commands(self, namespace):
         allow_internal_docker_ip_cmds = []
 
@@ -538,6 +556,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         # Add iptables commands to allow internal docker traffic
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
+
+        # Add iptables commands to allow internal chasiss midplane traffic
+        iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace)
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections
