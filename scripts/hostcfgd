@@ -554,7 +554,7 @@ class FeatureHandler(object):
         # ('always_enabled', 'always_disabled', 'disabled', 'enabled'). However, we should only
         # resync feature state in two cases:
         #     1. the rendered feature state is always_enabled or always_disabled, it means that the
-        #        feature state is immutable and potentia state change during HostConfigDaemon.load
+        #        feature state is immutable and potential state change during HostConfigDaemon.load
         #        in redis should be skipped;
         #     2. the current feature state in DB is a template which should be replaced by rendered feature
         #        state
