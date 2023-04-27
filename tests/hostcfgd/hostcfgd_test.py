@@ -29,7 +29,7 @@ hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 
 class TestFeatureHandler(TestCase):
-    """Test methods of `FeatureHandler` class. 
+    """Test methods of `FeatureHandler` class.
     """
     def checks_config_table(self, feature_table, expected_table):
         """Compares `FEATURE` table in `CONFIG_DB` with expected output table.
@@ -251,7 +251,7 @@ class TestFeatureHandler(TestCase):
         mock_db.mod_entry = mock.MagicMock()
         mock_feature_state_table = mock.MagicMock()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
         feature_table = {
             'sflow': {
                 'state': 'enabled',
@@ -266,14 +266,14 @@ class TestFeatureHandler(TestCase):
         mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'enabled'})
         mock_db.mod_entry.reset_mock()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
         mock_db.get_entry.return_value = {
             'state': 'disabled',
         }
         feature_handler.sync_state_field(feature_table)
         mock_db.mod_entry.assert_not_called()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
         feature_table = {
             'sflow': {
                 'state': 'always_enabled',
@@ -287,7 +287,7 @@ class TestFeatureHandler(TestCase):
         mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'always_enabled'})
         mock_db.mod_entry.reset_mock()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
         mock_db.get_entry.return_value = {
             'state': 'some template',
         }
@@ -515,7 +515,7 @@ class TestHostcfgdDaemon(TestCase):
     def test_mgmtiface_event(self):
         """
         Test handling mgmt events.
-        1) Management interface setup 
+        1) Management interface setup
         2) Management vrf setup
         """
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
