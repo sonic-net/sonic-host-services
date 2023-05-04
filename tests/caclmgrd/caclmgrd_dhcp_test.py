@@ -33,21 +33,22 @@ class TestCaclmgrdDhcp(TestCase):
 
         MockConfigDb.set_config_db(test_data["config_db"])
 
-        with mock.patch("caclmgrd.subprocess") as mocked_subprocess:
-            popen_mock = mock.Mock()
-            popen_attrs = test_data["popen_attributes"]
-            popen_mock.configure_mock(**popen_attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+        with mock.patch("caclmgrd.ControlPlaneAclManager.run_commands_pipe", return_value='sonic'):
+            with mock.patch("caclmgrd.subprocess") as mocked_subprocess:
+                popen_mock = mock.Mock()
+                popen_attrs = test_data["popen_attributes"]
+                popen_mock.configure_mock(**popen_attrs)
+                mocked_subprocess.Popen.return_value = popen_mock
 
-            call_rc = test_data["call_rc"]
-            mocked_subprocess.call.return_value = call_rc
+                call_rc = test_data["call_rc"]
+                mocked_subprocess.call.return_value = call_rc
 
-            mark = test_data["mark"]
+                mark = test_data["mark"]
 
-            caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-            mux_update = test_data["mux_update"]
+                caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+                mux_update = test_data["mux_update"]
 
-            for key,data in mux_update:
-                caclmgrd_daemon.update_dhcp_acl(key, '', data, mark)
+                for key,data in mux_update:
+                    caclmgrd_daemon.update_dhcp_acl(key, '', data, mark)
 
-            mocked_subprocess.call.assert_has_calls(test_data["expected_subprocess_calls"], any_order=False)
+                mocked_subprocess.call.assert_has_calls(test_data["expected_subprocess_calls"], any_order=False)

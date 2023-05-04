@@ -222,10 +222,6 @@ def main():
     if not os.path.exists(REBOOT_CAUSE_DIR):
         os.makedirs(REBOOT_CAUSE_DIR)
 
-    # Remove stale PREVIOUS_REBOOT_CAUSE_FILE if it exists
-    if os.path.exists(PREVIOUS_REBOOT_CAUSE_FILE):
-        os.remove(PREVIOUS_REBOOT_CAUSE_FILE)
-
     previous_reboot_cause, additional_reboot_info = determine_reboot_cause()
 
     # Current time
@@ -244,6 +240,10 @@ def main():
     # Write the previous reboot cause to REBOOT_CAUSE_HISTORY_FILE as a JSON format
     with open(REBOOT_CAUSE_HISTORY_FILE, "w") as reboot_cause_history_file:
         json.dump(reboot_cause_dict, reboot_cause_history_file)
+ 
+    # Remove stale PREVIOUS_REBOOT_CAUSE_FILE if it exists
+    if os.path.exists(PREVIOUS_REBOOT_CAUSE_FILE) or os.path.islink(PREVIOUS_REBOOT_CAUSE_FILE):
+        os.remove(PREVIOUS_REBOOT_CAUSE_FILE)
 
     # Create a symbolic link to previous-reboot-cause.json file
     os.symlink(REBOOT_CAUSE_HISTORY_FILE, PREVIOUS_REBOOT_CAUSE_FILE)
