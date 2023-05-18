@@ -1074,9 +1074,9 @@ class AaaCfg(object):
 
 def modify_single_file_inplace(filename, operations=None):
     if operations:
-        cmd = "sed -i {0} {1}".format(' -i '.join(operations), filename)
+        cmd = ["sed", '-i'] + operations + [filename]
         syslog.syslog(syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - {}".format(cmd))
-        os.system(cmd)
+        subprocess.run(cmd)
 
 
 class PasswHardening(object):
@@ -1117,11 +1117,6 @@ class PasswHardening(object):
         if modify_conf:
             self.modify_passw_conf_file()
 
-    def modify_single_file_inplace(self, filename, operations=None):
-        if operations:
-            cmd = ["sed", '-i'] + operations + [filename]
-            syslog.syslog(syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - {}".format(cmd))
-            subprocess.call(cmd)
 
     def set_passw_hardening_policies(self, passw_policies):
         # Password Hardening flow
@@ -1166,14 +1161,14 @@ class PasswHardening(object):
             self.passwd_aging_expire_modify(curr_expiration, 'MAX_DAYS')
 
             # Aging policy for new users
-            modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)+"\'"])
+            modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)])
 
         if self.is_passwd_aging_expire_update(curr_expiration_warning, 'WARN_DAYS'):
             # Aging policy for existing users
             self.passwd_aging_expire_modify(curr_expiration_warning, 'WARN_DAYS')
 
             # Aging policy for new users
-            modify_single_file_inplace(ETC_LOGIN_DEF, ["\'/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)+"\'"])
+            modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)])
 
     def passwd_aging_expire_modify(self, curr_expiration, age_type):
         normal_accounts = self.get_normal_accounts()
@@ -1320,8 +1315,8 @@ class SshServer(object):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format('port', port_num))
                 return False
         port_line_num = self.get_line_num_of_pattern("Port", SSH_CONFG, True)
-        remove_ports_cmd = "sed -i -E '/^#?Port '[1-9]'/d' " + SSH_CONFG # remove all lines start with Port or #Port
-        os.system(remove_ports_cmd)
+        modify_single_file_inplace(SSH_CONFG, ['-E', "/^(#)?Port [0-9]+$/d"])
+
         for port_num in values_list:
             # add port in original line
             add_port_cmd = f"sed -i ' {str(port_line_num)} i Port {str(port_num)}' {SSH_CONFG}"
@@ -1342,8 +1337,8 @@ class SshServer(object):
             elif key in SSH_CONFIG_NAMES:
                 # search replace configuration - if not in config file - append
                 kv_str = "{} {}".format(SSH_CONFIG_NAMES[key], str(value)) # name +' '+ value format
-                modify_single_file_inplace(SSH_CONFG,["-E \'/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
-                 kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}\'"])
+                modify_single_file_inplace(SSH_CONFG,['-E', "/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
+                 kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}"])
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
 
