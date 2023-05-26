@@ -1660,6 +1660,16 @@ class RSyslogCfg(object):
         self.cache['config'] = rsyslog_config
         self.cache['servers'] = rsyslog_servers
 
+
+class DnsCfg:
+
+    def load(self, *args, **kwargs):
+        self.dns_update()
+
+    def dns_update(self, *args, **kwargs):
+        run_cmd(['systemctl', 'restart', 'resolv-config'], True, False)
+
+
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
@@ -1713,6 +1723,9 @@ class HostConfigDaemon:
         # Initialize RSyslogCfg
         self.rsyslogcfg = RSyslogCfg()
 
+        # Initialize DnsCfg
+        self.dnscfg = DnsCfg()
+
     def load(self, init_data):
         features = init_data['FEATURE']
         aaa = init_data['AAA']
@@ -1730,7 +1743,7 @@ class HostConfigDaemon:
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
         syslog_cfg = init_data.get(swsscommon.CFG_SYSLOG_CONFIG_TABLE_NAME, {})
         syslog_srv = init_data.get(swsscommon.CFG_SYSLOG_SERVER_TABLE_NAME, {})
-
+        dns = init_data.get('DNS_NAMESERVER', {})
 
         self.feature_handler.sync_state_field(features)
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
@@ -1740,7 +1753,9 @@ class HostConfigDaemon:
         self.passwcfg.load(passwh)
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
+
         self.rsyslogcfg.load(syslog_cfg, syslog_srv)
+        self.dnscfg.load(dns)
 
         # Update AAA with the hostname
         self.aaacfg.hostname_update(self.devmetacfg.hostname)
@@ -1856,6 +1871,10 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'SYSLOG_CONFIG table handler...')
         self.rsyslog_handler()
 
+    def dns_nameserver_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'DNS nameserver handler...')
+        self.dnscfg.dns_update(key, data)
+
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
         # flag
@@ -1908,6 +1927,8 @@ class HostConfigDaemon:
                                  make_callback(self.rsyslog_config_handler))
         self.config_db.subscribe(swsscommon.CFG_SYSLOG_SERVER_TABLE_NAME,
                                  make_callback(self.rsyslog_server_handler))
+
+        self.config_db.subscribe('DNS_NAMESERVER', make_callback(self.dns_nameserver_handler))
 
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
