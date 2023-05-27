@@ -260,7 +260,7 @@ class TestFeatureHandler(TestCase):
         mock_db.mod_entry = mock.MagicMock()
         mock_feature_state_table = mock.MagicMock()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
         feature_table = {
             'sflow': {
                 'state': 'enabled',
@@ -275,14 +275,14 @@ class TestFeatureHandler(TestCase):
         mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'enabled'})
         mock_db.mod_entry.reset_mock()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
         mock_db.get_entry.return_value = {
             'state': 'disabled',
         }
         feature_handler.sync_state_field(feature_table)
         mock_db.mod_entry.assert_not_called()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
         feature_table = {
             'sflow': {
                 'state': 'always_enabled',
@@ -296,7 +296,7 @@ class TestFeatureHandler(TestCase):
         mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'always_enabled'})
         mock_db.mod_entry.reset_mock()
 
-        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {})
+        feature_handler = hostcfgd.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
         mock_db.get_entry.return_value = {
             'state': 'some template',
         }
