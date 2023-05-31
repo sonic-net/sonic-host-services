@@ -347,21 +347,23 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         return allow_internal_docker_ip_cmds
 
 
-    def generate_fwd_traffic_from_host_to_soc(self, namespace):
+    def generate_fwd_traffic_from_host_to_soc(self, namespace, new_config_db_connector=None):
 
         fwd_dualtor_grpc_traffic_from_host_to_soc_cmds = []
+        if not new_config_db_connector:
+            new_config_db_connector = self.config_db_map[DEFAULT_NAMESPACE]
         if self.DualToR:
-            loopback_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.LOOPBACK_TABLE)
+            loopback_table = new_config_db_connector.get_table(self.LOOPBACK_TABLE)
             loopback_name = 'Loopback3'
             loopback_address = get_ip_from_interface_table(loopback_table, loopback_name)
             vlan_name = 'Vlan'
-            vlan_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.VLAN_INTF_TABLE)
+            vlan_table = new_config_db_connector.get_table(self.VLAN_INTF_TABLE)
             vlan_address = get_ip_from_interface_table(vlan_table, vlan_name)
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
                     ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
             
             if loopback_address is not None:
-                mux_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.CONFIG_MUX_CABLE)
+                mux_table = new_config_db_connector.get_table(self.CONFIG_MUX_CABLE)
                 mux_table_keys = mux_table.keys()
                 for key in mux_table_keys:
                     kvp = mux_table.get(key)
@@ -518,7 +520,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 subprocess.call(insert_cmd)
                 self.log_info("Update DHCP chain: {}".format(' '.join(insert_cmd)))
 
-    def get_acl_rules_and_translate_to_iptables_commands(self, namespace):
+    def get_acl_rules_and_translate_to_iptables_commands(self, namespace, new_config_db_connector=None):
         """
         Retrieves current ACL tables and rules from Config DB, translates
         control plane ACLs into a list of iptables commands that can be run
@@ -604,8 +606,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
 
         # Get current ACL tables and rules from Config DB
-        self._tables_db_info = self.config_db_map[namespace].get_table(self.ACL_TABLE)
-        self._rules_db_info = self.config_db_map[namespace].get_table(self.ACL_RULE)
+        if not new_config_db_connector:
+            new_config_db_connector = self.config_db_map[namespace]
+        self._tables_db_info = new_config_db_connector.get_table(self.ACL_TABLE)
+        self._rules_db_info = new_config_db_connector.get_table(self.ACL_RULE)
 
         num_ctrl_plane_acl_rules = 0
 
@@ -761,22 +765,22 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         return iptables_cmds, service_to_source_ip_map
 
-    def update_control_plane_acls(self, namespace):
+    def update_control_plane_acls(self, namespace, new_config_db_connector=None):
         """
         Convenience wrapper which retrieves current ACL tables and rules from
         Config DB, translates control plane ACLs into a list of iptables
         commands and runs them.
         """
-        iptables_cmds, service_to_source_ip_map  = self.get_acl_rules_and_translate_to_iptables_commands(namespace)
+        iptables_cmds, service_to_source_ip_map  = self.get_acl_rules_and_translate_to_iptables_commands(namespace, new_config_db_connector)
         self.log_info("Issuing the following iptables commands:")
         for cmd in iptables_cmds:
             self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
 
-        self.update_control_plane_nat_acls(namespace, service_to_source_ip_map)
+        self.update_control_plane_nat_acls(namespace, service_to_source_ip_map, new_config_db_connector)
 
-    def update_control_plane_nat_acls(self, namespace, service_to_source_ip_map):
+    def update_control_plane_nat_acls(self, namespace, service_to_source_ip_map, new_config_db_connector=None):
         """
         Convenience wrapper for multi-asic platforms 
         which programs the NAT rules for redirecting the
@@ -786,14 +790,14 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # Add iptables commands to allow front panel traffic
         iptables_cmds = self.generate_fwd_traffic_from_namespace_to_host_commands(namespace, service_to_source_ip_map)
 
-        self.log_info("Issuing the following iptables commands:")
+        self.log_info("Issuing the following iptables commands: in update_control_plane_nat_acls")
         for cmd in iptables_cmds:
             self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
 
         if self.DualToR:
-            dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace)
+            dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace, new_config_db_connector)
             for cmd in dualtor_iptables_cmds:
                 self.log_info("  " + ' '.join(cmd))
             self.run_commands(dualtor_iptables_cmds)
@@ -809,6 +813,11 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         updates were received during the delay window, at which point it will update
         iptables using the current ACL rules.
         """
+        # ConfigDBConnector is not multi thread safe. In child thread, we use another new DB connector.
+        self.log_info("Before connect to config_db_connector in check_and_update_control_plane_acls")
+        config_db_connector = swsscommon.ConfigDBConnector(use_unix_socket_path=True, namespace=namespace)
+        config_db_connector.connect()
+        self.log_info("After connect to config_db_connector in check_and_update_control_plane_acls")
         while True:
             # Sleep for our delay interval
             time.sleep(self.UPDATE_DELAY_SECS)
@@ -825,7 +834,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     if num_changes == self.num_changes[namespace] and num_changes > 0:
                         self.log_info("ACL config for namespace '{}' has not changed for {} seconds. Applying updates ..."
                                  .format(namespace, self.UPDATE_DELAY_SECS))
-                        self.update_control_plane_acls(namespace)
+                        self.update_control_plane_acls(namespace, config_db_connector)
                     else:
                         self.log_error("Error updating ACLs for namespace '{}'".format(namespace))
 
