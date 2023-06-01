@@ -558,7 +558,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
 
         # Add iptables commands to allow internal chasiss midplane traffic
-        iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace)
+        if device_info.is_chassis():
+            iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace)
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections
