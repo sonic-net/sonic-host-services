@@ -308,7 +308,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
     def generate_allow_internal_chasis_midplane_traffic(self, namespace):
         allow_internal_chassis_midplane_traffic = []
-        if not namespace:
+        if device_info.is_chassis() and not namespace:
             chassis_midplane_ip = self.get_chassis_midplane_interface_ip()
             if not chassis_midplane_ip:
                 return allow_internal_chassis_midplane_traffic
