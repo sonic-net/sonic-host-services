@@ -15,6 +15,10 @@ class MockConfigDb(object):
         MockConfigDb.CONFIG_DB = test_config_db
 
     @staticmethod
+    def mod_config_db(test_config_db):
+        MockConfigDb.CONFIG_DB.update(test_config_db)
+
+    @staticmethod
     def deserialize_key(key, separator="|"):
         tokens = key.split(separator)
         if len(tokens) > 1:
