@@ -265,7 +265,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             for k, v in feature_tb_info.items():
                 self.feature_present[k] = True
 
-    def generate_block_ip2me_traffic_iptables_commands(self, namespace):
+    def generate_block_ip2me_traffic_iptables_commands(self, namespace, new_config_db_connector=None):
         INTERFACE_TABLE_NAME_LIST = [
             "LOOPBACK_INTERFACE",
             "VLAN_INTERFACE",
@@ -274,10 +274,13 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         ]
 
         block_ip2me_cmds = []
+        # Get current ACL tables and rules from Config DB
+        if not new_config_db_connector:
+            new_config_db_connector = self.config_db_map[namespace]
 
         # Add iptables rules to drop all packets destined for peer-to-peer interface IP addresses
         for iface_table_name in INTERFACE_TABLE_NAME_LIST:
-            iface_table = self.config_db_map[namespace].get_table(iface_table_name)
+            iface_table = new_config_db_connector.get_table(iface_table_name)
             if iface_table:
                 for key, _ in iface_table.items():
                     if not _ip_prefix_in_key(key):
@@ -750,7 +753,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 service_to_source_ip_map.update({ acl_service:{ "ipv4":ipv4_src_ip_set, "ipv6":ipv6_src_ip_set } })
 
         # Add iptables commands to block ip2me traffic
-        iptables_cmds += self.generate_block_ip2me_traffic_iptables_commands(namespace)
+        iptables_cmds += self.generate_block_ip2me_traffic_iptables_commands(namespace, new_config_db_connector)
 
         # Add iptables/ip6tables commands to allow all incoming packets with TTL of 0 or 1
         # This allows the device to respond to tools like tcptraceroute
@@ -790,7 +793,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # Add iptables commands to allow front panel traffic
         iptables_cmds = self.generate_fwd_traffic_from_namespace_to_host_commands(namespace, service_to_source_ip_map)
 
-        self.log_info("Issuing the following iptables commands: in update_control_plane_nat_acls")
+        self.log_info("Issuing the following iptables commands:")
         for cmd in iptables_cmds:
             self.log_info("  " + ' '.join(cmd))
 
