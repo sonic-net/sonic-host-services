@@ -274,13 +274,13 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         ]
 
         block_ip2me_cmds = []
-        # Get current ACL tables and rules from Config DB
-        if not new_config_db_connector:
-            new_config_db_connector = self.config_db_map[namespace]
 
         # Add iptables rules to drop all packets destined for peer-to-peer interface IP addresses
         for iface_table_name in INTERFACE_TABLE_NAME_LIST:
-            iface_table = new_config_db_connector.get_table(iface_table_name)
+            if new_config_db_connector:
+                iface_table = new_config_db_connector.get_table(iface_table_name)
+            else:
+                iface_table = self.config_db_map[namespace].get_table(iface_table_name)
             if iface_table:
                 for key, _ in iface_table.items():
                     if not _ip_prefix_in_key(key):
@@ -353,20 +353,27 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
     def generate_fwd_traffic_from_host_to_soc(self, namespace, new_config_db_connector=None):
 
         fwd_dualtor_grpc_traffic_from_host_to_soc_cmds = []
-        if not new_config_db_connector:
-            new_config_db_connector = self.config_db_map[DEFAULT_NAMESPACE]
         if self.DualToR:
-            loopback_table = new_config_db_connector.get_table(self.LOOPBACK_TABLE)
+            if new_config_db_connector:
+                loopback_table = new_config_db_connector.get_table(self.LOOPBACK_TABLE)
+            else:
+                loopback_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.LOOPBACK_TABLE)
             loopback_name = 'Loopback3'
             loopback_address = get_ip_from_interface_table(loopback_table, loopback_name)
             vlan_name = 'Vlan'
-            vlan_table = new_config_db_connector.get_table(self.VLAN_INTF_TABLE)
+            if new_config_db_connector:
+                vlan_table = new_config_db_connector.get_table(self.VLAN_INTF_TABLE)
+            else:
+                vlan_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.VLAN_INTF_TABLE)
             vlan_address = get_ip_from_interface_table(vlan_table, vlan_name)
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
                     ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
             
             if loopback_address is not None:
-                mux_table = new_config_db_connector.get_table(self.CONFIG_MUX_CABLE)
+                if new_config_db_connector:
+                    mux_table = new_config_db_connector.get_table(self.CONFIG_MUX_CABLE)
+                else:
+                    mux_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.CONFIG_MUX_CABLE)
                 mux_table_keys = mux_table.keys()
                 for key in mux_table_keys:
                     kvp = mux_table.get(key)
@@ -609,10 +616,12 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
 
         # Get current ACL tables and rules from Config DB
-        if not new_config_db_connector:
-            new_config_db_connector = self.config_db_map[namespace]
-        self._tables_db_info = new_config_db_connector.get_table(self.ACL_TABLE)
-        self._rules_db_info = new_config_db_connector.get_table(self.ACL_RULE)
+        if new_config_db_connector:
+            self._tables_db_info = new_config_db_connector.get_table(self.ACL_TABLE)
+            self._rules_db_info = new_config_db_connector.get_table(self.ACL_RULE)
+        else:
+            self._tables_db_info = self.config_db_map[namespace].get_table(self.ACL_TABLE)
+            self._rules_db_info = self.config_db_map[namespace].get_table(self.ACL_RULE)
 
         num_ctrl_plane_acl_rules = 0
 
