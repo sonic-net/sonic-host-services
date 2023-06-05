@@ -817,10 +817,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables using the current ACL rules.
         """
         # ConfigDBConnector is not multi thread safe. In child thread, we use another new DB connector.
-        self.log_info("Before connect to config_db_connector in check_and_update_control_plane_acls")
         config_db_connector = swsscommon.ConfigDBConnector(use_unix_socket_path=True, namespace=namespace)
         config_db_connector.connect()
-        self.log_info("After connect to config_db_connector in check_and_update_control_plane_acls")
         while True:
             # Sleep for our delay interval
             time.sleep(self.UPDATE_DELAY_SECS)
