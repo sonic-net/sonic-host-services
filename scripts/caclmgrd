@@ -356,7 +356,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             loopback_address = get_ip_from_interface_table(loopback_table, loopback_name)
             vlan_name = 'Vlan'
             vlan_table = config_db_connector.get_table(self.VLAN_INTF_TABLE)
-            
+
             vlan_address = get_ip_from_interface_table(vlan_table, vlan_name)
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
                     ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])

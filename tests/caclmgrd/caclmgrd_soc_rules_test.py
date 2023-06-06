@@ -48,7 +48,7 @@ class TestCaclmgrdSoc(TestCase):
                 mocked_subprocess.call.return_value = call_rc
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-                caclmgrd_daemon.update_control_plane_nat_acls('', {})
+                caclmgrd_daemon.update_control_plane_nat_acls('', {}, MockConfigDb())
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
 
     def test_get_ip_from_interface_table(self):
