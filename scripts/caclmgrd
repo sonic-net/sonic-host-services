@@ -837,6 +837,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     # Re-initialize
                     self.num_changes[namespace] = 0
                     self.update_thread[namespace] = None
+                    new_config_db_connector.close("CONFIG_DB")
                     return
 
     def allow_bfd_protocol(self, namespace):
