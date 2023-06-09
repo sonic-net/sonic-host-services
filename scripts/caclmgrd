@@ -811,34 +811,40 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         updates were received during the delay window, at which point it will update
         iptables using the current ACL rules.
         """
-        # ConfigDBConnector is not multi thread safe. In child thread, we use another new DB connector.
-        new_config_db_connector = swsscommon.ConfigDBConnector(use_unix_socket_path=True, namespace=namespace)
-        new_config_db_connector.connect()
-        while True:
-            # Sleep for our delay interval
-            time.sleep(self.UPDATE_DELAY_SECS)
+        try:
+            # ConfigDBConnector is not multi thread safe. In child thread, we use another new DB connector.
+            new_config_db_connector = swsscommon.ConfigDBConnector(use_unix_socket_path=True, namespace=namespace)
+            new_config_db_connector.connect()
+            while True:
+                # Sleep for our delay interval
+                time.sleep(self.UPDATE_DELAY_SECS)
 
-            with self.lock[namespace]:
-                if self.num_changes[namespace] > num_changes:
-                    # More ACL table changes occurred since this thread was spawned
-                    # spawn a new thread with the current number of changes
-                    new_changes = self.num_changes[namespace] - num_changes
-                    self.log_info("ACL config not stable for namespace '{}': {} changes detected in the past {} seconds. Skipping update ..."
-                             .format(namespace, new_changes, self.UPDATE_DELAY_SECS))
-                    num_changes = self.num_changes[namespace]
-                else:
-                    if num_changes == self.num_changes[namespace] and num_changes > 0:
-                        self.log_info("ACL config for namespace '{}' has not changed for {} seconds. Applying updates ..."
-                                 .format(namespace, self.UPDATE_DELAY_SECS))
-                        self.update_control_plane_acls(namespace, new_config_db_connector)
+                with self.lock[namespace]:
+                    if self.num_changes[namespace] > num_changes:
+                        # More ACL table changes occurred since this thread was spawned
+                        # spawn a new thread with the current number of changes
+                        new_changes = self.num_changes[namespace] - num_changes
+                        self.log_info("ACL config not stable for namespace '{}': {} changes detected in the past {} seconds. Skipping update ..."
+                                .format(namespace, new_changes, self.UPDATE_DELAY_SECS))
+                        num_changes = self.num_changes[namespace]
                     else:
-                        self.log_error("Error updating ACLs for namespace '{}'".format(namespace))
+                        if num_changes == self.num_changes[namespace] and num_changes > 0:
+                            self.log_info("ACL config for namespace '{}' has not changed for {} seconds. Applying updates ..."
+                                    .format(namespace, self.UPDATE_DELAY_SECS))
+                            self.update_control_plane_acls(namespace, new_config_db_connector)
+                        else:
+                            self.log_error("Error updating ACLs for namespace '{}'".format(namespace))
 
-                    # Re-initialize
-                    self.num_changes[namespace] = 0
-                    self.update_thread[namespace] = None
-                    new_config_db_connector.close("CONFIG_DB")
-                    return
+                        # Re-initialize
+                        self.num_changes[namespace] = 0
+                        self.update_thread[namespace] = None
+                        new_config_db_connector.close("CONFIG_DB")
+                        return
+        except Exception as e:
+            self.log_error("Error in check_and_update_control_plane_acls: {}".format(repr(e)))
+        finally:
+            self.num_changes[namespace] = 0
+            self.update_thread[namespace] = None
 
     def allow_bfd_protocol(self, namespace):
         iptables_cmds = []
