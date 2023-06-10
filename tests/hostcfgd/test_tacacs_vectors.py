@@ -18,7 +18,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
@@ -80,7 +80,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
@@ -142,7 +142,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
@@ -204,7 +204,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
                         "has_per_asic_scope": "False",
-                        "has_timer": "False",
+                        "delayed": "False",
                         "high_mem_alert": "disabled",
                         "set_owner": "kube",
                         "state": "enabled"
