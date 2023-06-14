@@ -1179,11 +1179,14 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "LOOPBACK_INTERFACE": {},
     "DEVICE_METADATA": {
         "localhost": {
-            "hostname": "old-hostname"
+            "hostname": "old-hostname",
+            "timezone": "Etc/UTC"
         }
     },
     "MGMT_INTERFACE": {},
-    "MGMT_VRF_CONFIG": {}
+    "MGMT_VRF_CONFIG": {},
+    "SYSLOG_CONFIG": {},
+    "SYSLOG_SERVER": {}
 }
 
 
@@ -1249,7 +1252,8 @@ HOSTCFG_DAEMON_CFG_DB = {
         "localhost": {
             "subtype": "DualToR",
             "type": "ToRRouter",
-            "hostname": "SomeNewHostname"
+            "hostname": "SomeNewHostname",
+            "timezone": "Europe/Kyiv"
         }
     },
     "MGMT_INTERFACE": {
