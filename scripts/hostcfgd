@@ -1319,8 +1319,7 @@ class SshServer(object):
 
         for port_num in values_list:
             # add port in original line
-            add_port_cmd = f"sed -i ' {str(port_line_num)} i Port {str(port_num)}' {SSH_CONFG}"
-            os.system(add_port_cmd)
+            modify_single_file_inplace(SSH_CONFG, ["{str(port_line_num)} i Port {str(port_num)}"])
         return True
 
     def set_policies(self, ssh_policies):
