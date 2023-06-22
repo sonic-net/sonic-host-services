@@ -578,6 +578,7 @@ class TestHostcfgdDaemon(TestCase):
         daemon.aaacfg = mock.MagicMock()
         daemon.iptables = mock.MagicMock()
         daemon.passwcfg = mock.MagicMock()
+        daemon.dnscfg = mock.MagicMock()
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
         daemon.register_callbacks()
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -644,6 +645,7 @@ class TestHostcfgdDaemon(TestCase):
         daemon.aaacfg = mock.MagicMock()
         daemon.iptables = mock.MagicMock()
         daemon.passwcfg = mock.MagicMock()
+        daemon.dnscfg = mock.MagicMock()
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
         with mock.patch('hostcfgd.check_output_pipe') as mocked_check_output:
             with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -670,3 +672,34 @@ class TestHostcfgdDaemon(TestCase):
                     call(['cat', '/proc/net/route'], ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"], ['wc', '-l'])
                 ]
                 mocked_check_output.assert_has_calls(expected)
+
+    def test_dns_events(self):
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [('DNS_NAMESERVER', '1.1.1.1')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.run_cmd') as mocked_run_cmd:
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
+
+
+class TestDnsHandler:
+
+    @mock.patch('hostcfgd.run_cmd')
+    def test_dns_update(self, mock_run_cmd):
+        dns_cfg = hostcfgd.DnsCfg()
+        key = "1.1.1.1"
+        dns_cfg.dns_update(key, {})
+
+        mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
+
+    def test_load(self):
+        dns_cfg = hostcfgd.DnsCfg()
+        dns_cfg.dns_update = mock.MagicMock()
+
+        data = {}
+        dns_cfg.load(data)
+        dns_cfg.dns_update.assert_called()

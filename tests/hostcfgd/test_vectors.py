@@ -1185,7 +1185,8 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "MGMT_INTERFACE": {},
     "MGMT_VRF_CONFIG": {},
     "SYSLOG_CONFIG": {},
-    "SYSLOG_SERVER": {}
+    "SYSLOG_SERVER": {},
+    "DNS_NAMESERVER": {}
 }
 
 
@@ -1261,5 +1262,8 @@ HOSTCFG_DAEMON_CFG_DB = {
         "vrf_global": {
             'mgmtVrfEnabled': 'true'
         }
-    }
+    },
+    "DNS_NAMESERVER": {
+        "1.1.1.1": {}
+    },
 }
