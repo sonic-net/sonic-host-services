@@ -11,6 +11,7 @@ import signal
 import re
 import jinja2
 import threading
+from shutil import copy2
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
@@ -22,6 +23,7 @@ PAM_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/common-auth-sonic.j2"
 PAM_PASSWORD_CONF = "/etc/pam.d/common-password"
 PAM_PASSWORD_CONF_TEMPLATE = "/usr/share/sonic/templates/common-password.j2"
 SSH_CONFG = "/etc/ssh/sshd_config"
+SSH_CONFG_TMP = "/tmp/sshd_config"
 NSS_TACPLUS_CONF = "/etc/tacplus_nss.conf"
 NSS_TACPLUS_CONF_TEMPLATE = "/usr/share/sonic/templates/tacplus_nss.conf.j2"
 NSS_RADIUS_CONF = "/etc/radius_nss.conf"
@@ -39,7 +41,7 @@ LINUX_DEFAULT_PASS_WARN_AGE = 7
 # Ssh min-max values
 SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1}
 SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600, "ports": 65535}
-SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "LoginGraceTime", "ports": "Port"}
+SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "LoginGraceTime"}
 
 ACCOUNT_NAME = 0 # index of account name
 AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
@@ -1261,8 +1263,10 @@ class SshServer(object):
         self.policies = {}
 
     def load(self, policies_conf):
-        for row in policies_conf:
-            self.policies_update(row, policies_conf[row], modify_conf=False)
+        if 'POLICIES' in policies_conf:
+            self.policies_update('POLICIES', policies_conf['POLICIES'], modify_conf=False)
+        else:
+            self.policies = {}
 
         self.modify_conf_file()
 
@@ -1276,14 +1280,10 @@ class SshServer(object):
     def policies_update(self, key, data, modify_conf=True):
         syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - key: {}".format(key))
         syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - data: {}".format(data))
-
-        if data == {}:
-            self.policies = {}
-        else:
+        if data:
             if 'ports' in data:
                 data['ports'] = data['ports'].split(',')
-            if key == 'POLICIES':
-                self.policies = data
+            self.policies = data
 
         if modify_conf:
             self.modify_conf_file()
@@ -1304,8 +1304,8 @@ class SshServer(object):
         return return_value
 
     def handle_ports_set(self, values_list):
-        if not len(values_list) > 0:
-            return True
+        if len(values_list) == 0:
+            return False
         key='ports'
         for port_num in values_list:
             if isinstance(port_num, int):
@@ -1319,19 +1319,20 @@ class SshServer(object):
 
         for port_num in values_list:
             # add port in original line
-            modify_single_file_inplace(SSH_CONFG, ["{str(port_line_num)} i Port {str(port_num)}"])
+            modify_single_file_inplace(SSH_CONFG, [f'{str(port_line_num)} i Port {str(port_num)}'])
         return True
 
     def set_policies(self, ssh_policies):
         # Ssh server flow
         # The ssh_policies from CONFIG_DB will be set in the ssh config files /etc/ssh/sshd_config
+        copy2(SSH_CONFG, SSH_CONFG_TMP)
 
         for key, value in ssh_policies.items():
             if key == 'ports':
                 if not self.handle_ports_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
                     return
-            elif int(value) < SSH_MIN_VALUES[key] or SSH_MAX_VALUES[key] < int(value):
+            elif int(value) < SSH_MIN_VALUES.get(key, 65535) or SSH_MAX_VALUES.get(key, -1) < int(value):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format(key, value))
             elif key in SSH_CONFIG_NAMES:
                 # search replace configuration - if not in config file - append
@@ -1341,10 +1342,19 @@ class SshServer(object):
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
 
-        try:
-            run_cmd('sudo systemctl restart ssh')
-        except Exception:
-            syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
+        ssh_verify_res = subprocess.run(['sudo', 'sshd', '-T'], capture_output=True)
+        if ssh_verify_res.returncode == 0:
+            try:
+                run_cmd(['systemctl', 'restart', 'ssh'],
+                        log_err=True, raise_exception=True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
+            else:
+                os.remove(SSH_CONFG_TMP)
+        else:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file - sshd -T returned {ssh_verify_res.returncode} with error {ssh_verify_res.stderr.decode()}')
+            os.rename(SSH_CONFG_TMP, SSH_CONFG)
+
 
 
 class KdumpCfg(object):
