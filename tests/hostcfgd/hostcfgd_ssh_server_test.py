@@ -54,7 +54,7 @@ class TestHostcfgdSSHServer(TestCase):
         sop_path = sample_output_path + "/" +  test_name + "_" + config_name
         sop_path_common = sample_output_path + "/" +  test_name
         hostcfgd.SSH_CONFG = op_path + "/sshd_config"
-        
+        hostcfgd.SSH_CONFG_TMP = hostcfgd.SSH_CONFG + ".tmp"
         shutil.rmtree(op_path, ignore_errors=True)
         os.mkdir(op_path)
 

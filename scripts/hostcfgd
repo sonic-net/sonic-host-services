@@ -23,7 +23,7 @@ PAM_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/common-auth-sonic.j2"
 PAM_PASSWORD_CONF = "/etc/pam.d/common-password"
 PAM_PASSWORD_CONF_TEMPLATE = "/usr/share/sonic/templates/common-password.j2"
 SSH_CONFG = "/etc/ssh/sshd_config"
-SSH_CONFG_TMP = "/tmp/sshd_config"
+SSH_CONFG_TMP = SSH_CONFG + ".tmp"
 NSS_TACPLUS_CONF = "/etc/tacplus_nss.conf"
 NSS_TACPLUS_CONF_TEMPLATE = "/usr/share/sonic/templates/tacplus_nss.conf.j2"
 NSS_RADIUS_CONF = "/etc/radius_nss.conf"
@@ -1275,7 +1275,8 @@ class SshServer(object):
         ssh_policies.update(self.policies)
 
         # set new SSH server policies.
-        self.set_policies(ssh_policies)
+        if len(ssh_policies) > 0:
+            self.set_policies(ssh_policies)
 
     def policies_update(self, key, data, modify_conf=True):
         syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - key: {}".format(key))
@@ -1314,12 +1315,12 @@ class SshServer(object):
             if int(port_num) < SSH_MIN_VALUES[key] or SSH_MAX_VALUES[key] < int(port_num):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format('port', port_num))
                 return False
-        port_line_num = self.get_line_num_of_pattern("Port", SSH_CONFG, True)
-        modify_single_file_inplace(SSH_CONFG, ['-E', "/^(#)?Port [0-9]+$/d"])
+        port_line_num = self.get_line_num_of_pattern("Port", SSH_CONFG_TMP, True)
+        modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?Port [0-9]+$/d"])
 
         for port_num in values_list:
             # add port in original line
-            modify_single_file_inplace(SSH_CONFG, [f'{str(port_line_num)} i Port {str(port_num)}'])
+            modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(port_line_num)} i Port {str(port_num)}'])
         return True
 
     def set_policies(self, ssh_policies):
@@ -1337,24 +1338,22 @@ class SshServer(object):
             elif key in SSH_CONFIG_NAMES:
                 # search replace configuration - if not in config file - append
                 kv_str = "{} {}".format(SSH_CONFIG_NAMES[key], str(value)) # name +' '+ value format
-                modify_single_file_inplace(SSH_CONFG,['-E', "/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
+                modify_single_file_inplace(SSH_CONFG_TMP,['-E', "/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
                  kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}"])
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
 
-        ssh_verify_res = subprocess.run(['sudo', 'sshd', '-T'], capture_output=True)
+        ssh_verify_res = subprocess.run(['sudo', 'sshd', '-T', '-f', SSH_CONFG_TMP], capture_output=True)
         if ssh_verify_res.returncode == 0:
+            os.rename(SSH_CONFG_TMP, SSH_CONFG)
             try:
                 run_cmd(['systemctl', 'restart', 'ssh'],
                         log_err=True, raise_exception=True)
             except Exception:
                 syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
-            else:
-                os.remove(SSH_CONFG_TMP)
         else:
             syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file - sshd -T returned {ssh_verify_res.returncode} with error {ssh_verify_res.stderr.decode()}')
-            os.rename(SSH_CONFG_TMP, SSH_CONFG)
-
+            os.remove(SSH_CONFG_TMP)
 
 
 class KdumpCfg(object):
