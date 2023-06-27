@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# Update the FIPS configuration
+
+set -e
+
+FIPS_ENFORCE=$1
+FIPS_ENABLE=$2
+[ -z "$FIPS_ENFORCE" ] && FIPS_ENFORCE=0
+[ -z "$FIPS_ENABLE" ] && FIPS_ENABLE=0
+RESTART_REQUIRED_IMAGES="docker-sonic-telemetry docker-sonic-restapi"
+RESTART_REQUIRED_SERVICES="sshd"
+
+if [ -f /etc/sonic/fips.conf ]; then
+    . /etc/sonic/fips.conf
+fi
+
+# Configure the FIPS runtime option, restart the docker containers
+# and the system services to enable or disable the FIPS
+update_runtime_config()
+{
+    mkdir -p /etc/fips
+    if [ "$FIPS_ENABLE" == "1" ]; then
+        if grep -qE "fips=1|sonic_fips=1" /proc/cmdline; then
+            echo "FIPS enabled in the kernel command line, skipped the configuration."
+            exit 0
+        fi
+    fi
+
+    echo $FIPS_ENABLE > /etc/fips/fips_enable
+    if [ -f /etc/fips/fips_enable.flag ] && [ "$(cat /etc/fips/fips_enable.flag)" == "$FIPS_ENABLE" ]; then
+        echo "The FIPS option $FIPS_ENABLE not changed, skipped."
+        exit 0
+    fi
+
+    # Restart the running docker contianers by image name
+    running_dockers=$(docker ps --format '{{.Image}},{{.Names}}')
+    for image in $RESTART_REQUIRED_IMAGES; do
+        [ -z "$image" ] && continue
+        while read -r line; do
+            contaner_name=$(echo $line | cut -d, -f2)
+            echo "Restarting the docker container $contaner_name"
+            docker restart $contaner_name > /dev/null
+        done < <(echo "$running_dockers" | grep "^${image}:")
+    done
+
+    # Restart the services
+    for service in "$RESTART_REQUIRED_SERVICES"; do
+        [ -z "$service" ] && continue
+        echo "Restarting the service $service"
+         systemctl restart $service
+    done
+
+    # Set the flag in a file to indicate the config complete successfully
+    echo $FIPS_ENABLE > /etc/fips/fips_enable.flag
+}
+
+# Update the FIPS enforcement config option in Linux kernel cmdline
+update_enforcement_config()
+{
+    local fips_enforce_state=$(sonic-installer get-fips | grep -q enabled && echo 1)
+    if [ "$fips_enforced_state" == "$FIPS_ENFORCE"  ]; then
+        echo "FIPS enforcement state $fips_enforced_state not change, skipped the configuration."
+        exit 0
+    fi
+
+    fips_option = '--disable-fips'
+    if [ "$FIPS_ENFORCE" == "1" ]; then
+        fips_option = '--enable-fips'
+    fi
+
+    echo "Set FIPS with option $fips_option"
+    sonic-installer set-fips "$fips_option"
+}
+
+update_runtime_config
+update_enforcement_config

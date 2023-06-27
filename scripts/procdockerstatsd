@@ -13,7 +13,7 @@ from datetime import datetime
 
 from sonic_py_common import daemon_base
 from swsscommon import swsscommon
-from sonic_py_common.general import getstatusoutput_noshell_pipe
+from sonic_py_common.general import getstatusoutput_noshell_pipe, getstatusoutput_noshell
 
 VERSION = '1.0'
 
@@ -168,6 +168,30 @@ class ProcDockerStats(daemon_base.DaemonBase):
                 cmd = row.get('CMD')
                 self.update_state_db(value, 'CMD', cmd)
 
+    def update_procfipsstats_command(self):
+        fips_enable_flag = '0'
+        current_enforce_state = '0'
+        next_enforce_state = '0'
+        if os.path.isfile('/etc/fips/fips_enable.flag'):
+            with open('/etc/fips/fips_enable.flag') as f:
+                fips_enable_flag = f.read().trip()
+        with open('/proc/cmdline') as f:
+            cmdline = f.read().trip()
+            if 'fips=1' in cmdline:
+                current_enforce_state = '1'
+        cmd = ['sonic-installer', 'get-fips']
+        exitcode, data = getstatusoutput_noshell(cmd)
+        if any(exitcode):
+            self.log_error("Error running command '{}'".format(cmd))
+            data = None
+        if 'enabled' in data:
+            next_enforce_state = '1'
+        fips_db_key = 'FIPS_STATS|state'
+        self.state_db.delete_all_by_pattern('STATE_DB', "FIPS_STATS|*")
+        self.update_state_db(fips_db_key, 'enabled', fips_enable_flag)
+        self.update_state_db(fips_db_key, 'enforced', current_enforce_state)
+        self.update_state_db(fips_db_key, 'enforced_next', next_enforce_state)
+
     def update_state_db(self, key1, key2, value2):
         self.state_db.set('STATE_DB', key1, key2, value2)
 
@@ -186,6 +210,8 @@ class ProcDockerStats(daemon_base.DaemonBase):
             self.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
             self.update_processstats_command()
             self.update_state_db('PROCESS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+            self.update_fipsstats_command()
+            self.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
 
             # Data need to be updated every 2 mins. hence adding delay of 120 seconds
             time.sleep(120)
