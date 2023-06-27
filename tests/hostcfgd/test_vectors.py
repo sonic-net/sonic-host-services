@@ -1172,6 +1172,7 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "RADIUS": {},
     "RADIUS_SERVER": {},
     "PASSW_HARDENING": {},
+    "SSH_SERVER": {},
     "KDUMP": {},
     "NTP": {},
     "NTP_SERVER": {},
@@ -1227,6 +1228,7 @@ HOSTCFG_DAEMON_CFG_DB = {
     "RADIUS": {},
     "RADIUS_SERVER": {},
     "PASSW_HARDENING": {},
+    "SSH_SERVER": {},
     "KDUMP": {
         "config": {
 

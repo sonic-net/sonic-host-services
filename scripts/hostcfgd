@@ -11,6 +11,7 @@ import signal
 import re
 import jinja2
 import threading
+from shutil import copy2
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
@@ -21,6 +22,8 @@ PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
 PAM_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/common-auth-sonic.j2"
 PAM_PASSWORD_CONF = "/etc/pam.d/common-password"
 PAM_PASSWORD_CONF_TEMPLATE = "/usr/share/sonic/templates/common-password.j2"
+SSH_CONFG = "/etc/ssh/sshd_config"
+SSH_CONFG_TMP = SSH_CONFG + ".tmp"
 NSS_TACPLUS_CONF = "/etc/tacplus_nss.conf"
 NSS_TACPLUS_CONF_TEMPLATE = "/usr/share/sonic/templates/tacplus_nss.conf.j2"
 NSS_RADIUS_CONF = "/etc/radius_nss.conf"
@@ -34,6 +37,11 @@ ETC_LOGIN_DEF = "/etc/login.defs"
 # Linux login.def default values (password hardening disable)
 LINUX_DEFAULT_PASS_MAX_DAYS = 99999
 LINUX_DEFAULT_PASS_WARN_AGE = 7
+
+# Ssh min-max values
+SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1}
+SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600, "ports": 65535}
+SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "LoginGraceTime"}
 
 ACCOUNT_NAME = 0 # index of account name
 AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
@@ -1066,6 +1074,12 @@ class AaaCfg(object):
                     "{} - failed: return code - {}, output:\n{}"
                     .format(err.cmd, err.returncode, err.output))
 
+def modify_single_file_inplace(filename, operations=None):
+    if operations:
+        cmd = ["sed", '-i'] + operations + [filename]
+        syslog.syslog(syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - {}".format(cmd))
+        subprocess.run(cmd)
+
 
 class PasswHardening(object):
     def __init__(self):
@@ -1105,11 +1119,6 @@ class PasswHardening(object):
         if modify_conf:
             self.modify_passw_conf_file()
 
-    def modify_single_file_inplace(self, filename, operations=None):
-        if operations:
-            cmd = ["sed", '-i'] + operations + [filename]
-            syslog.syslog(syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - {}".format(cmd))
-            subprocess.call(cmd)
 
     def set_passw_hardening_policies(self, passw_policies):
         # Password Hardening flow
@@ -1154,14 +1163,14 @@ class PasswHardening(object):
             self.passwd_aging_expire_modify(curr_expiration, 'MAX_DAYS')
 
             # Aging policy for new users
-            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)])
+            modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)])
 
         if self.is_passwd_aging_expire_update(curr_expiration_warning, 'WARN_DAYS'):
             # Aging policy for existing users
             self.passwd_aging_expire_modify(curr_expiration_warning, 'WARN_DAYS')
 
             # Aging policy for new users
-            self.modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)])
+            modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)])
 
     def passwd_aging_expire_modify(self, curr_expiration, age_type):
         normal_accounts = self.get_normal_accounts()
@@ -1248,6 +1257,103 @@ class PasswHardening(object):
 
         # set new Password Hardening policies.
         self.set_passw_hardening_policies(passw_policies)
+
+class SshServer(object):
+    def __init__(self):
+        self.policies = {}
+
+    def load(self, policies_conf):
+        if 'POLICIES' in policies_conf:
+            self.policies_update('POLICIES', policies_conf['POLICIES'], modify_conf=False)
+        else:
+            self.policies = {}
+
+        self.modify_conf_file()
+
+    def modify_conf_file(self):
+        ssh_policies = {}
+        ssh_policies.update(self.policies)
+
+        # set new SSH server policies.
+        if len(ssh_policies) > 0:
+            self.set_policies(ssh_policies)
+
+    def policies_update(self, key, data, modify_conf=True):
+        syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - key: {}".format(key))
+        syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - data: {}".format(data))
+        if data:
+            if 'ports' in data:
+                data['ports'] = data['ports'].split(',')
+            self.policies = data
+
+        if modify_conf:
+            self.modify_conf_file()
+
+    # return first line apperience of pattern - else return number of lines in the file
+    def get_line_num_of_pattern(self, pattern, file_path, find_commented=False):
+        syslog.syslog(syslog.LOG_DEBUG, "looking for pattern {} line in file {}".format(pattern, file_path))
+        return_value = 0
+        with open(file_path, 'r') as f:
+            for (i, line) in enumerate(f):
+                if re.match(pattern, line):
+                    syslog.syslog(syslog.LOG_DEBUG, "found pattern {} in line {}".format(pattern, str(i)))
+                    return i + 1
+                if find_commented and re.match('#' + pattern, line):
+                    syslog.syslog(syslog.LOG_DEBUG, "found pattern {} in line {}".format('#' + pattern, str(i)))
+                    return i + 1
+                return_value = i
+        return return_value
+
+    def handle_ports_set(self, values_list):
+        if len(values_list) == 0:
+            return False
+        key='ports'
+        for port_num in values_list:
+            if isinstance(port_num, int):
+                syslog.syslog(syslog.LOG_ERR, "port num value {} in wrong format".format(port_num))
+                return False
+            if int(port_num) < SSH_MIN_VALUES[key] or SSH_MAX_VALUES[key] < int(port_num):
+                syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format('port', port_num))
+                return False
+        port_line_num = self.get_line_num_of_pattern("Port", SSH_CONFG_TMP, True)
+        modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?Port [0-9]+$/d"])
+
+        for port_num in values_list:
+            # add port in original line
+            modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(port_line_num)} i Port {str(port_num)}'])
+        return True
+
+    def set_policies(self, ssh_policies):
+        # Ssh server flow
+        # The ssh_policies from CONFIG_DB will be set in the ssh config files /etc/ssh/sshd_config
+        copy2(SSH_CONFG, SSH_CONFG_TMP)
+
+        for key, value in ssh_policies.items():
+            if key == 'ports':
+                if not self.handle_ports_set(value):
+                    syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
+                    return
+            elif int(value) < SSH_MIN_VALUES.get(key, 65535) or SSH_MAX_VALUES.get(key, -1) < int(value):
+                syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format(key, value))
+            elif key in SSH_CONFIG_NAMES:
+                # search replace configuration - if not in config file - append
+                kv_str = "{} {}".format(SSH_CONFIG_NAMES[key], str(value)) # name +' '+ value format
+                modify_single_file_inplace(SSH_CONFG_TMP,['-E', "/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
+                 kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}"])
+            else:
+                syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
+
+        ssh_verify_res = subprocess.run(['sudo', 'sshd', '-T', '-f', SSH_CONFG_TMP], capture_output=True)
+        if ssh_verify_res.returncode == 0:
+            os.rename(SSH_CONFG_TMP, SSH_CONFG)
+            try:
+                run_cmd(['systemctl', 'restart', 'ssh'],
+                        log_err=True, raise_exception=True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
+        else:
+            syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file - sshd -T returned {ssh_verify_res.returncode} with error {ssh_verify_res.stderr.decode()}')
+            os.remove(SSH_CONFG_TMP)
 
 
 class KdumpCfg(object):
@@ -1720,6 +1826,9 @@ class HostConfigDaemon:
         # Initialize MgmtIfaceCfg
         self.mgmtifacecfg = MgmtIfaceCfg()
 
+        # Initialize SshServer
+        self.sshscfg = SshServer()
+
         # Initialize RSyslogCfg
         self.rsyslogcfg = RSyslogCfg()
 
@@ -1738,6 +1847,7 @@ class HostConfigDaemon:
         ntp_global = init_data['NTP']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
+        ssh_server = init_data['SSH_SERVER']
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
@@ -1751,6 +1861,7 @@ class HostConfigDaemon:
         self.ntpcfg.load(ntp_global, ntp_server)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
+        self.sshscfg.load(ssh_server)
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
 
@@ -1774,6 +1885,10 @@ class HostConfigDaemon:
     def passwh_handler(self, key, op, data):
         self.passwcfg.passw_policies_update(key, data)
         syslog.syslog(syslog.LOG_INFO, 'PASSW_HARDENING Update: key: {}, op: {}, data: {}'.format(key, op, data))
+
+    def ssh_handler(self, key, op, data):
+        self.sshscfg.policies_update(key, data)
+        syslog.syslog(syslog.LOG_INFO, 'SSH Update: key: {}, op: {}, data: {}'.format(key, op, data))
 
     def tacacs_server_handler(self, key, op, data):
         self.aaacfg.tacacs_server_update(key, data)
@@ -1902,6 +2017,7 @@ class HostConfigDaemon:
         self.config_db.subscribe('RADIUS', make_callback(self.radius_global_handler))
         self.config_db.subscribe('RADIUS_SERVER', make_callback(self.radius_server_handler))
         self.config_db.subscribe('PASSW_HARDENING', make_callback(self.passwh_handler))
+        self.config_db.subscribe('SSH_SERVER', make_callback(self.ssh_handler))
         # Handle IPTables configuration
         self.config_db.subscribe('LOOPBACK_INTERFACE', make_callback(self.lpbk_handler))
         # Handle NTP & NTP_SERVER updates
