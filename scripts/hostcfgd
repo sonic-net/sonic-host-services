@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import ast
 import copy
 import ipaddress
 import os
@@ -10,10 +9,9 @@ import syslog
 import signal
 import re
 import jinja2
-import threading
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
-from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
+from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 
 # FILE
@@ -60,18 +58,6 @@ RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 # MISC Constants
 CFG_DB = "CONFIG_DB"
 STATE_DB = "STATE_DB"
-HOSTCFGD_MAX_PRI = 10  # Used to enforce ordering b/w daemons under Hostcfgd
-DEFAULT_SELECT_TIMEOUT = 1000
-PORT_INIT_TIMEOUT_SEC = 180
-
-
-def safe_eval(val, default_value=False):
-    """ Safely evaluate the expression, without raising an exception """
-    try:
-        ret = ast.literal_eval(val)
-    except ValueError:
-        ret = default_value
-    return ret
 
 
 def signal_handler(sig, frame):
@@ -146,415 +132,6 @@ def get_pid(procname):
             return dirname
     return ""
 
-
-class Feature(object):
-    """ Represents a feature configuration from CONFIG_DB data. """
-
-    def __init__(self, feature_name, feature_cfg, device_config=None):
-        """ Initialize Feature object based on CONFIG_DB data.
-
-        Args:
-            feature_name (str): Feature name string
-            feature_cfg (dict): Feature CONFIG_DB configuration
-            deviec_config (dict): DEVICE_METADATA section of CONFIG_DB
-        """
-        if 'has_timer' in feature_cfg:
-            err_str = "Invalid obsolete field 'has_timer' in FEATURE table. Please update configuration schema version"
-            syslog.syslog(syslog.LOG_ERR, err_str)
-            raise ValueError(err_str)
-
-        self.name = feature_name
-        self.state = self._get_feature_table_key_render_value(feature_cfg.get('state'), device_config or {}, ['enabled', 'disabled', 'always_enabled', 'always_disabled'])
-        self.auto_restart = feature_cfg.get('auto_restart', 'disabled')
-        self.delayed = safe_eval(feature_cfg.get('delayed', 'False'))
-        self.has_global_scope = safe_eval(feature_cfg.get('has_global_scope', 'True'))
-        self.has_per_asic_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_per_asic_scope', 'False'), device_config or {}, ['True', 'False']))
-
-    def _get_feature_table_key_render_value(self, configuration, device_config, expected_values):
-        """ Returns the target value for the feature by rendering the configuration as J2 template.
-
-        Args:
-            configuration (str): Feature Table value from CONFIG_DB for given key
-            device_config (dict): DEVICE_METADATA section of CONFIG_DB and populated Device Running Metadata
-            expected_values (list): Expected set of Feature Table value for given key
-        Returns:
-            (str): Target feature table value for given key
-        """
-
-        if configuration is None:
-            return None
-
-        template = jinja2.Template(configuration)
-        target_value = template.render(device_config)
-        if target_value not in expected_values:
-            raise ValueError('Invalid value rendered for feature {}: {}'.format(self.name, target_value))
-        return target_value
-
-    def compare_state(self, feature_name, feature_cfg):
-        if self.name != feature_name or not isinstance(feature_cfg, dict):
-            return False
-
-        if self.state != feature_cfg.get('state', ''):
-            return False
-        return True
-
-
-class FeatureHandler(object):
-    """ Handles FEATURE table updates. """
-
-    SYSTEMD_SYSTEM_DIR = '/etc/systemd/system/'
-    SYSTEMD_SERVICE_CONF_DIR = os.path.join(SYSTEMD_SYSTEM_DIR, '{}.service.d/')
-
-    # Feature state constants
-    FEATURE_STATE_ENABLED = "enabled"
-    FEATURE_STATE_DISABLED = "disabled"
-    FEATURE_STATE_FAILED = "failed"
-
-    def __init__(self, config_db, feature_state_table, device_config, is_advanced_boot):
-        self._config_db = config_db
-        self._feature_state_table = feature_state_table
-        self._device_config = device_config
-        self._cached_config = {}
-        self.is_multi_npu = device_info.is_multi_npu()
-        self.enable_delayed_service = False
-        self.is_advanced_boot = is_advanced_boot
-        self.lock = threading.Lock()
-        self.port_listener_thread = threading.Thread(target=self._portListener, name='port_listener_thread')
-        self.port_listener_thread.daemon = True
-        self.port_listener_thread.start()
-        self._device_running_config = device_info.get_device_runtime_metadata()
-        self.ns_cfg_db = {}
-        self.ns_feature_state_tbl = {}
-
-        # Initlaize Global config that loads all database*.json
-        if self.is_multi_npu:
-            SonicDBConfig.initializeGlobalConfig()
-            namespaces = device_info.get_namespaces()
-            for ns in namespaces:
-                #Connect to ConfigDB in each namespace
-                self.ns_cfg_db[ns] = ConfigDBConnector(namespace=ns)
-                self.ns_cfg_db[ns].connect(wait_for_init=True, retry_on=True)
-
-                #Connect to stateDB in each namespace
-                db_conn = DBConnector(STATE_DB, 0, False, ns);
-                self.ns_feature_state_tbl[ns] = Table(db_conn, 'FEATURE')
-
-    def _enableDelayedServices(self):
-        with self.lock:
-            self.enable_delayed_service = True
-            for feature_name in self._cached_config:
-                if self._cached_config[feature_name].delayed:
-                    self.update_feature_state(self._cached_config[feature_name])
-
-    def _portListener(self):
-        syslog.syslog(syslog.LOG_INFO, "Starting port listener")
-        appl_db_connector = DBConnector("APPL_DB", 0)
-        subscribe_port = swsscommon.SubscriberStateTable(appl_db_connector, "PORT_TABLE")
-        sel = swsscommon.Select()
-        sel.addSelectable(subscribe_port)
-
-        if self.is_advanced_boot:
-             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after warm/fast boot")
-             self._enableDelayedServices()
-
-        while True:
-            (state, selectableObj) = sel.select(PORT_INIT_TIMEOUT_SEC*1000)
-            # Continue if select is timeout or selectable object is not return
-            if state == swsscommon.Select.ERROR:
-                if not self.enable_delayed_service:
-                    syslog.syslog(syslog.LOG_ERR, "Received unexpected error in waiting for port init. Restarting services")
-                    self._enableDelayedServices()
-                continue
-            if state != swsscommon.Select.OBJECT:
-                if not self.enable_delayed_service:
-                    syslog.syslog(syslog.LOG_INFO, "Updating delayed features after timeout")
-                    self._enableDelayedServices()
-                continue
-
-            key, op, fvs = subscribe_port.pop()
-            if not key:
-                break
-            if op == 'SET' and key == 'PortInitDone':
-                syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
-                self._enableDelayedServices()
-
-    def handler(self, feature_name, op, feature_cfg):
-        with self.lock:
-            if not feature_cfg:
-                syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
-                self._cached_config.pop(feature_name, None)
-                self._feature_state_table._del(feature_name)
-                return
-
-            device_config = {}
-            device_config.update(self._device_config)
-            device_config.update(self._device_running_config)
-
-            feature = Feature(feature_name, feature_cfg, device_config)
-            self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
-
-            # Change auto-restart configuration first.
-            # If service reached failed state before this configuration applies (e.g. on boot)
-            # the next called self.update_feature_state will start it again. If it will fail
-            # again the auto restart will kick-in. Another order may leave it in failed state
-            # and not auto restart.
-            if self._cached_config[feature_name].auto_restart != feature.auto_restart:
-                syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
-                              .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
-                self.update_systemd_config(feature)
-                self._cached_config[feature_name].auto_restart = feature.auto_restart
-
-            # Enable/disable the container service if the feature state was changed from its previous state.
-            if self._cached_config[feature_name].state != feature.state:
-                if self.update_feature_state(feature):
-                    self.sync_feature_asic_scope(feature)
-                    self._cached_config[feature_name] = feature
-                else:
-                    self.resync_feature_state(self._cached_config[feature_name])
-
-    def sync_state_field(self, feature_table):
-        """
-        Summary:
-        Updates the state field in the FEATURE|* tables as the state field
-        might have to be rendered based on DEVICE_METADATA table and generated Device Running Metadata
-        """
-        with self.lock:
-            for feature_name in feature_table.keys():
-                if not feature_name:
-                    syslog.syslog(syslog.LOG_WARNING, "Feature is None")
-                    continue
-
-                device_config = {}
-                device_config.update(self._device_config)
-                device_config.update(self._device_running_config)
-                feature = Feature(feature_name, feature_table[feature_name], device_config)
-
-                self._cached_config.setdefault(feature_name, feature)
-                self.update_systemd_config(feature)
-                self.update_feature_state(feature)
-                self.sync_feature_asic_scope(feature)
-                self.resync_feature_state(feature)
-
-    def update_feature_state(self, feature):
-        cached_feature = self._cached_config[feature.name]
-        enable = False
-        disable = False
-
-        # Allowed transitions:
-        #  None           -> always_enabled
-        #                 -> always_disabled
-        #                 -> enabled
-        #                 -> disabled
-        #  always_enabled -> always_disabled
-        #  enabled        -> disabled
-        #  disabled       -> enabled
-        if cached_feature.state is None:
-            enable = feature.state in ("always_enabled", "enabled")
-            disable = feature.state in ("always_disabled", "disabled")
-        elif cached_feature.state in ("always_enabled", "always_disabled"):
-            disable = feature.state == "always_disabled"
-            enable = feature.state == "always_enabled"
-        elif cached_feature.state in ("enabled", "disabled"):
-            enable = feature.state == "enabled"
-            disable = feature.state == "disabled"
-        else:
-            syslog.syslog(syslog.LOG_INFO, "Feature {} service is {}".format(feature.name, cached_feature.state))
-            return False
-
-        if not enable and not disable:
-            syslog.syslog(syslog.LOG_ERR, "Unexpected state value '{}' for feature {}"
-                          .format(feature.state, feature.name))
-            return False
-
-        if feature.delayed and not self.enable_delayed_service:
-            syslog.syslog(syslog.LOG_INFO, "Feature is {} delayed for port init".format(feature.name))
-            return True
-
-        if enable:
-            self.enable_feature(feature)
-            syslog.syslog(syslog.LOG_INFO, "Feature {} is enabled and started".format(feature.name))
-
-        if disable:
-            self.disable_feature(feature)
-            syslog.syslog(syslog.LOG_INFO, "Feature {} is stopped and disabled".format(feature.name))
-
-        return True
-
-    def sync_feature_asic_scope(self, feature_config):
-        """Updates the has_per_asic_scope field in the FEATURE|* tables as the field
-        might have to be rendered based on DEVICE_METADATA table or Device Running configuration.
-        Disable the ASIC instance service unit file it the render value is False and update config
-
-        Args:
-            feature: An object represents a feature's configuration in `FEATURE`
-            table of `CONFIG_DB`.
-
-        Returns:
-            None.
-        """
-
-
-        feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config, True)
-        for feature_name in feature_names:
-            if '@' not in feature_name:
-                continue
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if not unit_file_state:
-                continue
-            if unit_file_state != "disabled" and not feature_config.has_per_asic_scope:
-                cmds = []
-                for suffix in reversed(feature_suffixes):
-                    cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])
-                    cmds.append(["sudo", "systemctl", "disable", "{}.{}".format(feature_name, feature_suffixes[-1])])
-                    cmds.append(["sudo", "systemctl", "mask", "{}.{}".format(feature_name, feature_suffixes[-1])])
-                for cmd in cmds:
-                    syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
-                    try:
-                        run_cmd(cmd, raise_exception=True)
-                    except Exception as err:
-                        syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be stopped and disabled"
-                                      .format(feature.name, feature_suffixes[-1]))
-                        self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                        return
-        self._config_db.mod_entry('FEATURE', feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
-
-        # sync has_per_asic_scope to CONFIG_DB in namespaces in multi-asic platform
-        for ns, db in self.ns_cfg_db.items():
-            db.mod_entry('FEATURE', feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
-    
-    def update_systemd_config(self, feature_config):
-        """Updates `Restart=` field in feature's systemd configuration file
-        according to the value of `auto_restart` field in `FEATURE` table of `CONFIG_DB`.
-
-        Args:
-            feature: An object represents a feature's configuration in `FEATURE`
-            table of `CONFIG_DB`.
-
-        Returns:
-            None.
-        """
-        restart_field_str = "always" if "enabled" in feature_config.auto_restart else "no"
-        feature_systemd_config = "[Service]\nRestart={}\n".format(restart_field_str)
-        feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config)
-
-        # On multi-ASIC device, creates systemd configuration file for each feature instance
-        # residing in difference namespace.
-        for feature_name in feature_names:
-            syslog.syslog(syslog.LOG_INFO, "Updating feature '{}' systemd config file related to auto-restart ..."
-                          .format(feature_name))
-            feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
-            feature_systemd_config_file_path = os.path.join(feature_systemd_config_dir_path, 'auto_restart.conf')
-
-            if not os.path.exists(feature_systemd_config_dir_path):
-                os.mkdir(feature_systemd_config_dir_path)
-            with open(feature_systemd_config_file_path, 'w') as feature_systemd_config_file_handler:
-                feature_systemd_config_file_handler.write(feature_systemd_config)
-
-            syslog.syslog(syslog.LOG_INFO, "Feature '{}' systemd config file related to auto-restart is updated!"
-                          .format(feature_name))
-
-        try:
-            syslog.syslog(syslog.LOG_INFO, "Reloading systemd configuration files ...")
-            run_cmd(["sudo", "systemctl", "daemon-reload"], raise_exception=True)
-            syslog.syslog(syslog.LOG_INFO, "Systemd configuration files are reloaded!")
-        except Exception as err:
-            syslog.syslog(syslog.LOG_ERR, "Failed to reload systemd configuration files!")
-
-    def get_multiasic_feature_instances(self, feature, all_instance=False):
-        # Create feature name suffix depending feature is running in host or namespace or in both
-        feature_names = (
-            ([feature.name] if feature.has_global_scope or not self.is_multi_npu else []) +
-            ([(feature.name + '@' + str(asic_inst)) for asic_inst in range(device_info.get_num_npus())
-                if self.is_multi_npu and (all_instance or feature.has_per_asic_scope)])
-        )
-
-        if not feature_names:
-            syslog.syslog(syslog.LOG_ERR, "Feature '{}' service not available"
-                          .format(feature.name))
-
-        feature_suffixes = ["service"]
-
-        return feature_names, feature_suffixes
-
-    def get_systemd_unit_state(self, unit):
-        """ Returns service configuration """
-
-        cmd = ["sudo", "systemctl", "show", unit, "--property", "UnitFileState"]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = proc.communicate()
-        if proc.returncode != 0:
-            syslog.syslog(syslog.LOG_ERR, "Failed to get status of {}: rc={} stderr={}".format(unit, proc.returncode, stderr))
-            return 'invalid'  # same as systemd's "invalid indicates that it could not be determined whether the unit file is enabled".
-
-        props = dict([line.split("=") for line in stdout.decode().strip().splitlines()])
-        return props["UnitFileState"]
-
-    def enable_feature(self, feature):
-        feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
-        for feature_name in feature_names:
-            # Check if it is already enabled, if yes skip the system call
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state == "enabled" or not unit_file_state:
-                continue
-            cmds = []    
-            for suffix in feature_suffixes:
-                cmds.append(["sudo", "systemctl", "unmask", "{}.{}".format(feature_name, suffix)])
-
-            # If feature has timer associated with it, start/enable corresponding systemd .timer unit
-            # otherwise, start/enable corresponding systemd .service unit
-
-            cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
-            cmds.append(["sudo", "systemctl", "start", "{}.{}".format(feature_name, feature_suffixes[-1])])
-
-            for cmd in cmds:
-                syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
-                try:
-                    run_cmd(cmd, raise_exception=True)
-                except Exception as err:
-                    syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be enabled and started"
-                                  .format(feature.name, feature_suffixes[-1]))
-                    self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return
-
-        self.set_feature_state(feature, self.FEATURE_STATE_ENABLED)
-
-    def disable_feature(self, feature):
-        feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
-        for feature_name in feature_names:
-            # Check if it is already disabled, if yes skip the system call
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state in ("disabled", "masked") or not unit_file_state:
-                continue
-            cmds = []
-            for suffix in reversed(feature_suffixes):
-                cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])
-                cmds.append(["sudo", "systemctl", "disable", "{}.{}".format(feature_name, feature_suffixes[-1])])
-                cmds.append(["sudo", "systemctl", "mask", "{}.{}".format(feature_name, feature_suffixes[-1])])
-            for cmd in cmds:
-                syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
-                try:
-                    run_cmd(cmd, raise_exception=True)
-                except Exception as err:
-                    syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be stopped and disabled"
-                                  .format(feature.name, feature_suffixes[-1]))
-                    self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return
-
-        self.set_feature_state(feature, self.FEATURE_STATE_DISABLED)
-
-    def resync_feature_state(self, feature):
-        self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
-
-        # resync the feature state to CONFIG_DB in namespaces in multi-asic platform
-        for ns, db in self.ns_cfg_db.items():
-            db.mod_entry('FEATURE', feature.name, {'state': feature.state})
-
-    def set_feature_state(self, feature, state):
-        self._feature_state_table.set(feature.name, [('state', state)])
-
-        # Update the feature state to STATE_DB in namespaces in multi-asic platform
-        for ns, tbl in self.ns_feature_state_tbl.items():
-            tbl.set(feature.name, [('state', state)])
 
 class Iptables(object):
     def __init__(self):
@@ -1627,31 +1204,17 @@ class SyslogCfg:
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
-        self.advanced_boot = False
-        if swsscommon.RestartWaiter.isAdvancedBootInProgress(self.state_db_conn):
-            self.advanced_boot = True
-            swsscommon.RestartWaiter.waitAdvancedBootDone()
         # Just a sanity check to verify if the CONFIG_DB has been initialized
         # before moving forward
         self.config_db = ConfigDBConnector()
         self.config_db.connect(wait_for_init=True, retry_on=True)
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
 
-        # Load DEVICE metadata configurations
-        self.device_config = {}
-        self.device_config['DEVICE_METADATA'] = self.config_db.get_table('DEVICE_METADATA')
-
-        # Load feature state table
-        feature_state_table = Table(self.state_db_conn, 'FEATURE')
-
         # Initialize KDump Config and set the config to default if nothing is provided
         self.kdumpCfg = KdumpCfg(self.config_db)
 
         # Initialize IpTables
         self.iptables = Iptables()
-
-        # Intialize Feature Handler
-        self.feature_handler = FeatureHandler(self.config_db, feature_state_table, self.device_config, self.advanced_boot)
 
         # Initialize Ntp Config Handler
         self.ntpcfg = NtpCfg()
@@ -1678,7 +1241,6 @@ class HostConfigDaemon:
         self.syslogcfg = SyslogCfg()
 
     def load(self, init_data):
-        features = init_data['FEATURE']
         aaa = init_data['AAA']
         tacacs_global = init_data['TACPLUS']
         tacacs_server = init_data['TACPLUS_SERVER']
@@ -1694,7 +1256,6 @@ class HostConfigDaemon:
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
         syslog = init_data.get('SYSLOG_CONFIG', {})
 
-        self.feature_handler.sync_state_field(features)
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
         self.iptables.load(lpbk_table)
         self.ntpcfg.load(ntp_global, ntp_server)
@@ -1823,8 +1384,6 @@ class HostConfigDaemon:
             return callback
 
         self.config_db.subscribe('KDUMP', make_callback(self.kdump_handler))
-        # Handle FEATURE updates before other tables
-        self.config_db.subscribe('FEATURE', make_callback(self.feature_handler.handler))
         # Handle AAA, TACACS and RADIUS related tables
         self.config_db.subscribe('AAA', make_callback(self.aaa_handler))
         self.config_db.subscribe('TACPLUS', make_callback(self.tacacs_global_handler))
