@@ -35,6 +35,7 @@ setup(
     scripts = [
         'scripts/caclmgrd',
         'scripts/hostcfgd',
+        'scripts/featured',
         'scripts/aaastatsd',
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
