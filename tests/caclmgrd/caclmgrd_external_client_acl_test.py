@@ -38,9 +38,10 @@ class TestCaclmgrdExternalClientAcl(TestCase):
         self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
         self.caclmgrd.ControlPlaneAclManager.generate_block_ip2me_traffic_iptables_commands = mock.MagicMock(return_value=[])
         self.caclmgrd.ControlPlaneAclManager.get_chain_list = mock.MagicMock(return_value=["INPUT", "FORWARD", "OUTPUT"])
+        self.caclmgrd.ControlPlaneAclManager.get_chassis_midplane_interface_ip = mock.MagicMock(return_value='')
         caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
 
-        iptables_rules_ret, _ = caclmgrd_daemon.get_acl_rules_and_translate_to_iptables_commands('')
+        iptables_rules_ret, _ = caclmgrd_daemon.get_acl_rules_and_translate_to_iptables_commands('', MockConfigDb())
         test_data['return'] = [tuple(i) for i in test_data['return']]
         iptables_rules_ret = [tuple(i) for i in iptables_rules_ret]
         self.assertEqual(set(test_data["return"]).issubset(set(iptables_rules_ret)), True)

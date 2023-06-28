@@ -7,16 +7,16 @@ from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 from pyfakefs.fake_filesystem_unittest import patchfs
 
-from .test_ip2me_vectors import CACLMGRD_IP2ME_TEST_VECTOR
+from .test_chassis_midplane_vectors import CACLMGRD_CHASSIS_MIDPLANE_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
 
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
 
-class TestCaclmgrdIP2Me(TestCase):
+class TestCaclmgrdChassisMidplane(TestCase):
     """
-        Test caclmgrd IP2Me
+        Test caclmgrd Chassis Midplane
     """
     def setUp(self):
         swsscommon.ConfigDBConnector = MockConfigDb
@@ -28,15 +28,16 @@ class TestCaclmgrdIP2Me(TestCase):
         self.caclmgrd = load_module_from_source('caclmgrd', caclmgrd_path)
         self.maxDiff = None
 
-    @parameterized.expand(CACLMGRD_IP2ME_TEST_VECTOR)
+    @parameterized.expand(CACLMGRD_CHASSIS_MIDPLANE_TEST_VECTOR)
     @patchfs
-    def test_caclmgrd_ip2me(self, test_name, test_data, fs):
+    def test_caclmgrd_chassis_midplane(self, test_name, test_data, fs):
         if not os.path.exists(DBCONFIG_PATH):
             fs.create_file(DBCONFIG_PATH) # fake database_config.json
 
-        MockConfigDb.set_config_db(test_data["config_db"])
-        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
-        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
-        caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-        ret = caclmgrd_daemon.generate_block_ip2me_traffic_iptables_commands('', MockConfigDb())
-        self.assertListEqual(test_data["return"], ret)
+        with mock.patch("sonic_py_common.device_info.is_chassis", return_value=True):
+            with mock.patch("caclmgrd.ControlPlaneAclManager.run_commands_pipe", return_value='1.0.0.33'):
+                caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+                ret = caclmgrd_daemon.generate_allow_internal_chasis_midplane_traffic('')
+                self.assertListEqual(test_data["return"], ret)
+                ret = caclmgrd_daemon.generate_allow_internal_chasis_midplane_traffic('asic0')
+                self.assertListEqual([], ret)

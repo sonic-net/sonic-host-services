@@ -11,17 +11,22 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "RADIUS": {},
     "RADIUS_SERVER": {},
     "PASSW_HARDENING": {},
+    "SSH_SERVER": {},
     "KDUMP": {},
     "NTP": {},
     "NTP_SERVER": {},
     "LOOPBACK_INTERFACE": {},
     "DEVICE_METADATA": {
         "localhost": {
-            "hostname": "old-hostname"
+            "hostname": "old-hostname",
+            "timezone": "Etc/UTC"
         }
     },
     "MGMT_INTERFACE": {},
-    "MGMT_VRF_CONFIG": {}
+    "MGMT_VRF_CONFIG": {},
+    "SYSLOG_CONFIG": {},
+    "SYSLOG_SERVER": {},
+    "DNS_NAMESERVER": {}
 }
 
 
@@ -32,6 +37,7 @@ HOSTCFG_DAEMON_CFG_DB = {
     "RADIUS": {},
     "RADIUS_SERVER": {},
     "PASSW_HARDENING": {},
+    "SSH_SERVER": {},
     "KDUMP": {
         "config": {
 
@@ -56,7 +62,8 @@ HOSTCFG_DAEMON_CFG_DB = {
         "localhost": {
             "subtype": "DualToR",
             "type": "ToRRouter",
-            "hostname": "SomeNewHostname"
+            "hostname": "SomeNewHostname",
+            "timezone": "Europe/Kyiv"
         }
     },
     "MGMT_INTERFACE": {
@@ -66,5 +73,8 @@ HOSTCFG_DAEMON_CFG_DB = {
         "vrf_global": {
             'mgmtVrfEnabled': 'true'
         }
-    }
+    },
+    "DNS_NAMESERVER": {
+        "1.1.1.1": {}
+    },
 }

@@ -82,10 +82,15 @@ class TesNtpCfgd(TestCase):
 class TestHostcfgdDaemon(TestCase):
 
     def setUp(self):
+        self.get_dev_meta = mock.patch(
+            'sonic_py_common.device_info.get_device_runtime_metadata',
+            return_value={'DEVICE_RUNTIME_METADATA': {}})
+        self.get_dev_meta.start()
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
 
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
+        self.get_dev_meta.stop()
 
     def test_loopback_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
@@ -131,6 +136,7 @@ class TestHostcfgdDaemon(TestCase):
         """
         Test handling DEVICE_METADATA events.
         1) Hostname reload
+        1) Timezone reload
         """
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
@@ -139,14 +145,10 @@ class TestHostcfgdDaemon(TestCase):
         daemon.aaacfg = mock.MagicMock()
         daemon.iptables = mock.MagicMock()
         daemon.passwcfg = mock.MagicMock()
+        daemon.dnscfg = mock.MagicMock()
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
         daemon.register_callbacks()
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
-
             try:
                 daemon.start()
             except TimeoutError:
@@ -154,7 +156,9 @@ class TestHostcfgdDaemon(TestCase):
 
             expected = [
                 call(['sudo', 'service', 'hostname-config', 'restart']),
-                call(['sudo', 'monit', 'reload'])
+                call(['sudo', 'monit', 'reload']),
+                call(['timedatectl', 'set-timezone', 'Europe/Kyiv']),
+                call(['systemctl', 'restart', 'rsyslog']),
             ]
             mocked_subprocess.check_call.assert_has_calls(expected,
                                                           any_order=True)
@@ -164,31 +168,33 @@ class TestHostcfgdDaemon(TestCase):
         original_syslog = hostcfgd.syslog
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         with mock.patch('hostcfgd.syslog') as mocked_syslog:
-            mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
-            try:
-                daemon.start()
-            except TimeoutError:
-                pass
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
+                try:
+                    daemon.start()
+                except TimeoutError:
+                    pass
 
-            expected = [
-                call(original_syslog.LOG_ERR, 'Hostname was not updated: Empty not allowed')
-            ]
-            mocked_syslog.syslog.assert_has_calls(expected)
+                expected = [
+                    call(original_syslog.LOG_ERR, 'Hostname was not updated: Empty not allowed')
+                ]
+                mocked_syslog.syslog.assert_has_calls(expected)
 
         daemon.devmetacfg.hostname = "SameHostName"
         HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["hostname"] = daemon.devmetacfg.hostname
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         with mock.patch('hostcfgd.syslog') as mocked_syslog:
-            mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
-            try:
-                daemon.start()
-            except TimeoutError:
-                pass
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+                try:
+                    daemon.start()
+                except TimeoutError:
+                    pass
 
-            expected = [
-                call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
-            ]
-            mocked_syslog.syslog.assert_has_calls(expected)
+                expected = [
+                    call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
+                ]
+                mocked_syslog.syslog.assert_has_calls(expected)
 
     def test_mgmtiface_event(self):
         """
@@ -206,6 +212,7 @@ class TestHostcfgdDaemon(TestCase):
         daemon.aaacfg = mock.MagicMock()
         daemon.iptables = mock.MagicMock()
         daemon.passwcfg = mock.MagicMock()
+        daemon.dnscfg = mock.MagicMock()
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
         with mock.patch('hostcfgd.check_output_pipe') as mocked_check_output:
             with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -233,58 +240,33 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
-class TestSyslogHandler:
+    def test_dns_events(self):
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [('DNS_NAMESERVER', '1.1.1.1')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.run_cmd') as mocked_run_cmd:
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
+
+
+class TestDnsHandler:
+
     @mock.patch('hostcfgd.run_cmd')
-    @mock.patch('hostcfgd.SyslogCfg.parse_syslog_conf', mock.MagicMock(return_value=('100', '200')))
-    def test_syslog_update(self, mock_run_cmd):
-        syslog_cfg = hostcfgd.SyslogCfg()
-        data = {
-            'rate_limit_interval': '100',
-            'rate_limit_burst': '200'
-        }
-        syslog_cfg.syslog_update(data)
-        mock_run_cmd.assert_not_called()
+    def test_dns_update(self, mock_run_cmd):
+        dns_cfg = hostcfgd.DnsCfg()
+        key = "1.1.1.1"
+        dns_cfg.dns_update(key, {})
 
-        data = {
-            'rate_limit_interval': '200',
-            'rate_limit_burst': '200'
-        }
-        syslog_cfg.syslog_update(data)
-        expected = [call(['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], raise_exception=True),
-                    call(['systemctl', 'restart', 'rsyslog-config'], raise_exception=True)]
-        mock_run_cmd.assert_has_calls(expected)
-
-        data = {
-            'rate_limit_interval': '100',
-            'rate_limit_burst': '100'
-        }
-        mock_run_cmd.side_effect = Exception()
-        syslog_cfg.syslog_update(data)
-        # when exception occurs, interval and burst should not be updated
-        assert syslog_cfg.current_interval == '200'
-        assert syslog_cfg.current_burst == '200'
+        mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
     def test_load(self):
-        syslog_cfg = hostcfgd.SyslogCfg()
-        syslog_cfg.syslog_update = mock.MagicMock()
+        dns_cfg = hostcfgd.DnsCfg()
+        dns_cfg.dns_update = mock.MagicMock()
 
         data = {}
-        syslog_cfg.load(data)
-        syslog_cfg.syslog_update.assert_not_called()
-
-        data = {syslog_cfg.HOST_KEY: {}}
-        syslog_cfg.load(data)
-        syslog_cfg.syslog_update.assert_called_once()
-
-    def test_parse_syslog_conf(self):
-        syslog_cfg = hostcfgd.SyslogCfg()
-
-        syslog_cfg.SYSLOG_CONF_PATH = os.path.join(test_path, 'hostcfgd', 'mock_rsyslog.conf')
-        interval, burst = syslog_cfg.parse_syslog_conf()
-        assert interval == '50'
-        assert burst == '10002'
-
-        syslog_cfg.SYSLOG_CONF_PATH = os.path.join(test_path, 'hostcfgd', 'mock_empty_rsyslog.conf')
-        interval, burst = syslog_cfg.parse_syslog_conf()
-        assert interval == '0'
-        assert burst == '0'
+        dns_cfg.load(data)
+        dns_cfg.dns_update.assert_called()
