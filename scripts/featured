@@ -526,11 +526,11 @@ class FeatureDaemon:
 
 
 def main():
-    init_time = time.time()
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGHUP, signal_handler)
     daemon = FeatureDaemon()
+    init_time = time.time()
     daemon.render_all_feature_states()
     daemon.register_callbacks()
     daemon.start(init_time)

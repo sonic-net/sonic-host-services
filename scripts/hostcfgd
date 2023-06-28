@@ -1204,6 +1204,9 @@ class SyslogCfg:
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
+        # Wait if the Warm/Fast boot is in progress
+        if swsscommon.RestartWaiter.isAdvancedBootInProgress(self.state_db_conn):
+            swsscommon.RestartWaiter.waitAdvancedBootDone()
         # Just a sanity check to verify if the CONFIG_DB has been initialized
         # before moving forward
         self.config_db = ConfigDBConnector()
