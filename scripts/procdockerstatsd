@@ -169,28 +169,33 @@ class ProcDockerStats(daemon_base.DaemonBase):
                 self.update_state_db(value, 'CMD', cmd)
 
     def update_procfipsstats_command(self):
-        fips_enable_flag = '0'
-        current_enforce_state = '0'
-        next_enforce_state = '0'
-        if os.path.isfile('/etc/fips/fips_enable.flag'):
-            with open('/etc/fips/fips_enable.flag') as f:
-                fips_enable_flag = f.read().trip()
-        with open('/proc/cmdline') as f:
-            cmdline = f.read().trip()
-            if 'fips=1' in cmdline:
-                current_enforce_state = '1'
-        cmd = ['sonic-installer', 'get-fips']
-        exitcode, data = getstatusoutput_noshell(cmd)
-        if any(exitcode):
-            self.log_error("Error running command '{}'".format(cmd))
-            data = None
-        if 'enabled' in data:
-            next_enforce_state = '1'
+        enabled = False
+        current_enforced = False
+        next_enforcd = False
         fips_db_key = 'FIPS_STATS|state'
-        self.state_db.delete_all_by_pattern('STATE_DB', "FIPS_STATS|*")
-        self.update_state_db(fips_db_key, 'enabled', fips_enable_flag)
-        self.update_state_db(fips_db_key, 'enforced', current_enforce_state)
-        self.update_state_db(fips_db_key, 'enforced_next', next_enforce_state)
+
+        # Check if FIPS enforced in the current kernel cmdline
+        with open('/proc/cmdline') as f:
+           kernel_cmdline = f.read().strip().split(' ')
+        cur_enforced = 'sonic_fips=1' in kernel_cmdline or 'fips=1' in kernel_cmdline
+
+        # Check if FIPS enforced in the next kernel cmdline
+        cmd = ['sonic-installer', 'get-fips']
+        exitcode, _ = getstatusoutput_noshell(['sudo', 'sonic-installer', 'get-fips'], ['grep', '-i', 'enabled'])
+        if any(exitcode):
+            self.log_error("Error running command 'sudo sonic-installer get-fips'")
+        next_enforced = exitcode == 0
+
+        # Check if FIPS runtime status
+        exitcode, _ = getstatusoutput_noshell(['sudo', 'openssl', 'engine', '-vv'], ['grep', '-i', 'symcryp'])
+        if any(exitcode):
+            self.log_error("Error running command 'sudo openssl engine -vv'")
+        enabled = exitcode == 0
+
+        self.update_state_db(fips_db_key, 'timestamp', datetime.utcnow().isoformat())
+        self.update_state_db(fips_db_key, 'enforced', str(current_enforce))
+        self.update_state_db(fips_db_key, 'enforced_next', str(next_enforced))
+        self.update_state_db(fips_db_key, 'enabled', str(enabled))
 
     def update_state_db(self, key1, key2, value2):
         self.state_db.set('STATE_DB', key1, key2, value2)

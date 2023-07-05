@@ -10,8 +10,10 @@ import syslog
 import signal
 import re
 import jinja2
+import json
 import threading
 from shutil import copy2
+from datetime import datetime
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
@@ -66,7 +68,9 @@ RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 
 # FIPS
-FIPS_MODE_ENFORCE = 'enforce'
+FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
+OPENSSL_FIPS_CONFIG_FILE = '/etc/fips/fips_enable'
+DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
 
 # MISC Constants
 CFG_DB = "CONFIG_DB"
@@ -74,6 +78,7 @@ STATE_DB = "STATE_DB"
 HOSTCFGD_MAX_PRI = 10  # Used to enforce ordering b/w daemons under Hostcfgd
 DEFAULT_SELECT_TIMEOUT = 1000
 PORT_INIT_TIMEOUT_SEC = 180
+PROC_CMDLINE = '/proc/cmdline'
 
 
 def safe_eval(val, default_value=False):
@@ -117,6 +122,18 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
                   .format(err.cmd, err.returncode, err.output))
         if raise_exception:
             raise
+
+def run_cmd_output(cmd, log_err=True, raise_exception=False):
+    output = ''
+    try:
+        output = subprocess.check_output(cmd)
+    except Exception as err:
+        if log_err:
+            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+                  .format(err.cmd, err.returncode, err.output))
+        if raise_exception:
+            raise
+    return output
 
 
 def is_true(val):
@@ -1783,35 +1800,98 @@ class FipsCfg(object):
     Handles the changes in FIPS table.
     """
 
-    def __init__(self):
-        self.enabled = '0'
-        self.enforced = '0'
+    def __init__(self, state_db_conn):
+        self.enabled = False
+        self.enforced = False
+        self.restart_services = DEFAULT_FIPS_RESTART_SERVICES
+        self.state_db_conn = state_db_conn
+
+    def read_config(self):
+        if os.path.exists(FIPS_CONFIG_FILE):
+            with open(FIPS_CONFIG_FILE) as f:
+                conf = json.load(f)
+                self.restart_services = conf.get(RESTART_SERVICES_KEY, [])
+
+        with open(PROC_CMDLINE) as f:
+           kernel_cmdline = f.read().strip().split(' ')
+        self.cur_enforced = 'sonic_fips=1' in kernel_cmdline or 'fips=1' in kernel_cmdline
 
     def load(self, data={}):
         common_config = data.get('global', {})
         if not common_config:
             syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped the FIPS config, the FIPS setting is empty.')
             return
+        self.read_config()
         mode = common_config.get('mode', '').lower()
-        self.enabled = '0'
-        self.enforced = '0'
+        self.enabled = False
+        self.enforced = False
         if mode == 'enforce':
-            self.enabled = '1'
-            self.enforced = '1'
+            self.enabled = True
+            self.enforced = True
         elif mode == 'noneenforce':
-            self.enabled = '1'
+            self.enabled = True
         self.update()
 
-    def fips_handler():
-        data = self.config_db.get_table('FIPS')
+    def fips_handler(self, data):
         self.load(data)
 
     def update(self):
-        syslog.syslog(syslog.LOG_DEBUG, f'FipsCfg: update fips option enabled: {self.enabled}, enforced: {self.enforced}')
-        try:
-            run_cmd(['sudo', 'update-fips-config', self.enforced, self.enabled])
-        except subprocess.CalledProcessError as e:
-            syslog.syslog(syslog.LOG_ERR, f'FipsCfg: Failed to set new fips option enabled: {self.enabled}')
+        syslog.syslog(syslog.LOG_DEBUG, f'FipsCfg: update fips option enabled: {self.enabled}, enforced: {self.enforced}.')
+        self.update_enforce_config()
+        self.update_noneenforce_config()
+        self.state_db_conn.hset('FIPS_STATE|state', 'config_datetime', datetime.utcnow().isoformat())
+        syslog.syslog(syslog.LOG_DEBUG, f'FipsCfg: update fips option complete.')
+
+    def update_noneenforce_config(self):
+        cur_fips_enabled = '0'
+        if os.path.exists(OPENSSL_FIPS_CONFIG_FILE):
+            with open(OPENSSL_FIPS_CONFIG_FILE) as f:
+                cur_fips_enabled = f.read().strip()
+
+        expected_fips_enabled = '0'
+        if self.enabled:
+            expected_fips_enabled = '1'
+
+        # If the runtime config is not as expected, change the config
+        if cur_fips_enabled != expected_fips_enabled:
+            os.makedirs(os.path.dirname(OPENSSL_FIPS_CONFIG_FILE), exist_ok=True)
+            with open(OPENSSL_FIPS_CONFIG_FILE, 'w') as f:
+                f.write(expected_fips_enabled)
+
+        self.restart()
+
+    def restart(self):
+        if self.cur_enforced:
+            syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped to restart services, since FIPS enforced.')
+            return
+
+        modified_time = datetime.utcfromtimestamp(0)
+        if os.path.exists(OPENSSL_FIPS_CONFIG_FILE):
+            modified_time = datetime.fromtimestamp(os.path.getmtime(OPENSSL_FIPS_CONFIG_FILE))
+        timestamp = self.state_db_conn.hget('FIPS_STATE|state', 'config_datetime')
+        if timestamp and datetime.fromisoformat(timestamp).replace(tzinfo=None) > modified_time.replace(tzinfo=None):
+            syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped to restart services, since the services have alread been restarted.')
+            return
+
+        # Restart the services required and in the running state
+        output = run_cmd_output(['sudo', 'systemctl', '-t', 'service', '--state=running', '--no-pager', '-o', 'json'])
+        services = [s for s in json.dumps(output)]
+        for service in self.restart_services:
+            if service in services or service + '.service' in services:
+                run_cmd(['sudo', 'systemctl', 'restart', service])
+
+
+    def update_enforce_config(self):
+        fips_state = run_cmd_output(['sudo', 'sonic-installer', 'get-fips'])
+        next_enforced = 'enabled' in fips_state
+        if next_enforced != self.enforced:
+            syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped to configure the enforce option {self.enforced}, since the config has already been set.')
+            return
+        fips_option = '--disable-fips'
+        if self.enforced:
+            fips_option = '--enable-fips'
+        syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforced}.')
+        run_cmd(['sudo', 'sonic-installer', 'set-fips', fips_option])
 
 class HostConfigDaemon:
     def __init__(self):
@@ -1873,7 +1953,7 @@ class HostConfigDaemon:
         self.dnscfg = DnsCfg()
 
         # Initialize FipsCfg
-        self.fipscfg = FipsCfg()
+        self.fipscfg = FipsCfg(self.state_db_conn)
 
     def load(self, init_data):
         features = init_data['FEATURE']
@@ -2034,7 +2114,8 @@ class HostConfigDaemon:
 
     def fips_config_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'FIPS table handler...')
-        self.fipscfg.fips_handler()
+        data = self.config_db.get_table("FIPS")
+        self.fipscfg.fips_handler(data)
 
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
