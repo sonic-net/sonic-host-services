@@ -177,23 +177,24 @@ class ProcDockerStats(daemon_base.DaemonBase):
         # Check if FIPS enforced in the current kernel cmdline
         with open('/proc/cmdline') as f:
            kernel_cmdline = f.read().strip().split(' ')
-        cur_enforced = 'sonic_fips=1' in kernel_cmdline or 'fips=1' in kernel_cmdline
+        current_enforced = 'sonic_fips=1' in kernel_cmdline or 'fips=1' in kernel_cmdline
 
         # Check if FIPS enforced in the next kernel cmdline
-        cmd = ['sonic-installer', 'get-fips']
-        exitcode, _ = getstatusoutput_noshell(['sudo', 'sonic-installer', 'get-fips'], ['grep', '-i', 'enabled'])
+        exitcode, _ = getstatusoutput_noshell_pipe(['sudo', 'sonic-installer', 'get-fips'], ['grep', '-i', 'enabled'])
         if any(exitcode):
             self.log_error("Error running command 'sudo sonic-installer get-fips'")
-        next_enforced = exitcode == 0
+        else:
+            next_enforced = True
 
         # Check if FIPS runtime status
-        exitcode, _ = getstatusoutput_noshell(['sudo', 'openssl', 'engine', '-vv'], ['grep', '-i', 'symcryp'])
+        exitcode, _ = getstatusoutput_noshell_pipe(['sudo', 'openssl', 'engine', '-vv'], ['grep', '-i', 'symcryp'])
         if any(exitcode):
             self.log_error("Error running command 'sudo openssl engine -vv'")
-        enabled = exitcode == 0
+        else:
+            enabled = True
 
         self.update_state_db(fips_db_key, 'timestamp', datetime.utcnow().isoformat())
-        self.update_state_db(fips_db_key, 'enforced', str(current_enforce))
+        self.update_state_db(fips_db_key, 'enforced', str(current_enforced))
         self.update_state_db(fips_db_key, 'enforced_next', str(next_enforced))
         self.update_state_db(fips_db_key, 'enabled', str(enabled))
 

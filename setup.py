@@ -39,8 +39,7 @@ setup(
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
-        'scripts/sonic-host-server',
-        'scripts/update-fips-config'
+        'scripts/sonic-host-server'
     ],
     install_requires = [
         'dbus-python',

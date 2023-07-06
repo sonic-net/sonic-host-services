@@ -1801,8 +1801,8 @@ class FipsCfg(object):
     """
 
     def __init__(self, state_db_conn):
-        self.enabled = False
-        self.enforced = False
+        self.enable = False
+        self.enforce = False
         self.restart_services = DEFAULT_FIPS_RESTART_SERVICES
         self.state_db_conn = state_db_conn
 
@@ -1822,21 +1822,15 @@ class FipsCfg(object):
             syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped the FIPS config, the FIPS setting is empty.')
             return
         self.read_config()
-        mode = common_config.get('mode', '').lower()
-        self.enabled = False
-        self.enforced = False
-        if mode == 'enforce':
-            self.enabled = True
-            self.enforced = True
-        elif mode == 'noneenforce':
-            self.enabled = True
+        self.enforce = is_true(common_config.get('enforce', 'false'))
+        self.enable = self.enforce or is_true(common_config.get('enable', 'false'))
         self.update()
 
     def fips_handler(self, data):
         self.load(data)
 
     def update(self):
-        syslog.syslog(syslog.LOG_DEBUG, f'FipsCfg: update fips option enabled: {self.enabled}, enforced: {self.enforced}.')
+        syslog.syslog(syslog.LOG_DEBUG, f'FipsCfg: update fips option enable: {self.enable}, enforce: {self.enforce}.')
         self.update_enforce_config()
         self.update_noneenforce_config()
         self.state_db_conn.hset('FIPS_STATE|state', 'config_datetime', datetime.utcnow().isoformat())
@@ -1849,7 +1843,7 @@ class FipsCfg(object):
                 cur_fips_enabled = f.read().strip()
 
         expected_fips_enabled = '0'
-        if self.enabled:
+        if self.enable:
             expected_fips_enabled = '1'
 
         # If the runtime config is not as expected, change the config
@@ -1875,22 +1869,23 @@ class FipsCfg(object):
 
         # Restart the services required and in the running state
         output = run_cmd_output(['sudo', 'systemctl', '-t', 'service', '--state=running', '--no-pager', '-o', 'json'])
-        services = [s for s in json.dumps(output)]
+        services = [s['unit'] for s in json.loads(output)]
         for service in self.restart_services:
             if service in services or service + '.service' in services:
+                syslog.syslog(syslog.LOG_INFO, f'FipsCfg: restart service {service}.')
                 run_cmd(['sudo', 'systemctl', 'restart', service])
 
 
     def update_enforce_config(self):
         fips_state = run_cmd_output(['sudo', 'sonic-installer', 'get-fips'])
         next_enforced = 'enabled' in fips_state
-        if next_enforced != self.enforced:
-            syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped to configure the enforce option {self.enforced}, since the config has already been set.')
+        if next_enforced == self.enforce:
+            syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped to configure the enforce option {self.enforce}, since the config has already been set.')
             return
         fips_option = '--disable-fips'
-        if self.enforced:
+        if self.enforce:
             fips_option = '--enable-fips'
-        syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforced}.')
+        syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         run_cmd(['sudo', 'sonic-installer', 'set-fips', fips_option])
 
 class HostConfigDaemon:
