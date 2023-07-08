@@ -62,5 +62,4 @@ class TestProcDockerStatsDaemon(object):
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
         pdstatsd.update_procfipsstats_command()
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enforced') == "False"
-        assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enforced_next') == "True"
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enabled') == "True"

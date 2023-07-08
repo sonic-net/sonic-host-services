@@ -195,7 +195,6 @@ class ProcDockerStats(daemon_base.DaemonBase):
 
         self.update_state_db(fips_db_key, 'timestamp', datetime.utcnow().isoformat())
         self.update_state_db(fips_db_key, 'enforced', str(current_enforced))
-        self.update_state_db(fips_db_key, 'enforced_next', str(next_enforced))
         self.update_state_db(fips_db_key, 'enabled', str(enabled))
 
     def update_state_db(self, key1, key2, value2):
