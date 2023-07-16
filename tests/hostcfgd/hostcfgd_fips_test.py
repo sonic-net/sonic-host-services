@@ -10,6 +10,7 @@ from swsscommon import swsscommon
 from parameterized import parameterized
 from unittest import TestCase, mock
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_bootloader import MockBootloader
 from sonic_py_common.general import getstatusoutput_noshell
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,10 +63,11 @@ class TestHostcfgdFIPS(TestCase):
         with open(hostcfgd.OPENSSL_FIPS_CONFIG_FILE) as f:
             assert f.read() == result
 
+    @mock.patch('sonic_installer.bootloader.get_bootloader', side_effect=[MockBootloader()])
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=['', json.dumps(running_services)])
+    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
     @mock.patch('subprocess.check_call')
-    def test_hostcfgd_fips_enable(self, mock_check_call, mock_check_output, mock_syslog):
+    def test_hostcfgd_fips_enable(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:
             f.write('swiotlb=65536 sonic_fips=0')
         self.test_data['FIPS']['global']['enable'] = 'true'
@@ -78,10 +80,11 @@ class TestHostcfgdFIPS(TestCase):
         mock_syslog.assert_called_with(original_syslog.LOG_DEBUG, 'FipsCfg: update fips option complete.')
         self.assert_fips_runtime_config()
 
+    @mock.patch('sonic_installer.bootloader.get_bootloader', side_effect=[MockBootloader()])
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=['', json.dumps(running_services)])
+    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
     @mock.patch('subprocess.check_call')
-    def test_hostcfgd_fips_disable(self, mock_check_call, mock_check_output, mock_syslog):
+    def test_hostcfgd_fips_disable(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:
             f.write('swiotlb=65536 sonic_fips=0')
         with open(hostcfgd.OPENSSL_FIPS_CONFIG_FILE, 'w') as f:
@@ -96,10 +99,11 @@ class TestHostcfgdFIPS(TestCase):
         mock_syslog.assert_called_with(original_syslog.LOG_DEBUG, 'FipsCfg: update fips option complete.')
         self.assert_fips_runtime_config('0')
 
+    @mock.patch('sonic_installer.bootloader.get_bootloader', return_value=MockBootloader())
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=['FIPS is disabled', json.dumps(running_services)])
+    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
     @mock.patch('subprocess.check_call')
-    def test_hostcfgd_fips_enforce(self, mock_check_call, mock_check_output, mock_syslog):
+    def test_hostcfgd_fips_enforce(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:
             f.write('swiotlb=65536 sonic_fips=0')
         self.test_data['FIPS']['global']['enforce'] = 'true'
@@ -112,10 +116,11 @@ class TestHostcfgdFIPS(TestCase):
         mock_syslog.assert_called_with(original_syslog.LOG_DEBUG, 'FipsCfg: update fips option complete.')
         self.assert_fips_runtime_config()
 
+    @mock.patch('sonic_installer.bootloader.get_bootloader', return_value=MockBootloader(True))
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=['FIPS is enabled', json.dumps(running_services)])
+    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
     @mock.patch('subprocess.check_call')
-    def test_hostcfgd_fips_enforce_reconf(self, mock_check_call, mock_check_output, mock_syslog):
+    def test_hostcfgd_fips_enforce_reconf(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:
             f.write('swiotlb=65536 sonic_fips=1')
         self.test_data['FIPS']['global']['enforce'] = 'true'

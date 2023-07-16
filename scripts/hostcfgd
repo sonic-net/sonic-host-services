@@ -18,6 +18,7 @@ from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
 from swsscommon import swsscommon
+from sonic_installer import bootloader
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -1869,6 +1870,9 @@ class FipsCfg(object):
 
         # Restart the services required and in the running state
         output = run_cmd_output(['sudo', 'systemctl', '-t', 'service', '--state=running', '--no-pager', '-o', 'json'])
+        if not output:
+            return
+
         services = [s['unit'] for s in json.loads(output)]
         for service in self.restart_services:
             if service in services or service + '.service' in services:
@@ -1877,16 +1881,14 @@ class FipsCfg(object):
 
 
     def update_enforce_config(self):
-        fips_state = run_cmd_output(['sudo', 'sonic-installer', 'get-fips'])
-        next_enforced = 'enabled' in fips_state
+        loader = bootloader.get_bootloader()
+        image = loader.get_next_image()
+        next_enforced = loader.get_fips(image)
         if next_enforced == self.enforce:
             syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped to configure the enforce option {self.enforce}, since the config has already been set.')
             return
-        fips_option = '--disable-fips'
-        if self.enforce:
-            fips_option = '--enable-fips'
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
-        run_cmd(['sudo', 'sonic-installer', 'set-fips', fips_option])
+        loader.set_fips(image, self.enforce)
 
 class HostConfigDaemon:
     def __init__(self):
