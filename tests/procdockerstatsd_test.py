@@ -58,8 +58,8 @@ class TestProcDockerStatsDaemon(object):
             mock_cmd.assert_has_calls(expected_calls)
 
     @patch('procdockerstatsd.getstatusoutput_noshell_pipe', return_value=([0, 0], ''))
-    def test_update_procfipsstats_command(self, mock_cmd):
+    def test_update_fipsstats_command(self, mock_cmd):
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
-        pdstatsd.update_procfipsstats_command()
+        pdstatsd.update_fipsstats_command()
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enforced') == "False"
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enabled') == "True"
