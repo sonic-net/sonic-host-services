@@ -1834,7 +1834,7 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_DEBUG, f'FipsCfg: update fips option enable: {self.enable}, enforce: {self.enforce}.')
         self.update_enforce_config()
         self.update_noneenforce_config()
-        self.state_db_conn.hset('FIPS_STATE|state', 'config_datetime', datetime.utcnow().isoformat())
+        self.state_db_conn.hset('FIPS_STATS|state', 'config_datetime', datetime.utcnow().isoformat())
         syslog.syslog(syslog.LOG_DEBUG, f'FipsCfg: update fips option complete.')
 
     def update_noneenforce_config(self):
@@ -1863,7 +1863,7 @@ class FipsCfg(object):
         modified_time = datetime.utcfromtimestamp(0)
         if os.path.exists(OPENSSL_FIPS_CONFIG_FILE):
             modified_time = datetime.fromtimestamp(os.path.getmtime(OPENSSL_FIPS_CONFIG_FILE))
-        timestamp = self.state_db_conn.hget('FIPS_STATE|state', 'config_datetime')
+        timestamp = self.state_db_conn.hget('FIPS_STATS|state', 'config_datetime')
         if timestamp and datetime.fromisoformat(timestamp).replace(tzinfo=None) > modified_time.replace(tzinfo=None):
             syslog.syslog(syslog.LOG_INFO, f'FipsCfg: skipped to restart services, since the services have alread been restarted.')
             return
