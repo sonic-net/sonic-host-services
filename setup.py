@@ -5,7 +5,7 @@ import pkg_resources
 from packaging import version
 
 # sonic_dependencies, version requirement only supports '>='
-sonic_dependencies = ['sonic-py-common']
+sonic_dependencies = ['sonic-py-common', 'sonic-utilities']
 for package in sonic_dependencies:
     try:
         package_dist = pkg_resources.get_distribution(package.split(">=")[0])
