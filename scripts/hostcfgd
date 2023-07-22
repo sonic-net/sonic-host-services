@@ -9,6 +9,7 @@ import syslog
 import signal
 import re
 import jinja2
+import json
 from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
