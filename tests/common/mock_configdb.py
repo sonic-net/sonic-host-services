@@ -143,4 +143,16 @@ class MockSubscriberStateTable():
 
 class MockDBConnector():
     def __init__(self, db, val, tcpFlag=False, name=None):
-        pass
+        self.data = {}
+
+    def hget(self, key, field):
+        if key not in self.data:
+            return None
+        if field not in self.data[key]:
+            return None
+        return self.data[key][field]
+
+    def hset(self, key, field, value):
+        if key not in self.data:
+            self.data[key] = {}
+        self.data[key][field] = value
