@@ -1,4 +1,3 @@
-import time
 class MockConfigDb(object):
     """
         Mock Config DB which responds to data tables requests and store updates to the data table
@@ -63,11 +62,14 @@ class MockConfigDb(object):
         for e in MockConfigDb.event_queue:
             self.handlers[e[0]](e[0], e[1], self.get_entry(e[0], e[1]))
 
+
 class MockSelect():
 
     event_queue = []
     OBJECT = "OBJECT"
+    TIMEOUT = "TIMEOUT"
     ERROR = ""
+    NUM_TIMEOUT_TRIES = 0
 
     @staticmethod
     def set_event_queue(Q):
@@ -90,12 +92,14 @@ class MockSelect():
         self.sub_map[subscriber.table] = subscriber
 
     def select(self, TIMEOUT):
-        if not MockSelect.get_event_queue():
-            time.sleep(TIMEOUT/1000)
-            return "TIMEOUT", {}
+        if not MockSelect.get_event_queue() and MockSelect.NUM_TIMEOUT_TRIES == 0:
+            raise TimeoutError
+        elif MockSelect.NUM_TIMEOUT_TRIES != 0:
+            MockSelect.NUM_TIMEOUT_TRIES = MockSelect.NUM_TIMEOUT_TRIES - 1
+            return MockSelect.TIMEOUT, 0
+        
         table, key = MockSelect.get_event_queue().pop(0)
         self.sub_map[table].nextKey(key)
-        self.reset_event_queue()
         return "OBJECT", self.sub_map[table]
 
 
