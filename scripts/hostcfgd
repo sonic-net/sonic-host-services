@@ -573,7 +573,7 @@ class AaaCfg(object):
                 self.modify_single_file(NSS_CONF, [ "/tacplus/b", "/^passwd/s/compat/tacplus &/", "/^passwd/s/files/tacplus &/" ])
         elif 'radius' in authentication['login']:
             if os.path.isfile(NSS_CONF):
-                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //'" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //" ])
                 self.modify_single_file(NSS_CONF, [ "/radius/b", "/^passwd/s/compat/& radius/", "/^passwd/s/files/& radius/" ])
         else:
             if os.path.isfile(NSS_CONF):
