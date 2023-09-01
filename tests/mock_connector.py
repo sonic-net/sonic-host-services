@@ -11,6 +11,11 @@ class MockConnector(object):
     def get(self, db_id, key, field):
         return MockConnector.data[key][field]
 
+    def set(self, db_id, key, field, value):
+        if key not in MockConnector.data:
+            MockConnector.data[key] = {}
+        MockConnector.data[key][field] = value
+
     def keys(self, db_id, pattern):
         match = pattern.split('*')[0]
         ret = []
