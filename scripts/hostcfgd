@@ -984,7 +984,7 @@ class NtpCfg(object):
     3) Purpose of this daemon is to propagate runtime config changes in
        NTP, NTP_SERVER, NTP_KEY, and LOOPBACK_INTERFACE
     """
-    NTP_CONF_RESTART = ['service', 'ntp-config', 'restart']
+    NTP_CONF_RESTART = ['systemctl', 'restart', 'ntp-config']
 
     def __init__(self):
         self.cache = {}
@@ -1067,7 +1067,7 @@ class NtpCfg(object):
         try:
             run_cmd(self.NTP_CONF_RESTART, True, True)
             if restart_ntpd:
-                run_cmd(['service', 'ntp', 'restart'], True, True)
+                run_cmd(['systemctl', 'restart', 'ntp'], True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart ntp '
                                           'services')

@@ -54,14 +54,14 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['service', 'ntp-config', 'restart']),
-                call(['service', 'ntp', 'restart'])
+                call(['systemctl', 'restart', 'ntp-config']),
+                call(['systemctl', 'restart', 'ntp'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({}, MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['service', 'ntp-config', 'restart'])
+                call(['systemctl', 'restart', 'ntp-config'])
             ])
 
     def test_ntp_global_update_ntp_servers(self):
@@ -75,14 +75,14 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['service', 'ntp-config', 'restart']),
-                call(['service', 'ntp', 'restart'])
+                call(['systemctl', 'restart', 'ntp-config']),
+                call(['systemctl', 'restart', 'ntp'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({'0.debian.pool.ntp.org': {}}, {})
             mocked_subprocess.check_call.assert_has_calls([
-                call(['service', 'ntp-config', 'restart'])
+                call(['systemctl', 'restart', 'ntp-config'])
             ])
 
     def test_ntp_is_caching_config(self):
@@ -117,7 +117,7 @@ class TesNtpCfgd(TestCase):
 
             ntpcfgd.handle_ntp_source_intf_chg('eth0')
             mocked_subprocess.check_call.assert_has_calls([
-                call(['service', 'ntp-config', 'restart'])
+                call(['systemctl', 'restart', 'ntp-config'])
             ])
 
 
@@ -150,7 +150,7 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['service', 'ntp-config', 'restart']),
+            expected = [call(['systemctl', 'restart', 'ntp-config']),
             call(['iptables', '-t', 'mangle', '--append', 'PREROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-d', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460']),
             call(['iptables', '-t', 'mangle', '--append', 'POSTROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-s', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
