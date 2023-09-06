@@ -59,6 +59,15 @@ setup(
         'sonic-py-common',
         'deepdiff==6.2.2'
     ],
+    extras_require = {
+        "testing": [
+            'parameterized',
+            'pytest',
+            'pyfakefs',
+            'sonic-py-common',
+            'deepdiff==6.2.2'
+        ]
+    },
     classifiers = [
         'Development Status :: 3 - Alpha',
         'Environment :: Console',
