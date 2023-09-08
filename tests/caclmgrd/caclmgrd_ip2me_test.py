@@ -38,5 +38,5 @@ class TestCaclmgrdIP2Me(TestCase):
         self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
         self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
         caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-        ret = caclmgrd_daemon.generate_block_ip2me_traffic_iptables_commands('')
+        ret = caclmgrd_daemon.generate_block_ip2me_traffic_iptables_commands('', MockConfigDb())
         self.assertListEqual(test_data["return"], ret)
