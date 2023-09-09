@@ -35,10 +35,9 @@ class TestCaclmgrdChassisMidplane(TestCase):
             fs.create_file(DBCONFIG_PATH) # fake database_config.json
 
         with mock.patch("sonic_py_common.device_info.is_chassis", return_value=True):
-            with mock.patch("caclmgrd.ControlPlaneAclManager.run_commands_pipe", return_value='eth1-midplane'):
-                with mock.patch("caclmgrd.ControlPlaneAclManager.run_commands_pipe", return_value='1.0.0.33'):
-                caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-                ret = caclmgrd_daemon.generate_allow_internal_chasis_midplane_traffic('')
-                self.assertListEqual(test_data["return"], ret)
-                ret = caclmgrd_daemon.generate_allow_internal_chasis_midplane_traffic('asic0')
-                self.assertListEqual([], ret)
+            with mock.patch("caclmgrd.ControlPlaneAclManager.run_commands_pipe", side_effect=["eth1-midplane", "1.0.0.33", "eth1-midplane", "1.0.0.33"]):
+                    caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+                    ret = caclmgrd_daemon.generate_allow_internal_chasis_midplane_traffic('')
+                    self.assertListEqual(test_data["return"], ret)
+                    ret = caclmgrd_daemon.generate_allow_internal_chasis_midplane_traffic('asic0')
+                    self.assertListEqual([], ret)
