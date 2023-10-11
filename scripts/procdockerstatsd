@@ -13,7 +13,7 @@ from datetime import datetime
 
 from sonic_py_common import daemon_base
 from swsscommon import swsscommon
-from sonic_py_common.general import getstatusoutput_noshell_pipe
+from sonic_py_common.general import getstatusoutput_noshell_pipe, getstatusoutput_noshell
 
 VERSION = '1.0'
 
@@ -168,6 +168,22 @@ class ProcDockerStats(daemon_base.DaemonBase):
                 cmd = row.get('CMD')
                 self.update_state_db(value, 'CMD', cmd)
 
+    def update_fipsstats_command(self):
+        fips_db_key = 'FIPS_STATS|state'
+
+        # Check if FIPS enforced in the current kernel cmdline
+        with open('/proc/cmdline') as f:
+           kernel_cmdline = f.read().strip().split(' ')
+        enforced = 'sonic_fips=1' in kernel_cmdline or 'fips=1' in kernel_cmdline
+
+        # Check if FIPS runtime status
+        exitcode, _ = getstatusoutput_noshell_pipe(['sudo', 'openssl', 'engine', '-vv'], ['grep', '-i', 'symcryp'])
+        enabled = not any(exitcode)
+
+        self.update_state_db(fips_db_key, 'timestamp', datetime.utcnow().isoformat())
+        self.update_state_db(fips_db_key, 'enforced', str(enforced))
+        self.update_state_db(fips_db_key, 'enabled', str(enabled))
+
     def update_state_db(self, key1, key2, value2):
         self.state_db.set('STATE_DB', key1, key2, value2)
 
@@ -186,6 +202,8 @@ class ProcDockerStats(daemon_base.DaemonBase):
             self.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
             self.update_processstats_command()
             self.update_state_db('PROCESS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+            self.update_fipsstats_command()
+            self.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
 
             # Data need to be updated every 2 mins. hence adding delay of 120 seconds
             time.sleep(120)
