@@ -15,7 +15,6 @@ from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
 scripts_path = os.path.join(modules_path, "scripts")
-src_path = os.path.dirname(modules_path)
 output_path = os.path.join(test_path, "hostcfgd/output")
 sample_output_path = os.path.join(test_path, "hostcfgd/sample_output")
 sys.path.insert(0, modules_path)
