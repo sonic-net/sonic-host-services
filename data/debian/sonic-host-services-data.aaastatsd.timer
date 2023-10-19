@@ -1,0 +1,12 @@
+[Unit]
+Description=Delays aaastatsd daemon until SONiC has started
+PartOf=aaastatsd.service
+
+[Timer]
+OnUnitActiveSec=0 sec
+OnBootSec=1min 30 sec
+Unit=aaastatsd.service
+
+[Install]
+WantedBy=timers.target sonic.target
+
