@@ -57,6 +57,12 @@ class TestHostcfgdTACACS(TestCase):
         hostcfgd.ETC_PAMD_SSHD = op_path + "/sshd"
         hostcfgd.ETC_PAMD_LOGIN = op_path + "/login"
         hostcfgd.RADIUS_PAM_AUTH_CONF_DIR = op_path + "/"
+        hostcfgd.LDAP_CONF_TEMPLATE = t_path + "/ldap.conf.j2"
+        hostcfgd.LDAP_CONF = op_path + "/ldap.conf"
+        # hostcfgd.PAM_LDAP_CONF_TEMPLATE = t_path + "/pam_ldap.conf.j2"
+        # hostcfgd.PAM_LDAP_CONF = op_path + "/pam_ldap.conf"
+        # hostcfgd.NSS_LDAP_CONF_TEMPLATE = t_path + "/libnss-ldap.conf.j2"
+        # hostcfgd.NSS_LDAP_CONF = op_path + "/libnss-ldap.conf"
 
         shutil.rmtree( op_path, ignore_errors=True)
         os.mkdir( op_path)
@@ -83,7 +89,7 @@ class TestHostcfgdTACACS(TestCase):
         except:
             tacacs_server = []
 
-        host_config_daemon.aaacfg.load(aaa,tacacs_global,tacacs_server,[],[])
+        host_config_daemon.aaacfg.load(aaa,tacacs_global,tacacs_server,[],[], {}, {})
 
     """
         Check different config
