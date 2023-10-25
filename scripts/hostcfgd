@@ -105,7 +105,6 @@ def get_salt():
 
 def decrypt_passkey(secret):
     salt = get_salt()
-    print("from hostcfgd ", salt)
     cmd = "echo " + format(secret) + " | openssl enc -aes-128-cbc -a -d -salt -pbkdf2 -pass pass:" + salt 
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     output, errs = proc.communicate()
