@@ -57,6 +57,7 @@ LIMITS_CONF = "/etc/security/limits.conf"
 TACPLUS_SERVER_PASSKEY_DEFAULT = ""
 TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
 TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+TACACS_SECRET_SALT = "2e6593364d369fba925092e0c1c51466c276faa127f20d18cc5ed8ae52bedbcd"
 
 # RADIUS
 RADIUS_SERVER_AUTH_PORT_DEFAULT = "1812"
@@ -75,6 +76,38 @@ DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
 CFG_DB = "CONFIG_DB"
 STATE_DB = "STATE_DB"
 
+
+def get_salt():
+    file_path = "/etc/shadow"
+    target_username = "admin"
+    salt = TACACS_SECRET_SALT 
+
+    # Read the file and search for the "admin" username
+    try:
+        with open(file_path, 'r') as file:
+            for line in file:
+                if "admin:" in line:
+                    # Format: username:$id$salt$hashed
+                    parts = line.split('$')
+                    if len(parts) == 4:
+                        salt = parts[2]
+                        break
+
+    except FileNotFoundError:
+        syslog.syslog(syslog.LOG_ERR, "File not found: {}".format(file_path))
+    except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, "output: {}".format(str(e)))
+    return salt
+
+def decrypt_passkey(secret):
+    salt = get_salt()
+    cmd = "echo " + format(secret) + " | openssl enc -aes-128-cbc -a -d -salt -pbkdf2 -pass pass:" + salt 
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    output, errs = proc.communicate()
+
+    if not errs:
+        output = output.decode('utf-8')
+    return output, errs
 
 def signal_handler(sig, frame):
     if sig == signal.SIGHUP:
@@ -500,6 +533,14 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
+                if server['passkey'] is not None:
+                    config_db = ConfigDBConnector() 
+                    config_db.connect()
+                    output, errs = decrypt_passkey(server['passkey'])
+                    if not errs:
+                        server['passkey'] = output
+                    else:
+                        syslog.syslog(syslog.LOG_ERR, "{}: decrypt_passkey failed.".format(addr))
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
