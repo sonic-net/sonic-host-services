@@ -94,9 +94,9 @@ def get_salt():
                         break
 
     except FileNotFoundError:
-        click.echo('File not found: ' % file_path)
+        syslog.syslog(syslog.LOG_ERR, "File not found: {}".format(file_path))
     except Exception as e:
-        click.echo('An error occurred: ' % str(e))
+        syslog.syslog(syslog.LOG_ERR, "{}".format(str(e))
 
     if salt == None:
         salt = TACACS_SECRET_SALT
