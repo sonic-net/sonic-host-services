@@ -96,7 +96,6 @@ def get_salt():
     except FileNotFoundError:
         click.echo('File not found: ' % file_path)
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
         click.echo('An error occurred: ' % str(e))
 
     if salt == None:
