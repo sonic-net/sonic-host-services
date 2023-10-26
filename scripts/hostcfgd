@@ -96,7 +96,7 @@ def get_salt():
     except FileNotFoundError:
         syslog.syslog(syslog.LOG_ERR, "File not found: {}".format(file_path))
     except Exception as e:
-        syslog.syslog(syslog.LOG_ERR, "output: {}".format(e.output))
+        syslog.syslog(syslog.LOG_ERR, "output: {}".format(str(e)))
     return salt
 
 def decrypt_passkey(secret):
