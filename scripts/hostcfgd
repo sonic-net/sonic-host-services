@@ -80,7 +80,7 @@ STATE_DB = "STATE_DB"
 def get_salt():
     file_path = "/etc/shadow"
     target_username = "admin"
-    salt = None
+    salt = TACACS_SECRET_SALT 
 
     # Read the file and search for the "admin" username
     try:
@@ -98,9 +98,6 @@ def get_salt():
     except Exception as e:
         syslog.syslog(syslog.LOG_ERR, "{}".format(str(e))
 
-    if salt is None:
-        salt = TACACS_SECRET_SALT
-    
     return salt
 
 def decrypt_passkey(secret):
