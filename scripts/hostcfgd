@@ -532,13 +532,14 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
-                config_db = ConfigDBConnector() 
-                config_db.connect()
-                output, errs = decrypt_passkey(server['passkey'])
-                if not errs:
-                    server['passkey'] = output
-                else:
-                    syslog.syslog(syslog.LOG_ERR, "{}: decrypt_passkey failed.".format(addr))
+                if server['passkey'] is not None:
+                    config_db = ConfigDBConnector() 
+                    config_db.connect()
+                    output, errs = decrypt_passkey(server['passkey'])
+                    if not errs:
+                        server['passkey'] = output
+                    else:
+                        syslog.syslog(syslog.LOG_ERR, "{}: decrypt_passkey failed.".format(addr))
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
