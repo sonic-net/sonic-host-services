@@ -107,6 +107,7 @@ def decrypt_passkey(secret):
 
     if not errs:
         output = output.decode('utf-8')
+    return output, errs
 
 def signal_handler(sig, frame):
     if sig == signal.SIGHUP:
