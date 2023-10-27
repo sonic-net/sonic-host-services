@@ -46,7 +46,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "global": {
                             "auth_type": "chap",
                             "timeout": 5,
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "src_intf": "Ethernet0"
                     }
                 },
@@ -56,7 +56,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 50,
                             "timeout": 10,
                             "auth_type": "chap",
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "vrf": "default"
                     },
                     "192.168.1.2" : {
@@ -64,7 +64,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 51,
                             "timeout": 15,
                             "auth_type": "pap",
-                            "passkey": "dellsonic1",
+                            "passkey": "U2FsdGVkX1/JWY/fktTzRyZbuUg79+BnvEn1jPupNCM=",
                             "vrf": "mgmt"
                     }
                 },
@@ -108,7 +108,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "global": {
                             "auth_type": "chap",
                             "timeout": 5,
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "src_intf": "Ethernet0"
                     }
                 },
@@ -118,7 +118,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 50,
                             "timeout": 10,
                             "auth_type": "chap",
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "vrf": "default"
                     },
                     "192.168.1.2" : {
@@ -126,7 +126,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 51,
                             "timeout": 15,
                             "auth_type": "pap",
-                            "passkey": "dellsonic1",
+                            "passkey": "U2FsdGVkX1/JWY/fktTzRyZbuUg79+BnvEn1jPupNCM=",
                             "vrf": "mgmt"
                     }
                 },
@@ -170,7 +170,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "global": {
                             "auth_type": "chap",
                             "timeout": 5,
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "src_intf": "Ethernet0"
                     }
                 },
@@ -180,7 +180,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 50,
                             "timeout": 10,
                             "auth_type": "chap",
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "vrf": "default"
                     },
                     "192.168.1.2" : {
@@ -188,7 +188,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 51,
                             "timeout": 15,
                             "auth_type": "pap",
-                            "passkey": "dellsonic1",
+                            "passkey": "U2FsdGVkX1/JWY/fktTzRyZbuUg79+BnvEn1jPupNCM=",
                             "vrf": "mgmt"
                     }
                 },
@@ -232,7 +232,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "global": {
                             "auth_type": "chap",
                             "timeout": 5,
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "src_intf": "Ethernet0"
                     }
                 },
@@ -242,7 +242,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 50,
                             "timeout": 10,
                             "auth_type": "chap",
-                            "passkey": "dellsonic",
+                            "passkey": "U2FsdGVkX1+hVtCDFDHckKVtuZsap88euNyLxGToWCw=",
                             "vrf": "default"
                     },
                     "192.168.1.2" : {
@@ -250,7 +250,7 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "tcp_port": 51,
                             "timeout": 15,
                             "auth_type": "pap",
-                            "passkey": "dellsonic1",
+                            "passkey": "U2FsdGVkX1/JWY/fktTzRyZbuUg79+BnvEn1jPupNCM=",
                             "vrf": "mgmt"
                     }
                 },
