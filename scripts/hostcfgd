@@ -79,14 +79,14 @@ STATE_DB = "STATE_DB"
 
 def get_salt():
     file_path = "/etc/shadow"
-    target_username = "admin"
+    target_username = "admin" + ":" 
     salt = TACACS_SECRET_SALT 
 
     # Read the file and search for the "admin" username
     try:
         with open(file_path, 'r') as file:
             for line in file:
-                if "admin:" in line:
+                if target_username in line:
                     # Format: username:$id$salt$hashed
                     parts = line.split('$')
                     if len(parts) == 4:
