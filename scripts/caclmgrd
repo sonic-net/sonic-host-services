@@ -365,7 +365,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
             loopback_address = loopback_networks[0].network_address
             vlan_name = 'Vlan'
-            vlan_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.VLAN_INTF_TABLE)
+            vlan_table = config_db_connector.get_table(self.VLAN_INTF_TABLE)
             vlan_networks = get_ipv4_networks_from_interface_table(vlan_table, vlan_name)
 
             if len(vlan_networks) == 0:
@@ -373,10 +373,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                    "iptables -t nat --flush POSTROUTING")
+                    ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
             
             if loopback_address is not None:
-                mux_table = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.CONFIG_MUX_CABLE)
+                mux_table = config_db_connector.get_table(self.CONFIG_MUX_CABLE)
                 mux_table_keys = mux_table.keys()
                 for key in mux_table_keys:
                     kvp = mux_table.get(key)
