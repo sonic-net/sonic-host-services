@@ -44,3 +44,43 @@ CACLMGRD_SOC_TEST_VECTOR = [
         }
     ]
 ]
+
+
+CACLMGRD_SOC_TEST_VECTOR_EMPTY = [
+    [
+        "SOC_SESSION_TEST",
+        {
+            "config_db": {
+                "DEVICE_METADATA": {
+                    "localhost": {
+                        "subtype": "DualToR",
+                        "type": "ToRRouter",
+                    }
+                },
+                "MUX_CABLE": {
+                    "Ethernet4": {
+                        "cable_type": "active-active",
+                        "soc_ipv4": "10.10.11.7/32",
+                    }
+                },
+                "VLAN_INTERFACE": {
+                    "Vlan1000|10.10.10.3/24": {
+                        "NULL": "NULL",
+                    }
+                },
+                "LOOPBACK_INTERFACE": {
+                    "Loopback3|10.10.10.10/32": {
+                        "NULL": "NULL",
+                    }
+                },
+                "FEATURE": {
+                },
+            },
+            "expected_subprocess_calls": [],
+            "popen_attributes": {
+                'communicate.return_value': ('output', 'error'),
+            },
+            "call_rc": 0,
+        }
+    ]
+]
