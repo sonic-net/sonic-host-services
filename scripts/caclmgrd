@@ -359,7 +359,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 self.log_warning("Loopback 3 IP not available from DualToR active-active config")
                 return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
-            if not isinstance(loopback_networks[0], ipaddress.IPv4Network)
+            if not isinstance(loopback_networks[0], ipaddress.IPv4Network):
                 self.log_warning("Loopback 3 IP Network not available from DualToR active-active config")
                 return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
@@ -388,7 +388,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                             if soc_ipv4_addr in ip_network:
                                 vlan_address = ip_network.network_address
                                 fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                                        "iptables -t nat -A POSTROUTING --destination {} --source {} -j SNAT --to-source {}".format(str(soc_ipv4_addr), str(vlan_address), str(loopback_address)))
+                                         ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '--destination', str(soc_ipv4_addr), '--source', str(vlan_address), '-j', 'SNAT', '--to-source', str(loopback_address)])
 
         return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
