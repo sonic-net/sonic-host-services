@@ -52,6 +52,17 @@ HOSTCFG_DAEMON_CFG_DB = {
     "NTP_SERVER": {
         "0.debian.pool.ntp.org": {}
     },
+    "NTP_KEY": {
+        "1": {
+            "value": "blahblah",
+            "type": "md5"
+        },
+        "42": {
+            "value": "theanswer",
+            "type": "md5",
+            "trusted": "yes"
+        }
+    },
     "LOOPBACK_INTERFACE": {
         "Loopback0|10.184.8.233/32": {
             "scope": "global",
