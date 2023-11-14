@@ -7,6 +7,12 @@ trigger:
 - master
 - 202???
 
+pr:
+  branches:
+    include:
+    - master
+    - 202???
+
 resources:
   repositories:
   - repository: sonic-buildimage
