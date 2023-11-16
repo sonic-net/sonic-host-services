@@ -403,6 +403,164 @@ FEATURED_TEST_VECTOR = [
         },
     ],
     [
+        "SingleToRCase_DHCP_Server_Enabled",
+        {
+            "device_runtime_metadata": {
+                "DEVICE_RUNTIME_METADATA": {
+                    "ETHERNET_PORTS_PRESENT": True
+                    }
+                },
+            "config_db": {
+                "DEVICE_METADATA": {
+                    "localhost": {
+                        "type": "ToR",
+                    }
+                },
+                "FEATURE": {
+                    "dhcp_server": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "local",
+                        "state": "enabled"
+                    }
+                },
+            },
+            "expected_config_db": {
+                "FEATURE": {
+                    "dhcp_server": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "local",
+                        "state": "enabled"
+                    }
+                },
+            },
+            "enable_feature_subprocess_calls": [
+                call(["sudo", "systemctl", "unmask", "dhcp_server.service"]),
+                call(["sudo", "systemctl", "enable", "dhcp_server.service"]),
+                call(["sudo", "systemctl", "start", "dhcp_server.service"])
+            ],
+            "daemon_reload_subprocess_call": [
+                call(["sudo", "systemctl", "daemon-reload"]),
+            ],
+            "popen_attributes": {
+                'communicate.return_value': ('output', 'error')
+            },
+            "is_service_enabled_side_effict": [True]
+        },
+    ],
+    [
+        "SingleToRCase_DHCP_Server_Enabled_Dhcp_Relay_Disabled",
+        {
+            "device_runtime_metadata": {
+                "DEVICE_RUNTIME_METADATA": {
+                    "ETHERNET_PORTS_PRESENT": True
+                    }
+                },
+            "config_db": {
+                "DEVICE_METADATA": {
+                    "localhost": {
+                        "type": "ToR",
+                    }
+                },
+                "FEATURE": {
+                    "dhcp_server": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "local",
+                        "state": "enabled"
+                    }
+                },
+            },
+            "expected_config_db": {
+                "FEATURE": {
+                    "dhcp_server": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "local",
+                        "state": "enabled"
+                    }
+                },
+            },
+            "enable_feature_subprocess_calls": [
+                call(["sudo", "systemctl", "unmask", "dhcp_server.service"]),
+                call(["sudo", "systemctl", "enable", "dhcp_server.service"]),
+                call(["sudo", "systemctl", "start", "dhcp_server.service"])
+            ],
+            "daemon_reload_subprocess_call": [
+                call(["sudo", "systemctl", "daemon-reload"]),
+            ],
+            "popen_attributes": {
+                'communicate.return_value': ('output', 'error')
+            },
+            "is_service_enabled_side_effict": [False]
+        },
+    ],
+    [
+        "SingleToRCase_DHCP_Server_Disabled",
+        {
+            "device_runtime_metadata": {
+                "DEVICE_RUNTIME_METADATA": {
+                    "ETHERNET_PORTS_PRESENT": True
+                    }
+                },
+            "config_db": {
+                "DEVICE_METADATA": {
+                    "localhost": {
+                        "type": "ToR",
+                    }
+                },
+                "FEATURE": {
+                    "dhcp_server": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "local",
+                        "state": "disabled"
+                    }
+                },
+            },
+            "expected_config_db": {
+                "FEATURE": {
+                    "dhcp_server": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "local",
+                        "state": "disabled"
+                    }
+                },
+            },
+            "enable_feature_subprocess_calls": [
+                call(["sudo", "systemctl", "stop", "dhcp_server.service"]),
+                call(["sudo", "systemctl", "disable", "dhcp_server.service"]),
+                call(["sudo", "systemctl", "mask", "dhcp_server.service"])
+            ],
+            "daemon_reload_subprocess_call": [
+                call(["sudo", "systemctl", "daemon-reload"]),
+            ],
+            "popen_attributes": {
+                'communicate.return_value': ('output', 'error')
+            },
+        },
+    ],
+    [
         "DualTorCaseWithNoSystemCalls",
         {
             "device_runtime_metadata": {

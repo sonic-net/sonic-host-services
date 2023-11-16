@@ -24,15 +24,48 @@ DEFAULT_SELECT_TIMEOUT = 1000 # 1sec
 PORT_INIT_TIMEOUT_SEC = 180
 
 
-def run_cmd(cmd, log_err=True, raise_exception=False):
+def run_cmd(cmd, log_err=True, raise_exception=False, return_res=False):
     try:
-        subprocess.check_call(cmd)
+        if return_res:
+            return 0, subprocess.check_output(cmd, universal_newlines=True)
+        else:
+            subprocess.check_call(cmd)
     except Exception as err:
         if log_err:
             syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
                   .format(err.cmd, err.returncode, err.output))
         if raise_exception:
             raise
+        if return_res:
+            return err.returncode, str("Encouter error: {}".format(err.output))
+
+
+def is_service_enabled(service_name):
+    """
+    Check whether service is enabled
+    Args:
+        service_name: Name of service to be checked
+    Returns:
+        If service is enabled, return True. Else return False
+    """
+    state, output = run_cmd(["systemctl", "is-enabled", service_name], return_res=True)
+    return state == 0 and output.strip() == "enabled"
+
+
+def restart_service(service_name):
+    """
+    Restart service by name
+    Args:
+        service_name: Name of service to be restarted
+    """
+    if is_service_enabled(service_name):
+        syslog.syslog(syslog.LOG_INFO, "Restarting {}".format(service_name))
+        run_cmd(["sudo", "systemctl", "stop", service_name])
+        run_cmd(["sudo", "systemctl", "reset-failed", service_name])
+        run_cmd(["sudo", "systemctl", "start", service_name], raise_exception=True)
+        syslog.syslog(syslog.LOG_INFO, "{} restarted successfully".format(service_name))
+    else:
+        syslog.syslog(syslog.LOG_ERR, "Cannot restart {} because it's not enabled".format(service_name))
 
 
 def signal_handler(sig, frame):
@@ -414,7 +447,9 @@ class FeatureHandler(object):
                                   .format(feature.name, feature_suffixes[-1]))
                     self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
                     return
-
+            if feature_name == "dhcp_server":
+                # For dhcp_server feature change, we need to restart dhcp_relay container too
+                restart_service("dhcp_relay")
         self.set_feature_state(feature, self.FEATURE_STATE_ENABLED)
 
     def disable_feature(self, feature):
@@ -438,6 +473,9 @@ class FeatureHandler(object):
                                   .format(feature.name, feature_suffixes[-1]))
                     self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
                     return
+            if feature.name == "dhcp_server":
+                # For dhcp_server feature change, we need to restart dhcp_relay container too
+                restart_service("dhcp_relay")
 
         self.set_feature_state(feature, self.FEATURE_STATE_DISABLED)
 

@@ -203,11 +203,14 @@ class TestFeatureHandler(TestCase):
         with mock.patch('featured.subprocess') as mocked_subprocess:
             with mock.patch("sonic_py_common.device_info.get_device_runtime_metadata", return_value=config_data['device_runtime_metadata']):
                 with mock.patch("sonic_py_common.device_info.is_multi_npu", return_value=True if 'num_npu' in config_data else False):
-                    with mock.patch("sonic_py_common.device_info.get_num_npus", return_value=config_data['num_npu'] if 'num_npu' in config_data else 1):
+                    with mock.patch("sonic_py_common.device_info.get_num_npus", return_value=config_data['num_npu'] if 'num_npu' in config_data else 1), \
+                         mock.patch("featured.is_service_enabled") as mock_is_service_enabled:
                         popen_mock = mock.Mock()
                         attrs = config_data['popen_attributes']
                         popen_mock.configure_mock(**attrs)
                         mocked_subprocess.Popen.return_value = popen_mock
+                        if "is_service_enabled_side_effict" in config_data:
+                            mock_is_service_enabled.side_effect = config_data["is_service_enabled_side_effict"]
 
                         device_config = {}
                         device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
