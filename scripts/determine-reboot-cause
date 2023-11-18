@@ -29,7 +29,8 @@ REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR, "reboot-cause.txt")
 PREVIOUS_REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR,  "previous-reboot-cause.json")
 FIRST_BOOT_PLATFORM_FILE = "/tmp/notify_firstboot_to_platform"
 REBOOT_TYPE_KEXEC_FILE = "/proc/cmdline"
-REBOOT_PROCESSED_FILE = "/tmp/previous-reboot-cause-processed"
+TMP_DIR="/tmp"
+REBOOT_PROCESSED_FILE = os.path.join(TMP_DIR, "previous-reboot-cause-processed")
 # The following SONIC_BOOT_TYPEs come from the warm/fast reboot script which is in sonic-utilities
 # Because the system can be rebooted from some old versions, we have to take all possible BOOT options into consideration.
 # On 201803, 201807 we have
@@ -221,7 +222,7 @@ def main():
 
     if os.path.exists(REBOOT_PROCESSED_FILE):
         sonic_logger.log_info("User {} : reboot-cause already processed. Nothing to do. Exiting...".format(pwd.getpwuid(os.getuid()).pw_name))
-        sys.exit(0)
+        return
 
     # Create REBOOT_CAUSE_DIR if it doesn't exist
     if not os.path.exists(REBOOT_CAUSE_DIR):
