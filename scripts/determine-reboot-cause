@@ -29,6 +29,8 @@ REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR, "reboot-cause.txt")
 PREVIOUS_REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR,  "previous-reboot-cause.json")
 FIRST_BOOT_PLATFORM_FILE = "/tmp/notify_firstboot_to_platform"
 REBOOT_TYPE_KEXEC_FILE = "/proc/cmdline"
+TMP_DIR="/tmp"
+REBOOT_PROCESSED_FILE = os.path.join(TMP_DIR, "previous-reboot-cause-processed")
 # The following SONIC_BOOT_TYPEs come from the warm/fast reboot script which is in sonic-utilities
 # Because the system can be rebooted from some old versions, we have to take all possible BOOT options into consideration.
 # On 201803, 201807 we have
@@ -218,6 +220,10 @@ def main():
         sonic_logger.log_error("User {} does not have permission to execute".format(pwd.getpwuid(os.getuid()).pw_name))
         sys.exit("This utility must be run as root")
 
+    if os.path.exists(REBOOT_PROCESSED_FILE):
+        sonic_logger.log_info("User {} : reboot-cause already processed. Nothing to do. Exiting...".format(pwd.getpwuid(os.getuid()).pw_name))
+        return
+
     # Create REBOOT_CAUSE_DIR if it doesn't exist
     if not os.path.exists(REBOOT_CAUSE_DIR):
         os.makedirs(REBOOT_CAUSE_DIR)
@@ -257,6 +263,10 @@ def main():
     with open(REBOOT_CAUSE_FILE, "w") as cause_file:
         cause_file.write(REBOOT_CAUSE_UNKNOWN)
 
+    # Create tmp reboot processed file to mark processing of last reboot cause during current boot.
+    # This is used to prevent reprocessing of reboot cause if this service restarts.
+    with open(REBOOT_PROCESSED_FILE, "w") as reboot_processed_file:
+        reboot_processed_file.write("processed last reboot cause")
 
 if __name__ == "__main__":
     main()
