@@ -71,8 +71,7 @@ EXPECTED_USER_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_14_
 EXPECTED_KERNEL_PANIC_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2021_3_28_13_48_49', 'cause': 'Kernel Panic', 'user': 'N/A', 'time': 'Sun Mar 28 13:45:12 UTC 2021'}
 
 REBOOT_CAUSE_DIR="host/reboot-cause/"
-TMP_DIR="tmp/"
-REBOOT_PROCESSED_FILE="tmp/previous-reboot-cause-processed"
+
 class TestDetermineRebootCause(object):
     def test_parse_warmfast_reboot_from_proc_cmdline(self):
         with mock.patch("os.path.isfile") as mock_isfile:
@@ -180,58 +179,23 @@ class TestDetermineRebootCause(object):
                     assert additional_info == EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_USER
 
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_DIR', os.path.join(os.getcwd(), REBOOT_CAUSE_DIR))
-    @mock.patch('determine_reboot_cause.TMP_DIR', os.path.join(os.getcwd(), TMP_DIR))
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_HISTORY_DIR', os.path.join(os.getcwd(), 'host/reboot-cause/history/'))
     @mock.patch('determine_reboot_cause.PREVIOUS_REBOOT_CAUSE_FILE', os.path.join(os.getcwd(), 'host/reboot-cause/previous-reboot-cause.json'))
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_FILE', os.path.join(os.getcwd(),'host/reboot-cause/reboot-cause.txt'))
-    @mock.patch('determine_reboot_cause.REBOOT_PROCESSED_FILE', os.path.join(os.getcwd(),'tmp/previous-reboot-cause-processed'))
     def test_determine_reboot_cause_main_without_reboot_cause_dir(self):
         if os.path.exists(REBOOT_CAUSE_DIR):
             shutil.rmtree(REBOOT_CAUSE_DIR)
-        if not os.path.exists(TMP_DIR):
-            os.makedirs(TMP_DIR)
-        if os.path.exists(REBOOT_PROCESSED_FILE):
-            os.remove(REBOOT_PROCESSED_FILE)
         with mock.patch("os.geteuid", return_value=0):
             determine_reboot_cause.main()
             assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
             assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True
-            assert os.path.exists(REBOOT_PROCESSED_FILE) == True
 
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_DIR', os.path.join(os.getcwd(), REBOOT_CAUSE_DIR))
-    @mock.patch('determine_reboot_cause.TMP_DIR', os.path.join(os.getcwd(), TMP_DIR))
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_HISTORY_DIR', os.path.join(os.getcwd(), 'host/reboot-cause/history/'))
     @mock.patch('determine_reboot_cause.PREVIOUS_REBOOT_CAUSE_FILE', os.path.join(os.getcwd(), 'host/reboot-cause/previous-reboot-cause.json'))
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_FILE', os.path.join(os.getcwd(),'host/reboot-cause/reboot-cause.txt'))
-    @mock.patch('determine_reboot_cause.REBOOT_PROCESSED_FILE', os.path.join(os.getcwd(),'tmp/previous-reboot-cause-processed'))
     def test_determine_reboot_cause_main_with_reboot_cause_dir(self):
-        if not os.path.exists(TMP_DIR):
-            os.makedirs(TMP_DIR)
-        if os.path.exists(REBOOT_PROCESSED_FILE):
-            os.remove(REBOOT_PROCESSED_FILE)
         with mock.patch("os.geteuid", return_value=0):
             determine_reboot_cause.main()
             assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
             assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True   
-            assert os.path.exists(REBOOT_PROCESSED_FILE) == True
-
-    @mock.patch('determine_reboot_cause.REBOOT_CAUSE_DIR', os.path.join(os.getcwd(), REBOOT_CAUSE_DIR))
-    @mock.patch('determine_reboot_cause.TMP_DIR', os.path.join(os.getcwd(), TMP_DIR))
-    @mock.patch('determine_reboot_cause.REBOOT_CAUSE_HISTORY_DIR', os.path.join(os.getcwd(), 'host/reboot-cause/history/'))
-    @mock.patch('determine_reboot_cause.PREVIOUS_REBOOT_CAUSE_FILE', os.path.join(os.getcwd(), 'host/reboot-cause/previous-reboot-cause.json'))
-    @mock.patch('determine_reboot_cause.REBOOT_CAUSE_FILE', os.path.join(os.getcwd(),'host/reboot-cause/reboot-cause.txt'))
-    @mock.patch('determine_reboot_cause.REBOOT_PROCESSED_FILE', os.path.join(os.getcwd(),'tmp/previous-reboot-cause-processed'))
-    def test_determine_reboot_cause_test_restart(self):
-        if os.path.exists(REBOOT_CAUSE_DIR):
-            shutil.rmtree(REBOOT_CAUSE_DIR)
-        if not os.path.exists(TMP_DIR):
-            os.makedirs(TMP_DIR)
-        if not os.path.exists(REBOOT_PROCESSED_FILE):
-            os.mknod(REBOOT_PROCESSED_FILE)
-        with mock.patch("os.geteuid", return_value=0):
-            determine_reboot_cause.main()
-            assert os.path.exists("host/reboot-cause/reboot-cause.txt") == False
-            assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == False
-            assert os.path.exists(REBOOT_PROCESSED_FILE) == True
-        if os.path.exists(TMP_DIR):
-           shutil.rmtree(TMP_DIR)
