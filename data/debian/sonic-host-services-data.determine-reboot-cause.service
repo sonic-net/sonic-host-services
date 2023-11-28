@@ -6,7 +6,6 @@ ConditionPathExists=!/tmp/determine-reboot-cause
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
 ExecStart=/usr/local/bin/determine-reboot-cause
 ExecStartPost=/usr/bin/touch /tmp/determine-reboot-cause
 [Install]
