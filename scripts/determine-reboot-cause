@@ -38,6 +38,7 @@ REBOOT_TYPE_KEXEC_FILE = "/proc/cmdline"
 # To extract the commom part of them, we should have the following PATTERN
 REBOOT_TYPE_KEXEC_PATTERN_WARM = ".*SONIC_BOOT_TYPE=(warm|fastfast).*"
 REBOOT_TYPE_KEXEC_PATTERN_FAST = ".*SONIC_BOOT_TYPE=(fast|fast-reboot).*"
+REBOOT_TYPE_KEXEC_PATTERN_EXPRESS = ".*SONIC_BOOT_TYPE=(express).*"
 
 REBOOT_CAUSE_UNKNOWN = "Unknown"
 REBOOT_CAUSE_NON_HARDWARE = "Non-Hardware"
@@ -58,6 +59,9 @@ def parse_warmfast_reboot_from_proc_cmdline():
         m = re.search(REBOOT_TYPE_KEXEC_PATTERN_FAST, cause_file_kexec)
         if m and m.group(1):
             return 'fast-reboot'
+        m = re.search(REBOOT_TYPE_KEXEC_PATTERN_EXPRESS, cause_file_kexec)
+        if m and m.group(1):
+            return 'express-reboot'
     return None
 
 
