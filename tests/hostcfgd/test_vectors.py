@@ -576,8 +576,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -606,12 +612,23 @@ HOSTCFGD_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
                 call(["sudo", "systemctl", "stop", "bgp.service"]),
                 call(["sudo", "systemctl", "disable", "bgp.service"]),
                 call(["sudo", "systemctl", "mask", "bgp.service"]),
+                call(["sudo", "systemctl", "start", "syncd.service"]),
+                call(["sudo", "systemctl", "enable", "syncd.service"]),
+                call(["sudo", "systemctl", "unmask", "syncd.service"]),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"]),
@@ -671,8 +688,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -701,12 +724,23 @@ HOSTCFGD_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
                 call(["sudo", "systemctl", "stop", "bgp.service"]),
                 call(["sudo", "systemctl", "disable", "bgp.service"]),
                 call(["sudo", "systemctl", "mask", "bgp.service"]),
+                call(["sudo", "systemctl", "start", "syncd.service"]),
+                call(["sudo", "systemctl", "enable", "syncd.service"]),
+                call(["sudo", "systemctl", "unmask", "syncd.service"]),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"]),
@@ -766,8 +800,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -796,6 +836,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
@@ -805,6 +853,9 @@ HOSTCFGD_TEST_VECTOR = [
                 call(["sudo", "systemctl", "start", "teamd.service"]),
                 call(["sudo", "systemctl", "enable", "teamd.service"]),
                 call(["sudo", "systemctl", "unmask", "teamd.service"]),
+                call(["sudo", "systemctl", "start", "syncd.service"]),
+                call(["sudo", "systemctl", "enable", "syncd.service"]),
+                call(["sudo", "systemctl", "unmask", "syncd.service"]),
  
             ],
             "daemon_reload_subprocess_call": [
@@ -865,8 +916,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -895,6 +952,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
@@ -904,6 +969,9 @@ HOSTCFGD_TEST_VECTOR = [
                 call(["sudo", "systemctl", "start", "teamd.service"]),
                 call(["sudo", "systemctl", "enable", "teamd.service"]),
                 call(["sudo", "systemctl", "unmask", "teamd.service"]),
+                call(["sudo", "systemctl", "start", "syncd.service"]),
+                call(["sudo", "systemctl", "enable", "syncd.service"]),
+                call(["sudo", "systemctl", "unmask", "syncd.service"]),
  
             ],
             "daemon_reload_subprocess_call": [
@@ -965,8 +1033,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -995,6 +1069,14 @@ HOSTCFGD_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
@@ -1016,6 +1098,12 @@ HOSTCFGD_TEST_VECTOR = [
                 call(["sudo", "systemctl", "stop", "lldp@1.service"]),
                 call(["sudo", "systemctl", "disable", "lldp@1.service"]),
                 call(["sudo", "systemctl", "mask", "lldp@1.service"]),
+                call(["sudo", "systemctl", "start", "syncd@0.service"]),
+                call(["sudo", "systemctl", "enable", "syncd@0.service"]),
+                call(["sudo", "systemctl", "unmask", "syncd@0.service"]),
+                call(["sudo", "systemctl", "start", "syncd@1.service"]),
+                call(["sudo", "systemctl", "enable", "syncd@1.service"]),
+                call(["sudo", "systemctl", "unmask", "syncd@1.service"]),
  
             ],
             "daemon_reload_subprocess_call": [
