@@ -13,6 +13,7 @@ resources:
     type: github
     name: sonic-net/sonic-buildimage
     endpoint: build
+    ref: 202305
 
 variables:
   - name: BUILD_BRANCH
