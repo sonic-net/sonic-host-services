@@ -368,7 +368,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
 
-            loopback_address_keys = list(loopback_networks.values())
+            loopback_address_keys = list(loopback_networks.keys())
 
             if not isinstance(loopback_address_keys[0], ipaddress.IPv4Network):
                 self.log_warning("Loopback 3 IP Network not available from DualToR active-active config")
