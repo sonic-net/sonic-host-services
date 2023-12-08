@@ -29,7 +29,7 @@ class TestCaclmgrdSoc(TestCase):
         
     @parameterized.expand(CACLMGRD_SOC_TEST_VECTOR)
     @patchfs
-    @patch('caclmgrd.get_ipv4_networks_from_interface_table', MagicMock(return_value={IPv4Network('10.10.10.18/24', strict=False): IPv4Address('10.10.10.18') , IPv4Network('10.10.11.18/24', strict=False) : IPv4Address('10.10.11.18')  }))
+    #@patch('caclmgrd.get_ipv4_networks_from_interface_table', MagicMock(return_value={IPv4Network('10.10.10.18/24', strict=False): IPv4Address('10.10.10.18') , IPv4Network('10.10.11.18/24', strict=False) : IPv4Address('10.10.11.18')  }))
     def test_caclmgrd_soc(self, test_name, test_data, fs):
         if not os.path.exists(DBCONFIG_PATH):
             fs.create_file(DBCONFIG_PATH) # fake database_config.json
