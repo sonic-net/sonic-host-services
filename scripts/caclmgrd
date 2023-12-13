@@ -334,7 +334,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ipv6[namespace], '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
             allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_mgmt_ip, '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
 
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', 'self.namespace_docker_mgmt_ipv6[namespace]', '-j', 'ACCEPT'])
+            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
 
         else:
 
