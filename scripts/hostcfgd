@@ -500,13 +500,17 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
-                if ('key_encrypt' in server) and (server['key_encrypt']):
+                if 'key_encrypt' in server:
                     secure_cipher = security_cipher()
-                    output, errs = secure_cipher.decrypt_passkey("TACPLUS", server['passkey'])
-                    if not errs:
-                       server['passkey'] = output
+                    if server['key_encrypt'] == 'True':
+                        output, errs = secure_cipher.decrypt_passkey("TACPLUS", server['passkey'])
+                        if not errs:
+                           server['passkey'] = output
+                        else:
+                            syslog.syslog(syslog.LOG_ERR, "{}: decrypt_passkey failed.".format(addr))
                     else:
-                        syslog.syslog(syslog.LOG_ERR, "{}: decrypt_passkey failed.".format(addr))
+                        # Delete the cipher_pass file if exist
+                        secure_cipher.del_cipher_pass()
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
