@@ -725,8 +725,8 @@ class PasswHardening(object):
                     # Special values of expiration/expiration warning
                     # 0: meaning password will be expired/warning immediately.
                     # -1: meaning password expired/warning never.
-                    curr_expiration = int(passw_policies.get('expiration'))
-                    curr_expiration_warning = int(passw_policies.get('expiration_warning'))
+                    curr_expiration = int(passw_policies.get('expiration', -1))
+                    curr_expiration_warning = int(passw_policies.get('expiration_warning', -1))
 
         if self.is_passwd_aging_expire_update(curr_expiration, 'MAX_DAYS'):
             # Set aging policy for existing users
