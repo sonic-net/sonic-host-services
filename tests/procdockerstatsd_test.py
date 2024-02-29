@@ -1,5 +1,6 @@
 import sys
 import os
+import psutil
 import pytest
 from unittest.mock import call, patch
 from swsscommon import swsscommon
@@ -17,6 +18,62 @@ sys.path.insert(0, modules_path)
 # Load the file under test
 procdockerstatsd_path = os.path.join(scripts_path, 'procdockerstatsd')
 procdockerstatsd = load_module_from_source('procdockerstatsd', procdockerstatsd_path)
+
+class MockProcess:
+    def __init__(self, uids, pid, ppid, memory_percent, cpu_percent, create_time, cmdline, user_time, system_time):
+        self._uids = uids
+        self._pid = pid
+        self._ppid = ppid
+        self._memory_percent = memory_percent
+        self._cpu_percent = cpu_percent
+        self._create_time = create_time
+        self._terminal = cmdline
+        self._cmdline = cmdline
+        self._user_time = user_time
+        self._system_time = system_time
+
+    def uids(self):
+        return self._uids
+
+    def pid(self):
+        return self._pid
+
+    def ppid(self):
+        return self._ppid
+
+    def memory_percent(self):
+        return self._memory_percent
+
+    def cpu_percent(self):
+        return self._cpu_percent
+
+    def create_time(self):
+        return self._create_time
+
+    def terminal(self):
+        return self._terminal
+
+    def cmdline(self):
+        return self._cmdline
+
+    def cpu_times(self):
+        class CPUTimes:
+            def __init__(self, user_time, system_time):
+                self.user = user_time
+                self.system = system_time
+
+            def __getitem__(self, index):
+                if index == 0:
+                    return self.user
+                else:
+                    return self.system
+
+            def __iter__(self):
+                yield self.user
+                yield self.system
+
+        return CPUTimes(self._user_time, self._system_time)
+
 
 class TestProcDockerStatsDaemon(object):
     def test_convert_to_bytes(self):
@@ -51,11 +108,17 @@ class TestProcDockerStatsDaemon(object):
         assert output is None
 
     def test_update_processstats_command(self):
-        expected_calls = [call(["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"], ["head", "-1024"])]
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
-        with patch("procdockerstatsd.getstatusoutput_noshell_pipe", return_value=([0, 0], 'output')) as mock_cmd:
+
+        # Create a list of mocked processes
+        mocked_processes = [
+            MockProcess(uids=[1000], pid=1234, ppid=5678, memory_percent=10.5, cpu_percent=20.5, create_time=1234567890, cmdline=['python', 'script.py'], user_time=1.5, system_time=2.0),
+            MockProcess(uids=[1000], pid=5678, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=9876543210, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0)
+        ]
+
+        with patch("procdockerstatsd.psutil.process_iter", return_value=mocked_processes) as mock_process_iter:
             pdstatsd.update_processstats_command()
-            mock_cmd.assert_has_calls(expected_calls)
+            mock_process_iter.assert_called_once()
 
     @patch('procdockerstatsd.getstatusoutput_noshell_pipe', return_value=([0, 0], ''))
     def test_update_fipsstats_command(self, mock_cmd):
