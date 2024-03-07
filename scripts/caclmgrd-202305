@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 #
 # caclmgrd
 #
@@ -41,10 +41,8 @@ def _ip_prefix_in_key(key):
     """
     return (isinstance(key, tuple))
 
+def get_ip_from_interface_table(table, intf_name):
 
-def get_ipv4_networks_from_interface_table(table, intf_name):
-    
-    addresses = {}
     if table:
         for key, _ in table.items():
             if not _ip_prefix_in_key(key):
@@ -53,13 +51,12 @@ def get_ipv4_networks_from_interface_table(table, intf_name):
 
             iface_name, iface_cidr = key
             if iface_name.startswith(intf_name):
-                ip_ntwrk = ipaddress.ip_network(iface_cidr, strict=False)
                 ip_str = iface_cidr.split("/")[0]
                 ip_addr = ipaddress.ip_address(ip_str)
-                if isinstance(ip_ntwrk, ipaddress.IPv4Network) and isinstance(ip_addr, ipaddress.IPv4Address):
-                    addresses[ip_ntwrk] = ip_addr
+                if isinstance(ip_addr, ipaddress.IPv4Address):
+                    return ip_addr
 
-    return addresses
+    return None
 
 # ============================== Classes ==============================
 
@@ -262,6 +259,31 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         tcp_flags_str = tcp_flags_str[:-1]
         return tcp_flags_str
 
+    def generate_allow_restapi_iptables_commands(self, namespace):
+        # Following ranges from 6 regions are temporarily hardcoded and allowed for Bluebird Service
+        src_ip_range = ["20.44.16.64/27", "13.66.141.96/27", "13.69.229.128/27", "52.162.110.128/27", "52.231.147.224/27", "40.74.146.224/27", "40.78.203.96/27", "20.150.171.224/27", "52.162.110.128/27"]
+        dest_ip_range = ["10.20.8.199/32", "10.212.64.1/32", "10.212.64.2/32"]
+        dports = ["8081", "8090"]
+
+        allow_restapi_commands = []
+
+        for dport in dports:
+            for src_ip in src_ip_range:
+                ip_ntwrk = ipaddress.ip_network(src_ip, strict=False)
+                if isinstance(ip_ntwrk, ipaddress.IPv4Network):
+                    allow_restapi_commands.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -s {} -p tcp --dport {} -j ACCEPT".format(src_ip, dport))
+                else:
+                    allow_restapi_commands.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -s {} -p tcp --dport {} -j ACCEPT".format(src_ip, dport))
+
+            for dest_ip in dest_ip_range:
+                ip_ntwrk = ipaddress.ip_network(dest_ip, strict=False)
+                if isinstance(ip_ntwrk, ipaddress.IPv4Network):
+                    allow_restapi_commands.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -d {} -p tcp --dport {} -j ACCEPT".format(dest_ip, dport))
+                else:
+                    allow_restapi_commands.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -d {} -p tcp --dport {} -j ACCEPT".format(dest_ip, dport))
+
+        return allow_restapi_commands
+
     def update_feature_present(self):
         feature_tb_info = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.FEATURE_TABLE)
         if feature_tb_info:
@@ -307,22 +329,16 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         ip_address_cmd1 = ['awk', '{print $4}']
         ip_address_cmd2 = ['cut', '-d', '/', '-f1']
         ip_address_cmd3 = ['head', '-1']
-        ip_address_cmd4 = ['awk', '{print $0}']
-        ip_address_cmd5 = ['cut', '-d', ' ', '-f2']
-
-        midplane_dev_name = self.run_commands_pipe(ip_address_cmd0, ip_address_cmd4, ip_address_cmd5)
-        midplane_ip = self.run_commands_pipe(ip_address_cmd0, ip_address_cmd1, ip_address_cmd2, ip_address_cmd3)
-
-        return midplane_dev_name, midplane_ip
+        return self.run_commands_pipe(ip_address_cmd0, ip_address_cmd1, ip_address_cmd2, ip_address_cmd3)
 
     def generate_allow_internal_chasis_midplane_traffic(self, namespace):
         allow_internal_chassis_midplane_traffic = []
         if device_info.is_chassis() and not namespace:
-            chassis_midplane_dev_name, chassis_midplane_ip = self.get_chassis_midplane_interface_ip()
+            chassis_midplane_ip = self.get_chassis_midplane_interface_ip()
             if not chassis_midplane_ip:
                 return allow_internal_chassis_midplane_traffic
             allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-s', chassis_midplane_ip, '-d', chassis_midplane_ip, '-j', 'ACCEPT'])
-            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-i', chassis_midplane_dev_name, '-j', 'ACCEPT'])
+            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-i', 'eth1-midplane', '-j', 'ACCEPT'])
 
         return allow_internal_chassis_midplane_traffic
 
@@ -336,7 +352,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ipv6[namespace], '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
             allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_mgmt_ip, '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
 
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
+            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', 'self.namespace_docker_mgmt_ipv6[namespace]', '-j', 'ACCEPT'])
 
         else:
 
@@ -362,27 +378,11 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         if self.DualToR:
             loopback_table = config_db_connector.get_table(self.LOOPBACK_TABLE)
             loopback_name = 'Loopback3'
-            loopback_networks = get_ipv4_networks_from_interface_table(loopback_table, loopback_name)
-            if len(loopback_networks) == 0:
-                self.log_warning("Loopback 3 IP not available from DualToR active-active config")
-                return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
-
-            loopback_address_vals = list(loopback_networks.values())
-
-            if not isinstance(loopback_address_vals[0], ipaddress.IPv4Address):
-                self.log_warning("Loopback 3 IP Network not available from DualToR active-active config")
-                return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
-            loopback_address = loopback_address_vals[0]
+            loopback_address = get_ip_from_interface_table(loopback_table, loopback_name)
             vlan_name = 'Vlan'
             vlan_table = config_db_connector.get_table(self.VLAN_INTF_TABLE)
-            vlan_networks = get_ipv4_networks_from_interface_table(vlan_table, vlan_name)
 
-            if len(vlan_networks) == 0:
-                self.log_warning("Vlan IP not available from DualToR active-active config")
-                return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
+            vlan_address = get_ip_from_interface_table(vlan_table, vlan_name)
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
                     ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
             
@@ -392,16 +392,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 for key in mux_table_keys:
                     kvp = mux_table.get(key)
                     if 'cable_type' in kvp and kvp['cable_type'] == 'active-active':
-                        soc_ipv4_str = kvp['soc_ipv4'].split("/")[0]
-                        soc_ipv4_addr = ipaddress.ip_address(soc_ipv4_str)
-                        for ip_network, vlan_address in vlan_networks.items():
-                            # Only add the vlan source IP specific soc IP address to IPtables
-                            if soc_ipv4_addr in ip_network:
-                                fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                                         ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '--destination', str(soc_ipv4_addr), '--source', str(vlan_address), '-j', 'SNAT', '--to-source', str(loopback_address)])
+                        fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                                ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '--destination', kvp['soc_ipv4'], '--source', vlan_address, '-j', 'SNAT', '--to-source', loopback_address])
 
         return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
 
     def generate_fwd_traffic_from_namespace_to_host_commands(self, namespace, acl_source_ip_map):
         """
@@ -634,6 +628,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # TODO: Determine BGP ACLs based on configured device sessions, and remove this blanket acceptance
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
+
+        # Add iptables/ip6tables commands to allow all restapi/http/https requests
+        if "restapi" in self.feature_present and self.feature_present.get("restapi"):
+            iptables_cmds += self.generate_allow_restapi_iptables_commands(namespace)
 
         # Get current ACL tables and rules from Config DB
 
@@ -1078,13 +1076,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         ctrl_plane_acl_notification.add(namespace)
                     # Check ACL Rule notification and make sure Rule point to ACL Table which is Controlplane
                     else:
-                        try:
-                            acl_table = key.split(acl_rule_table_seprator)[0]
-                            if self.config_db_map[namespace].get_table(self.ACL_TABLE)[acl_table]["type"] == self.ACL_TABLE_TYPE_CTRLPLANE:
-                                ctrl_plane_acl_notification.add(namespace)
-                        except KeyError:
-                            self.log_error("ACL table '{}' not found in Config DB ACL_TABLE.".format(acl_table))
-                            continue
+                        acl_table = key.split(acl_rule_table_seprator)[0]
+                        if self.config_db_map[namespace].get_table(self.ACL_TABLE)[acl_table]["type"] == self.ACL_TABLE_TYPE_CTRLPLANE:
+                            ctrl_plane_acl_notification.add(namespace)
 
             # Update the Control Plane ACL of the namespace that got config db acl table event
             for namespace in ctrl_plane_acl_notification:
