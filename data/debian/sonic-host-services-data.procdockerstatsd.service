@@ -1,7 +1,7 @@
 [Unit]
 Description=Process and docker CPU/memory utilization data export daemon
-Requires=database.service updategraph.service
-After=database.service updategraph.service
+Requires=database.service config-setup.service
+After=database.service config-setup.service
 BindsTo=sonic.target
 After=sonic.target
 
