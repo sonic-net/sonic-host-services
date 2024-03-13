@@ -192,3 +192,37 @@ class TestHostcfgdTACACS(TestCase):
             ]
             mocked_syslog.assert_has_calls(expected)
 
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_delete_config_table(self, test_name, test_data):
+        """
+            Test hostcfd delete config table check
+
+            Args:
+                test_name(str): test name
+                test_data(dict): test data which contains initial Config Db tables, and expected results
+
+            Returns:
+                None
+        """
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+        host_config_daemon.register_callbacks()
+
+        # render with delete config table
+        original_syslog = hostcfgd.syslog
+        with mock.patch('hostcfgd.syslog.syslog') as mocked_syslog:
+            mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+
+            # simulate subscribe callback
+            try:
+                hostcfgd.ConfigDBConnector.handlers['AAA']('AAA', 'DEL', None)
+            except TypeError as e:
+                assert False
+
+            # check sys log
+            expected = [
+                mock.call(mocked_syslog.LOG_INFO, "AAA Update: key: authorization, op: DEL, data: {}")
+            ]
+            mocked_syslog.assert_has_calls(expected)
