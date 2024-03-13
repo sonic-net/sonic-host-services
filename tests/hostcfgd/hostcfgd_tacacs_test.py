@@ -224,8 +224,8 @@ class TestHostcfgdTACACS(TestCase):
 
             # check sys log
             expected = [
-                mock.call(mocked_syslog.LOG_INFO, "file size check pass: /sonic/src/sonic-host-services/tests/hostcfgd/output/TACACS_config_db_local/sshd size is (2139) bytes"),
-                mock.call(mocked_syslog.LOG_INFO, "file size check pass: /sonic/src/sonic-host-services/tests/hostcfgd/output/TACACS_config_db_local/login size is (4951) bytes"),
+                mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (2139) bytes".format(hostcfgd.ETC_PAMD_SSHD)),
+                mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (4951) bytes".format(hostcfgd.ETC_PAMD_LOGIN)),
                 mock.call(mocked_syslog.LOG_INFO, "Found audisp-tacplus PID: "),
                 mock.call(mocked_syslog.LOG_INFO, "cmd - ['service', 'aaastatsd', 'stop']"),
                 mock.call(mocked_syslog.LOG_ERR, "['service', 'aaastatsd', 'stop'] - failed: return code - 1, output:\nNone"),
