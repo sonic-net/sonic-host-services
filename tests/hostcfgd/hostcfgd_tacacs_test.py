@@ -217,7 +217,7 @@ class TestHostcfgdTACACS(TestCase):
 
             # simulate subscribe callback
             try:
-                hostcfgd.ConfigDBConnector.handlers['AAA']('AAA', 'DEL', None)
+                hostcfgd.ConfigDBConnector.publish('AAA', 'authorization', 'DEL', None)
             except TypeError as e:
                 assert False
 
