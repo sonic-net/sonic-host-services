@@ -419,7 +419,7 @@ class AaaCfg(object):
         if self.ldap_global == {}:
             return False
         return self.ldap_global.get('bind_dn', "") and self.ldap_global.get('base_dn', "") and \
-            self.ldap_global.get('bind_password', "") and 'ldap' in self.authentication['login'] and \
+            self.ldap_global.get('bind_password', "") and 'ldap' in self.authentication.get('login', "") and \
                 self.ldap_servers
 
     def pick_src_intf_ipaddrs(self, keys, src_intf):
