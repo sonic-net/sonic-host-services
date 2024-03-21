@@ -1797,9 +1797,5 @@ def main():
     daemon.start()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        syslog.syslog(syslog.LOG_ERR, "hostcfgd crashed with exception: {}".format(e))
-        raise e
+    main()
 
