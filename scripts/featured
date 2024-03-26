@@ -166,7 +166,7 @@ class FeatureHandler(object):
     def port_listener(self, key, op, data):
         if not key:
             return 
-        if op == 'SET' and key == 'PortInitDone' and not self.is_delayed_enabled:
+        if op == 'SET' and key == 'PortInitDone':
             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
             self.enable_delayed_services()
 
