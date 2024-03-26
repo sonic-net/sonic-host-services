@@ -1,0 +1,17 @@
+{{ ldap_cfg.cfg_servers(servers) }}
+
+base {{ ldap_cfg.cfg_base(servers) }}
+
+ldap_version {{ ldap_cfg.cfg_version(servers) }}
+
+binddn {{ ldap_cfg.cfg_bind(servers) }}
+
+bindpw {{ ldap_cfg.cfg_bindpw(servers) }}
+
+port {{ ldap_cfg.cfg_port(servers) }}
+
+scope {{ ldap_cfg.cfg_scope(servers) }}
+
+timelimit {{ ldap_cfg.cfg_timeout(servers) }}
+
+bind_timelimit {{ ldap_cfg.cfg_bind_timeout(servers) }}

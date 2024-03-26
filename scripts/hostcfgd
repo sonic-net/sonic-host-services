@@ -17,6 +17,10 @@ from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 from sonic_installer import bootloader
+hostcfg_file_path = os.path.abspath(__file__)
+hostcfg_dir_path = os.path.dirname(hostcfg_file_path)
+sys.path.append(hostcfg_dir_path)
+import ldap
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -31,6 +35,16 @@ NSS_RADIUS_CONF = "/etc/radius_nss.conf"
 NSS_RADIUS_CONF_TEMPLATE = "/usr/share/sonic/templates/radius_nss.conf.j2"
 PAM_RADIUS_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/pam_radius_auth.conf.j2"
 NSS_CONF = "/etc/nsswitch.conf"
+LDAP_CONF_TEMPLATE = "/usr/share/sonic/templates/ldap.conf.j2"
+LDAP_CONF = "/etc/ldap/ldap.conf"
+NSLCD_CONF_TEMPLATE = "/usr/share/sonic/templates/nslcd.conf.j2"
+NSLCD_CONF = "/etc/nslcd.conf"
+PAM_SESSION_CONF = "/etc/pam.d/common-session"
+PAM_SESSION_NONINT_CONF = "/etc/pam.d/common-session-noninteractive"
+PAM_SESSION_LAST_LINE = '# end of pam-auth-update config'
+MKHOME_DIR_RULE = 'session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022 silent'
+MKHOME_DIR_LIB = 'pam_mkhomedir.so'
+MKHOME_DIR_LIB_REG = r'.*pam_mkhomedir'
 ETC_PAMD_SSHD = "/etc/pam.d/sshd"
 ETC_PAMD_LOGIN = "/etc/pam.d/login"
 ETC_LOGIN_DEF = "/etc/login.defs"
@@ -147,6 +161,79 @@ def obfuscate(data):
         return data
 
 
+def run_cmd_output_custom_log(cmd, custom_log_func=None):
+    syslog.syslog(syslog.LOG_INFO, "run_cmd_output_custom_log - Executing cmd: {}".format(cmd))
+    cmd_output = b''
+    try:
+        if not isinstance(cmd, list):
+            raise TypeError(f'{cmd} is not list')
+        cmd_output = subprocess.check_output(cmd)
+        syslog.syslog(syslog.LOG_INFO, f"cmd_output: {cmd_output.decode()}")
+    except subprocess.CalledProcessError as err:
+        err_log_msg = f"cmd: {err.cmd}, return code: {err.returncode}, output: {err.output}"
+        if not custom_log_func:
+            syslog.syslog(syslog.LOG_ERR, err_log_msg)
+        else:
+            custom_log_func(err, err_log_msg)
+        cmd_output = err.output
+
+    return cmd_output
+
+
+def generate_file_from_template(template_j2, file_conf_output, permission, kwargs):
+    try:
+        syslog.syslog(syslog.LOG_INFO, f'generate_file_from_template template_j2={template_j2}'
+                      f'file_conf_output={file_conf_output} kwargs={kwargs}')
+        template_j2_abspath = os.path.abspath(template_j2)
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
+        env.filters['sub'] = sub
+        template_j2_ob = env.get_template(template_j2_abspath)
+        file_conf = template_j2_ob.render(**kwargs)
+
+        with open(file_conf_output + ".tmp", 'w') as f:
+            f.write(file_conf)
+        os.chmod(file_conf_output + ".tmp", permission)
+        os.rename(file_conf_output + ".tmp", file_conf_output)
+    except Exception as e:
+        log_msg = f'Failed generate_file_from_template error={e}'
+        syslog.syslog(syslog.LOG_ERR, log_msg)
+
+def custom_service_en_log_func(err, err_log_msg):
+    """
+    function checks if there are some log messages from cmd
+     that decided to modify the log level to INFO instead ERROR.
+    """
+    # Omit error response when checking if a service is enabled.
+    syslog.syslog(syslog.LOG_DEBUG, f"err: {err}, err_log_msg: {err_log_msg}")
+    if 'is-enabled' in err.cmd and 'masked' in err.output.decode():
+        syslog.syslog(syslog.LOG_INFO, err_log_msg)
+    else:
+        syslog.syslog(syslog.LOG_ERR, err_log_msg)
+
+def restart_service(service_name):
+    cmd_service_return = run_cmd_output_custom_log(['systemctl', 'is-enabled', service_name], custom_service_en_log_func)
+    if 'masked' in cmd_service_return.decode():
+        syslog.syslog(syslog.LOG_DEBUG, f"{service_name}: unmask & starting")
+        run_cmd_output_custom_log(['systemctl', 'unmask', service_name])
+        run_cmd_output_custom_log(['systemctl', 'start', service_name])
+    else:
+        syslog.syslog(syslog.LOG_DEBUG, f"{service_name}: restarting")
+        run_cmd_output_custom_log(['systemctl', 'restart', service_name])
+
+
+def handle_nslcd_service(is_ldap_config_complete):
+    if is_ldap_config_complete:
+        # nslcd service should be restart after any ldap configuration.
+        restart_service("nslcd")
+    else:
+        # stopping nslcd service when Ldap feature disabled
+        cmd_nslcd_return = run_cmd_output_custom_log(['systemctl', 'is-enabled', 'nslcd'], custom_service_en_log_func)
+        if 'enabled' in cmd_nslcd_return.decode():
+            syslog.syslog(syslog.LOG_DEBUG, "nslcd: deactivating (Ldap disabled)")
+            run_cmd_output_custom_log(['systemctl', 'stop', 'nslcd'])
+            run_cmd_output_custom_log(['systemctl', 'mask', 'nslcd'])
+
+
 def get_pid(procname):
     for dirname in os.listdir('/proc'):
         if dirname == 'curproc':
@@ -159,6 +246,18 @@ def get_pid(procname):
         if procname in content:
             return dirname
     return ""
+
+
+def is_match(pattern, file_path):
+    syslog.syslog(syslog.LOG_DEBUG, "looking for pattern {} line in file {}".format(pattern, file_path))
+    res_match = False
+    with open(file_path, 'r') as f:
+        for (i, line) in enumerate(f):
+            if re.match(pattern, line):
+                syslog.syslog(syslog.LOG_INFO, "matched pattern {} in line {}".format(pattern, str(i)))
+                res_match = True
+                break
+    return res_match
 
 
 class Iptables(object):
@@ -265,6 +364,10 @@ class AaaCfg(object):
         self.radius_global = {}
         self.radius_servers = {}
 
+        self.ldap_global_default = {}
+        self.ldap_global = {}
+        self.ldap_servers = {}
+
         self.authentication = {}
         self.authorization = {}
         self.accounting = {}
@@ -274,7 +377,7 @@ class AaaCfg(object):
         self.hostname = ""
 
     # Load conf from ConfigDb
-    def load(self, aaa_conf, tac_global_conf, tacplus_conf, rad_global_conf, radius_conf):
+    def load(self, aaa_conf, tac_global_conf, tacplus_conf, rad_global_conf, radius_conf, ldap_global_conf, ldap_conf):
         for row in aaa_conf:
             self.aaa_update(row, aaa_conf[row], modify_conf=False)
         for row in tac_global_conf:
@@ -286,6 +389,11 @@ class AaaCfg(object):
             self.radius_global_update(row, rad_global_conf[row], modify_conf=False)
         for row in radius_conf:
             self.radius_server_update(row, radius_conf[row], modify_conf=False)
+
+        for row in ldap_global_conf:
+            self.ldap_global_update(row, ldap_global_conf[row], modify_conf=False)
+        for row in ldap_conf:
+            self.ldap_server_update(row, ldap_conf[row], modify_conf=False)
 
         self.modify_conf_file()
 
@@ -302,6 +410,17 @@ class AaaCfg(object):
             self.accounting = data
         if modify_conf:
             self.modify_conf_file()
+        
+        if key == 'authentication':
+            # Enable/Disable LDAP service (nslcd) according LDAP configuration.
+            handle_nslcd_service(self.is_ldap_config_complete())
+
+    def is_ldap_config_complete(self):
+        if self.ldap_global == {}:
+            return False
+        return self.ldap_global.get('bind_dn', "") and self.ldap_global.get('base_dn', "") and \
+            self.ldap_global.get('bind_password', "") and 'ldap' in self.authentication.get('login', "") and \
+                self.ldap_servers
 
     def pick_src_intf_ipaddrs(self, keys, src_intf):
         new_ipv4_addr = ""
@@ -404,6 +523,25 @@ class AaaCfg(object):
         if modify_conf:
             self.modify_conf_file()
 
+    def ldap_global_update(self, key, data, modify_conf=True):
+        if key == 'global':
+            self.ldap_global = data
+
+            if modify_conf:
+                self.modify_conf_file()
+            handle_nslcd_service(self.is_ldap_config_complete())
+
+    def ldap_server_update(self, key, data, modify_conf=True):
+        if data == {}:
+            if key in self.ldap_servers:
+                del self.ldap_servers[key]
+        else:
+            self.ldap_servers[key] = data
+
+        if modify_conf:
+            self.modify_conf_file()
+        handle_nslcd_service(self.is_ldap_config_complete())
+
     def hostname_update(self, hostname, modify_conf=True):
         if self.hostname == hostname:
             return
@@ -468,7 +606,6 @@ class AaaCfg(object):
 
         syslog.syslog(syslog.LOG_INFO, "file size check pass: {} size is ({}) bytes".format(filename, size))
 
-
     def modify_single_file(self, filename, operations=None):
         if operations:
             e_list = ['-e'] * len(operations)
@@ -489,6 +626,9 @@ class AaaCfg(object):
         accounting.update(self.accounting)
         tacplus_global = self.tacplus_global_default.copy()
         tacplus_global.update(self.tacplus_global)
+        ldap_global = self.ldap_global_default.copy()
+        ldap_global.update(self.ldap_global)
+
         if 'src_ip' in tacplus_global:
             src_ip = tacplus_global['src_ip']
         else:
@@ -541,10 +681,23 @@ class AaaCfg(object):
                 radsrvs_conf.append(server)
             radsrvs_conf = sorted(radsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
+        # LDAP server configuration
+        ldapsrvs_conf = []
+        if self.ldap_servers:
+            for addr in self.ldap_servers:
+                server = ldap_global.copy()
+                server['ip'] = addr
+                server.update(self.ldap_servers[addr])
+                ldapsrvs_conf.append(server)
+            ldapsrvs_conf = sorted(ldapsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
+
         template_file = os.path.abspath(PAM_AUTH_CONF_TEMPLATE)
         env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
         env.filters['sub'] = sub
         template = env.get_template(template_file)
+
+        if 'ldap' in authentication['login']:
+            pam_conf = template.render(debug=self.debug, trace=self.trace, auth=authentication, servers=ldapsrvs_conf)
         if 'radius' in authentication['login']:
             pam_conf = template.render(debug=self.debug, trace=self.trace, auth=authentication, servers=radsrvs_conf)
         else:
@@ -556,6 +709,17 @@ class AaaCfg(object):
         os.chmod(PAM_AUTH_CONF + ".tmp", 0o644)
         os.rename(PAM_AUTH_CONF + ".tmp", PAM_AUTH_CONF)
 
+        if os.path.isfile(PAM_SESSION_CONF): 
+            # Support to add home directory to LDAP AAA users
+            if 'ldap' in authentication['login']:
+                if not is_match(MKHOME_DIR_LIB_REG, PAM_SESSION_CONF):
+                    modify_single_file_inplace(PAM_SESSION_CONF, [f"/^{PAM_SESSION_LAST_LINE}/i {MKHOME_DIR_RULE}"])
+                    modify_single_file_inplace(PAM_SESSION_NONINT_CONF, [f"/^{PAM_SESSION_LAST_LINE}/i {MKHOME_DIR_RULE}"])
+            else: # login without ldap
+                syslog.syslog(syslog.LOG_DEBUG, f"auth login: not ldap type - rm {MKHOME_DIR_RULE} from  {PAM_SESSION_CONF} file.")
+                modify_single_file_inplace(PAM_SESSION_CONF, [ f"/{MKHOME_DIR_LIB}/d" ])
+                modify_single_file_inplace(PAM_SESSION_NONINT_CONF, [ f"/{MKHOME_DIR_LIB}/d" ])
+
         # Modify common-auth include file in /etc/pam.d/login, sshd.
         # /etc/pam.d/sudo is not handled, because it would change the existing
         # behavior. It can be modified once a config knob is added for sudo.
@@ -566,19 +730,36 @@ class AaaCfg(object):
             self.modify_single_file(ETC_PAMD_SSHD,  [ "/^@include/s/common-auth-sonic$/common-auth/" ])
             self.modify_single_file(ETC_PAMD_LOGIN, [ "/^@include/s/common-auth-sonic$/common-auth/" ])
 
-        # Add tacplus/radius in nsswitch.conf if TACACS+/RADIUS enable
-        if 'tacacs+' in authentication['login']:
+        # Add tacplus/radius/ldap in nsswitch.conf if TACACS+/RADIUS enable
+        if 'tacacs+' in authentication['login'] and servers_conf:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ ldap//" ])
                 self.modify_single_file(NSS_CONF, [ "/tacplus/b", "/^passwd/s/compat/tacplus &/", "/^passwd/s/files/tacplus &/" ])
+                self.modify_single_file(NSS_CONF, [ "/^group/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^shadow/s/ ldap//" ])
+
         elif 'radius' in authentication['login']:
             if os.path.isfile(NSS_CONF):
-                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //'" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ ldap//" ])
                 self.modify_single_file(NSS_CONF, [ "/radius/b", "/^passwd/s/compat/& radius/", "/^passwd/s/files/& radius/" ])
+                self.modify_single_file(NSS_CONF, [ "/^group/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^shadow/s/ ldap//" ])
+        elif 'ldap' in authentication['login']:
+            if os.path.isfile(NSS_CONF):
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
+                self.modify_single_file(NSS_CONF, [ "/ldap/b", "/^passwd/s/compat/& ldap/", "/^passwd/s/files/& ldap/" ])
+                self.modify_single_file(NSS_CONF, [ "/ldap/b", "/^group/s/compat/& ldap/", "/^group/s/files/& ldap/" ])
+                self.modify_single_file(NSS_CONF, [ "/ldap/b", "/^shadow/s/compat/& ldap/", "/^shadow/s/files/& ldap/" ])
         else:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //g" ])
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^group/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^shadow/s/ ldap//" ])
 
         # Add tacplus authorization configration in nsswitch.conf
         tacacs_authorization_conf = None
@@ -647,6 +828,19 @@ class AaaCfg(object):
             syslog.syslog(syslog.LOG_ERR,
                     "{} - failed: return code - {}, output:\n{}"
                     .format(err.cmd, err.returncode, err.output))
+
+
+        # Set NSLCD conf (LDAP)
+        generate_file_from_template(NSLCD_CONF_TEMPLATE, NSLCD_CONF, 0o640, {'servers': ldapsrvs_conf, 'ldap_cfg': ldap.LdapCfg})
+
+        # Set LDAP conf
+        if not os.path.exists(LDAP_CONF):
+            try:
+                os.makedirs(os.path.dirname(LDAP_CONF))
+            except Exception as err:
+                syslog.syslog(syslog.LOG_ERR, "Error occurred when using cmd makedirs: {}".format(err))
+        generate_file_from_template(LDAP_CONF_TEMPLATE, LDAP_CONF, 0o644, {'servers': ldapsrvs_conf, 'ldap_cfg': ldap.LdapCfg})
+
 
 def modify_single_file_inplace(filename, operations=None):
     if operations:
@@ -1557,6 +1751,8 @@ class HostConfigDaemon:
         tacacs_server = init_data['TACPLUS_SERVER']
         radius_global = init_data['RADIUS']
         radius_server = init_data['RADIUS_SERVER']
+        ldap_global = init_data['LDAP']
+        ldap_server = init_data['LDAP_SERVER']
         lpbk_table = init_data['LOOPBACK_INTERFACE']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
@@ -1572,7 +1768,7 @@ class HostConfigDaemon:
         ntp_servers = init_data.get(swsscommon.CFG_NTP_SERVER_TABLE_NAME)
         ntp_keys = init_data.get(swsscommon.CFG_NTP_KEY_TABLE_NAME)
 
-        self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
+        self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
@@ -1634,6 +1830,20 @@ class HostConfigDaemon:
         if 'passkey' in log_data:
             log_data['passkey'] = obfuscate(log_data['passkey'])
         syslog.syslog(syslog.LOG_INFO, 'RADIUS Global update: key: {}, op: {}, data: {}'.format(key, op, log_data))
+
+    def ldap_global_handler(self, key, op, data):
+        self.aaacfg.ldap_global_update(key, data)
+        log_data = copy.deepcopy(data)
+        if 'passkey' in log_data:
+            log_data['passkey'] = obfuscate(log_data['passkey'])
+        syslog.syslog(syslog.LOG_INFO, 'LDAP Global update: key: {}, op: {}, data: {}'.format(key, op, log_data))
+
+    def ldap_server_handler(self, key, op, data):
+        self.aaacfg.ldap_server_update(key, data)
+        log_data = copy.deepcopy(data)
+        if 'passkey' in log_data:
+            log_data['passkey'] = obfuscate(log_data['passkey'])
+        syslog.syslog(syslog.LOG_INFO, 'LDAP_SERVER update: key: {}, op: {}, data: {}'.format(key, op, log_data))
 
     def mgmt_intf_handler(self, key, op, data):
         key = ConfigDBConnector.deserialize_key(key)
@@ -1740,6 +1950,8 @@ class HostConfigDaemon:
         self.config_db.subscribe('TACPLUS_SERVER', make_callback(self.tacacs_server_handler))
         self.config_db.subscribe('RADIUS', make_callback(self.radius_global_handler))
         self.config_db.subscribe('RADIUS_SERVER', make_callback(self.radius_server_handler))
+        self.config_db.subscribe('LDAP', make_callback(self.ldap_global_handler))
+        self.config_db.subscribe('LDAP_SERVER', make_callback(self.ldap_server_handler))
         self.config_db.subscribe('PASSW_HARDENING', make_callback(self.passwh_handler))
         self.config_db.subscribe('SSH_SERVER', make_callback(self.ssh_handler))
         # Handle IPTables configuration
