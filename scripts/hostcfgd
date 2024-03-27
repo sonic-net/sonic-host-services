@@ -1728,6 +1728,7 @@ class HostConfigDaemon:
             def callback(table, key, data):
                 if data is None:
                     op = "DEL"
+                    data = {}
                 else:
                     op = "SET"
                 return func(key, op, data)
