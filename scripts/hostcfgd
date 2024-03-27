@@ -45,8 +45,8 @@ SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600, "ports": 65
 SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "LoginGraceTime"}
 
 ACCOUNT_NAME = 0 # index of account name
-AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
-            'WARN_DAYS': {'REGEX_DAYS': r'^PASS_WARN_AGE[ \t]*(?P<warn_days>\d*)', 'DAYS': 'warn_days', 'CHAGE_FLAG': '-W '}
+AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>-?\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
+            'WARN_DAYS': {'REGEX_DAYS': r'^PASS_WARN_AGE[ \t]*(?P<warn_days>-?\d*)', 'DAYS': 'warn_days', 'CHAGE_FLAG': '-W '}
             }
 PAM_LIMITS_CONF_TEMPLATE = "/usr/share/sonic/templates/pam_limits.j2"
 LIMITS_CONF_TEMPLATE = "/usr/share/sonic/templates/limits.conf.j2"
@@ -722,15 +722,11 @@ class PasswHardening(object):
         if passw_policies:
             if 'state' in passw_policies:
                 if passw_policies['state'] == 'enabled':
-                    if 'expiration' in passw_policies:
-                        if int(self.passw_policies['expiration']) != 0: # value '0' meaning age policy is disabled
-                            #  the logic is to modify the expiration time according the last updated modificatiion
-                            #
-                            curr_expiration = int(passw_policies['expiration'])
-
-                    if 'expiration_warning' in passw_policies:
-                        if int(self.passw_policies['expiration_warning']) != 0: # value '0' meaning age policy is disabled
-                            curr_expiration_warning = int(passw_policies['expiration_warning'])
+                    # Special values of expiration/expiration warning
+                    # 0: meaning password will be expired/warning immediately.
+                    # -1: meaning password expired/warning never.
+                    curr_expiration = int(passw_policies.get('expiration', -1))
+                    curr_expiration_warning = int(passw_policies.get('expiration_warning', -1))
 
         if self.is_passwd_aging_expire_update(curr_expiration, 'MAX_DAYS'):
             # Set aging policy for existing users
