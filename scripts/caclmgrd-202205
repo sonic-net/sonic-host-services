@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 #
 # caclmgrd
 #
@@ -17,7 +17,7 @@ try:
     import sys
     import threading
     import time
-    from sonic_py_common.general import getstatusoutput_noshell_pipe
+
     from sonic_py_common import daemon_base, device_info, multi_asic
     from swsscommon import swsscommon
 except ImportError as err:
@@ -41,10 +41,8 @@ def _ip_prefix_in_key(key):
     """
     return (isinstance(key, tuple))
 
+def get_ip_from_interface_table(table, intf_name):
 
-def get_ipv4_networks_from_interface_table(table, intf_name):
-    
-    addresses = {}
     if table:
         for key, _ in table.items():
             if not _ip_prefix_in_key(key):
@@ -53,13 +51,12 @@ def get_ipv4_networks_from_interface_table(table, intf_name):
 
             iface_name, iface_cidr = key
             if iface_name.startswith(intf_name):
-                ip_ntwrk = ipaddress.ip_network(iface_cidr, strict=False)
                 ip_str = iface_cidr.split("/")[0]
                 ip_addr = ipaddress.ip_address(ip_str)
-                if isinstance(ip_ntwrk, ipaddress.IPv4Network) and isinstance(ip_addr, ipaddress.IPv4Address):
-                    addresses[ip_ntwrk] = ip_addr
+                if isinstance(ip_addr, ipaddress.IPv4Address):
+                    return ip_addr
 
-    return addresses
+    return None
 
 # ============================== Classes ==============================
 
@@ -84,7 +81,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
     ACL_TABLE_TYPE_CTRLPLANE = "CTRLPLANE"
 
     BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
-    VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL"
 
     # To specify a port range instead of a single port, use iptables format:
     # separate start and end ports with a colon, e.g., "1000:2000"
@@ -101,12 +97,12 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         },
         "SSH": {
             "ip_protocols": ["tcp"],
-            "dst_ports": ["22"],
+            "dst_ports": ["22", "50051"], # Temporary hack to allow Streaming telemetry (50051) traffic
             "multi_asic_ns_to_host_fwd":True
         },
         "EXTERNAL_CLIENT": {
             "ip_protocols": ["tcp"],
-            "multi_asic_ns_to_host_fwd":True
+            "multi_asic_ns_to_host_fwd":False
         },
         "ANY": {
             "ip_protocols": ["any"],
@@ -119,8 +115,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
     DualToR = False
     bfdAllowed = False
-    VxlanAllowed = False
-    VxlanSrcIP = ""
 
     def __init__(self, log_identifier):
         super(ControlPlaneAclManager, self).__init__(log_identifier)
@@ -142,7 +136,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         self.iptables_cmd_ns_prefix = {}
         self.config_db_map[DEFAULT_NAMESPACE] = swsscommon.ConfigDBConnector(use_unix_socket_path=True, namespace=DEFAULT_NAMESPACE)
         self.config_db_map[DEFAULT_NAMESPACE].connect()
-        self.iptables_cmd_ns_prefix[DEFAULT_NAMESPACE] = []
+        self.iptables_cmd_ns_prefix[DEFAULT_NAMESPACE] = ""
         self.namespace_mgmt_ip = self.get_namespace_mgmt_ip(self.iptables_cmd_ns_prefix[DEFAULT_NAMESPACE], DEFAULT_NAMESPACE)
         self.namespace_mgmt_ipv6 = self.get_namespace_mgmt_ipv6(self.iptables_cmd_ns_prefix[DEFAULT_NAMESPACE], DEFAULT_NAMESPACE)
         self.namespace_docker_mgmt_ip = {}
@@ -180,60 +174,38 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             self.update_docker_mgmt_ip_acl(fabric_asic_namespace)
 
     def update_docker_mgmt_ip_acl(self, namespace):
-            self.iptables_cmd_ns_prefix[namespace] = ["ip", "netns", "exec", str(namespace)]
+            self.iptables_cmd_ns_prefix[namespace] = "ip netns exec " + namespace + " "
             self.namespace_docker_mgmt_ip[namespace] = self.get_namespace_mgmt_ip(self.iptables_cmd_ns_prefix[namespace],
                                                                                              namespace)
             self.namespace_docker_mgmt_ipv6[namespace] = self.get_namespace_mgmt_ipv6(self.iptables_cmd_ns_prefix[namespace],
                                                                                              namespace)
 
     def get_namespace_mgmt_ip(self, iptable_ns_cmd_prefix, namespace):
-        ip_address_cmd0 = iptable_ns_cmd_prefix + ['ip', '-4', '-o', 'addr', 'show', ("eth0" if namespace else "docker0")]
-        ip_address_cmd1 = ['awk', '{print $4}']
-        ip_address_cmd2 = ['cut', '-d', '/', '-f1']
-        ip_address_cmd3 = ['head', '-1']
+        ip_address_get_command = iptable_ns_cmd_prefix + "ip -4 -o addr show " + ("eth0" if namespace else "docker0") +\
+                                 " | awk '{print $4}' | cut -d'/' -f1 | head -1"
 
-        return self.run_commands_pipe(ip_address_cmd0, ip_address_cmd1, ip_address_cmd2, ip_address_cmd3)
+        return self.run_commands([ip_address_get_command])
 
     def get_namespace_mgmt_ipv6(self, iptable_ns_cmd_prefix, namespace):
-        ipv6_address_cmd0 = iptable_ns_cmd_prefix + ['ip', '-6', '-o', 'addr', 'show', 'scope', 'global', ("eth0" if namespace else "docker0")]
-        ipv6_address_cmd1 = ['awk', '{print $4}']
-        ipv6_address_cmd2 = ['cut', '-d', '/', '-f1']
-        ipv6_address_cmd3 = ['head', '-1']
-        return self.run_commands_pipe(ipv6_address_cmd0, ipv6_address_cmd1, ipv6_address_cmd2, ipv6_address_cmd3)
+        ipv6_address_get_command = iptable_ns_cmd_prefix + "ip -6 -o addr show scope global " + ("eth0" if namespace else "docker0") +\
+                                 " | awk '{print $4}' | cut -d'/' -f1 | head -1"
+        return self.run_commands([ipv6_address_get_command])
 
-    def log_output(self, cmd, exitcodes, stdout):
-        if any(exitcodes):
-            self.log_error("Error running command '{}'".format(cmd))
-        elif stdout:
-            return stdout.rstrip('\n')
-        return None
-
-    def run_commands(self, commands):
+    def run_commands(self, commands, ignore_error=False):
         """
         Given a list of shell commands, run them in order
         Args:
-            commands: List of List of Strings, each string is a shell command
+            commands: List of strings, each string is a shell command
         """
         for cmd in commands:
-            proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
+            proc = subprocess.Popen(cmd, shell=True, universal_newlines=True, stdout=subprocess.PIPE)
 
             (stdout, stderr) = proc.communicate()
-            output = self.log_output(cmd, [proc.returncode], stdout)
-            if output is not None: return output
-        return ""
 
-    def run_commands_pipe(self, *args):
-        """
-        Run commands connected by shell pipes in a secure way without invoking shell injections.
-        Return empty string and log error if not success. Otherwise, return the command output.
-        Args:
-            args: List of strings
-        """
-        exitcodes, stdout = getstatusoutput_noshell_pipe(*args)
-        cmd_list = [' '.join(arg) for arg in args]
-        cmd = '|'.join(cmd_list)
-        output = self.log_output(cmd, exitcodes, stdout)
-        if output is not None: return output
+            if proc.returncode != 0 and not ignore_error:
+                self.log_error("Error running command '{}'".format(cmd))
+            elif stdout:
+                return stdout.rstrip('\n')
         return ""
 
     def parse_int_to_tcp_flags(self, hex_value):
@@ -262,6 +234,24 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         tcp_flags_str = tcp_flags_str[:-1]
         return tcp_flags_str
 
+    def exitgenerate_allow_restapi_iptables_commands(self, namespace):
+        # Following ranges from 6 regions are temporarily hardcoded and allowed for Bluebird Service
+        src_ip_range = ["20.44.16.64/27", "13.66.141.96/27", "13.69.229.128/27", "52.162.110.128/27", "52.231.147.224/27", "40.74.146.224/27", "40.78.203.96/27", "20.150.171.224/27", "52.162.110.128/27"]
+
+        dports = ["8081", "8090"]
+
+        allow_restapi_commands = []
+
+        for dport in dports:
+            for src_ip in src_ip_range:
+                ip_ntwrk = ipaddress.ip_network(src_ip, strict=False)
+                if isinstance(ip_ntwrk, ipaddress.IPv4Network):
+                    allow_restapi_commands.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -s {} -p tcp --dport {} -j ACCEPT".format(src_ip, dport))
+                else:
+                    allow_restapi_commands.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -s {} -p tcp --dport {} -j ACCEPT".format(src_ip, dport))
+
+        return allow_restapi_commands
+
     def update_feature_present(self):
         feature_tb_info = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.FEATURE_TABLE)
         if feature_tb_info:
@@ -271,6 +261,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
     def generate_block_ip2me_traffic_iptables_commands(self, namespace, config_db_connector):
         INTERFACE_TABLE_NAME_LIST = [
             "LOOPBACK_INTERFACE",
+            "MGMT_INTERFACE",
             "VLAN_INTERFACE",
             "PORTCHANNEL_INTERFACE",
             "INTERFACE"
@@ -294,35 +285,34 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     ip_addr = next(ip_ntwrk.hosts()) if iface_table_name == "VLAN_INTERFACE" else ip_ntwrk.network_address
 
                     if isinstance(ip_ntwrk, ipaddress.IPv4Network):
-                        block_ip2me_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-d', '{}/{}'.format(ip_addr, ip_ntwrk.max_prefixlen), '-j', 'DROP'])
+                        block_ip2me_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -d {}/{} -j DROP".format(ip_addr, ip_ntwrk.max_prefixlen))
                     elif isinstance(ip_ntwrk, ipaddress.IPv6Network):
-                        block_ip2me_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-d', '{}/{}'.format(ip_addr, ip_ntwrk.max_prefixlen), '-j', 'DROP'])
+                        block_ip2me_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -d {}/{} -j DROP".format(ip_addr, ip_ntwrk.max_prefixlen))
                     else:
                         self.log_warning("Unrecognized IP address type on interface '{}': {}".format(iface_name, ip_ntwrk))
 
         return block_ip2me_cmds
 
     def get_chassis_midplane_interface_ip(self):
-        ip_address_cmd0 = ['ip', '-4', '-o', 'addr', 'show', "eth1-midplane"]
-        ip_address_cmd1 = ['awk', '{print $4}']
-        ip_address_cmd2 = ['cut', '-d', '/', '-f1']
-        ip_address_cmd3 = ['head', '-1']
-        ip_address_cmd4 = ['awk', '{print $0}']
-        ip_address_cmd5 = ['cut', '-d', ' ', '-f2']
 
-        midplane_dev_name = self.run_commands_pipe(ip_address_cmd0, ip_address_cmd4, ip_address_cmd5)
-        midplane_ip = self.run_commands_pipe(ip_address_cmd0, ip_address_cmd1, ip_address_cmd2, ip_address_cmd3)
+        chassis_midplane_dev_name_command = "ip -4 -o addr show " + "eth1-midplane" +\
+                                             " | awk '{print $0}' | cut -d' ' -f2"
 
+        midplane_dev_name = self.run_commands([chassis_midplane_dev_name_command])
+
+        chassis_midplane_ip_command = "ip -4 -o addr show " + "eth1-midplane" +\
+                                 " | awk '{print $4}' | cut -d'/' -f1 | head -1"
+        midplane_ip = self.run_commands([chassis_midplane_ip_command])
         return midplane_dev_name, midplane_ip
 
     def generate_allow_internal_chasis_midplane_traffic(self, namespace):
         allow_internal_chassis_midplane_traffic = []
-        if device_info.is_chassis() and not namespace:
-            chassis_midplane_dev_name, chassis_midplane_ip = self.get_chassis_midplane_interface_ip()
+        if not namespace:
+            midplane_dev_name, chassis_midplane_ip = self.get_chassis_midplane_interface_ip()
             if not chassis_midplane_ip:
                 return allow_internal_chassis_midplane_traffic
-            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-s', chassis_midplane_ip, '-d', chassis_midplane_ip, '-j', 'ACCEPT'])
-            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-i', chassis_midplane_dev_name, '-j', 'ACCEPT'])
+            allow_internal_chassis_midplane_traffic.append("iptables -A INPUT -s {} -d {} -j ACCEPT".format(chassis_midplane_ip, chassis_midplane_ip))
+            allow_internal_chassis_midplane_traffic.append("iptables -A INPUT -i {} -j ACCEPT".format(midplane_dev_name))
 
         return allow_internal_chassis_midplane_traffic
 
@@ -331,27 +321,35 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         if namespace:
             # For namespace docker allow local communication on docker management ip for all proto
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ip[namespace], '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
+            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                (self.namespace_docker_mgmt_ip[namespace], self.namespace_docker_mgmt_ip[namespace]))
 
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ipv6[namespace], '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_mgmt_ip, '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
+            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                (self.namespace_docker_mgmt_ipv6[namespace], self.namespace_docker_mgmt_ipv6[namespace]))
+            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                 (self.namespace_mgmt_ip, self.namespace_docker_mgmt_ip[namespace]))
 
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
+            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                 (self.namespace_mgmt_ipv6, self.namespace_docker_mgmt_ipv6[namespace]))
 
         else:
 
             # Also host namespace communication on docker bridge on multi-asic.
             if self.namespace_docker_mgmt_ip:
-                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_mgmt_ip, '-d', self.namespace_mgmt_ip, '-j', 'ACCEPT'])
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                    (self.namespace_mgmt_ip, self.namespace_mgmt_ip))
 
             if self.namespace_docker_mgmt_ipv6:
-                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', self.namespace_mgmt_ipv6, '-j', 'ACCEPT'])
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                    (self.namespace_mgmt_ipv6, self.namespace_mgmt_ipv6))
             # In host allow all tcp/udp traffic from namespace docker eth0 management ip to host docker bridge
             for docker_mgmt_ip in list(self.namespace_docker_mgmt_ip.values()):
-                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', docker_mgmt_ip, '-d', self.namespace_mgmt_ip, '-j', 'ACCEPT'])
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                     (docker_mgmt_ip, self.namespace_mgmt_ip))
 
             for docker_mgmt_ipv6 in list(self.namespace_docker_mgmt_ipv6.values()):
-                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', docker_mgmt_ipv6, '-d', self.namespace_mgmt_ipv6, '-j', 'ACCEPT'])
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -s {} -d {} -j ACCEPT".format
+                                                     (docker_mgmt_ipv6, self.namespace_mgmt_ipv6))
 
         return allow_internal_docker_ip_cmds
 
@@ -362,29 +360,13 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         if self.DualToR:
             loopback_table = config_db_connector.get_table(self.LOOPBACK_TABLE)
             loopback_name = 'Loopback3'
-            loopback_networks = get_ipv4_networks_from_interface_table(loopback_table, loopback_name)
-            if len(loopback_networks) == 0:
-                self.log_warning("Loopback 3 IP not available from DualToR active-active config")
-                return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
-
-            loopback_address_vals = list(loopback_networks.values())
-
-            if not isinstance(loopback_address_vals[0], ipaddress.IPv4Address):
-                self.log_warning("Loopback 3 IP Network not available from DualToR active-active config")
-                return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
-            loopback_address = loopback_address_vals[0]
+            loopback_address = get_ip_from_interface_table(loopback_table, loopback_name)
             vlan_name = 'Vlan'
             vlan_table = config_db_connector.get_table(self.VLAN_INTF_TABLE)
-            vlan_networks = get_ipv4_networks_from_interface_table(vlan_table, vlan_name)
 
-            if len(vlan_networks) == 0:
-                self.log_warning("Vlan IP not available from DualToR active-active config")
-                return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
+            vlan_address = get_ip_from_interface_table(vlan_table, vlan_name)
             fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                    ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
+                    "iptables -t nat --flush POSTROUTING")
             
             if loopback_address is not None:
                 mux_table = config_db_connector.get_table(self.CONFIG_MUX_CABLE)
@@ -392,21 +374,15 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 for key in mux_table_keys:
                     kvp = mux_table.get(key)
                     if 'cable_type' in kvp and kvp['cable_type'] == 'active-active':
-                        soc_ipv4_str = kvp['soc_ipv4'].split("/")[0]
-                        soc_ipv4_addr = ipaddress.ip_address(soc_ipv4_str)
-                        for ip_network, vlan_address in vlan_networks.items():
-                            # Only add the vlan source IP specific soc IP address to IPtables
-                            if soc_ipv4_addr in ip_network:
-                                fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
-                                         ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '--destination', str(soc_ipv4_addr), '--source', str(vlan_address), '-j', 'SNAT', '--to-source', str(loopback_address)])
+                        fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                                "iptables -t nat -A POSTROUTING --destination {} --source {} -j SNAT --to-source {}".format(kvp['soc_ipv4'], vlan_address, loopback_address))
 
         return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
-
 
     def generate_fwd_traffic_from_namespace_to_host_commands(self, namespace, acl_source_ip_map):
         """
         The below SNAT and DNAT rules are added in asic namespace in multi-ASIC platforms. It helps to forward request coming
-        in through the front panel interfaces created/present in the asic namespace for the servie running in linux host network namespace. 
+        in through the front panel interfaces created/present in the asic namespace for the servie running in linux host network namespace.
         The external IP addresses are NATed to the internal docker IP addresses for the Host service to respond.
         """
 
@@ -414,10 +390,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             return []
 
         fwd_traffic_from_namespace_to_host_cmds = []
-        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-t', 'nat', '-X'])
-        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-t', 'nat', '-F'])
-        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-t', 'nat', '-X'])
-        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-t', 'nat', '-F'])
+        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -t nat -X")
+        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -t nat -F")
+        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -t nat -X")
+        fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -t nat -F")
 
         for acl_service in self.ACL_SERVICES:
             if self.ACL_SERVICES[acl_service]["multi_asic_ns_to_host_fwd"]:
@@ -431,15 +407,23 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                             for ipv4_src_ip in nat_source_ipv4_set:
                                 # IPv4 rules
                                 fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                               ['iptables', '-t', 'nat', '-A', 'PREROUTING', '-p', ip_protocol, '-s', ipv4_src_ip, '--dport', dst_port, '-j', 'DNAT', '--to-destination', self.namespace_mgmt_ip])
+                                                                   "iptables -t nat -A PREROUTING -p {} -s {} --dport {}  -j DNAT --to-destination {}".format
+                                                                   (ip_protocol, ipv4_src_ip, dst_port,
+                                                                    self.namespace_mgmt_ip))
                                 fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                               ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-p', ip_protocol, '-s', ipv4_src_ip, '--dport', dst_port, '-j', 'SNAT', '--to-source', self.namespace_docker_mgmt_ip[namespace]])
+                                                                   "iptables -t nat -A POSTROUTING -p {} -s {} --dport {} -j SNAT --to-source {}".format
+                                                                   (ip_protocol, ipv4_src_ip, dst_port,
+                                                                    self.namespace_docker_mgmt_ip[namespace]))
                             for ipv6_src_ip in nat_source_ipv6_set:
                                 # IPv6 rules
                                 fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                               ['ip6tables', '-t', 'nat', '-A', 'PREROUTING', '-p', ip_protocol, '-s', ipv6_src_ip, '--dport', dst_port, '-j', 'DNAT', '--to-destination', self.namespace_mgmt_ipv6])
+                                                                   "ip6tables -t nat -A PREROUTING -p {} -s {} --dport {}  -j DNAT --to-destination {}".format
+                                                                   (ip_protocol, ipv6_src_ip, dst_port,
+                                                                    self.namespace_mgmt_ipv6))
                                 fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                               ['ip6tables', '-t', 'nat', '-A', 'POSTROUTING', '-p', ip_protocol, '-s', ipv6_src_ip, '--dport', dst_port, '-j', 'SNAT', '--to-source', self.namespace_docker_mgmt_ipv6[namespace]])
+                                                                   "ip6tables -t nat -A POSTROUTING -p {} -s {} --dport {} -j SNAT --to-source {}".format
+                                                                   (ip_protocol,ipv6_src_ip, dst_port,
+                                                                    self.namespace_docker_mgmt_ipv6[namespace]))
 
         return fwd_traffic_from_namespace_to_host_cmds
 
@@ -463,24 +447,22 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         iptables_cmds = []
         if dhcp_chain_exist:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-F', 'DHCP'])
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -F DHCP")
             self.log_info("DHCP chain exists, flush")
         else:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-N', 'DHCP'])
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -N DHCP")
             self.log_info("DHCP chain does not exist, create")
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'DHCP', '-j', 'RETURN'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A DHCP -j RETURN")
 
         self.log_info("Issuing the following iptables commands for DHCP chain:")
         for cmd in iptables_cmds:
-            self.log_info("  " + ' '.join(cmd))
+            self.log_info("  " + cmd)
 
         self.run_commands(iptables_cmds)
 
     def get_chain_list(self, iptable_ns_cmd_prefix, exclude_list):
-        cmd0 = iptable_ns_cmd_prefix + ['iptables', '-L', '-v', '-n']
-        cmd1 = ['grep', 'Chain']
-        cmd2 = ['awk', '{print $2}']
-        chain_list = self.run_commands_pipe(cmd0, cmd1, cmd2).splitlines()
+        command = iptable_ns_cmd_prefix + "iptables -L -v -n | grep Chain | awk '{print $2}'"
+        chain_list = self.run_commands([command]).splitlines()
 
         for chain in exclude_list:
             if chain in chain_list:
@@ -494,9 +476,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             sample: iptables --insert/delete/check DHCP -m mark --mark 0x67004 -j DROP
         '''
         if mark is None:
-            return iptable_ns_cmd_prefix + ['iptables', '--'+str(op), 'DHCP', '-m', 'physdev', '--physdev-in', str(intf), '-j', 'DROP']
+            return iptable_ns_cmd_prefix + 'iptables --{} DHCP -m physdev --physdev-in {} -j DROP'.format(op, intf)
         else:
-            return iptable_ns_cmd_prefix + ['iptables', '--'+str(op), 'DHCP', '-m', 'mark', '--mark', str(mark), '-j', 'DROP']
+            return iptable_ns_cmd_prefix + 'iptables --{} DHCP -m mark --mark {} -j DROP'.format(op, mark)
 
     def update_dhcp_chain(self, op, intf, mark):
         for namespace in list(self.config_db_map.keys()):
@@ -504,7 +486,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             update_cmd = self.dhcp_acl_rule(self.iptables_cmd_ns_prefix[namespace], op, intf, mark)
 
             execute = 0
-            ret = subprocess.call(check_cmd) # ret==0 indicates the rule exists
+            ret = subprocess.call(check_cmd, shell=True) # ret==0 indicates the rule exists
 
             if op == "insert" and ret == 1:
                 execute = 1
@@ -512,8 +494,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 execute = 1
 
             if execute == 1:
-                subprocess.call(update_cmd)
-                self.log_info("Update DHCP chain: {}".format(' '.join(update_cmd)))
+                subprocess.call(update_cmd, shell=True)
+                self.log_info("Update DHCP chain: {}".format(update_cmd))
 
     def update_dhcp_acl(self, key, op, data, mark):
         if "state" not in data:
@@ -538,17 +520,17 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         for namespace in list(self.config_db_map.keys()):
             check_cmd = self.dhcp_acl_rule(self.iptables_cmd_ns_prefix[namespace], "check", key, pre_mark)
 
-            ret = subprocess.call(check_cmd) # ret==0 indicates the rule exists
+            ret = subprocess.call(check_cmd, shell=True) # ret==0 indicates the rule exists
 
             '''update only when the rule with  pre_mark exists'''
             if ret == 0:
                 delete_cmd = self.dhcp_acl_rule(self.iptables_cmd_ns_prefix[namespace], "delete", key, pre_mark)
                 insert_cmd = self.dhcp_acl_rule(self.iptables_cmd_ns_prefix[namespace], "insert", key, cur_mark)
 
-                subprocess.call(delete_cmd)
-                self.log_info("Update DHCP chain: {}".format(' '.join(delete_cmd)))
-                subprocess.call(insert_cmd)
-                self.log_info("Update DHCP chain: {}".format(' '.join(insert_cmd)))
+                subprocess.call(delete_cmd, shell=True)
+                self.log_info("Update DHCP chain: {}".format(delete_cmd))
+                subprocess.call(insert_cmd, shell=True)
+                self.log_info("Update DHCP chain: {}".format(insert_cmd))
 
     def get_acl_rules_and_translate_to_iptables_commands(self, namespace, config_db_connector):
         """
@@ -564,27 +546,27 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # First, add iptables commands to set default policies to accept all
         # traffic. In case we are connected remotely, the connection will not
         # drop when we flush the current rules
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-P', 'INPUT', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-P', 'FORWARD', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-P', 'OUTPUT', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -P INPUT ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -P FORWARD ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -P OUTPUT ACCEPT")
 
         # Add iptables command to flush the current rules and delete all non-default chains
         chain_list = self.get_chain_list(self.iptables_cmd_ns_prefix[namespace], ["DHCP"] if self.DualToR else [""])
         for chain in chain_list:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-F', chain])
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -F " + chain)
             if chain not in ["INPUT", "FORWARD", "OUTPUT"]:
-                iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-X', chain])
+                iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -X " + chain)
 
         # Add same set of commands for ip6tables
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-P', 'INPUT', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-P', 'FORWARD', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-P', 'OUTPUT', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-F'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-X'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -P INPUT ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -P FORWARD ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -P OUTPUT ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -F")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -X")
 
         # Add iptables/ip6tables commands to allow all traffic from localhost
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', '127.0.0.1', '-i', 'lo', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', '::1', '-i', 'lo', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -s 127.0.0.1 -i lo -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -s ::1 -i lo -j ACCEPT")
 
         # Add iptables commands to allow internal docker traffic
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
@@ -594,46 +576,50 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
 
         # Add iptables/ip6tables commands to allow bidirectional ICMPv4 ping and traceroute
         # TODO: Support processing ICMPv4 service ACL rules, and remove this blanket acceptance
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'icmp', '--icmp-type', 'echo-request', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'icmp', '--icmp-type', 'echo-reply', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'icmp', '--icmp-type', 'destination-unreachable', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'icmp', '--icmp-type', 'time-exceeded', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p icmp --icmp-type echo-reply -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p icmp --icmp-type destination-unreachable -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p icmp --icmp-type time-exceeded -j ACCEPT")
 
         # Add iptables/ip6tables commands to allow bidirectional ICMPv6 ping and traceroute
         # TODO: Support processing ICMPv6 service ACL rules, and remove this blanket acceptance
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'echo-request', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'echo-reply', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'destination-unreachable', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'time-exceeded', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type echo-request -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type echo-reply -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type destination-unreachable -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type time-exceeded -j ACCEPT")
 
         # Add iptables/ip6tables commands to allow all incoming Neighbor Discovery Protocol (NDP) NS/NA/RS/RA messages
         # TODO: Support processing NDP service ACL rules, and remove this blanket acceptance
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'neighbor-solicitation', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'neighbor-advertisement', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'router-solicitation', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'icmpv6', '--icmpv6-type', 'router-advertisement', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type neighbor-solicitation -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type neighbor-advertisement -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type router-solicitation -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p icmpv6 --icmpv6-type router-advertisement -j ACCEPT")
 
         # Add iptables commands to link the DCHP chain to block dhcp packets based on ingress interfaces
         if self.DualToR:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'udp', '--dport', '67', '-j', 'DHCP'])
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p udp --dport 67 -j DHCP")
 
         # Add iptables/ip6tables commands to allow all incoming IPv4 DHCP packets
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'udp', '--dport', '67:68', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'udp', '--dport', '67:68', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p udp --dport 67:68 -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p udp --dport 67:68 -j ACCEPT")
 
         # Add iptables/ip6tables commands to allow all incoming IPv6 DHCP packets
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'udp', '--dport', '546:547', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'udp', '--dport', '546:547', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p udp --dport 546:547 -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p udp --dport 546:547 -j ACCEPT")
 
         # Add iptables/ip6tables commands to allow all incoming BGP traffic
         # TODO: Determine BGP ACLs based on configured device sessions, and remove this blanket acceptance
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -p tcp --dport 179 -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p tcp --dport 179 -j ACCEPT")
+
+        # Add iptables/ip6tables commands to allow all restapi/http/https requests
+        if "restapi" in self.feature_present and self.feature_present.get("restapi"):
+            iptables_cmds += self.generate_allow_restapi_iptables_commands(namespace)
 
         # Get current ACL tables and rules from Config DB
 
@@ -740,24 +726,24 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     # Apply the rule to the default protocol(s) for this ACL service
                     for ip_protocol in ip_protocols:
                         for dst_port in dst_ports:
-                            rule_cmd = ["ip6tables"] if table_ip_version == 6 else ["iptables"]
+                            rule_cmd = "ip6tables" if table_ip_version == 6 else "iptables"
 
-                            rule_cmd += ["-A", "INPUT"]
+                            rule_cmd += " -A INPUT"
                             if ip_protocol != "any":
-                                rule_cmd += ["-p", str(ip_protocol)]
- 
+                                rule_cmd += " -p {}".format(ip_protocol)
+
                             if "SRC_IPV6" in rule_props and rule_props["SRC_IPV6"]:
-                                rule_cmd += ["-s", str(rule_props["SRC_IPV6"])]
+                                rule_cmd += " -s {}".format(rule_props["SRC_IPV6"])
                                 if rule_props["PACKET_ACTION"] == "ACCEPT":
                                     ipv6_src_ip_set.add(rule_props["SRC_IPV6"])
                             elif "SRC_IP" in rule_props and rule_props["SRC_IP"]:
-                                rule_cmd += ["-s", str(rule_props["SRC_IP"])]
+                                rule_cmd += " -s {}".format(rule_props["SRC_IP"])
                                 if rule_props["PACKET_ACTION"] == "ACCEPT":
                                     ipv4_src_ip_set.add(rule_props["SRC_IP"])
 
                             # Destination port 0 is reserved/unused port, so, using it to apply the rule to all ports.
                             if dst_port != "0":
-                                rule_cmd += ["--dport", str(dst_port)]
+                                rule_cmd += " --dport {}".format(dst_port)
 
                             # If there are TCP flags present and ip protocol is TCP, append them
                             if ip_protocol == "tcp" and "TCP_FLAGS" in rule_props and rule_props["TCP_FLAGS"]:
@@ -767,10 +753,10 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                                 tcp_flags_mask = int(tcp_flags_mask, 16)
 
                                 if tcp_flags_mask > 0:
-                                    rule_cmd += ["--tcp-flags", "{}".format(self.parse_int_to_tcp_flags(tcp_flags_mask)), "{}".format(self.parse_int_to_tcp_flags(tcp_flags))]
+                                    rule_cmd += " --tcp-flags {mask} {flags}".format(mask=self.parse_int_to_tcp_flags(tcp_flags_mask), flags=self.parse_int_to_tcp_flags(tcp_flags))
 
                             # Append the packet action as the jump target
-                            rule_cmd += ["-j", "{}".format(rule_props["PACKET_ACTION"])]
+                            rule_cmd += " -j {}".format(rule_props["PACKET_ACTION"])
 
                             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + rule_cmd)
                             num_ctrl_plane_acl_rules += 1
@@ -783,14 +769,14 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         # Add iptables/ip6tables commands to allow all incoming packets with TTL of 0 or 1
         # This allows the device to respond to tools like tcptraceroute
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-m', 'ttl', '--ttl-lt', '2', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '-m', 'hl', '--hl-lt', '2', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -m ttl --ttl-lt 2 -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -p tcp -m hl --hl-lt 2 -j ACCEPT")
 
         # Finally, if the device has control plane ACLs configured,
         # add iptables/ip6tables commands to drop all other incoming packets
         if num_ctrl_plane_acl_rules > 0:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-j', 'DROP'])
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-j', 'DROP'])
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -A INPUT -j DROP")
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -A INPUT -j DROP")
 
         return iptables_cmds, service_to_source_ip_map
 
@@ -803,7 +789,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds, service_to_source_ip_map  = self.get_acl_rules_and_translate_to_iptables_commands(namespace, config_db_connector)
         self.log_info("Issuing the following iptables commands:")
         for cmd in iptables_cmds:
-            self.log_info("  " + ' '.join(cmd))
+            self.log_info("  " + cmd)
 
         self.run_commands(iptables_cmds)
 
@@ -811,9 +797,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
     def update_control_plane_nat_acls(self, namespace, service_to_source_ip_map, config_db_connector):
         """
-        Convenience wrapper for multi-asic platforms 
+        Convenience wrapper for multi-asic platforms
         which programs the NAT rules for redirecting the
-        traffic coming on the front panel interface map to namespace 
+        traffic coming on the front panel interface map to namespace
         to the host.
         """
         # Add iptables commands to allow front panel traffic
@@ -821,14 +807,14 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         self.log_info("Issuing the following iptables commands:")
         for cmd in iptables_cmds:
-            self.log_info("  " + ' '.join(cmd))
+            self.log_info("  " + cmd)
 
         self.run_commands(iptables_cmds)
 
         if self.DualToR:
             dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace, config_db_connector)
             for cmd in dualtor_iptables_cmds:
-                self.log_info("  " + ' '.join(cmd))
+                self.log_info("  " + cmd)
             self.run_commands(dualtor_iptables_cmds)
 
 
@@ -876,57 +862,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
     def allow_bfd_protocol(self, namespace):
         iptables_cmds = []
         # Add iptables/ip6tables commands to allow all BFD singlehop and multihop sessions
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "iptables -I INPUT 2 -p udp -m multiport --dports 3784,4784 -j ACCEPT")
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + "ip6tables -I INPUT 2 -p udp -m multiport --dports 3784,4784 -j ACCEPT")
         self.run_commands(iptables_cmds)
-
-    def allow_vxlan_port(self, namespace, data):
-        for fv in data:
-            if (fv[0] == "src_ip"):
-                self.VxlanSrcIP = fv[1]
-                break
-
-        if not self.VxlanSrcIP:
-            self.log_info("Received vxlan tunnel configuration without source ip")
-            return False
-
-        iptables_cmds = []
-
-        # Add iptables/ip6tables commands to allow VxLAN packets
-        ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
-        if isinstance(ip_addr, ipaddress.IPv6Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
-        elif isinstance(ip_addr, ipaddress.IPv4Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
-
-        self.run_commands(iptables_cmds)
-        self.log_info("Enabled vxlan port for source ip " + self.VxlanSrcIP)
-        self.VxlanAllowed = True
-        return True
-
-    def block_vxlan_port(self, namespace):
-        if not self.VxlanSrcIP:
-            self.log_info("Cannot remove vxlan tunnel configuration without source ip")
-            return False
-
-        iptables_cmds = []
-
-        # Remove iptables/ip6tables commands that allow VxLAN packets
-        ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
-        if isinstance(ip_addr, ipaddress.IPv6Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
-        elif isinstance(ip_addr, ipaddress.IPv4Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
-
-        self.run_commands(iptables_cmds)
-        self.VxlanAllowed = False
-        self.log_info("Disabled vxlan port for source ip " + self.VxlanSrcIP)
-        self.VxlanSrcIP = ""
-        return True
 
     def run(self):
         # Set select timeout to 1 second
@@ -942,22 +880,19 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # Initlaize Global config that loads all database*.json
         if device_info.is_multi_npu():
             swsscommon.SonicDBConfig.initializeGlobalConfig()
-        
+
         # Create the Select object
         sel = swsscommon.Select()
 
         # Set up STATE_DB connector to monitor the change in MUX_CABLE_TABLE
         state_db_connector = None
-        config_db_connector = None
         subscribe_mux_cable = None
         subscribe_dhcp_packet_mark = None
         state_db_id = swsscommon.SonicDBConfig.getDbId("STATE_DB")
-        config_db_id = swsscommon.SonicDBConfig.getDbId("CONFIG_DB")
         dhcp_packet_mark_tbl = {}
 
         # set up state_db connector
         state_db_connector = swsscommon.DBConnector("STATE_DB", 0)
-        config_db_connector = swsscommon.DBConnector("CONFIG_DB", 0)
 
         if self.DualToR:
             self.log_info("Dual ToR mode")
@@ -976,8 +911,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         subscribe_bfd_session = swsscommon.SubscriberStateTable(state_db_connector, self.BFD_SESSION_TABLE)
         sel.addSelectable(subscribe_bfd_session)
 
-        subscribe_vxlan_table = swsscommon.SubscriberStateTable(config_db_connector, self.VXLAN_TUNNEL_TABLE)
-        sel.addSelectable(subscribe_vxlan_table)
         # Map of Namespace <--> susbcriber table's object
         config_db_subscriber_table_map = {}
 
@@ -1052,16 +985,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         self.update_dhcp_acl(key, op, dict(fvs), mark)
                 continue
 
-            if db_id == config_db_id:
-                while True:
-                    key, op, fvs = subscribe_vxlan_table.pop()
-                    if not key:
-                        break
-                    if op == 'SET' and not self.VxlanAllowed:
-                        self.allow_vxlan_port(namespace, fvs)
-                    elif op == 'DEL' and self.VxlanAllowed:
-                        self.block_vxlan_port(namespace)
-
             ctrl_plane_acl_notification = set()
 
             # Pop data of both Subscriber Table object of namespace that got config db acl table event
@@ -1078,13 +1001,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         ctrl_plane_acl_notification.add(namespace)
                     # Check ACL Rule notification and make sure Rule point to ACL Table which is Controlplane
                     else:
-                        try:
-                            acl_table = key.split(acl_rule_table_seprator)[0]
-                            if self.config_db_map[namespace].get_table(self.ACL_TABLE)[acl_table]["type"] == self.ACL_TABLE_TYPE_CTRLPLANE:
-                                ctrl_plane_acl_notification.add(namespace)
-                        except KeyError:
-                            self.log_error("ACL table '{}' not found in Config DB ACL_TABLE.".format(acl_table))
-                            continue
+                        acl_table = key.split(acl_rule_table_seprator)[0]
+                        if self.config_db_map[namespace].get_table(self.ACL_TABLE)[acl_table]["type"] == self.ACL_TABLE_TYPE_CTRLPLANE:
+                            ctrl_plane_acl_notification.add(namespace)
 
             # Update the Control Plane ACL of the namespace that got config db acl table event
             for namespace in ctrl_plane_acl_notification:
