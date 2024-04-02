@@ -146,7 +146,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
                 mem = process.memory_percent()
                 cpu = process.cpu_percent()
                 stime = process.create_time()
-                stime_formatted = datetime.fromtimestamp(stime).strftime("%b%d")
+                stime_formatted = datetime.utcfromtimestamp(stime).strftime("%b%d")
                 tty = process.terminal()
                 ttime = process.cpu_times()
                 time_formatted = str(timedelta(seconds=int(ttime.user + ttime.system)))
