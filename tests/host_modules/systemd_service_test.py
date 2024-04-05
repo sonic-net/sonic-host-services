@@ -8,10 +8,11 @@ class TestSystemdService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_service_restart(self, MockInit, MockBusName, MockSystemBus):
+    def test_service_restart_valid(self, MockInit, MockBusName, MockSystemBus):
         with mock.patch("subprocess.run") as mock_run:
             res_mock = mock.Mock()
             test_ret = 0
+            test_msg = b"Succeeded"
             attrs = {"returncode": test_ret, "stderr": test_msg}
             res_mock.configure_mock(**attrs)
             mock_run.return_value = res_mock
@@ -23,29 +24,25 @@ class TestSystemdService(object):
             assert "/usr/bin/systemctl" in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
-
-        with mock.patch("subprocess.run") as mock_run:
-            res_mock = mock.Mock()
-            test_ret = 1
-            test_msg = b"Dbus does not support"
-            attrs = {"returncode": test_ret, "stderr": test_msg}
-            res_mock.configure_mock(**attrs)
-            mock_run.return_value = res_mock
-            service = "unsupported"
-            systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
-            ret, msg = systemd_service_stub.restart_service(service)
-            call_args = mock_run.call_args[0][0]
-            assert "/usr/bin/systemctl" in call_args
-            assert service in call_args
-            assert "stop" in call_args
-            assert ret == test_ret, "Return value is wrong"
-            assert "Dbus does not support" in msg, "Return message is wrong"
-    
+   
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_service_restart_invalid(self, MockInit, MockBusName, MockSystemBus):
+        systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
+        service = "unsupported_service"
+        ret, msg = systemd_service_stub.restart_service(service)
+        assert ret == 1
+        assert "Dbus does not support" in msg
         
-    def test_service_stop(self, MockInit, MockBusName, MockSystemBus):
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_service_stop_valid(self, MockInit, MockBusName, MockSystemBus):
         with mock.patch("subprocess.run") as mock_run:
             res_mock = mock.Mock()
             test_ret = 0
+            test_msg = b"Succeeded"
             attrs = {"returncode": test_ret, "stderr": test_msg}
             res_mock.configure_mock(**attrs)
             mock_run.return_value = res_mock
@@ -58,19 +55,13 @@ class TestSystemdService(object):
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
 
-        with mock.patch("subprocess.run") as mock_run:
-            res_mock = mock.Mock()
-            test_ret = 1
-            test_msg = b"Dbus does not support"
-            attrs = {"returncode": test_ret, "stderr": test_msg}
-            res_mock.configure_mock(**attrs)
-            mock_run.return_value = res_mock
-            service = "unsupported"
-            systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
-            ret, msg = systemd_service_stub.stop_service(service)
-            call_args = mock_run.call_args[0][0]
-            assert "/usr/bin/systemctl" in call_args
-            assert service in call_args
-            assert "stop" in call_args
-            assert ret == test_ret, "Return value is wrong"
-            assert "Dbus does not support" in msg, "Return message is wrong"
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_service_stop_invalid(self, MockInit, MockBusName, MockSystemBus):
+        service = "unsupported service"
+        systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
+        ret, msg = systemd_service_stub.stop_service(service)
+        assert ret == 1
+        assert "Dbus does not support" in msg
+
