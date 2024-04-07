@@ -64,7 +64,6 @@ stages:
     - script: |
         set -xe
         sudo pip3 install enum34
-        sudo pip install psutil
         sudo pip3 install swsssdk-2.0.1-py3-none-any.whl
         sudo pip3 install sonic_py_common-1.0-py3-none-any.whl
         sudo pip3 install sonic_yang_mgmt-1.0-py3-none-any.whl
