@@ -4,7 +4,7 @@ from host_modules import host_service
 import subprocess
 
 MOD_NAME = 'systemd'
-ALLOWED_SERVICES = ['snmp', 'swss']
+ALLOWED_SERVICES = ['snmp', 'swss', 'dhcp_relay', 'radv', 'restapi', 'lldp', 'sshd']
 EXIT_FAILURE = 1
 
 
