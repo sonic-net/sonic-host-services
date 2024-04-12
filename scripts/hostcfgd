@@ -17,7 +17,7 @@ from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 from sonic_installer import bootloader
-from sonic_py_common.security_cipher import security_cipher
+from sonic_py_common.security_cipher import master_key_mgr 
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -501,7 +501,7 @@ class AaaCfg(object):
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
                 if 'key_encrypt' in server:
-                    secure_cipher = security_cipher()
+                    secure_cipher = master_key_mgr()
                     if server['key_encrypt'] == 'True':
                         output, errs = secure_cipher.decrypt_passkey("TACPLUS", server['passkey'])
                         if not errs:
