@@ -14,8 +14,10 @@ class SystemdService(host_service.HostModule):
     """
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
     def restart_service(self, service):
+        if not service:
+            return EXIT_FAILURE, "Dbus restart_service called with no service specified"
         if service not in ALLOWED_SERVICES:
-            return EXIT_FAILURE, "Dbus does not support {} service management".format(service)
+            return EXIT_FAILURE, "Dbus does not support {} service restart".format(service)
 
         cmd = ['/usr/bin/systemctl', 'reset-failed', service]
         result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -33,6 +35,8 @@ class SystemdService(host_service.HostModule):
     
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
     def stop_service(self, service):
+        if not service:
+            return EXIT_FAILURE, "Dbus stop_service called with no service specified"
         if service not in ALLOWED_SERVICES:
             return EXIT_FAILURE, "Dbus does not support {} service management".format(service)
 

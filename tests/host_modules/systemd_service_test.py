@@ -38,6 +38,16 @@ class TestSystemdService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
+    def test_service_restart_empty(self, MockInit, MockBusName, MockSystemBus):
+        service = ""
+        systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
+        ret, msg = systemd_service_stub.restart_service(service)
+        assert ret == 1
+        assert "restart_service called with no service specified" in msg
+    
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
     def test_service_stop_valid(self, MockInit, MockBusName, MockSystemBus):
         with mock.patch("subprocess.run") as mock_run:
             res_mock = mock.Mock()
@@ -65,3 +75,12 @@ class TestSystemdService(object):
         assert ret == 1
         assert "Dbus does not support" in msg
 
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_service_stop_empty(self, MockInit, MockBusName, MockSystemBus):
+        service = ""
+        systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
+        ret, msg = systemd_service_stub.stop_service(service)
+        assert ret == 1
+        assert "stop_service called with no service specified" in msg
