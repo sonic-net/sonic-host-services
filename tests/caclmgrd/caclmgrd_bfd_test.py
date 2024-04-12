@@ -1,6 +1,6 @@
 import os
 import sys
-import swsscommon
+from swsscommon import swsscommon
 
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
@@ -18,7 +18,7 @@ class TestCaclmgrdBfd(TestCase):
         Test caclmgrd bfd
     """
     def setUp(self):
-        swsscommon.swsscommon.ConfigDBConnector = MockConfigDb
+        swsscommon.ConfigDBConnector = MockConfigDb
         test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         modules_path = os.path.dirname(test_path)
         scripts_path = os.path.join(modules_path, "scripts")
@@ -47,5 +47,10 @@ class TestCaclmgrdBfd(TestCase):
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
                 caclmgrd_daemon.allow_bfd_protocol('')
+                mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
+                caclmgrd_daemon.bfdAllowed = True
+                mocked_subprocess.Popen.reset_mock()
+                caclmgrd_daemon.num_changes[''] = 1
+                caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
 

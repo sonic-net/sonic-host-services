@@ -802,6 +802,12 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
+        if self.bfdAllowed:
+            self.allow_bfd_protocol(namespace)
+        if self.VxlanAllowed:
+            fvs = swsscommon.FieldValuePairs([("src_ip", self.VxlanSrcIP)])
+            self.allow_vxlan_port(namespace, fvs)
+
 
         self.update_control_plane_nat_acls(namespace, service_to_source_ip_map, config_db_connector)
 
