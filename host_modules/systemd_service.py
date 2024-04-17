@@ -20,12 +20,9 @@ class SystemdService(host_service.HostModule):
             return EXIT_FAILURE, "Dbus does not support {} service restart".format(service)
 
         cmd = ['/usr/bin/systemctl', 'reset-failed', service]
-        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        
         msg = ''
-        if result.returncode:
-            msg = result.stderr.decode()
-            return result.returncode, msg
-
         cmd = ['/usr/bin/systemctl', 'restart', service]
         result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if result.returncode:
