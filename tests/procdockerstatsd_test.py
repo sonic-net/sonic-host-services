@@ -109,11 +109,13 @@ class TestProcDockerStatsDaemon(object):
 
     def test_update_processstats_command(self):
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        current_time = datetime.now()
+        valid_create_time = int((current_time - timedelta(days=30)).timestamp())
 
         # Create a list of mocked processes
         mocked_processes = [
-            MockProcess(uids=[1000], pid=1234, ppid=5678, memory_percent=10.5, cpu_percent=20.5, create_time=1234567890, cmdline=['python', 'script.py'], user_time=1.5, system_time=2.0),
-            MockProcess(uids=[1000], pid=5678, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=9876543210, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0)
+            MockProcess(uids=[1000], pid=1234, ppid=5678, memory_percent=10.5, cpu_percent=20.5, create_time=valid_create_time, cmdline=['python', 'script.py'], user_time=1.5, system_time=2.0),
+            MockProcess(uids=[1000], pid=5678, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=valid_create_time, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0)
         ]
 
         with patch("procdockerstatsd.psutil.process_iter", return_value=mocked_processes) as mock_process_iter:
