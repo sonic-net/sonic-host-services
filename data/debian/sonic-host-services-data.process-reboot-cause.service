@@ -1,7 +1,7 @@
 [Unit]
 Description=Retrieve the reboot cause from the history files and save them to StateDB
-After=database.service determine-reboot-cause.service
-Upholds=database.service determine-reboot-cause.service
+Requires=rc-local.service database.service
+After=rc-local.service database.service
 
 [Service]
 Type=simple
