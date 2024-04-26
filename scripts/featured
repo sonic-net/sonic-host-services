@@ -79,6 +79,7 @@ class Feature(object):
         self.delayed = safe_eval(feature_cfg.get('delayed', 'False'))
         self.has_global_scope = safe_eval(feature_cfg.get('has_global_scope', 'True'))
         self.has_per_asic_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_per_asic_scope', 'False'), device_config or {}, ['True', 'False']))
+        self.has_per_dpu_scope = safe_eval(feature_cfg.get('has_per_dpu_scope', 'False'))
 
     def _get_feature_table_key_render_value(self, configuration, device_config, expected_values):
         """ Returns the target value for the feature by rendering the configuration as J2 template.
@@ -131,6 +132,7 @@ class FeatureHandler(object):
         self._device_running_config = device_info.get_device_runtime_metadata()
         self.ns_cfg_db = {}
         self.ns_feature_state_tbl = {}
+        self.num_dpus = device_info.get_num_dpus()
 
         # Initlaize Global config that loads all database*.json
         if self.is_multi_npu:
@@ -319,7 +321,20 @@ class FeatureHandler(object):
         Returns:
             None.
         """
-        restart_field_str = "always" if "enabled" in feature_config.auto_restart else "no"
+        # As per the current code(due to various dependencies) SWSS service stop/start also stops/starts the dependent services(syncd, teamd, bgpd etc)
+        # There is an issue seen of syncd service getting stopped twice upon a critical process crash in syncd service due to above reason.
+        # Also early start of syncd service has traffic impact on VOQ chassis.
+        # to fix the above issue, we are disabling the auto restart of syncd service as it will be started by swss service.
+        # This change can be extended to other dependent services as well in future and also on pizza box platforms.
+
+        device_type = self._device_config.get('DEVICE_METADATA', {}).get('localhost', {}).get('type')
+        is_dependent_service = feature_config.name in ['syncd', 'gbsyncd']
+        if device_type == 'SpineRouter' and is_dependent_service:
+            syslog.syslog(syslog.LOG_INFO, "Skipped setting Restart field in systemd for {}".format(feature_config.name))
+            restart_field_str = "no"
+        else:
+            restart_field_str = "always" if "enabled" in feature_config.auto_restart else "no"
+
         feature_systemd_config = "[Service]\nRestart={}\n".format(restart_field_str)
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config)
 
@@ -351,7 +366,9 @@ class FeatureHandler(object):
         feature_names = (
             ([feature.name] if feature.has_global_scope or not self.is_multi_npu else []) +
             ([(feature.name + '@' + str(asic_inst)) for asic_inst in range(device_info.get_num_npus())
-                if self.is_multi_npu and (all_instance or feature.has_per_asic_scope)])
+                if self.is_multi_npu and (all_instance or feature.has_per_asic_scope)]) + 
+            ([(feature.name + '@' + device_info.DPU_NAME_PREFIX + str(dpu_inst)) for dpu_inst in range(self.num_dpus)
+                if all_instance or feature.has_per_dpu_scope])
         )
 
         if not feature_names:
