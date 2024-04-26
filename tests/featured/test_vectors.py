@@ -1083,7 +1083,7 @@ FEATURED_TEST_VECTOR = [
                     "lldp": {
                         "state": "enabled",
                         "delayed": "False",
-                        "has_global_scope": "True",
+                        "has_global_scope": "{% if ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['linecard']) %}False{% else %}True{% endif %}",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
@@ -1118,7 +1118,7 @@ FEATURED_TEST_VECTOR = [
                     },
                     "lldp": {
                         "auto_restart": "enabled",
-                        "has_global_scope": "True",
+                        "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "delayed": "False",
                         "high_mem_alert": "disabled",
@@ -1147,9 +1147,9 @@ FEATURED_TEST_VECTOR = [
                 call(['sudo', 'systemctl', 'unmask', 'teamd@1.service']),
                 call(['sudo', 'systemctl', 'enable', 'teamd@1.service']),
                 call(['sudo', 'systemctl', 'start', 'teamd@1.service']),
-                call(['sudo', 'systemctl', 'unmask', 'lldp.service']),
-                call(['sudo', 'systemctl', 'enable', 'lldp.service']),
-                call(['sudo', 'systemctl', 'start', 'lldp.service']),
+                call(['sudo', 'systemctl', 'mask', 'lldp.service']),
+                call(['sudo', 'systemctl', 'disable', 'lldp.service']),
+                call(['sudo', 'systemctl', 'stop', 'lldp.service']),
                 call(['sudo', 'systemctl', 'unmask', 'lldp@0.service']),
                 call(['sudo', 'systemctl', 'enable', 'lldp@0.service']),
                 call(['sudo', 'systemctl', 'start', 'lldp@0.service']),
