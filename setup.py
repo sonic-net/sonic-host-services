@@ -47,6 +47,7 @@ setup(
         'systemd-python',
         'Jinja2>=2.10',
         'PyGObject',
+        'psutil'
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',
@@ -57,7 +58,8 @@ setup(
         'pytest',
         'pyfakefs',
         'sonic-py-common',
-        'deepdiff==6.2.2'
+        'deepdiff==6.2.2',
+        'psutil'
     ],
     extras_require = {
         "testing": [

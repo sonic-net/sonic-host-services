@@ -5,11 +5,12 @@ Daemon which periodically gathers process and docker statistics and pushes the d
 '''
 
 import os
+import psutil
 import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sonic_py_common import daemon_base
 from swsscommon import swsscommon
@@ -136,18 +137,30 @@ class ProcDockerStats(daemon_base.DaemonBase):
         return True
 
     def update_processstats_command(self):
-        cmd0 = ["ps", "-eo", "uid,pid,ppid,%mem,%cpu,stime,tty,time,cmd", "--sort", "-%cpu"]
-        cmd1 = ["head", "-1024"]
-        exitcode, data = getstatusoutput_noshell_pipe(cmd0, cmd1)
-        if any(exitcode):
-            cmd = ' | '.join([' '.join(cmd0), ' '.join(cmd1)])
-            self.log_error("Error running command '{}'".format(cmd))
-            data = None
-        processdata = self.format_process_cmd_output(data)
-        value = ""
+        processdata = []
+        for process in psutil.process_iter(['pid', 'ppid', 'memory_percent', 'cpu_percent', 'create_time', 'cmdline']):
+            try:
+                uid = process.uids()[0]
+                pid = process.pid
+                ppid = process.ppid()
+                mem = process.memory_percent()
+                cpu = process.cpu_percent()
+                stime = process.create_time()
+                stime_formatted = datetime.utcfromtimestamp(stime).strftime("%b%d")
+                tty = process.terminal()
+                ttime = process.cpu_times()
+                time_formatted = str(timedelta(seconds=int(ttime.user + ttime.system)))
+                cmd = ' '.join(process.cmdline())
+
+                row = {'PID': pid, 'UID': uid, 'PPID': ppid, '%CPU': cpu, '%MEM': mem, 'STIME': stime_formatted,  'TT': tty, 'TIME': time_formatted, 'CMD': cmd}
+                processdata.append(row)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+
         # wipe out all data before updating with new values
         self.state_db.delete_all_by_pattern('STATE_DB', 'PROCESS_STATS|*')
-        for row in processdata[0:]:
+
+        for row in processdata:
             cid = row.get('PID')
             if cid:
                 value = 'PROCESS_STATS|{}'.format(cid)
@@ -157,7 +170,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
                 self.update_state_db(value, 'PPID', ppid)
                 cpu = row.get('%CPU')
                 self.update_state_db(value, '%CPU', str(cpu))
-                mem = row.get('%MEM')
+                mem = round(row.get('%MEM'), 1)
                 self.update_state_db(value, '%MEM', str(mem))
                 stime = row.get('STIME')
                 self.update_state_db(value, 'STIME', stime)
