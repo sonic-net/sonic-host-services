@@ -68,6 +68,15 @@ auth	[success=2 default=ignore]	pam_exec.so /usr/sbin/cache_radius
 # Local
 auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so nullok try_first_pass
 
+{% elif auth['login'] == 'ldap,local' %}
+auth    [success=2 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
+auth    [success=1 default=ignore]      pam_unix.so nullok try_first_pass
+{% elif auth['login'] == 'local,ldap' %}
+auth    [success=2 default=ignore]      pam_unix.so nullok try_first_pass
+auth    [success=1 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
+{% elif auth['login'] == 'ldap' %}
+auth    [success=1 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
+
 {% else %}
 auth	[success=1 default=ignore]	pam_unix.so nullok try_first_pass
 
