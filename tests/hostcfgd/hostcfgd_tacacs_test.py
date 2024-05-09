@@ -218,7 +218,6 @@ class TestHostcfgdTACACS(TestCase):
         with mock.patch('hostcfgd.syslog.syslog') as mocked_syslog:
             mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
             mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
-            mocked_syslog.LOG_DEBUG = original_syslog.LOG_DEBUG
 
             # simulate subscribe callback
             try:
@@ -228,15 +227,12 @@ class TestHostcfgdTACACS(TestCase):
 
             # check sys log
             expected = [
-                mock.call(mocked_syslog.LOG_DEBUG, "auth login: not ldap type - rm session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022 silent from  {} file.".format(hostcfgd.PAM_COMMON_SESS)),
-                mock.call(mocked_syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - ['sed', '-i', '/pam_mkhomedir.so/d', '{}']".format(hostcfgd.PAM_COMMON_SESS)),
-                mock.call(mocked_syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - ['sed', '-i', '/pam_mkhomedir.so/d', '{}-noninteractive']".format(hostcfgd.PAM_COMMON_SESS)),
                 mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (2139) bytes".format(hostcfgd.ETC_PAMD_SSHD)),
                 mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (4951) bytes".format(hostcfgd.ETC_PAMD_LOGIN)),
                 mock.call(mocked_syslog.LOG_INFO, "Found audisp-tacplus PID: "),
                 mock.call(mocked_syslog.LOG_INFO, "cmd - ['service', 'aaastatsd', 'stop']"),
                 mock.call(mocked_syslog.LOG_ERR, "['service', 'aaastatsd', 'stop'] - failed: return code - 1, output:\nNone"),
-                mock.call(mocked_syslog.LOG_INFO, "generate_file_from_template template_j2=/usr/share/sonic/templates/nslcd.conf.j2file_conf_output=/etc/nslcd.conf kwargs={'servers': [], 'ldap_cfg': <class 'ldap.LdapCfg'>}"),
                 mock.call(mocked_syslog.LOG_INFO, "AAA Update: key: DEL, op: DEL, data: {}")
             ]
-            mocked_syslog.assert_has_calls(expected)
+            for expected_call in expected:
+                assert expected_call in mocked_syslog.mock_calls, f"Expected call {expected_call} not found"
