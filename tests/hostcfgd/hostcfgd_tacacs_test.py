@@ -51,6 +51,7 @@ class TestHostcfgdTACACS(TestCase):
         hostcfgd.NSS_RADIUS_CONF_TEMPLATE = t_path + "/radius_nss.conf.j2"
         hostcfgd.PAM_RADIUS_AUTH_CONF_TEMPLATE = t_path + "/pam_radius_auth.conf.j2"
         hostcfgd.PAM_AUTH_CONF = op_path + "/common-auth-sonic"
+        hostcfgd.PAM_COMMON_SESS = op_path + "/common-session"
         hostcfgd.NSS_TACPLUS_CONF = op_path + "/tacplus_nss.conf"
         hostcfgd.NSS_RADIUS_CONF = op_path + "/radius_nss.conf"
         hostcfgd.NSS_CONF = op_path + "/nsswitch.conf"
@@ -59,10 +60,6 @@ class TestHostcfgdTACACS(TestCase):
         hostcfgd.RADIUS_PAM_AUTH_CONF_DIR = op_path + "/"
         hostcfgd.LDAP_CONF_TEMPLATE = t_path + "/ldap.conf.j2"
         hostcfgd.LDAP_CONF = op_path + "/ldap.conf"
-        # hostcfgd.PAM_LDAP_CONF_TEMPLATE = t_path + "/pam_ldap.conf.j2"
-        # hostcfgd.PAM_LDAP_CONF = op_path + "/pam_ldap.conf"
-        # hostcfgd.NSS_LDAP_CONF_TEMPLATE = t_path + "/libnss-ldap.conf.j2"
-        # hostcfgd.NSS_LDAP_CONF = op_path + "/libnss-ldap.conf"
 
         shutil.rmtree( op_path, ignore_errors=True)
         os.mkdir( op_path)
@@ -221,6 +218,7 @@ class TestHostcfgdTACACS(TestCase):
         with mock.patch('hostcfgd.syslog.syslog') as mocked_syslog:
             mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
             mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
+            mocked_syslog.LOG_DEBUG = original_syslog.LOG_DEBUG
 
             # simulate subscribe callback
             try:
@@ -230,11 +228,15 @@ class TestHostcfgdTACACS(TestCase):
 
             # check sys log
             expected = [
+                mock.call(mocked_syslog.LOG_DEBUG, "auth login: not ldap type - rm session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022 silent from  {} file.".format(hostcfgd.PAM_COMMON_SESS)),
+                mock.call(mocked_syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - ['sed', '-i', '/pam_mkhomedir.so/d', '{}']".format(hostcfgd.PAM_COMMON_SESS)),
+                mock.call(mocked_syslog.LOG_DEBUG, "modify_single_file_inplace: cmd - ['sed', '-i', '/pam_mkhomedir.so/d', '{}-noninteractive']".format(hostcfgd.PAM_COMMON_SESS)),
                 mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (2139) bytes".format(hostcfgd.ETC_PAMD_SSHD)),
                 mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (4951) bytes".format(hostcfgd.ETC_PAMD_LOGIN)),
                 mock.call(mocked_syslog.LOG_INFO, "Found audisp-tacplus PID: "),
                 mock.call(mocked_syslog.LOG_INFO, "cmd - ['service', 'aaastatsd', 'stop']"),
                 mock.call(mocked_syslog.LOG_ERR, "['service', 'aaastatsd', 'stop'] - failed: return code - 1, output:\nNone"),
+                mock.call(mocked_syslog.LOG_INFO, "generate_file_from_template template_j2=/usr/share/sonic/templates/nslcd.conf.j2file_conf_output=/etc/nslcd.conf kwargs={'servers': [], 'ldap_cfg': <class 'ldap.LdapCfg'>}"),
                 mock.call(mocked_syslog.LOG_INFO, "AAA Update: key: DEL, op: DEL, data: {}")
             ]
             mocked_syslog.assert_has_calls(expected)
