@@ -38,6 +38,7 @@ setup(
         'scripts/featured',
         'scripts/aaastatsd',
         'scripts/procdockerstatsd',
+        'scripts/bmpcfgd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
         'scripts/sonic-host-server',

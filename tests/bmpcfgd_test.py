@@ -13,26 +13,23 @@ from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 from tests.common.mock_bootloader import MockBootloader
 from sonic_py_common.general import getstatusoutput_noshell
 
-test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+test_path = os.path.dirname(os.path.abspath(__file__))
 modules_path = os.path.dirname(test_path)
 scripts_path = os.path.join(modules_path, "scripts")
 sys.path.insert(0, modules_path)
 
 # Load the file under test
 bmpcfgd_path = os.path.join(scripts_path, 'bmpcfgd')
-loader = importlib.machinery.SourceFileLoader('bmpcfgd', bmpcfgd_path)
-spec = importlib.util.spec_from_loader(loader.name, loader)
-bmpcfgd = importlib.util.module_from_spec(spec)
-loader.exec_module(bmpcfgd)
-sys.modules['bmpcfgd'] = bmpcfgd
+bmpcfgd = load_module_from_source('bmpcfgd', bmpcfgd_path)
+
+
 original_syslog = bmpcfgd.syslog
 
 # Mock swsscommon classes
 bmpcfgd.ConfigDBConnector = MockConfigDb
 bmpcfgd.DBConnector = MockDBConnector
 bmpcfgd.Table = mock.Mock()
-running_services = [{"unit":"ssh.service","load":"loaded","active":"active","sub":"running","description":"OpenBSD Secure Shell server"},
-            {"unit":"restapi.service","load":"loaded","active":"active","sub":"running","description":"SONiC Restful API Service"}]
 
 
 class TestBMPCfgDaemon(TestCase):
@@ -56,13 +53,12 @@ class TestBMPCfgDaemon(TestCase):
 
     @mock.patch('sonic_installer.bootloader.get_bootloader', side_effect=[MockBootloader()])
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
     @mock.patch('subprocess.check_call')
     def test_bmpcfgd_neighbor_enable(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         self.test_data['BMP']['table']['bgp_neighbor_table'] = 'true'
         MockConfigDb.set_config_db(self.test_data)
-        host_config_daemon = bmpcfgd.BMPCfgDaemon()
-        host_config_daemon.bmp_handler("BMP", '', self.test_data)
+        bmp_config_daemon = bmpcfgd.BMPCfgDaemon()
+        bmp_config_daemon.bmp_handler("BMP", '', self.test_data)
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: update : true, false, false')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: stop bmp daemon.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: Reset bmp table from state_db.')
@@ -70,13 +66,12 @@ class TestBMPCfgDaemon(TestCase):
 
     @mock.patch('sonic_installer.bootloader.get_bootloader', side_effect=[MockBootloader()])
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
     @mock.patch('subprocess.check_call')
     def test_bmpcfgd_bgp_rib_in_enable(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         self.test_data['BMP']['table']['bgp_rib_in_table'] = 'true'
         MockConfigDb.set_config_db(self.test_data)
-        host_config_daemon = bmpcfgd.BMPCfgDaemon()
-        host_config_daemon.bmp_handler("BMP", '', self.test_data)
+        bmp_config_daemon = bmpcfgd.BMPCfgDaemon()
+        bmp_config_daemon.bmp_handler("BMP", '', self.test_data)
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: update : false, true, false')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: stop bmp daemon.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: Reset bmp table from state_db.')
@@ -84,13 +79,12 @@ class TestBMPCfgDaemon(TestCase):
 
     @mock.patch('sonic_installer.bootloader.get_bootloader', side_effect=[MockBootloader()])
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
     @mock.patch('subprocess.check_call')
     def test_bmpcfgd_bgp_rib_out_enable(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         self.test_data['BMP']['table']['bgp_rib_out_table'] = 'true'
         MockConfigDb.set_config_db(self.test_data)
-        host_config_daemon = bmpcfgd.BMPCfgDaemon()
-        host_config_daemon.bmp_handler("BMP", '', self.test_data)
+        bmp_config_daemon = bmpcfgd.BMPCfgDaemon()
+        bmp_config_daemon.bmp_handler("BMP", '', self.test_data)
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: update : false, false, true')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: stop bmp daemon.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'BMPCfg: Reset bmp table from state_db.')
