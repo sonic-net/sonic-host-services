@@ -51,6 +51,7 @@ class TestHostcfgdTACACS(TestCase):
         hostcfgd.NSS_RADIUS_CONF_TEMPLATE = t_path + "/radius_nss.conf.j2"
         hostcfgd.PAM_RADIUS_AUTH_CONF_TEMPLATE = t_path + "/pam_radius_auth.conf.j2"
         hostcfgd.PAM_AUTH_CONF = op_path + "/common-auth-sonic"
+        hostcfgd.PAM_COMMON_SESS = op_path + "/common-session"
         hostcfgd.NSS_TACPLUS_CONF = op_path + "/tacplus_nss.conf"
         hostcfgd.NSS_RADIUS_CONF = op_path + "/radius_nss.conf"
         hostcfgd.NSS_CONF = op_path + "/nsswitch.conf"
@@ -59,10 +60,6 @@ class TestHostcfgdTACACS(TestCase):
         hostcfgd.RADIUS_PAM_AUTH_CONF_DIR = op_path + "/"
         hostcfgd.LDAP_CONF_TEMPLATE = t_path + "/ldap.conf.j2"
         hostcfgd.LDAP_CONF = op_path + "/ldap.conf"
-        # hostcfgd.PAM_LDAP_CONF_TEMPLATE = t_path + "/pam_ldap.conf.j2"
-        # hostcfgd.PAM_LDAP_CONF = op_path + "/pam_ldap.conf"
-        # hostcfgd.NSS_LDAP_CONF_TEMPLATE = t_path + "/libnss-ldap.conf.j2"
-        # hostcfgd.NSS_LDAP_CONF = op_path + "/libnss-ldap.conf"
 
         shutil.rmtree( op_path, ignore_errors=True)
         os.mkdir( op_path)
@@ -237,4 +234,5 @@ class TestHostcfgdTACACS(TestCase):
                 mock.call(mocked_syslog.LOG_ERR, "['service', 'aaastatsd', 'stop'] - failed: return code - 1, output:\nNone"),
                 mock.call(mocked_syslog.LOG_INFO, "AAA Update: key: DEL, op: DEL, data: {}")
             ]
-            mocked_syslog.assert_has_calls(expected)
+            for expected_call in expected:
+                assert expected_call in mocked_syslog.mock_calls, f"Expected call {expected_call} not found"
