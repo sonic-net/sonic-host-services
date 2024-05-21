@@ -38,6 +38,7 @@ class TesNtpCfgd(TestCase):
             'global': {'vrf': 'mgmt', 'src_intf': 'eth0'}
         }
         MockConfigDb.CONFIG_DB['NTP_SERVER'] = {'0.debian.pool.ntp.org': {}}
+
         MockConfigDb.CONFIG_DB['NTP_KEY'] = {'42': {'value': 'theanswer'}}
 
     def tearDown(self):
