@@ -8,7 +8,7 @@ from swsscommon import swsscommon
 
 from parameterized import parameterized
 from unittest import TestCase, mock
-from tests.hostcfgd.test_radius_vectors import HOSTCFGD_TEST_RADIUS_VECTOR
+from tests.hostcfgd.test_ldap_vectors import HOSTCFGD_TEST_LDAP_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 from sonic_py_common.general import getstatusoutput_noshell
 
@@ -34,19 +34,19 @@ hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 
-class TestHostcfgdRADIUS(TestCase):
+class TestHostcfgdLDAP(TestCase):
     """
-        Test hostcfd daemon - RADIUS
+        Test hostcfd daemon - LDAP
     """
     def run_diff(self, file1, file2):
         _, output = getstatusoutput_noshell(['diff', '-uR', file1, file2])
         return output
 
 
-    @parameterized.expand(HOSTCFGD_TEST_RADIUS_VECTOR)
-    def test_hostcfgd_radius(self, test_name, test_data):
+    @parameterized.expand(HOSTCFGD_TEST_LDAP_VECTOR)
+    def test_hostcfgd_ldap(self, test_name, test_data):
         """
-            Test RADIUS hostcfd daemon initialization
+            Test LDAP hostcfd daemon initialization
             Args:
                 test_name(str): test name
                 test_data(dict): test data which contains initial Config Db tables, and expected results
@@ -66,6 +66,8 @@ class TestHostcfgdRADIUS(TestCase):
         hostcfgd.NSS_TACPLUS_CONF = op_path + "/tacplus_nss.conf"
         hostcfgd.NSS_RADIUS_CONF = op_path + "/radius_nss.conf"
         hostcfgd.NSS_CONF = op_path + "/nsswitch.conf"
+        hostcfgd.NSLCD_CONF = op_path + "/nslcd.conf"
+        hostcfgd.NSLCD_CONF_TEMPLATE = t_path + "/nslcd.conf.j2"
         hostcfgd.ETC_PAMD_SSHD = op_path + "/sshd"
         hostcfgd.ETC_PAMD_LOGIN = op_path + "/login"
         hostcfgd.RADIUS_PAM_AUTH_CONF_DIR = op_path + "/"
@@ -82,22 +84,33 @@ class TestHostcfgdRADIUS(TestCase):
         aaa = host_config_daemon.config_db.get_table('AAA')
 
         try:
-            radius_global = host_config_daemon.config_db.get_table('RADIUS')
+            ldap_global = host_config_daemon.config_db.get_table('LDAP')
         except:
-            radius_global = []
+            ldap_global = []
         try:
-            radius_server = \
-                host_config_daemon.config_db.get_table('RADIUS_SERVER')
+            ldap_server = \
+                host_config_daemon.config_db.get_table('LDAP_SERVER')
         except:
-            radius_server = []
+            ldap_server = []
 
-        host_config_daemon.aaacfg.load(aaa,[],[],radius_global,radius_server, {}, {})
-        dcmp = filecmp.dircmp(sop_path, op_path)
+        host_config_daemon.aaacfg.load(aaa,[],[],[] ,[] , ldap_global, ldap_server)
+
         diff_output = ""
-        for name in dcmp.diff_files:
-            diff_output += \
-                "Diff: file: {} expected: {} output: {}\n".format(\
-                    name, dcmp.left, dcmp.right)
-            diff_output += self.run_diff( dcmp.left + "/" + name,\
-                dcmp.right + "/" + name)
+        files_to_compare = ['common-auth-sonic', 'nslcd.conf']
+
+        # check output files exists
+        for name in files_to_compare:
+            if not os.path.isfile(sop_path + "/" + name):
+                raise ValueError('filename: %s not exit' % (sop_path + "/" + name))
+            if not os.path.isfile(op_path + "/" + name):
+                raise ValueError('filename: %s not exit' % (op_path + "/" + name))
+
+        # deep comparison
+        match, mismatch, errors = filecmp.cmpfiles(sop_path, op_path, files_to_compare, shallow=False)
+
+        if not match:
+            for name in files_to_compare:
+                diff_output += self.run_diff( sop_path + "/" + name,\
+                    op_path + "/" + name).decode('utf-8')
+
         self.assertTrue(len(diff_output) == 0, diff_output)

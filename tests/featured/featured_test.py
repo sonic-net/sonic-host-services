@@ -320,6 +320,24 @@ class TestFeatureHandler(TestCase):
         }
         feature_handler.sync_state_field(feature_table)
         mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'enabled'})
+    
+    def test_port_init_done_twice(self):
+        """There could be multiple "PortInitDone" event in case of swss
+        restart(either due to crash or due to manual operation). swss
+        restarting would cause all services that depend on it to be stopped.
+        Those stopped services which have delayed=True will not be auto
+        restarted by systemd, featured is responsible for enabling those services
+        when swss is ready. This test case covers it.
+        """
+        feature_handler = featured.FeatureHandler(None, None, {}, False)
+        assert not feature_handler.is_delayed_enabled
+        feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+        assert feature_handler.is_delayed_enabled
+        
+        feature_handler.enable_delayed_services = mock.MagicMock()
+        feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+        feature_handler.enable_delayed_services.assert_called_once()
+
 
 @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
 @mock.patch('sonic_py_common.device_info.get_device_runtime_metadata')

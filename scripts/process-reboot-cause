@@ -52,12 +52,16 @@ def read_reboot_cause_files_and_save_state_db():
         x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
         if os.path.isfile(x):
             with open(x, "r") as cause_file:
-                data = json.load(cause_file)
-                _hash = '{}|{}'.format(REBOOT_CAUSE_TABLE_NAME, data['gen_time'])
-                state_db.set(state_db.STATE_DB, _hash, 'cause', data['cause'])
-                state_db.set(state_db.STATE_DB, _hash, 'time', data['time'])
-                state_db.set(state_db.STATE_DB, _hash, 'user', data['user'])
-                state_db.set(state_db.STATE_DB, _hash, 'comment', data['comment'])
+                try:
+                    data = json.load(cause_file)
+                    _hash = '{}|{}'.format(REBOOT_CAUSE_TABLE_NAME, data['gen_time'])
+                    state_db.set(state_db.STATE_DB, _hash, 'cause', data['cause'])
+                    state_db.set(state_db.STATE_DB, _hash, 'time', data['time'])
+                    state_db.set(state_db.STATE_DB, _hash, 'user', data['user'])
+                    state_db.set(state_db.STATE_DB, _hash, 'comment', data['comment'])
+                except json.decoder.JSONDecodeError as je:
+                    sonic_logger.log_info("Unable to process reload cause file {}: {}".format(x, je))
+                    pass
 
     if len(TIME_SORTED_FULL_REBOOT_FILE_LIST) > 10:
         for i in range(len(TIME_SORTED_FULL_REBOOT_FILE_LIST)):
