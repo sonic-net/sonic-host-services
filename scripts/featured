@@ -287,7 +287,9 @@ class FeatureHandler(object):
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
             if not unit_file_state:
                 continue
-            if unit_file_state != "disabled" and \
+            if not self.is_multi_npu:
+                continue
+            if unit_file_state != "masked" and \
               ((not feature_config.has_per_asic_scope and '@' in feature_name) or (not feature_config.has_global_scope and '@' not in feature_name)):
                 cmds = []
                 for suffix in reversed(feature_suffixes):
