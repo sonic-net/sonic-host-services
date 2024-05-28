@@ -4,7 +4,7 @@ from host_modules import host_service
 import subprocess
 
 MOD_NAME = 'systemd'
-ALLOWED_SERVICES = ['snmp', 'swss', 'dhcp_relay', 'radv', 'restapi', 'lldp', 'sshd', 'pmon', 'rsyslog']
+ALLOWED_SERVICES = ['snmp', 'swss', 'dhcp_relay', 'radv', 'restapi', 'lldp', 'sshd', 'pmon', 'rsyslog', 'telemetry']
 EXIT_FAILURE = 1
 
 
@@ -20,7 +20,12 @@ class SystemdService(host_service.HostModule):
             return EXIT_FAILURE, "Dbus does not support {} service restart".format(service)
 
         cmd = ['/usr/bin/systemctl', 'reset-failed', service]
-        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode:
+            possible_expected_error = "Failed to reset failed state"
+            msg = result.stderr.decode()
+            if possible_expected_error not in msg:
+                return result.returncode, msg  # Throw error only if unexpected error
         
         msg = ''
         cmd = ['/usr/bin/systemctl', 'restart', service]
