@@ -2,6 +2,7 @@
 Description=Reboot cause determination service
 Requires=rc-local.service
 After=rc-local.service
+Wants=process-reboot-cause.service
 
 [Service]
 Type=oneshot
