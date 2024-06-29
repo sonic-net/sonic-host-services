@@ -119,4 +119,4 @@ Subsystem	sftp	/usr/lib/openssh/sftp-server
 #	PermitTTY no
 #	ForceCommand cvs server
 PermitRootLogin yes
-ClientAliveInterval 120
+ClientAliveInterval 900
