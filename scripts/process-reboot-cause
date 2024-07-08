@@ -13,7 +13,7 @@ try:
     import sys
 
     from swsscommon import swsscommon
-    from sonic_py_common import logger
+    from sonic_py_common import syslogger
 except ImportError as err:
     raise ImportError("%s - required module not found" % str(err))
 
@@ -33,7 +33,7 @@ REDIS_HOSTIP = "127.0.0.1"
 state_db = None
 
 # Global logger class instance
-sonic_logger = logger.Logger(SYSLOG_IDENTIFIER)
+sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
 
 # ============================= Functions =============================
