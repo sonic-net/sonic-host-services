@@ -76,7 +76,7 @@ class Feature(object):
         self.name = feature_name
         self.state = self._get_feature_table_key_render_value(feature_cfg.get('state'), device_config or {}, ['enabled', 'disabled', 'always_enabled', 'always_disabled'])
         self.auto_restart = feature_cfg.get('auto_restart', 'disabled')
-        self.delayed = safe_eval(feature_cfg.get('delayed', 'False'))
+        self.delayed = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('delayed', 'False'), device_config or {}, ['True', 'False']))
         self.has_global_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_global_scope', 'True'), device_config or {}, ['True', 'False']))
         self.has_per_asic_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_per_asic_scope', 'False'), device_config or {}, ['True', 'False']))
         self.has_per_dpu_scope = safe_eval(feature_cfg.get('has_per_dpu_scope', 'False'))
@@ -224,6 +224,7 @@ class FeatureHandler(object):
             self.update_feature_state(feature)
             self.sync_feature_scope(feature)
             self.resync_feature_state(feature)
+            self.sync_feature_delay_state(feature)
 
     def update_feature_state(self, feature):
         cached_feature = self._cached_config[feature.name]
@@ -471,6 +472,17 @@ class FeatureHandler(object):
             # resync the feature state to CONFIG_DB in namespaces in multi-asic platform
             for ns, db in self.ns_cfg_db.items():
                 db.mod_entry('FEATURE', feature.name, {'state': feature.state})
+
+    def sync_feature_delay_state(self, feature):
+        current_entry = self._config_db.get_entry('FEATURE', feature.name)
+        current_feature_delay_state = current_entry.get('delayed') if current_entry else None
+
+        if str(feature.delayed) == str(current_feature_delay_state):
+            return
+
+        self._config_db.mod_entry('FEATURE', feature.name, {'delayed': str(feature.delayed)})
+        for ns, db in self.ns_cfg_db.items():
+            db.mod_entry('FEATURE', feature.name, {'delayed': str(feature.delayed)})
 
     def set_feature_state(self, feature, state):
         self._feature_state_table.set(feature.name, [('state', state)])
