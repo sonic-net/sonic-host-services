@@ -47,6 +47,14 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "kube",
                         "state": "enabled"
                     },
+                    "pmon": {
+                        "state": "enabled",
+                        "delayed": "{% if 'type' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['type'] == 'SpineRouter' %}False{% else %}True{% endif %}",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    }
                 },
             },
             "expected_config_db": {
@@ -78,6 +86,14 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "kube",
                         "state": "enabled"
                     },
+                    "pmon": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "True",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    }
                 },
             },
             "enable_feature_subprocess_calls": [
@@ -1095,6 +1111,14 @@ FEATURED_TEST_VECTOR = [
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
+                    },
+                    "pmon": {
+                        "state": "enabled",
+                        "delayed": "{% if 'type' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['type'] == 'SpineRouter' %}False{% else %}True{% endif %}",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
                     }
                 },
             },
@@ -1125,6 +1149,14 @@ FEATURED_TEST_VECTOR = [
                         "state": "enabled"
                     },
                     "macsec": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
+                    "pmon": {
                         "auto_restart": "enabled",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
