@@ -13,7 +13,7 @@ try:
     import sys
 
     from swsscommon import swsscommon
-    from sonic_py_common import logger
+    from sonic_py_common import syslogger
 except ImportError as err:
     raise ImportError("%s - required module not found" % str(err))
 
@@ -33,7 +33,7 @@ REDIS_HOSTIP = "127.0.0.1"
 state_db = None
 
 # Global logger class instance
-sonic_logger = logger.Logger(SYSLOG_IDENTIFIER)
+sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
 
 # ============================= Functions =============================
@@ -72,7 +72,7 @@ def read_reboot_cause_files_and_save_state_db():
 
 def main():
     # Configure logger to log all messages INFO level and higher
-    sonic_logger.set_min_log_priority_info()
+    sonic_logger.set_min_log_priority(sonic_logger.DEFAULT_LOG_LEVEL)
 
     sonic_logger.log_info("Starting up...")
 
