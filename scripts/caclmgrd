@@ -783,8 +783,15 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         # Add iptables/ip6tables commands to allow all incoming packets with TTL of 0 or 1
         # This allows the device to respond to tools like tcptraceroute
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-m', 'ttl', '--ttl-lt', '2', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '-m', 'hl', '--hl-lt', '2', '-j', 'ACCEPT'])
+        # Allow ICMP with TTL < 2
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'icmp', '-m', 'ttl', '--ttl-lt', '2', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'ipv6-icmp', '-m', 'hl', '--hl-lt', '2', '-j', 'ACCEPT'])
+
+        # Allow UDP and TCP with TTL < 2 and dst-port > 1024, in case traceroute based on UDP or TCP
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'udp', '-m', 'ttl', '--ttl-lt', '2', '--dport', '1025:65535', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'tcp', '-m', 'ttl', '--ttl-lt', '2', '--dport', '1025:65535', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'udp', '-m', 'hl', '--hl-lt', '2', '--dport', '1025:65535', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '-m', 'hl', '--hl-lt', '2', '--dport', '1025:65535', '-j', 'ACCEPT'])
 
         # Finally, if the device has control plane ACLs configured,
         # add iptables/ip6tables commands to drop all other incoming packets
