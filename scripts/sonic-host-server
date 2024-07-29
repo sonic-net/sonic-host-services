@@ -12,7 +12,7 @@ import dbus.service
 import dbus.mainloop.glib
 
 from gi.repository import GObject
-from host_modules import config_engine, gcu, host_service, showtech, systemd_service, file_stat
+from host_modules import config_engine, gcu, host_service, showtech, systemd_service, file_service
 
 
 def register_dbus():
@@ -23,7 +23,7 @@ def register_dbus():
             'host_service': host_service.HostService('host_service'),
             'showtech': showtech.Showtech('showtech'),
             'systemd': systemd_service.SystemdService('systemd'),
-            'file_stat': file_stat.FileService('file')
+            'file_stat': file_service.FileService('file')
             }
     for mod_name, handler_class in mod_dict.items():
         handlers[mod_name] = handler_class
