@@ -15,6 +15,7 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "PASSW_HARDENING": {},
     "SSH_SERVER": {},
     "KDUMP": {},
+    "AUDIT": {},
     "NTP": {},
     "NTP_SERVER": {},
     "LOOPBACK_INTERFACE": {},
@@ -43,6 +44,11 @@ HOSTCFG_DAEMON_CFG_DB = {
     "KDUMP": {
         "config": {
 
+        }
+    },
+    "AUDIT": {
+        "config": {
+            "enabled": "true"
         }
     },
     "NTP": {

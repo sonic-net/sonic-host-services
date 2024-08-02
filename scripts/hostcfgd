@@ -85,6 +85,11 @@ FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
 OPENSSL_FIPS_CONFIG_FILE = '/etc/fips/fips_enable'
 DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
 
+# AUDIT
+INIT_AUDIT_CONFIG_FILE = '/etc/sonic/custom-audit.rules'
+AUDIT_CONFIG_FILE = '/etc/audit/rules.d/custom-audit.rules'
+RESTART_AUDITD = ["sudo", "systemctl", "restart", "auditd"]
+
 # MISC Constants
 CFG_DB = "CONFIG_DB"
 STATE_DB = "STATE_DB"
@@ -1170,6 +1175,37 @@ class KdumpCfg(object):
                 num_dumps = data.get("num_dumps")
             run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
 
+class AuditCfg(object):
+    def __init__(self, CfgDb):
+        self.config_db = CfgDb
+        self.audit_defaults = {"enabled" : "true"}
+
+    def load(self, audit_table):
+        syslog.syslog(syslog.LOG_INFO, "AuditCfg init")
+        audit_conf = audit_table.get("config", {})
+        for row in self.audit_defaults:
+            value = self.audit_defaults.get(row)
+            if not audit_conf.get(row):
+                self.config_db.mod_entry("AUDIT", "config", {row: value})
+
+    def audit_update(self, key, data):
+        syslog.syslog(syslog.LOG_INFO, "Audit global configuration update")
+        if key == "config":
+            # Admin mode
+            audit_enabled = self.audit_defaults["enabled"]
+            if data.get("enabled") is not None:
+                audit_enabled = data.get("enabled")
+            if audit_enabled.lower() == "true":
+                enabled = True
+            else:
+                enabled = False
+            if enabled:
+                run_cmd(["sudo", "cp", INIT_AUDIT_CONFIG_FILE, AUDIT_CONFIG_FILE])
+                run_cmd(RESTART_AUDITD)
+            else:
+                run_cmd(["sudo", "rm", AUDIT_CONFIG_FILE])
+                run_cmd(RESTART_AUDITD)
+
 class NtpCfg(object):
     """
     NtpCfg Config Daemon
@@ -1709,6 +1745,9 @@ class HostConfigDaemon:
         # Initialize KDump Config and set the config to default if nothing is provided
         self.kdumpCfg = KdumpCfg(self.config_db)
 
+        # Initialize Audit Config and set the config to default if nothing is provided
+        self.auditCfg = AuditCfg(self.config_db)
+
         # Initialize IpTables
         self.iptables = Iptables()
 
@@ -1755,6 +1794,7 @@ class HostConfigDaemon:
         ldap_server = init_data['LDAP_SERVER']
         lpbk_table = init_data['LOOPBACK_INTERFACE']
         kdump = init_data['KDUMP']
+        audit = init_data['AUDIT']
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
@@ -1771,6 +1811,7 @@ class HostConfigDaemon:
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
         self.kdumpCfg.load(kdump)
+        self.auditCfg.load(audit)
         self.passwcfg.load(passwh)
         self.sshscfg.load(ssh_server)
         self.devmetacfg.load(dev_meta)
@@ -1897,6 +1938,10 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
 
+    def audit_handler (self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'Audit handler')
+        self.auditCfg.audit_update(key, data)
+
     def device_metadata_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
@@ -1945,6 +1990,7 @@ class HostConfigDaemon:
             return callback
 
         self.config_db.subscribe('KDUMP', make_callback(self.kdump_handler))
+        self.config_db.subscribe('AUDIT', make_callback(self.audit_handler))
         # Handle AAA, TACACS and RADIUS related tables
         self.config_db.subscribe('AAA', make_callback(self.aaa_handler))
         self.config_db.subscribe('TACPLUS', make_callback(self.tacacs_global_handler))
