@@ -1694,6 +1694,65 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
+class Memory_StatisticsCfg(object):
+    def __init__(self, CfgDb):
+        self.config_db = CfgDb
+        self.memory_statistics_defaults= {
+            "enabled": "false",
+            "retention_time": "15",
+            "sampling_interval": "5"
+        }
+
+    def load(self, memory_statistics_table):
+        """
+        Set the MEMORY_STATISTICS table in CFG DB to memory_statistics_defaults if not set by the user
+        """
+        syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg init ...")
+        memory_statistics_conf = memory_statistics_table.get("config", {})
+        for row in self.memory_statistics_defaults:
+            value = self.memory_statistics_defaults.get(row)
+            if not memory_statistics_conf.get(row):
+                self.config_db.mod_entry("MEMORY_STATISTICS", "config", {row: value})
+
+    def memory_statistics_update(self, key, data):
+        syslog.syslog(syslog.LOG_INFO, "Memory_Statistics global configuration update")
+        if key == "config":
+            # Admin mode
+            memory_statistics_enabled = self.memory_statistics_defaults["enabled"]
+            if data.get("enabled") is not None:
+                memory_statistics_enabled = data.get("enabled")
+            if memory_statistics_enabled.lower() == "true":
+                enabled = True
+            else:
+                enabled = False
+            if enabled:
+                run_cmd(["sonic-memory_statistics-conifg", "--enable"])
+            else:
+                run_cmd(["sonic-memory_statistics-config", "--disable"])
+            
+            # Memory configuration
+            retention_time = self.memory_statistics_defaults["retention_time"]
+            if data.get("retention_time") is not None:
+                retention_time = data.get("retention_time")
+            run_cmd(["sonic-memory_statistics-config", "--retention_time", retention_time])
+
+            # Sampling interval
+            sampling_interval = self.memory_statistics_defaults["sampling_interval"]
+            if data.get("sampling_interval") is not None:
+                sampling_interval = data.get("sampling_interval")
+            run_cmd(["sonic-memory_statistics-config", "--sampling_interval", sampling_interval])
+
+    def run_cmd(cmd):
+        """
+        Execute a shell command and return the output
+        """
+        import subprocess
+        try:
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+            syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
+        except subprocess.CalledProcessError as e:
+            syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
+
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
@@ -1708,6 +1767,8 @@ class HostConfigDaemon:
 
         # Initialize KDump Config and set the config to default if nothing is provided
         self.kdumpCfg = KdumpCfg(self.config_db)
+
+        self.memory_statisticsCfg = Memory_StatisticsCfg(self.config_db)
 
         # Initialize IpTables
         self.iptables = Iptables()
@@ -1755,6 +1816,7 @@ class HostConfigDaemon:
         ldap_server = init_data['LDAP_SERVER']
         lpbk_table = init_data['LOOPBACK_INTERFACE']
         kdump = init_data['KDUMP']
+        memory_statistics = init_data['MEMORY_STATISTICS']
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
@@ -1771,6 +1833,7 @@ class HostConfigDaemon:
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
         self.kdumpCfg.load(kdump)
+        self.memory_statisticsCfg.load(memory_statistics)
         self.passwcfg.load(passwh)
         self.sshscfg.load(ssh_server)
         self.devmetacfg.load(dev_meta)
@@ -1897,6 +1960,10 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
 
+    def memory_statistics_handler (self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'Memory_Statistics handler...')
+        self.memory_statisticsCfg.memory_statistics_update(key, data)
+
     def device_metadata_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
@@ -1945,6 +2012,7 @@ class HostConfigDaemon:
             return callback
 
         self.config_db.subscribe('KDUMP', make_callback(self.kdump_handler))
+        self.config_db.subscribe('MEMORY_STATISTICS', make_callback(self.memory_statistics_handler))
         # Handle AAA, TACACS and RADIUS related tables
         self.config_db.subscribe('AAA', make_callback(self.aaa_handler))
         self.config_db.subscribe('TACPLUS', make_callback(self.tacacs_global_handler))
