@@ -1175,10 +1175,20 @@ class KdumpCfg(object):
                 num_dumps = data.get("num_dumps")
             run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
 
+
 class AuditCfg(object):
+    """
+    Update Audit configuration in CONFIG_DB table
+    1) Copy the audit rules file when enablement or disablement
+    2) Restart auditd services to apply the changes
+
+    Args:
+        key:  Triggered table's key. Should be always "config"
+        data: Configuration data
+    """
     def __init__(self, CfgDb):
         self.config_db = CfgDb
-        self.audit_defaults = {"enabled" : "true"}
+        self.audit_defaults = {"enabled": "true"}
 
     def load(self, audit_table):
         syslog.syslog(syslog.LOG_INFO, "AuditCfg init")
@@ -1189,9 +1199,8 @@ class AuditCfg(object):
                 self.config_db.mod_entry("AUDIT", "config", {row: value})
 
     def audit_update(self, key, data):
-        syslog.syslog(syslog.LOG_INFO, "Audit global configuration update")
+        syslog.syslog(syslog.LOG_INFO, "Audit configuration update")
         if key == "config":
-            # Admin mode
             audit_enabled = self.audit_defaults["enabled"]
             if data.get("enabled") is not None:
                 audit_enabled = data.get("enabled")
@@ -1205,6 +1214,7 @@ class AuditCfg(object):
             else:
                 run_cmd(["sudo", "rm", AUDIT_CONFIG_FILE])
                 run_cmd(RESTART_AUDITD)
+
 
 class NtpCfg(object):
     """
