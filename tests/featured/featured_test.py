@@ -262,7 +262,8 @@ class TestFeatureHandler(TestCase):
     
     @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
     @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
-    @mock.patch('featured.FeatureHandler.sync_feature_asic_scope', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_scope', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
     def test_feature_resync(self):
         mock_db = mock.MagicMock()
         mock_db.get_entry = mock.MagicMock()

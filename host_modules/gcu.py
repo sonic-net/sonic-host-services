@@ -40,6 +40,36 @@ class GCU(host_service.HostModule):
         return result.returncode, msg
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
+    def replace_db(self, patch_text):
+        input_bytes = (patch_text + '\n').encode('utf-8')
+        cmd = ['/usr/local/bin/config', 'replace', '-f', 'CONFIGDB', '/dev/stdin']
+
+        result = subprocess.run(cmd, input=input_bytes, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        msg = ''
+        if result.returncode:
+            lines = result.stderr.decode().split('\n')
+            for line in lines:
+                if 'Error' in line:
+                    msg = line
+                    break
+        return result.returncode, msg
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
+    def replace_yang(self, patch_text):
+        input_bytes = (patch_text + '\n').encode('utf-8')
+        cmd = ['/usr/local/bin/config', 'replace', '-f', 'SONICYANG', '/dev/stdin']
+
+        result = subprocess.run(cmd, input=input_bytes, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        msg = ''
+        if result.returncode:
+            lines = result.stderr.decode().split('\n')
+            for line in lines:
+                if 'Error' in line:
+                    msg = line
+                    break
+        return result.returncode, msg
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
     def create_checkpoint(self, checkpoint_file):
 
         cmd = ['/usr/local/bin/config', 'checkpoint', checkpoint_file]

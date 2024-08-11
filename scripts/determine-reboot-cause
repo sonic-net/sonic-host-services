@@ -14,7 +14,7 @@ try:
     import re
     import sys
 
-    from sonic_py_common import device_info, logger
+    from sonic_py_common import device_info, syslogger
 
 except ImportError as err:
     raise ImportError("%s - required module not found" % str(err))
@@ -44,7 +44,7 @@ REBOOT_CAUSE_NON_HARDWARE = "Non-Hardware"
 REBOOT_CAUSE_HARDWARE_OTHER = "Hardware - Other"
 
 # Global logger class instance
-sonic_logger = logger.Logger(SYSLOG_IDENTIFIER)
+sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
 
 # ============================= Functions =============================
@@ -108,7 +108,7 @@ def get_reboot_cause_from_platform():
         chassis  = platform.get_chassis()
         hardware_reboot_cause_major, hardware_reboot_cause_minor = chassis.get_reboot_cause()
         sonic_logger.log_info("Platform api returns reboot cause {}, {}".format(hardware_reboot_cause_major, hardware_reboot_cause_minor))
-    except ImportError:
+    except (ImportError, FileNotFoundError):
         sonic_logger.log_warning("sonic_platform package not installed. Unable to detect hardware reboot causes.")
         hardware_reboot_cause_major, hardware_reboot_cause_minor = REBOOT_CAUSE_NON_HARDWARE, "N/A"
 
@@ -210,7 +210,7 @@ def determine_reboot_cause():
 
 def main():
     # Configure logger to log all messages INFO level and higher
-    sonic_logger.set_min_log_priority_info()
+    sonic_logger.set_min_log_priority(sonic_logger.DEFAULT_LOG_LEVEL)
 
     sonic_logger.log_info("Starting up...")
 
