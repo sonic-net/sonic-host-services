@@ -86,8 +86,9 @@ OPENSSL_FIPS_CONFIG_FILE = '/etc/fips/fips_enable'
 DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
 
 # AUDIT
-INIT_AUDIT_CONFIG_FILE = '/etc/sonic/custom-audit.rules'
-AUDIT_CONFIG_FILE = '/etc/audit/rules.d/custom-audit.rules'
+AUDIT_INIT_CONFIG_FILE = "/etc/sonic/audit/security-auditing.rules"
+AUDIT_CONFIG_FILE = "/etc/audit/rules.d/security-auditing.rules"
+AUDIT_SYSLOG_CONFIG_FILE = "/etc/audit/plugins.d/syslog.conf"
 RESTART_AUDITD = ["sudo", "systemctl", "restart", "auditd"]
 
 # MISC Constants
@@ -1209,10 +1210,12 @@ class AuditCfg(object):
             else:
                 enabled = False
             if enabled:
-                run_cmd(["sudo", "cp", INIT_AUDIT_CONFIG_FILE, AUDIT_CONFIG_FILE])
+                run_cmd(["sudo", "cp", AUDIT_INIT_CONFIG_FILE, AUDIT_CONFIG_FILE])
+                run_cmd(["sudo", "sed", "-i", "s/active = no/active = yes/", AUDIT_SYSLOG_CONFIG_FILE])
                 run_cmd(RESTART_AUDITD)
             else:
                 run_cmd(["sudo", "rm", AUDIT_CONFIG_FILE])
+                run_cmd(["sudo", "sed", "-i", "s/active = yes/active = no/", AUDIT_SYSLOG_CONFIG_FILE])
                 run_cmd(RESTART_AUDITD)
 
 

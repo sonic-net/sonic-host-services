@@ -29,8 +29,9 @@ hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = Mock()
 
 
-INIT_AUDIT_CONFIG_FILE = "/etc/sonic/custom-audit.rules"
-AUDIT_CONFIG_FILE = "/etc/audit/rules.d/custom-audit.rules"
+AUDIT_INIT_CONFIG_FILE = "/etc/sonic/audit/security-auditing.rules"
+AUDIT_CONFIG_FILE = "/etc/audit/rules.d/security-auditing.rules"
+AUDIT_SYSLOG_CONFIG_FILE = "/etc/audit/plugins.d/syslog.conf"
 RESTART_AUDITD = ['sudo', 'systemctl', 'restart', 'auditd']
 
 
@@ -57,7 +58,8 @@ class TestHostcfgdAudit(object):
         mock_syslog.assert_has_calls(expected_syslog)
 
         expected_subprocess = [
-            call(['sudo', 'cp', INIT_AUDIT_CONFIG_FILE, AUDIT_CONFIG_FILE]),
+            call(['sudo', 'cp', AUDIT_INIT_CONFIG_FILE, AUDIT_CONFIG_FILE]),
+            call(["sudo", "sed", "-i", "s/active = no/active = yes/", AUDIT_SYSLOG_CONFIG_FILE]),
             call(RESTART_AUDITD)
         ]
         mock_subprocess.assert_has_calls(expected_subprocess)
@@ -79,6 +81,7 @@ class TestHostcfgdAudit(object):
 
         expected_subprocess = [
             call(["sudo", "rm", AUDIT_CONFIG_FILE]),
+            call(["sudo", "sed", "-i", "s/active = yes/active = no/", AUDIT_SYSLOG_CONFIG_FILE]),
             call(RESTART_AUDITD)
         ]
         mock_subprocess.assert_has_calls(expected_subprocess)
