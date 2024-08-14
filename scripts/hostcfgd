@@ -612,8 +612,8 @@ class AaaCfg(object):
             e_operations = [item for sublist in zip(e_list, operations) for item in sublist]
             with open(filename+'.new', 'w') as f:
                 subprocess.call(["sed"] + e_operations + [filename], stdout=f)
-            subprocess.call(["mv", '-f', filename, filename+'.old'])
-            subprocess.call(['mv', '-f', filename+'.new', filename])
+            subprocess.call(["cp", '-f', filename, filename+'.old'])
+            subprocess.call(['cp', '-f', filename+'.new', filename])
 
         self.check_file_not_empty(filename)
 
