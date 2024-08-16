@@ -635,6 +635,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
 
+        # Add ip6tables commands to disable connection tracking for icmpv6 traffic
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-t', 'raw', '-A', 'PREROUTING', '-p', 'ipv6-icmp', '-j', 'NOTRACK'])
+
         # Get current ACL tables and rules from Config DB
 
         self._tables_db_info = config_db_connector.get_table(self.ACL_TABLE)
