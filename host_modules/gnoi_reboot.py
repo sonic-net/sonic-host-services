@@ -5,7 +5,6 @@ import logging
 import threading
 import time
 from host_modules import host_service
-from host_modules import infra_host
 from utils.run_cmd import _run_command
 
 MOD_NAME = 'gnoi_reboot'
@@ -82,9 +81,6 @@ class GnoiReboot(host_service.HostModule):
         rc, stdout, stderr = _run_command(command)
         if rc:
             self.populate_reboot_status_flag()
-            # Raise critical state if NSF reboot fails
-            if rebootmethod in REBOOTMETHOD_NSF_VALUES:
-                infra_host.InfraHost.raise_critical_state(infra_host.InfraHost)
             logger.error("%s: Reboot failed execution with stdout: %s, "
                          "stderr: %s", MOD_NAME, stdout, stderr)
             return
@@ -97,8 +93,6 @@ class GnoiReboot(host_service.HostModule):
         time.sleep(REBOOT_TIMEOUT)
         # Conclude that the reboot has failed if we reach this point
         self.populate_reboot_status_flag()
-        # Raise critical state if reboot fails
-        infra_host.InfraHost.raise_critical_state(infra_host.InfraHost)
         return
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='as', out_signature='is')
