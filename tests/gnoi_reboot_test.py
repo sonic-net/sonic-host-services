@@ -33,7 +33,6 @@ VALID_REBOOT_REQUEST_NSF = "{\"method\": \"NSF\", \"message\": \"test reboot req
 INVALID_REBOOT_REQUEST = "\"method\": 1, \"message\": \"test reboot request reason\""
 
 imp.load_source("host_service", host_modules_path + "/host_service.py")
-imp.load_source("infra_host", host_modules_path + "/infra_host.py")
 imp.load_source("gnoi_reboot", host_modules_path + "/gnoi_reboot.py")
 from gnoi_reboot import *
 
@@ -98,14 +97,12 @@ class TestGnoiReboot(object):
             mock.patch("gnoi_reboot._run_command") as mock_run_command,
             mock.patch("time.sleep") as mock_sleep,
             mock.patch("gnoi_reboot.GnoiReboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
-            # mock.patch("host_modules.infra_host.InfraHost.raise_critical_state") as mock_raise_critical_state,
         ):
             mock_run_command.return_value = (0, ["stdout: execute NSF reboot"], ["stderror: execute NSF reboot"])
             self.gnoi_reboot_module.execute_reboot("NSF")
             mock_run_command.assert_called_once_with("/etc/init.d/gpins-nsf-boot nsf-reboot")
             mock_sleep.assert_called_once_with(260)
             mock_populate_reboot_status_flag.assert_called_once_with()
-            # mock_raise_critical_state.assert_called_once_with(infra_host.InfraHost)
 
     def test_execute_reboot_fail_unknown_reboot(self, caplog):
         with caplog.at_level(logging.ERROR):
@@ -131,7 +128,6 @@ class TestGnoiReboot(object):
         with (
             mock.patch("gnoi_reboot._run_command") as mock_run_command,
             mock.patch("gnoi_reboot.GnoiReboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
-            # mock.patch("host_modules.infra_host.InfraHost.raise_critical_state") as mock_raise_critical_state,
             caplog.at_level(logging.ERROR),
         ):
             mock_run_command.return_value = (1, ["stdout: execute NSF reboot"], ["stderror: execute NSF reboot"])
@@ -141,7 +137,6 @@ class TestGnoiReboot(object):
                     "['stderror: execute NSF reboot']")
             assert caplog.records[0].message == msg
             mock_populate_reboot_status_flag.assert_called_once_with()
-            # mock_raise_critical_state.assert_called_once_with(infra_host.InfraHost)
 
     def test_issue_reboot_success_cold_boot(self):
         with (
