@@ -586,6 +586,14 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', '127.0.0.1', '-i', 'lo', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', '::1', '-i', 'lo', '-j', 'ACCEPT'])
 
+
+        if self.bfdAllowed:
+            iptables_cmds += self.get_bfd_iptable_commands(namespace)
+
+        if self.VxlanAllowed:
+            fvs = swsscommon.FieldValuePairs([("src_ip", self.VxlanSrcIP)])
+            iptables_cmds += self.get_vxlan_port_iptable_commands(namespace, fvs)
+
         # Add iptables commands to allow internal docker traffic
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
 
@@ -813,12 +821,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
-        if self.bfdAllowed:
-            self.allow_bfd_protocol(namespace)
-        if self.VxlanAllowed:
-            fvs = swsscommon.FieldValuePairs([("src_ip", self.VxlanSrcIP)])
-            self.allow_vxlan_port(namespace, fvs)
-
 
         self.update_control_plane_nat_acls(namespace, service_to_source_ip_map, config_db_connector)
 
@@ -886,14 +888,21 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         finally:
             new_config_db_connector.close("CONFIG_DB")
 
-    def allow_bfd_protocol(self, namespace):
+    def get_bfd_iptable_commands(self, namespace):
         iptables_cmds = []
         # Add iptables/ip6tables commands to allow all BFD singlehop and multihop sessions
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'])
-        self.run_commands(iptables_cmds)
+        return iptables_cmds
 
-    def allow_vxlan_port(self, namespace, data):
+    def allow_bfd_protocol(self, namespace):
+        iptables_cmds = self.get_bfd_iptable_commands(namespace)
+        if iptables_cmds:
+            self.run_commands(iptables_cmds)
+
+
+    def get_vxlan_port_iptable_commands(self, namespace, data):
+        iptables_cmds = []
         for fv in data:
             if (fv[0] == "src_ip"):
                 self.VxlanSrcIP = fv[1]
@@ -901,9 +910,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         if not self.VxlanSrcIP:
             self.log_info("Received vxlan tunnel configuration without source ip")
-            return False
-
-        iptables_cmds = []
+            return iptables_cmds
 
         # Add iptables/ip6tables commands to allow VxLAN packets
         ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
@@ -914,10 +921,15 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                     ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
 
+        return iptables_cmds
+
+    def allow_vxlan_port(self, namespace, data):
+        iptables_cmds = self.get_vxlan_port_iptable_commands(namespace, data)
+        if not iptables_cmds:
+            return False
         self.run_commands(iptables_cmds)
         self.log_info("Enabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanAllowed = True
-        return True
 
     def block_vxlan_port(self, namespace):
         if not self.VxlanSrcIP:
