@@ -1711,51 +1711,51 @@ class MemoryStatsCfg(object):
         Args:
             memory_stats_config: Configured memory statistics settings.
         """
-        syslog.syslog(syslog.LOG_INFO, 'MemoryStatsCfg: load initial')
+        syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg init ...")
+        memory_statistics_conf = memory_statistics_table.get("config", {})
+        for row in self.memory_statistics_defaults:
+            value = self.memory_statistics_defaults.get(row)
+            if not memory_statistics_conf.get(row):
+                self.config_db.mod_entry("MEMORY_STATISTICS", "config", {row: value})
 
-        if not memory_stats_config:
-            memory_stats_config = {}
+    def memory_statistics_update(self, key, data):
+        syslog.syslog(syslog.LOG_INFO, "Memory_Statistics global configuration update")
+        if key == "config":
+            # Admin mode
+            memory_statistics_enabled = self.memory_statistics_defaults["enabled"]
+            if data.get("enabled") is not None:
+                memory_statistics_enabled = data.get("enabled")
+            if memory_statistics_enabled.lower() == "true":
+                enabled = True
+            else:
+                enabled = False
+            if enabled:
+                run_cmd(["sonic-memory_statistics-conifg", "--enable"])
+            else:
+                run_cmd(["sonic-memory_statistics-config", "--disable"])
+            
+            # Memory configuration
+            retention_time = self.memory_statistics_defaults["retention_time"]
+            if data.get("retention_time") is not None:
+                retention_time = data.get("retention_time")
+            run_cmd(["sonic-memory_statistics-config", "--retention_time", retention_time])
 
-        # Force load memory statistics settings.
-        enable_data = memory_stats_config.get("enable", {})
-        retention_data = memory_stats_config.get("retention", {})
-        sampling_data = memory_stats_config.get("sampling", {})
+            # Sampling interval
+            sampling_interval = self.memory_statistics_defaults["sampling_interval"]
+            if data.get("sampling_interval") is not None:
+                sampling_interval = data.get("sampling_interval")
+            run_cmd(["sonic-memory_statistics-config", "--sampling_interval", sampling_interval])
 
-        self.memory_stats_message("enable", enable_data)
-        self.memory_stats_message("retention", retention_data)
-        self.memory_stats_message("sampling", sampling_data)
-
-    def memory_stats_message(self, key, data):
+    def run_cmd(cmd):
         """
-        Apply memory stats settings handler.
-        Args:
-            key: DB table's key that was triggered change.
-            data: Read table data.
+        Execute a shell command and return the output
         """
-        if type(data) != dict:
-            # Nothing to handle
-            return
-
-        update_required = False
-        # Check with cache
-        for k, v in data.items():
-            if v != self.cache.get(k):
-                update_required = True
-                break
-
-        if not update_required:
-            return
-
+        import subprocess
         try:
-            # Signal the memory stats daemon to reload configuration
-            run_cmd(["systemctl", "reload", "memory-stats-daemon"], True, True)
-        except Exception:
-            syslog.syslog(syslog.LOG_ERR, 'MemoryStatsCfg: Failed to reload memory-stats-daemon')
-            return
-
-        # Update cache
-        for k, v in data.items():
-            self.cache[k] = v
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+            syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
+        except subprocess.CalledProcessError as e:
+            syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
 
 class HostConfigDaemon:
     def __init__(self):
