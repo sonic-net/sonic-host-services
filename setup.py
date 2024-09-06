@@ -47,6 +47,7 @@ setup(
         'systemd-python',
         'Jinja2>=2.10',
         'PyGObject',
+        'pycairo==1.26.1',
         'psutil'
     ] + sonic_dependencies,
     setup_requires = [
