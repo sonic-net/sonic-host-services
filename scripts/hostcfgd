@@ -1694,7 +1694,7 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
-class MemoryStatsCfg(object):
+class MemoryStatisticsCfg(object):
     """
     Memory Stats Config Daemon
     Handles changes in MEMORY_STATS table.
@@ -1707,8 +1707,8 @@ class MemoryStatsCfg(object):
         self.cache = {}
         self.memory_statistics_defaults = {
             "enabled": "false",
-            "retention_time": "24h",
-            "sampling_interval": "5m"
+            "retention_time": "15 days",
+            "sampling_interval": "5 minutes"
         }
 
     def load(self, memory_stats_config: dict):
