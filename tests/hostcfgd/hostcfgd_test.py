@@ -299,7 +299,7 @@ class TestHostcfgdDaemon(TestCase):
         daemon = hostcfgd.HostConfigDaemon()
         daemon.register_callbacks()
         MockConfigDb.event_queue = [('MEMORY_STATISTICS', 'config')]
-        
+
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
             popen_mock = mock.Mock()
             attrs = {'communicate.return_value': ('output', 'error')}
@@ -312,13 +312,14 @@ class TestHostcfgdDaemon(TestCase):
             except TimeoutError:
                 pass
 
-            expected = [
+            expected_calls = [
                 mock.call(['sonic-memory_statistics-config', '--enable']),
-                mock.call(['sonic-memory_statistics-config', '--retention_time', '15']),
-                mock.call(['sonic-memory_statistics-config', '--sampling_interval', '5'])
+                mock.call(['sonic-memory_statistics-config', '--retention_time', '15 days']),
+                mock.call(['sonic-memory_statistics-config', '--sampling_interval', '5 minutes'])
             ]
-            
-            mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+
+            mocked_subprocess.check_call.assert_has_calls(expected_calls, any_order=True)
+
 
 
 class TestDnsHandler:
