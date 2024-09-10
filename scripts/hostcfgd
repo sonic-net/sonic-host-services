@@ -1703,7 +1703,8 @@ class Memory_StatisticsCfg(object):
     3) Handle change of sampling interval
     """
 
-    def __init__(self):
+    def __init__(self, config_db):
+        self.config_db = config_db
         self.cache = {}
         self.memory_statistics_defaults = {
             "enabled": "false",
