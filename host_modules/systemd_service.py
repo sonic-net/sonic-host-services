@@ -7,6 +7,8 @@ MOD_NAME = 'systemd'
 ALLOWED_SERVICES = ['snmp', 'swss', 'dhcp_relay', 'radv', 'restapi', 'lldp', 'sshd', 'pmon', 'rsyslog', 'telemetry']
 EXIT_FAILURE = 1
 
+REBOOTMETHOD_COLD_BOOT_VALUES = {1, "COLD"}
+REBOOTMETHOD_HALT_BOOT_VALUES = {3, "HALT"}
 
 class SystemdService(host_service.HostModule):
     """
@@ -47,4 +49,22 @@ class SystemdService(host_service.HostModule):
         msg = ''
         if result.returncode:
             msg = result.stderr.decode()
+        return result.returncode, msg
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
+    def execute_reboot(self, rebootmethod):
+        if rebootmethod in REBOOTMETHOD_COLD_BOOT_VALUES:
+            command = ['reboot']
+            logger.warning("%s: Issuing cold reboot", MOD_NAME)
+        elif rebootmethod in REBOOTMETHOD_HALT_BOOT_VALUES:
+            command = ['/usr/local/bin/reboot','-p']
+            logger.warning("%s: Issuing pre-reboot command", MOD_NAME)
+        else:
+            return EXIT_FAILURE, "{}: Invalid reboot method: {}".format(MOD_NAME, rebootmethod)
+
+        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        msg = ''
+        if result.returncode:
+            msg = result.stderr.decode()
+
         return result.returncode, msg
