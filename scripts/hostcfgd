@@ -1694,7 +1694,7 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
-class MemoryStatisticsCfg(object):
+class Memory_StatisticsCfg(object):
     """
     Memory Stats Config Daemon
     Handles changes in MEMORY_STATS table.
