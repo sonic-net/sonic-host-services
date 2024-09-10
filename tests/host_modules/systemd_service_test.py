@@ -84,3 +84,57 @@ class TestSystemdService(object):
         ret, msg = systemd_service_stub.stop_service(service)
         assert ret == 1
         assert "stop_service called with no service specified" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_execute_reboot_cold(self, MockInit, MockBusName, MockSystemBus):
+        # Mock subprocess.run
+        with mock.patch("subprocess.run") as mock_run:
+            # Mock the result of subprocess.run
+            res_mock = mock.Mock()
+            test_ret = 0
+            test_msg = b"Succeeded"
+            res_mock.configure_mock(returncode=test_ret, stderr=test_msg)
+            mock_run.return_value = res_mock
+
+            method = systemd_service.RebootMethod.COLD
+            systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
+
+            # Execute the reboot method
+            ret, msg = systemd_service_stub.execute_reboot(method)
+
+            # Assert the correct command was called
+            call_args = mock_run.call_args[0][0]
+            assert "/usr/local/bin/reboot" in call_args, f"Expected 'reboot' command, but got: {call_args}"
+
+            # Assert the return values are correct
+            assert ret == test_ret, f"Expected return code {test_ret}, got {ret}"
+            assert msg == "", f"Expected return message '', got {msg}"
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_execute_reboot_halt(self, MockInit, MockBusName, MockSystemBus):
+        # Mock subprocess.run
+        with mock.patch("subprocess.run") as mock_run:
+            # Mock the result of subprocess.run
+            res_mock = mock.Mock()
+            test_ret = 0
+            test_msg = b"Succeeded"
+            res_mock.configure_mock(returncode=test_ret, stderr=test_msg)
+            mock_run.return_value = res_mock
+
+            method = systemd_service.RebootMethod.HALT
+            systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
+
+            # Execute the reboot method
+            ret, msg = systemd_service_stub.execute_reboot(method)
+
+            # Assert the correct command was called
+            call_args = mock_run.call_args[0][0]
+            assert "/usr/local/bin/reboot" in call_args, f"Expected 'reboot' command, but got: {call_args}"
+
+            # Assert the return values are correct
+            assert ret == test_ret, f"Expected return code {test_ret}, got {ret}"
+            assert msg == "", f"Expected return message '', got {msg}"
