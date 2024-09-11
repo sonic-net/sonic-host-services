@@ -1694,8 +1694,9 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
-class Memory_StatisticsCfg:
-    def __init__(self):
+class Memory_StatisticsCfg(object):
+    def __init__(self, config_db):
+        self.config_db = config_db
         pass
 
     def apply_configuration(self, config_data):
