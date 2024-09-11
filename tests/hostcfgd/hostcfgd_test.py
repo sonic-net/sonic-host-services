@@ -294,7 +294,17 @@ class TestHostcfgdDaemon(TestCase):
                 pass
             mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
-    def test_memory_statistics_event(self):
+   def test_memory_statistics_event(self):
+        HOSTCFG_DAEMON_CFG_DB = {
+            'MEMORY_STATISTICS': {
+                'config': {
+                    'enabled': 'true',
+                    'retention_time': '15 days',
+                    'sampling_interval': '5 minutes'
+                }
+            }
+        }
+
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
         daemon.register_callbacks()
@@ -319,7 +329,6 @@ class TestHostcfgdDaemon(TestCase):
             ]
 
             mocked_subprocess.check_call.assert_has_calls(expected_calls, any_order=True)
-
 
 
 class TestDnsHandler:
