@@ -1703,7 +1703,8 @@ class Memory_StatisticsCfg(object):
     3) Handle change of sampling interval
     """
 
-    def __init__(self):
+    def __init__(self, config_db):
+        self.config_db = config_db
         self.cache = {}
         self.memory_statistics_defaults = {
             "enabled": "false",
@@ -1746,8 +1747,8 @@ class Memory_StatisticsCfg(object):
             self.run_cmd(["sonic-memory_statistics-config", "--disable"])
 
         # Set retention time and sampling interval
-        self.run_cmd(["sonic-memory_statistics-config", "--retention_time", retention_time])
-        self.run_cmd(["sonic-memory_statistics-config", "--sampling_interval", sampling_interval])
+        self.run_cmd(["sonic-memory_statistics-config", "--retention-time", retention_time])
+        self.run_cmd(["sonic-memory_statistics-config", "--sampling-interval", sampling_interval])
 
     def memory_statistics_update(self, key, data):
         """
@@ -1771,6 +1772,10 @@ class Memory_StatisticsCfg(object):
             syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
         except subprocess.CalledProcessError as e:
             syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
+        except FileNotFoundError:
+            syslog.syslog(syslog.LOG_ERR, f"Command not found: {' '.join(cmd)}")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"An unexpected error occurred: {str(e)}")
 
 class HostConfigDaemon:
     def __init__(self):
