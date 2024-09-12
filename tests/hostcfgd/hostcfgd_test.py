@@ -294,63 +294,41 @@ class TestHostcfgdDaemon(TestCase):
                 pass
             mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
-class TestMemoryStatisticsCfg(unittest.TestCase):
-    def setUp(self):
-        self.cfg = Memory_StatisticsCfg()
+    def test_memory_statistics_event(self):
+        HOSTCFG_DAEMON_CFG_DB = {
+            'MEMORY_STATISTICS': {
+                'config': {
+                    'enabled': 'true',
+                    'retention_time': '15 days',
+                    'sampling_interval': '5 minutes'
+                }
+            }
+        }
 
-    @patch('hostcfgd.subprocess.run')
-    def test_load_config(self, mock_run):
-        config_data = json.dumps({
-            "enabled": True,
-            "retention_time": 3600,
-            "sampling_interval": 60
-        })
-        self.cfg.load_config(config_data)
-        self.assertTrue(self.cfg.enabled)
-        self.assertEqual(self.cfg.retention_time, 3600)
-        self.assertEqual(self.cfg.sampling_interval, 60)
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        MockConfigDb.event_queue = [('MEMORY_STATISTICS', 'config')]
 
-    @patch('hostcfgd.subprocess.run')
-    def test_apply_config_enable(self, mock_run):
-        self.cfg.enabled = True
-        self.cfg.retention_time = 3600
-        self.cfg.sampling_interval = 60
-        self.cfg.apply_config()
-        mock_run.assert_called_once_with(
-            'set_memory_statistics --enable --retention-time 3600 --sampling-interval 60',
-            shell=True, text=True, capture_output=True
-        )
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+            mocked_subprocess.check_call = mock.Mock()
 
-    @patch('hostcfgd.subprocess.run')
-    def test_apply_config_disable(self, mock_run):
-        self.cfg.enabled = False
-        self.cfg.apply_config()
-        mock_run.assert_called_once_with(
-            'set_memory_statistics --disable',
-            shell=True, text=True, capture_output=True
-        )
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
 
-    @patch('hostcfgd.subprocess.run')
-    def test_update_config(self, mock_run):
-        self.cfg.update_config('retention_time', 7200)
-        self.assertEqual(self.cfg.retention_time, 7200)
-        mock_run.assert_called_once_with(
-            'set_memory_statistics --enable --retention-time 7200 --sampling-interval 0',
-            shell=True, text=True, capture_output=True
-        )
+            expected_calls = [
+                mock.call(['sonic-memory_statistics-config', '--enable']),
+                mock.call(['sonic-memory_statistics-config', '--retention_time', '15 days']),
+                mock.call(['sonic-memory_statistics-config', '--sampling_interval', '5 minutes'])
+            ]
 
-    @patch('hostcfgd.subprocess.run')
-    def test_update_config_invalid_key(self, mock_run):
-        with self.assertRaises(ValueError) as context:
-            self.cfg.update_config('invalid_key', 1234)
-        self.assertEqual(str(context.exception), "Unknown configuration key: invalid_key")
-
-    @patch('hostcfgd.subprocess.run')
-    def test_load_config_invalid_json(self, mock_run):
-        invalid_config_data = "{invalid_json}"
-        with self.assertRaises(ValueError) as context:
-            self.cfg.load_config(invalid_config_data)
-        self.assertEqual(str(context.exception), "Invalid JSON format for configuration data")
+            mocked_subprocess.check_call.assert_has_calls(expected_calls, any_order=True)
 
 
 class TestDnsHandler:
