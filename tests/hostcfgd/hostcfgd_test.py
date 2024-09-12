@@ -294,7 +294,7 @@ class TestHostcfgdDaemon(TestCase):
                 pass
             mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
-   class TestMemoryStatisticsCfg(unittest.TestCase):
+class TestMemoryStatisticsCfg(unittest.TestCase):
     def setUp(self):
         self.cfg = Memory_StatisticsCfg()
 
