@@ -1694,88 +1694,43 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
-class Memory_StatisticsCfg(object):
-    """
-    Memory Stats Config Daemon
-    Handles changes in MEMORY_STATS table.
-    1) Handle enabling or disabling the feature
-    2) Handle change of retention period
-    3) Handle change of sampling interval
-    """
+class Memory_StatisticsCfg:
+    def __init__(self):
+        self.enabled = False
+        self.retention_time = 0
+        self.sampling_interval = 0
 
-    def __init__(self, config_db):
-        self.config_db = config_db
-        self.cache = {}
-        self.memory_statistics_defaults = {
-            "enabled": "false",
-            "retention_time": "15 days",
-            "sampling_interval": "5 minutes"
-        }
-
-    def load(self, memory_stats_config: dict):
-        """
-        Load memory statistics configuration when the daemon starts.
-        Args:
-            memory_stats_config: Configured memory statistics settings.
-        """
-        syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg init ...")
-        memory_statistics_conf = memory_stats_config.get("config", {})
-
-        # Apply default configurations if not present
-        for row, value in self.memory_statistics_defaults.items():
-            if not memory_statistics_conf.get(row):
-                self.config_db.mod_entry("MEMORY_STATISTICS", "config", {row: value})
-
-        # Apply configurations to ensure they are set correctly on startup
-        self.apply_configuration(memory_statistics_conf)
-
-    def apply_configuration(self, config):
-        """
-        Apply the memory statistics configuration settings.
-        Args:
-            config: Configuration data for memory statistics.
-        """
-        # Determine if the feature is enabled or disabled
-        enabled = config.get("enabled", self.memory_statistics_defaults["enabled"]).lower() == "true"
-        retention_time = config.get("retention_time", self.memory_statistics_defaults["retention_time"])
-        sampling_interval = config.get("sampling_interval", self.memory_statistics_defaults["sampling_interval"])
-
-        # Enable or disable memory statistics
-        if enabled:
-            self.run_cmd(["sonic-memory_statistics-config", "--enable"])
-        else:
-            self.run_cmd(["sonic-memory_statistics-config", "--disable"])
-
-        # Set retention time and sampling interval
-        self.run_cmd(["sonic-memory_statistics-config", "--retention-time", retention_time])
-        self.run_cmd(["sonic-memory_statistics-config", "--sampling-interval", sampling_interval])
-
-    def memory_statistics_update(self, key, data):
-        """
-        Handle updates to the memory statistics configuration.
-        Args:
-            key: Key identifying the config type.
-            data: Updated configuration data.
-        """
-        syslog.syslog(syslog.LOG_INFO, "Memory_Statistics global configuration update")
-        if key == "config":
-            self.apply_configuration(data)
-
-    def run_cmd(self, cmd):
-        """
-        Execute a shell command and return the output.
-        Args:
-            cmd: List of command arguments.
-        """
+    def load_config(self, config_data):
         try:
-            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-            syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
-        except subprocess.CalledProcessError as e:
-            syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
-        except FileNotFoundError:
-            syslog.syslog(syslog.LOG_ERR, f"Command not found: {' '.join(cmd)}")
-        except Exception as e:
-            syslog.syslog(syslog.LOG_ERR, f"An unexpected error occurred: {str(e)}")
+            config = json.loads(config_data)
+            self.enabled = config.get("enabled", self.enabled)
+            self.retention_time = config.get("retention_time", self.retention_time)
+            self.sampling_interval = config.get("sampling_interval", self.sampling_interval)
+        except json.JSONDecodeError:
+            raise ValueError("Invalid JSON format for configuration data")
+
+    def apply_config(self):
+        if self.enabled:
+            self._run_shell_command(f"set_memory_statistics --enable --retention-time {self.retention_time} --sampling-interval {self.sampling_interval}")
+        else:
+            self._run_shell_command("set_memory_statistics --disable")
+
+    def update_config(self, key, value):
+        if key == "enabled":
+            self.enabled = value
+        elif key == "retention_time":
+            self.retention_time = value
+        elif key == "sampling_interval":
+            self.sampling_interval = value
+        else:
+            raise ValueError(f"Unknown configuration key: {key}")
+
+        self.apply_config()
+
+    def _run_shell_command(self, command):
+        result = subprocess.run(command, shell=True, text=True, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Shell command failed with error: {result.stderr}")
 
 class HostConfigDaemon:
     def __init__(self):
