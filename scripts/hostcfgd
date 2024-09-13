@@ -1703,7 +1703,8 @@ class Memory_StatisticsCfg(object):
     3) Handle change of sampling interval
     """
 
-    def __init__(self):
+    def __init__(self, CfgDb):
+        self.config_db = CfgDb
         self.cache = {}
         self.memory_statistics_defaults = {
             "enabled": "false",
@@ -1711,14 +1712,14 @@ class Memory_StatisticsCfg(object):
             "sampling_interval": "5 minutes"
         }
 
-    def load(self, memory_stats_config: dict):
+    def load(self, memory_statistics_table):
         """
         Load memory statistics configuration when the daemon starts.
         Args:
             memory_stats_config: Configured memory statistics settings.
         """
         syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg init ...")
-        memory_statistics_conf = memory_stats_config.get("config", {})
+        memory_statistics_conf = memory_statistics_table.get("config", {})
 
         # Apply default configurations if not present
         for row, value in self.memory_statistics_defaults.items():
@@ -1771,7 +1772,8 @@ class Memory_StatisticsCfg(object):
             syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
         except subprocess.CalledProcessError as e:
             syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
-     
+            
+
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
