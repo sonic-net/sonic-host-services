@@ -1771,6 +1771,7 @@ class Memory_StatisticsCfg(object):
             syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
         except subprocess.CalledProcessError as e:
             syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
+     
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
