@@ -35,6 +35,7 @@ setup(
     scripts = [
         'scripts/caclmgrd',
         'scripts/hostcfgd',
+        'scripts/bmpcfgd',
         'scripts/featured',
         'scripts/aaastatsd',
         'scripts/procdockerstatsd',
