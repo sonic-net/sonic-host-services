@@ -66,4 +66,8 @@
 # ftp             -       chroot          /ftp
 # @student        -       maxlogins       4
 
+{% if max_sessions and max_sessions | int > 0 -%}
+* - maxsyslogins {{ max_sessions }}
+{% endif -%}
+
 # End of file
