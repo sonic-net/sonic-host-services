@@ -122,6 +122,7 @@ class TesNtpCfgd(TestCase):
 
 
 class TestHostcfgdDaemon(TestCase):
+
     def setUp(self):
         self.get_dev_meta = mock.patch(
             'sonic_py_common.device_info.get_device_runtime_metadata',
@@ -293,12 +294,46 @@ class TestHostcfgdDaemon(TestCase):
                 pass
             mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
+    def load(init_data):
+        # Debug print to inspect init_data during runtime
+        print("init_data content:", init_data)
+
+        # Safely accessing 'MEMORY_STATISTICS' with a fallback to an empty dict if the key is missing
+        memory_statistics = init_data.get('MEMORY_STATISTICS', {})
+
+        # Proceed with loading other parts of the config
+        aaa = init_data.get('AAA', {})
+        tacacs_global = init_data.get('TACPLUS', {})
+        tacacs_server = init_data.get('TACPLUS_SERVER', {})
+        radius_global = init_data.get('RADIUS', {})
+        radius_server = init_data.get('RADIUS_SERVER', {})
+        ldap_global = init_data.get('LDAP', {})
+        ldap_server = init_data.get('LDAP_SERVER', {})
+        lpbk_table = init_data.get('LOOPBACK_INTERFACE', {})
+        kdump = init_data.get('KDUMP', {})
+
+        # Debugging memory_statistics
+        if memory_statistics:
+            print("Memory statistics configuration found:", memory_statistics)
+        else:
+            print("Memory statistics configuration not found.")
+
     def test_memory_statistics_event(self):
+        HOSTCFG_DAEMON_CFG_DB = {
+            'MEMORY_STATISTICS': {
+                'config': {
+                    'enabled': 'true',
+                    'retention_time': '15 days',
+                    'sampling_interval': '5 minutes'
+                }
+            }
+        }
+
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
         daemon.register_callbacks()
         MockConfigDb.event_queue = [('MEMORY_STATISTICS', 'config')]
-        
+
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
             popen_mock = mock.Mock()
             attrs = {'communicate.return_value': ('output', 'error')}
@@ -311,13 +346,14 @@ class TestHostcfgdDaemon(TestCase):
             except TimeoutError:
                 pass
 
-            expected = [
+            expected_calls = [
                 mock.call(['sonic-memory_statistics-config', '--enable']),
-                mock.call(['sonic-memory_statistics-config', '--retention_time', '15']),
-                mock.call(['sonic-memory_statistics-config', '--sampling_interval', '5'])
+                mock.call(['sonic-memory_statistics-config', '--retention_time', '15 days']),
+                mock.call(['sonic-memory_statistics-config', '--sampling_interval', '5 minutes'])
             ]
-            
-            mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+
+            mocked_subprocess.check_call.assert_has_calls(expected_calls, any_order=True)
+
 
 class TestDnsHandler:
 
