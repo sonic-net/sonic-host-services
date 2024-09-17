@@ -361,14 +361,14 @@ class TestHostcfgdDaemon(TestCase):
             print("Memory statistics configuration not found.")
 
     def test_memory_statistics_event(self):
-        HOSTCFG_DAEMON_CFG_DB = {
+        HOSTCFG_DAEMON_INIT_CFG_DB = {
             'MEMORY_STATISTICS': {
                 'config': {
                     'enabled': 'true',
-                    'retention_time': '15 days',
-                    'sampling_interval': '5 minutes'
+                    'retention_time': '15',
+                    'sampling_interval': '5'
                 }
-            }
+            },
         }
 
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)

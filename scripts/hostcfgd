@@ -1792,10 +1792,9 @@ class Memory_StatisticsCfg(object):
         """
         try:
             output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-            syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
-        except subprocess.CalledProcessError as e:
-            syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
-           
+            syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))  # Ensure proper decoding
+        except subprocess.CalledProcessError as e:  # Make sure subprocess is imported correctly
+            syslog.syslog(syslog.LOG_ERR, str(e))
 
 class SerialConsoleCfg:
 
