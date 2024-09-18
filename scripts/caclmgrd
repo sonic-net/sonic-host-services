@@ -108,6 +108,11 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             "ip_protocols": ["tcp"],
             "multi_asic_ns_to_host_fwd":True
         },
+        "MATCH": {
+            "ip_protocols": ["tcp"],
+            "dst_ports": ["0"],
+            "multi_asic_ns_to_host_fwd":True
+        },
         "ANY": {
             "ip_protocols": ["any"],
             "dst_ports": ["0"],
@@ -756,7 +761,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                             rule_cmd = ["ip6tables"] if table_ip_version == 6 else ["iptables"]
 
                             rule_cmd += ["-A", "INPUT"]
-                            if ip_protocol != "any":
+                            if acl_service == "MATCH" and "IP_PROTOCOL" in rule_props:
+                                rule_cmd += ["-p", str(rule_props["IP_PROTOCOL"])]
+                            elif ip_protocol != "any":
                                 rule_cmd += ["-p", str(ip_protocol)]
  
                             if "SRC_IPV6" in rule_props and rule_props["SRC_IPV6"]:
@@ -769,7 +776,13 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                                     ipv4_src_ip_set.add(rule_props["SRC_IP"])
 
                             # Destination port 0 is reserved/unused port, so, using it to apply the rule to all ports.
-                            if dst_port != "0":
+                            if acl_service == "MATCH":
+                                if "L4_DST_PORT" in rule_props:
+                                    rule_cmd += ["--dport", str(rule_props["L4_DST_PORT"])]
+                                elif "L4_DST_PORT_RANGE" in rule_props:
+                                    dst_port = ":".join(rule_props["L4_DST_PORT_RANGE"].split("-"))
+                                    rule_cmd += ["--dport", str(dst_port)]
+                            elif dst_port != "0":
                                 rule_cmd += ["--dport", str(dst_port)]
 
                             # If there are TCP flags present and ip protocol is TCP, append them
