@@ -79,6 +79,13 @@ HOSTCFG_DAEMON_CFG_DB = {
             "timezone": "Europe/Kyiv"
         }
     },
+    "MEMORY_STATISTICS": {
+        "config": {
+            "enabled": "true",
+            "retention_time": "15 days",
+            "sampling_interval": "5 minutes"
+    }
+    },
     "MGMT_INTERFACE": {
         "eth0|1.2.3.4/24": {}
     },
