@@ -324,12 +324,12 @@ class TestHostcfgdDaemon(TestCase):
                     call(['cat', '/proc/net/route'], ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"], ['wc', '-l'])
                 ]
                 mocked_check_output.assert_has_calls(expected)
-                
+
     def test_memory_statistics_event(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
         daemon.register_callbacks()
-        MockConfigDb.event_queue = [('MEMORY_STATISTICS', 'config')]
+        MockConfigDb.event_queue = [('MEMORY_STATISTICS_TABLE', 'config')]
 
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
             popen_mock = mock.Mock()
