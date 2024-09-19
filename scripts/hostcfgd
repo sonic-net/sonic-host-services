@@ -1775,7 +1775,7 @@ class Memory_StatisticsCfg(object):
 
     def memory_statistics_update(self, key, data):
         """
-        Handle update to the memory statistics configuration.
+        Handle updates to the memory statistics configuration.
         Args:
             key: Key identifying the config type.
             data: Updated configuration data.
@@ -1792,9 +1792,10 @@ class Memory_StatisticsCfg(object):
         """
         try:
             output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-            syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))  # Ensure proper decoding
-        except subprocess.CalledProcessError as e:  # Make sure subprocess is imported correctly
-            syslog.syslog(syslog.LOG_ERR, str(e))
+            syslog.syslog(syslog.LOG_INFO, output.decode('utf-8'))
+        except subprocess.CalledProcessError as e:
+            syslog.syslog(syslog.LOG_ERR, e.output.decode('utf-8'))
+           
 
 class SerialConsoleCfg:
 
@@ -2140,7 +2141,7 @@ class HostConfigDaemon:
         # Handle FIPS changes
         self.config_db.subscribe('FIPS', make_callback(self.fips_config_handler))
 
-        # Handle NTP, NTP_SERVER, and NTP_KEY updates  
+        # Handle NTP, NTP_SERVER, and NTP_KEY updates
         self.config_db.subscribe(swsscommon.CFG_NTP_GLOBAL_TABLE_NAME,
                                  make_callback(self.ntp_global_handler))
         self.config_db.subscribe(swsscommon.CFG_NTP_SERVER_TABLE_NAME,

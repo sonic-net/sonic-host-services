@@ -216,6 +216,7 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
+
     def test_devicemeta_event(self):
         """
         Test handling DEVICE_METADATA events.
@@ -323,54 +324,8 @@ class TestHostcfgdDaemon(TestCase):
                     call(['cat', '/proc/net/route'], ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"], ['wc', '-l'])
                 ]
                 mocked_check_output.assert_has_calls(expected)
-
-    def test_dns_events(self):
-        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
-        MockConfigDb.event_queue = [('DNS_NAMESERVER', '1.1.1.1')]
-        daemon = hostcfgd.HostConfigDaemon()
-        daemon.register_callbacks()
-        with mock.patch('hostcfgd.run_cmd') as mocked_run_cmd:
-            try:
-                daemon.start()
-            except TimeoutError:
-                pass
-            mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
-
-    def load(init_data):
-        # Debug print to inspect init_data during runtime
-        print("init_data content:", init_data)
-
-        # Safely accessing 'MEMORY_STATISTICS' with a fallback to an empty dict if the key is missing
-        memory_statistics = init_data.get('MEMORY_STATISTICS', {})
-
-        # Proceed with loading other parts of the config
-        aaa = init_data.get('AAA', {})
-        tacacs_global = init_data.get('TACPLUS', {})
-        tacacs_server = init_data.get('TACPLUS_SERVER', {})
-        radius_global = init_data.get('RADIUS', {})
-        radius_server = init_data.get('RADIUS_SERVER', {})
-        ldap_global = init_data.get('LDAP', {})
-        ldap_server = init_data.get('LDAP_SERVER', {})
-        lpbk_table = init_data.get('LOOPBACK_INTERFACE', {})
-        kdump = init_data.get('KDUMP', {})
-
-        # Debugging memory_statistics
-        if memory_statistics:
-            print("Memory statistics configuration found:", memory_statistics)
-        else:
-            print("Memory statistics configuration not found.")
-
+                
     def test_memory_statistics_event(self):
-        HOSTCFG_DAEMON_INIT_CFG_DB = {
-            'MEMORY_STATISTICS': {
-                'config': {
-                    'enabled': 'true',
-                    'retention_time': '15',
-                    'sampling_interval': '5'
-                }
-            },
-        }
-
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
         daemon.register_callbacks()
@@ -395,6 +350,18 @@ class TestHostcfgdDaemon(TestCase):
             ]
 
             mocked_subprocess.check_call.assert_has_calls(expected_calls, any_order=True)
+
+    def test_dns_events(self):
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [('DNS_NAMESERVER', '1.1.1.1')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.run_cmd') as mocked_run_cmd:
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
 
 class TestDnsHandler:
