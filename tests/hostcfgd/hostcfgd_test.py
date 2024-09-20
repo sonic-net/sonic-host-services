@@ -329,7 +329,7 @@ class TestHostcfgdDaemon(TestCase):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
         daemon.register_callbacks()
-        MockConfigDb.event_queue = [('MEMORY_STATISTICS_TABLE', 'config')]
+        MockConfigDb.event_queue = [('MEMORY_STATISTICS', 'config')]
 
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
             popen_mock = mock.Mock()

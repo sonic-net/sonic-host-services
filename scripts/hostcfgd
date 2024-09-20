@@ -1747,7 +1747,7 @@ class Memory_StatisticsCfg(object):
         # Apply default configurations if not present
         for row, value in self.memory_statistics_defaults.items():
             if not memory_statistics_conf.get(row):
-                self.config_db.mod_entry("MEMORY_STATISTICS_TABLE", "config", {row: value})
+                self.config_db.mod_entry("MEMORY_STATISTICS", "config", {row: value})
 
         # Apply configurations to ensure they are set correctly on startup
         self.apply_configuration(memory_statistics_conf)
@@ -1896,7 +1896,7 @@ class HostConfigDaemon:
         ldap_server = init_data['LDAP_SERVER']
         lpbk_table = init_data['LOOPBACK_INTERFACE']
         kdump = init_data['KDUMP']
-        memory_statistics = init_data['MEMORY_STATISTICS_TABLE']
+        memory_statistics = init_data['MEMORY_STATISTICS']
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
@@ -2100,7 +2100,7 @@ class HostConfigDaemon:
             return callback
 
         self.config_db.subscribe('KDUMP', make_callback(self.kdump_handler))
-        self.config_db.subscribe('MEMORY_STATISTICS_TABLE', make_callback(self.memory_statistics_handler))
+        self.config_db.subscribe('MEMORY_STATISTICS', make_callback(self.memory_statistics_handler))
         # Handle AAA, TACACS and RADIUS related tables
         self.config_db.subscribe('AAA', make_callback(self.aaa_handler))
         self.config_db.subscribe('TACPLUS', make_callback(self.tacacs_global_handler))
