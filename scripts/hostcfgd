@@ -1724,10 +1724,9 @@ class Memory_StatisticsCfg(object):
     2) Handle change of retention period
     3) Handle change of sampling interval
     """
- 
-    def __init__(self):
+    def __init__(self, config_db):
         self.cache = {}
- 
+        self.config_db = config_db  # Store config_db instance for further use
     def load(self, memory_statistics_table: dict):
         """Memory stats configuration
         Force load memory statistics configuration.
@@ -1735,19 +1734,15 @@ class Memory_StatisticsCfg(object):
             memory_statistics_table: Configured memory statistics settings.
         """
         syslog.syslog(syslog.LOG_INFO, 'MemoryStatsCfg: load initial')
- 
         if not memory_statistics_table:
             memory_statistics_table = {}
- 
         # Force load memory statistics settings.
         enable_data = memory_statistics_table.get("enable", {})
         retention_data = memory_statistics_table.get("retention", {})
         sampling_data = memory_statistics_table.get("sampling", {})
- 
         self.memory_statistics_message("enable", enable_data)
         self.memory_statistics_message("retention", retention_data)
         self.memory_statistics_message("sampling", sampling_data)
- 
     def memory_statistics_message(self, key, data):
         """
         Apply memory stats settings handler.
@@ -1758,17 +1753,14 @@ class Memory_StatisticsCfg(object):
         if type(data) != dict:
             # Nothing to handle
             return
- 
         update_required = False
         # Check with cache
         for k, v in data.items():
             if v != self.cache.get(k):
                 update_required = True
                 break
- 
         if not update_required:
             return
- 
         try:
             # If the disable flag is set, stop the daemon.
             if key == "enable" and not data.get("enabled", True):
@@ -1779,11 +1771,9 @@ class Memory_StatisticsCfg(object):
         except Exception as e:
             syslog.syslog(syslog.LOG_ERR, f'MemoryStatsCfg: Failed to manage memory-stats-daemon: {e}')
             return
- 
         # Update cache
         for k, v in data.items():
             self.cache[k] = v
- 
     def reload_memory_statistics_daemon(self):
         """Reload the memory stats daemon"""
         syslog.syslog(syslog.LOG_INFO, 'MemoryStatsCfg: Reloading memory-stats-daemon')
@@ -1793,7 +1783,6 @@ class Memory_StatisticsCfg(object):
         except subprocess.CalledProcessError as e:
             syslog.syslog(syslog.LOG_ERR, f"MemoryStatsCfg: Failed to reload memory-stats-daemon: {e}")
             raise
- 
     # Additional methods for handling signals
     def get_memorystatistics_pid(self):
         """Get the PID of the memorystatsd process."""
@@ -1804,24 +1793,21 @@ class Memory_StatisticsCfg(object):
         except psutil.NoSuchProcess:
             return None
         return None
- 
     def reload_memorystatistics(self):
         """Send SIGHUP to reload configuration."""
         pid = self.get_memorystatistics_pid()
         if pid:
             os.kill(pid, signal.SIGHUP)
- 
     def shutdown_memorystatistics(self):
         """Send SIGTERM to gracefully shut down memorystatsd."""
         pid = self.get_memorystatistics_pid()
         if pid:
             os.kill(pid, signal.SIGTERM)
- 
     def monitor_config_changes(self):
         """Monitor configuration changes from ConfigDB."""
         while True:
-            config = configdb.get_memory_statistics_config()
- 
+            # Use self.config_db to get configuration
+            config = self.config_db.get_memory_statistics_config()
             # Handle changes in retention_period, sampling_interval, or enable/disable feature
             if config.get('changed'):  # Assuming 'changed' is a flag indicating a change
                 if config.get('enabled', True):  # If 'enabled' is True, reload the daemon
@@ -1829,7 +1815,6 @@ class Memory_StatisticsCfg(object):
                 else:
                     # If 'enabled' is False, disable the feature by sending SIGTERM to the daemon
                     self.shutdown_memorystatistics()
- 
             time.sleep(5)  # Polling interval
 
 class SerialConsoleCfg:
