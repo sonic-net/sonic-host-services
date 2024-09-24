@@ -14,6 +14,7 @@ from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
+from swsscommon import CFG_MEMORY_STATISTICS_TABLE_NAME
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 from sonic_installer import bootloader
@@ -1724,9 +1725,11 @@ class Memory_StatisticsCfg(object):
     2) Handle change of retention period
     3) Handle change of sampling interval
     """
+
     def __init__(self, config_db):
         self.cache = {}
         self.config_db = config_db  # Store config_db instance for further use
+
     def load(self, memory_statistics_table: dict):
         """Memory stats configuration
         Force load memory statistics configuration.
@@ -1743,6 +1746,7 @@ class Memory_StatisticsCfg(object):
         self.memory_statistics_message("enable", enable_data)
         self.memory_statistics_message("retention", retention_data)
         self.memory_statistics_message("sampling", sampling_data)
+
     def memory_statistics_message(self, key, data):
         """
         Apply memory stats settings handler.
@@ -1774,6 +1778,7 @@ class Memory_StatisticsCfg(object):
         # Update cache
         for k, v in data.items():
             self.cache[k] = v
+
     def reload_memory_statistics_daemon(self):
         """Reload the memory stats daemon"""
         syslog.syslog(syslog.LOG_INFO, 'MemoryStatsCfg: Reloading memory-stats-daemon')
@@ -1783,6 +1788,7 @@ class Memory_StatisticsCfg(object):
         except subprocess.CalledProcessError as e:
             syslog.syslog(syslog.LOG_ERR, f"MemoryStatsCfg: Failed to reload memory-stats-daemon: {e}")
             raise
+
     # Additional methods for handling signals
     def get_memorystatistics_pid(self):
         """Get the PID of the memorystatsd process."""
@@ -1793,16 +1799,19 @@ class Memory_StatisticsCfg(object):
         except psutil.NoSuchProcess:
             return None
         return None
+
     def reload_memorystatistics(self):
         """Send SIGHUP to reload configuration."""
         pid = self.get_memorystatistics_pid()
         if pid:
             os.kill(pid, signal.SIGHUP)
+
     def shutdown_memorystatistics(self):
         """Send SIGTERM to gracefully shut down memorystatsd."""
         pid = self.get_memorystatistics_pid()
         if pid:
             os.kill(pid, signal.SIGTERM)
+
     def monitor_config_changes(self):
         """Monitor configuration changes from ConfigDB."""
         while True:
