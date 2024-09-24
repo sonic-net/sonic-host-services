@@ -14,7 +14,7 @@ from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
-from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
+ # from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 from sonic_installer import bootloader
 hostcfg_file_path = os.path.abspath(__file__)
