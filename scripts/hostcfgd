@@ -9,6 +9,7 @@ import syslog
 import signal
 import re
 import jinja2
+import time
 import json
 from shutil import copy2
 from datetime import datetime
@@ -1717,114 +1718,105 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
-class Memory_StatisticsCfg(object):
+class Memory_StatisticsCfg:
     """
-    Memory Stats Config Daemon
-    Handles changes in MEMORY_STATISTICS table.
-    1) Handle enabling or disabling the feature
-    2) Handle change of retention period
-    3) Handle change of sampling interval
+    Memory_StatisticsCfg class handles the configuration updates for the MemoryStatisticsDaemon.
+    It listens to ConfigDB changes and applies them by restarting, shutting down, or reloading
+    the MemoryStatisticsDaemon.
     """
 
     def __init__(self, config_db):
-        self.cache = {}
+        self.cache = {
+            "enabled": "false",
+            "retention": "15",
+            "sampling": "5"
+        }
         self.config_db = config_db  # Store config_db instance for further use
 
-    def load(self, memory_statistics_table: dict):
-        """Memory stats configuration
-        Force load memory statistics configuration.
-        Args:
-            memory_statistics_table: Configured memory statistics settings.
-        """
-        syslog.syslog(syslog.LOG_INFO, 'MemoryStatsCfg: load initial')
-        if not memory_statistics_table:
-            memory_statistics_table = {}
-        # Force load memory statistics settings.
-        enable_data = memory_statistics_table.get("enable", {})
-        retention_data = memory_statistics_table.get("retention", {})
-        sampling_data = memory_statistics_table.get("sampling", {})
-        self.memory_statistics_message("enable", enable_data)
-        self.memory_statistics_message("retention", retention_data)
-        self.memory_statistics_message("sampling", sampling_data)
+    def load(self, memory_statistics_config: dict):
+        """Load initial memory statistics configuration."""
+        syslog.syslog(syslog.LOG_INFO, 'Memory_StatisticsCfg: Load initial configuration')
+        if not memory_statistics_config:
+            memory_statistics_config = {}
+
+        self.memory_statistics_message("enabled", memory_statistics_config.get("enabled", {}))
+        self.memory_statistics_message("retention", memory_statistics_config.get("retention", {}))
+        self.memory_statistics_message("sampling", memory_statistics_config.get("sampling", {}))
 
     def memory_statistics_message(self, key, data):
         """
-        Apply memory stats settings handler.
+        Apply memory statistics settings handler.
         Args:
-            key: DB table's key that was triggered change.
-            data: Read table data.
+            key: DB table's key that triggered the change.
+            data: New table data to process.
         """
-        if type(data) != dict:
-            # Nothing to handle
-            return
-        update_required = False
-        # Check with cache
-        for k, v in data.items():
-            if v != self.cache.get(k):
-                update_required = True
-                break
+        if not isinstance(data, dict):
+            return  # Nothing to handle if data is not a dictionary
+
+        update_required = any(data.get(k) != self.cache.get(k) for k in data)
         if not update_required:
             return
+
         try:
-            # If the disable flag is set, stop the daemon.
-            if key == "enable" and not data.get("enabled", True):
-                self.shutdown_memorystatistics()
-            else:
-                # Signal the memory stats daemon to reload configuration
-                self.reload_memory_statistics_daemon()
-        except Exception as e:
-            syslog.syslog(syslog.LOG_ERR, f'MemoryStatsCfg: Failed to manage memory-stats-daemon: {e}')
-            return
-        # Update cache
-        for k, v in data.items():
-            self.cache[k] = v
-
-    def reload_memory_statistics_daemon(self):
-        """Reload the memory stats daemon"""
-        syslog.syslog(syslog.LOG_INFO, 'MemoryStatsCfg: Reloading memory-stats-daemon')
-        try:
-            subprocess.run(["systemctl", "reload", "memory-stats-daemon"], check=True)
-            syslog.syslog(syslog.LOG_INFO, 'MemoryStatsCfg: memory-stats-daemon successfully reloaded')
-        except subprocess.CalledProcessError as e:
-            syslog.syslog(syslog.LOG_ERR, f"MemoryStatsCfg: Failed to reload memory-stats-daemon: {e}")
-            raise
-
-    # Additional methods for handling signals
-    def get_memorystatistics_pid(self):
-        """Get the PID of the memorystatsd process."""
-        try:
-            for proc in psutil.process_iter(['name']):
-                if proc.info['name'] == 'memorystatsd':
-                    return proc.pid
-        except psutil.NoSuchProcess:
-            return None
-        return None
-
-    def reload_memorystatistics(self):
-        """Send SIGHUP to reload configuration."""
-        pid = self.get_memorystatistics_pid()
-        if pid:
-            os.kill(pid, signal.SIGHUP)
-
-    def shutdown_memorystatistics(self):
-        """Send SIGTERM to gracefully shut down memorystatsd."""
-        pid = self.get_memorystatistics_pid()
-        if pid:
-            os.kill(pid, signal.SIGTERM)
-
-    def monitor_config_changes(self):
-        """Monitor configuration changes from ConfigDB."""
-        while True:
-            # Use self.config_db to get configuration
-            config = self.config_db.get_memory_statistics_config()
-            # Handle changes in retention_period, sampling_interval, or enable/disable feature
-            if config.get('changed'):  # Assuming 'changed' is a flag indicating a change
-                if config.get('enabled', True):  # If 'enabled' is True, reload the daemon
-                    self.reload_memorystatistics()
+            if key == "enabled":
+                enabled = data.get("enabled", "false").lower() == "true"
+                if enabled:
+                    self.restart_memory_statistics()
                 else:
-                    # If 'enabled' is False, disable the feature by sending SIGTERM to the daemon
-                    self.shutdown_memorystatistics()
-            time.sleep(5)  # Polling interval
+                    self.shutdown_memory_statistics()
+            else:
+                # If other keys (like sampling/retention) are changed, just reload the daemon config
+                self.reload_memory_statistics()
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f'Memory_StatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
+            return
+
+        # Update cache with the new values
+        self.cache.update(data)
+
+    def restart_memory_statistics(self):
+        """Restart the memory statistics daemon."""
+        self.shutdown_memory_statistics()  # Ensure the daemon is stopped before restarting
+        time.sleep(1)  # Brief delay to allow shutdown
+        syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Starting MemoryStatisticsDaemon")
+        try:
+            subprocess.Popen(['/usr/bin/memorystatsd'])  
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Failed to start MemoryStatisticsDaemon: {e}")
+
+    def reload_memory_statistics(self):
+        """Send SIGHUP to the MemoryStatisticsDaemon to reload its configuration."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            os.kill(pid, signal.SIGHUP)  # Notify daemon to reload its configuration
+            syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Sent SIGHUP to reload daemon configuration")
+
+    def shutdown_memory_statistics(self):
+        """Send SIGTERM to stop the MemoryStatisticsDaemon gracefully."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            os.kill(pid, signal.SIGTERM)  # Graceful shutdown
+            syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
+
+    def get_memory_statistics_pid(self):
+        """Retrieve the PID of the running MemoryStatisticsDaemon."""
+        try:
+            with open('/var/run/memorystatsd.pid', 'r') as pid_file:
+                pid = int(pid_file.read().strip())
+            return pid
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Failed to retrieve MemoryStatisticsDaemon PID: {e}")
+            return None
+
+    def on_config_change(self, memory_statistics_config):
+        """Callback function to handle configuration changes from ConfigDB."""
+        syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Configuration change detected")
+        enabled = memory_statistics_config.get("enabled", "false")
+        
+        if enabled == "true":
+            self.restart_memory_statistics()  # Start or restart the daemon
+        else:
+            self.shutdown_memory_statistics()  # Stop the daemon if disabled
 
 class SerialConsoleCfg:
 
