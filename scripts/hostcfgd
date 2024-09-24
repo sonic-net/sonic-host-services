@@ -2100,8 +2100,8 @@ class HostConfigDaemon:
             return callback
 
         self.config_db.subscribe('KDUMP', make_callback(self.kdump_handler))
-        self.config_db.subscribe(swsscommon.memory_statistics_table,
-                                 'MEMORY_STATISTICS', make_callback(self.memory_statistics_handler))
+        self.config_db.subscribe(swsscommon.CFG_MEMORY_STATISTICS_TABLE_NAME,
+                                 make_callback(self.memory_statistics_handler))
         # Handle AAA, TACACS and RADIUS related tables
         self.config_db.subscribe('AAA', make_callback(self.aaa_handler))
         self.config_db.subscribe('TACPLUS', make_callback(self.tacacs_global_handler))
