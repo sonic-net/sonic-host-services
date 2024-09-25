@@ -1919,10 +1919,10 @@ class HostConfigDaemon:
         ldap_server = init_data['LDAP_SERVER']
         lpbk_table = init_data['LOOPBACK_INTERFACE']
         kdump = init_data['KDUMP']
-        memory_statistics = init_data[swsscommon.CFG_MEMORY_STATISTICS_TABLE_NAME, {}]
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
+        memory_statistics = init_data[swsscommon.CFG_MEMORY_STATISTICS_TABLE_NAME, {}]
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
         syslog_cfg = init_data.get(swsscommon.CFG_SYSLOG_CONFIG_TABLE_NAME, {})
