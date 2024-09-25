@@ -11,6 +11,7 @@ import re
 import jinja2
 import time
 import json
+import importlib
 from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
