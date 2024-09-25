@@ -15,7 +15,7 @@ from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
-from swsscommon import CFG_MEMORY_STATISTICS_TABLE_NAME
+# from swsscommon import CFG_MEMORY_STATISTICS_TABLE_NAME
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 from sonic_installer import bootloader
