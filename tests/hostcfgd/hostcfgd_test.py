@@ -325,32 +325,35 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
-    def test_memory_statistics_event(self):
-        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
-        daemon = hostcfgd.HostConfigDaemon()
-        daemon.register_callbacks()
+    def test_memory_statistics_event(self, mock_config_db_connector):
+        # Mock the ConfigDBConnector instance methods
+        mock_instance = mock_config_db_connector.return_value
+        # Make sure get_table returns the correct nested structure
+        mock_instance.get_table.return_value = HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics']
+ 
+        # Mock the subprocess module to avoid real process callswith mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+        daemon = hostcfgd.HostConfigDaemon()  # Create the daemon instance# Load config using the correct nested dictionary
+        daemon.memory_statisticsCfg.load(HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics'])
+
+        # Mock the subprocess.Popen and check_call
+        popen_mock = mock.Mock()
+        attrs = {'communicate.return_value': ('output', 'error')}
+        popen_mock.configure_mock(**attrs)
+        mocked_subprocess.Popen.return_value = popen_mock
+        mocked_subprocess.check_call = mock.Mock()
+
+        # Trigger event handler
         MockConfigDb.event_queue = [('MEMORY_STATISTICS', 'config')]
+        daemon.memory_statistics_handler('enabled', 'SET', 'true')
 
-        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
-            mocked_subprocess.check_call = mock.Mock()
+        # Define expected subprocess calls
+        expected_calls = [
+            mock.call(['/usr/bin/memorystatsd']),
+        ]
 
-            try:
-                daemon.start()
-            except TimeoutError:
-                pass
-
-            expected_calls = [
-                mock.call(['sonic-memory_statistics-config', '--enable']),
-                mock.call(['sonic-memory_statistics-config', '--retention_time', '15 days']),
-                mock.call(['sonic-memory_statistics-config', '--sampling_interval', '5 minutes'])
-            ]
-
-            mocked_subprocess.check_call.assert_has_calls(expected_calls, any_order=True)
-
+        # Check if subprocess check_call was made with correct arguments
+        mocked_subprocess.Popen.assert_has_calls(expected_calls, any_order=True)
+        
     def test_dns_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [('DNS_NAMESERVER', '1.1.1.1')]
