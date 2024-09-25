@@ -15,6 +15,7 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "PASSW_HARDENING": {},
     "SSH_SERVER": {},
     "KDUMP": {},
+    "MEMORY_STATISTICS": {},
     "NTP": {},
     "NTP_SERVER": {},
     "LOOPBACK_INTERFACE": {},
@@ -80,10 +81,10 @@ HOSTCFG_DAEMON_CFG_DB = {
         }
     },
     "MEMORY_STATISTICS": {
-        "config": {
+        "memory_statistics": {
             "enabled": "true",
-            "retention_time": "15 days",
-            "sampling_interval": "5 minutes"
+            "retention_time": "15",
+            "sampling_interval": "5"
     }
     },
     "MGMT_INTERFACE": {
