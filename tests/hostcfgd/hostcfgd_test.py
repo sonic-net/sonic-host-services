@@ -327,6 +327,7 @@ class TestHostcfgdDaemon(TestCase):
 
     @patch('hostcfgd.ConfigDBConnector', autospec=True)
     def test_memory_statistics_event(self, mock_config_db_connector):
+        print("Available keys in HOSTCFG_DAEMON_CFG_DB:", HOSTCFG_DAEMON_CFG_DB.keys())
         # Mock the ConfigDBConnector instance methods
         mock_instance = mock_config_db_connector.return_value
         # Make sure get_table returns the correct nested structure
