@@ -357,39 +357,6 @@ class TestHostcfgdDaemon(TestCase):
 
             # Check if subprocess Popen was called with correct arguments
             mocked_popen.assert_has_calls(expected_calls, any_order=True)
-
-    
-
-    # @patch('hostcfgd.ConfigDBConnector'
-    # def test_memory_statistics_event(self, mock_config_db_connector):
-    #     print("Available keys in HOSTCFG_DAEMON_CFG_DB:", HOSTCFG_DAEMON_CFG_DB.keys())
-    #     # Mock the ConfigDBConnector instance methods
-    #     mock_instance = mock_config_db_connector.return_value
-    #     # Make sure get_table returns the correct nested structure
-    #     mock_instance.get_table.return_value = HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics']
- 
-    #     # Mock the subprocess module to avoid real process callswith mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-    #     daemon = hostcfgd.HostConfigDaemon()  # Create the daemon instance# Load config using the correct nested dictionary
-    #     daemon.memory_statisticsCfg.load(HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics'])
-
-    #     # Mock the subprocess.Popen and check_call
-    #     popen_mock = mock.Mock()
-    #     attrs = {'communicate.return_value': ('output', 'error')}
-    #     popen_mock.configure_mock(**attrs)
-    #     mocked_subprocess.Popen.return_value = popen_mock
-    #     mocked_subprocess.check_call = mock.Mock()
-
-    #     # Trigger event handler
-    #     MockConfigDb.event_queue = [('MEMORY_STATISTICS', 'config')]
-    #     daemon.memory_statistics_handler('enabled', 'SET', 'true')
-
-    #     # Define expected subprocess calls
-    #     expected_calls = [
-    #         mock.call(['/usr/bin/memorystatsd']),
-    #     ]
-
-    #     # Check if subprocess check_call was made with correct arguments
-    #     mocked_subprocess.Popen.assert_has_calls(expected_calls, any_order=True)
         
     def test_dns_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
