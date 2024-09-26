@@ -17,8 +17,8 @@ from datetime import datetime
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
-import swsscommon
-# from swsscommon import RestartWaiter
+from swsscommon import swsscommon
+from swsscommon import RestartWaiter
 from sonic_installer import bootloader
 hostcfg_file_path = os.path.abspath(__file__)
 hostcfg_dir_path = os.path.dirname(hostcfg_file_path)
@@ -2187,4 +2187,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
