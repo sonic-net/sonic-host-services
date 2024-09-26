@@ -327,7 +327,7 @@ class TestHostcfgdDaemon(TestCase):
     def test_memory_statistics_event(self, mock_config_db_connector):
         # Mock the ConfigDBConnector instance methods
         mock_instance = mock_config_db_connector.return_value
-        # Ensure get_table returns the correct nested structure
+        # Ensure get_table returns the correct nested structur
         mock_instance.get_table.return_value = HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics']
 
         # Patch subprocess.Popen and check_call
@@ -359,7 +359,7 @@ class TestHostcfgdDaemon(TestCase):
 
     
 
-    # @patch('hostcfgd.ConfigDBConnector')
+    # @patch('hostcfgd.ConfigDBConnector'
     # def test_memory_statistics_event(self, mock_config_db_connector):
     #     print("Available keys in HOSTCFG_DAEMON_CFG_DB:", HOSTCFG_DAEMON_CFG_DB.keys())
     #     # Mock the ConfigDBConnector instance methods
