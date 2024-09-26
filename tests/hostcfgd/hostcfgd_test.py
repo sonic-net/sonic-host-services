@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import hostcfgd 
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
@@ -325,29 +324,21 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
-class TestHostcfgdDaemon(TestCase):
-
     @patch('hostcfgd.ConfigDBConnector', autospec=True)
     def test_memory_statistics_event(self, mock_config_db_connector):
         # Mock the ConfigDBConnector instance methods
         mock_instance = mock_config_db_connector.return_value
-
-        # Ensure get_table returns the correct nested structure
-        # Check if 'MEMORY_STATISTICS' exists in the HOSTCFG_DAEMON_CFG_DB
-        memory_statistics = HOSTCFG_DAEMON_CFG_DB.get('MEMORY_STATISTICS', {}).get('memory_statistics', {})
-        if not memory_statistics:
-            raise ValueError("No MEMORY_STATISTICS data found in HOSTCFG_DAEMON_CFG_DB")
-        
-        mock_instance.get_table.return_value = memory_statistics
+        # Ensure get_table returns the correct nested structur
+        mock_instance.get_table.return_value = HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics']
 
         # Patch subprocess.Popen and check_call
-        with patch('hostcfgd.subprocess.Popen') as mocked_popen, \
-             patch('hostcfgd.subprocess.check_call') as mocked_check_call:
+        with mock.patch('hostcfgd.subprocess.Popen') as mocked_popen, \
+            mock.patch('hostcfgd.subprocess.check_call') as mocked_check_call:
             
             # Create the daemon instance
             daemon = hostcfgd.HostConfigDaemon()
             # Load config using the correct nested dictionary
-            daemon.memory_statisticsCfg.load(memory_statistics)
+            daemon.memory_statisticsCfg.load(HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics'])
 
             # Mock subprocess.Popen behavior
             popen_mock = mock.Mock()
@@ -366,7 +357,6 @@ class TestHostcfgdDaemon(TestCase):
 
             # Check if subprocess Popen was called with correct arguments
             mocked_popen.assert_has_calls(expected_calls, any_order=True)
-
 
     def test_dns_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
