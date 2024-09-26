@@ -325,7 +325,7 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
-    @patch('path.to.ConfigDBConnector', autospec=True)
+    @patch('hostcfgd.ConfigDBConnector', autospec=True)
     def test_memory_statistics_event(self, mock_config_db_connector):
         # Mock the ConfigDBConnector instance methods
         mock_instance = mock_config_db_connector.return_value
