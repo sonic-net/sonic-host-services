@@ -11,7 +11,7 @@ from unittest import TestCase, mock
 
 from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
-
+from unittest.mock import patch
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
 from unittest.mock import call
@@ -325,6 +325,7 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
+    @patch('path.to.ConfigDBConnector', autospec=True)
     def test_memory_statistics_event(self, mock_config_db_connector):
         # Mock the ConfigDBConnector instance methods
         mock_instance = mock_config_db_connector.return_value
