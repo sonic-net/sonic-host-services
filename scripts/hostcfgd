@@ -9,18 +9,22 @@ import syslog
 import signal
 import re
 import jinja2
+import time
 import json
+import importlib
 from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
+from swsscommon import RestartWaiter
 from sonic_installer import bootloader
 hostcfg_file_path = os.path.abspath(__file__)
 hostcfg_dir_path = os.path.dirname(hostcfg_file_path)
 sys.path.append(hostcfg_dir_path)
 import ldap
+importlib.reload(swsscommon)
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -1716,6 +1720,99 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
+print(swsscommon.__file__)
+
+class Memory_StatisticsCfg:
+    """
+    Memory_StatisticsCfg class handles the configuration updates for the MemoryStatisticsDaemon.
+    It listens to ConfigDB changes and applies them by restarting, shutting down, or reloading
+    the MemoryStatisticsDaemon.
+    """
+ 
+    def __init__(self, config_db):
+        self.cache = {
+            "enabled": "false",
+            "retention": "15",
+            "sampling": "5"
+        }
+        self.config_db = config_db  # Store config_db instance for further use
+ 
+    def load(self, memory_statistics_config: dict):
+        """Load initial memory statistics configuration."""
+        syslog.syslog(syslog.LOG_INFO, 'Memory_StatisticsCfg: Load initial configuration')
+ 
+        if not memory_statistics_config:
+            memory_statistics_config = {}
+ 
+        # Call memory_statistics_message to handle the initial config load for each key
+        self.memory_statistics_message("enabled", memory_statistics_config.get("enabled", "false"))
+        self.memory_statistics_message("retention", memory_statistics_config.get("retention", "15"))
+        self.memory_statistics_message("sampling", memory_statistics_config.get("sampling", "5"))
+ 
+    def memory_statistics_update(self, key, data):
+        """
+        Apply memory statistics settings handler.
+        Args:
+            key: DB table's key that triggered the change.
+            data: New table data to process.
+        """
+        # Ensure data is a string or convertible to the required value
+        if not isinstance(data, str):
+            data = str(data)
+ 
+        # Check if any value has changed
+        if data != self.cache.get(key):
+            syslog.syslog(syslog.LOG_INFO, f"Memory_StatisticsCfg: Detected change in '{key}'")
+ 
+            try:
+                if key == "enabled":
+                    enabled = data.lower() == "true"
+                    if enabled:
+                        self.restart_memory_statistics()  # Start or restart the daemon
+                    else:
+                        self.shutdown_memory_statistics()  # Stop the daemon if disabled
+                else:
+                    # If other keys (like sampling/retention) are changed, just reload the daemon config
+                    self.reload_memory_statistics()
+ 
+                # Update cache with the new value
+                self.cache[key] = data
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f'Memory_StatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
+ 
+    def restart_memory_statistics(self):
+        """Restart the memory statistics daemon."""
+        self.shutdown_memory_statistics()  # Ensure the daemon is stopped before restarting
+        time.sleep(1)  # Brief delay to allow shutdown
+        syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Starting MemoryStatisticsDaemon")
+        try:
+            subprocess.Popen(['/usr/bin/memorystatsd'])  
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Failed to start MemoryStatisticsDaemon: {e}")
+ 
+    def reload_memory_statistics(self):
+        """Send SIGHUP to the MemoryStatisticsDaemon to reload its configuration."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            os.kill(pid, signal.SIGHUP)  # Notify daemon to reload its configuration
+            syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Sent SIGHUP to reload daemon configuration")
+ 
+    def shutdown_memory_statistics(self):
+        """Send SIGTERM to stop the MemoryStatisticsDaemon gracefully."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            os.kill(pid, signal.SIGTERM)  # Graceful shutdown
+            syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
+ 
+    def get_memory_statistics_pid(self):
+        """Retrieve the PID of the running MemoryStatisticsDaemon."""
+        try:
+            with open('/var/run/memorystatsd.pid', 'r') as pid_file:
+                pid = int(pid_file.read().strip())
+            return pid
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Failed to retrieve MemoryStatisticsDaemon PID: {e}")
+            return None
 
 class SerialConsoleCfg:
 
@@ -1749,6 +1846,7 @@ class SerialConsoleCfg:
         return
 
 
+
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
@@ -1763,6 +1861,8 @@ class HostConfigDaemon:
 
         # Initialize KDump Config and set the config to default if nothing is provided
         self.kdumpCfg = KdumpCfg(self.config_db)
+
+        self.memory_statisticsCfg = Memory_StatisticsCfg(self.config_db)
 
         # Initialize IpTables
         self.iptables = Iptables()
@@ -1816,6 +1916,7 @@ class HostConfigDaemon:
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
+        memory_statistics = init_data.get[swsscommon.CFG_MEMORY_STATISTICS_TABLE_NAME, {}]
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
         syslog_cfg = init_data.get(swsscommon.CFG_SYSLOG_CONFIG_TABLE_NAME, {})
@@ -1830,6 +1931,7 @@ class HostConfigDaemon:
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
         self.kdumpCfg.load(kdump)
+        self.memory_statisticsCfg.load(memory_statistics)
         self.passwcfg.load(passwh)
         self.sshscfg.load(ssh_server)
         self.devmetacfg.load(dev_meta)
@@ -1959,6 +2061,10 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
 
+    def memory_statistics_handler (self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'Memory_Statistics handler...')
+        self.memory_statisticsCfg.memory_statistics_update(key, data)
+
     def device_metadata_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
@@ -2035,6 +2141,9 @@ class HostConfigDaemon:
         # Handle DEVICE_MEATADATA changes
         self.config_db.subscribe(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
                                  make_callback(self.device_metadata_handler))
+        
+        self.config_db.subscribe(swsscommon.CFG_MEMORY_STATISTICS_TABLE_NAME,
+                                 make_callback(self.memory_statistics_handler))
 
         # Handle MGMT_VRF_CONFIG changes
         self.config_db.subscribe(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME,
@@ -2078,4 +2187,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
