@@ -337,7 +337,7 @@ class TestHostcfgdDaemon(TestCase):
         if not memory_statistics:
             raise ValueError("No MEMORY_STATISTICS data found in HOSTCFG_DAEMON_CFG_DB")
         
-        mock_instance.get_table.return_value = memory_stats_config
+        mock_instance.get_table.return_value = memory_statistics
 
         # Patch subprocess.Popen and check_call
         with patch('hostcfgd.subprocess.Popen') as mocked_popen, \
@@ -346,7 +346,7 @@ class TestHostcfgdDaemon(TestCase):
             # Create the daemon instance
             daemon = hostcfgd.HostConfigDaemon()
             # Load config using the correct nested dictionary
-            daemon.memory_statisticsCfg.load(memory_stats_config)
+            daemon.memory_statisticsCfg.load(memory_statistics)
 
             # Mock subprocess.Popen behavior
             popen_mock = mock.Mock()
