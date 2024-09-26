@@ -11,6 +11,8 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "authentication_retries": "6",
                         "login_timeout": "120",
                         "ports": "22",
+                        "inactivity_timeout": "15",
+                        "max_sessions": "0",
                     }
                 },
                 "DEVICE_METADATA": {
@@ -34,6 +36,12 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                    }
+                },
+                "SERIAL_CONSOLE": {
+                    "POLICIES":{
+                        "inactivity_timeout": "15",
+                        "sysrq_capabilities": "disabled"
                     }
                 }
             },
@@ -43,6 +51,8 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "authentication_retries": "12",
                         "login_timeout": "120",
                         "ports": "22",
+                        "inactivity_timeout": "15",
+                        "max_sessions": "0",
                     }
                 },
                 "DEVICE_METADATA": {
@@ -66,6 +76,12 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                    }
+                },
+                "SERIAL_CONSOLE": {
+                    "POLICIES":{
+                        "inactivity_timeout": "15",
+                        "sysrq_capabilities": "disabled"
                     }
                 }
             },
@@ -75,6 +91,8 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "authentication_retries": "6",
                         "login_timeout": "60",
                         "ports": "22",
+                        "inactivity_timeout": "15",
+                        "max_sessions": "0",
                     }
                 },
                 "DEVICE_METADATA": {
@@ -98,6 +116,12 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                    }
+                },
+                "SERIAL_CONSOLE": {
+                    "POLICIES":{
+                        "inactivity_timeout": "15",
+                        "sysrq_capabilities": "disabled"
                     }
                 }
             },
@@ -107,6 +131,8 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "authentication_retries": "6",
                         "login_timeout": "120",
                         "ports": "22,23,24",
+                        "inactivity_timeout": "15",
+                        "max_sessions": "0",
                     }
                 },
                 "DEVICE_METADATA": {
@@ -132,6 +158,12 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
                     }
                 },
+                "SERIAL_CONSOLE": {
+                    "POLICIES":{
+                        "inactivity_timeout": "15",
+                        "sysrq_capabilities": "disabled"
+                    }
+                }
             },
             "modify_all":{
                 "SSH_SERVER": {
@@ -139,6 +171,8 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "authentication_retries": "16",
                         "login_timeout": "140",
                         "ports": "22,222",
+                        "inactivity_timeout": "15",
+                        "max_sessions": "0",
                     }
                 },
                 "DEVICE_METADATA": {
@@ -162,6 +196,12 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "enabled": "false",
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                    }
+                },
+                "SERIAL_CONSOLE": {
+                    "POLICIES":{
+                        "inactivity_timeout": "15",
+                        "sysrq_capabilities": "disabled"
                     }
                 }
             }

@@ -1720,8 +1720,6 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
-print(swsscommon.__file__)
-
 class Memory_StatisticsCfg:
     """
     Memory_StatisticsCfg class handles the configuration updates for the MemoryStatisticsDaemon.
@@ -1844,8 +1842,6 @@ class SerialConsoleCfg:
             self.cache.update({key: data})
 
         return
-
-
 
 class HostConfigDaemon:
     def __init__(self):
