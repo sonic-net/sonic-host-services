@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import hostcfgd 
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
