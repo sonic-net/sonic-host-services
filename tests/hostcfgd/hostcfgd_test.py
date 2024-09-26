@@ -4,7 +4,6 @@ import time
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
-
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
@@ -325,7 +324,7 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
-    @patch('hostcfgd.ConfigDBConnector', autospec=True)
+    @patch('hostcfgd.ConfigDBConnector')
     def test_memory_statistics_event(self, mock_config_db_connector):
         print("Available keys in HOSTCFG_DAEMON_CFG_DB:", HOSTCFG_DAEMON_CFG_DB.keys())
         # Mock the ConfigDBConnector instance methods
