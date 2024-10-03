@@ -67,6 +67,17 @@ class ProcDockerStats(daemon_base.DaemonBase):
             process_data_list.append(process_data)
         return process_data_list
 
+   def format_mount_cmd_output(self, cmdout):
+       lines = cmdout.splitlines()
+       keys = re.split(" +", lines[0])
+       mount_data = dict()
+       mount_data_list = []
+       for line in lines[1:]:
+           values = line.split()
+           mount_data_list.append(values)
+       formatted_dict = self.create_mount_dict(mount_data_list)
+       return formatted_dict
+
     def convert_to_bytes(self, value):
         UNITS_B = 'B'
         UNITS_KB = 'KB'
@@ -118,6 +129,20 @@ class ProcDockerStats(daemon_base.DaemonBase):
 
                 dockerdict[key]['PIDS'] = row.get('PIDS')
         return dockerdict
+
+    def create_mount_dict(self, dict_list):
+        mountdict = {}
+        for row in dict_list[0:]:
+            if row[1] == "tmpfs" or row[1] == "devtmpfs" or row[1] == "overlay":
+                continue
+            key = 'MOUNT_POINTS|{}'.format(row[6])
+            mountdict[key] = {}
+            mountdict[key]['Filesystem'] = row[0]
+            mountdict[key]['Type'] = row[1]
+            mountdict[key]['1K-blocks'] = row[2]
+            mountdict[key]['Used'] = row[3]
+            mountdict[key]['Available'] = row[4]
+        return mountdict
 
     def update_dockerstats_command(self):
         cmd = ["docker", "stats", "--no-stream", "-a"]
@@ -197,6 +222,23 @@ class ProcDockerStats(daemon_base.DaemonBase):
         self.update_state_db(fips_db_key, 'enforced', str(enforced))
         self.update_state_db(fips_db_key, 'enabled', str(enabled))
 
+    def update_mountpointstats_command(self):
+        cmd = ["df", "-T"]
+        data = self.run_command(cmd)
+        if not data:
+            self.log_error("'{}' returned null output for filesystem".format(cmd))
+            return False
+        mountdata = self.format_mount_cmd_output(data)
+        if not mountdata:
+            self.log_error("formatting for filesystem output failed")
+            return False
+        self.state_db.delete_all_by_pattern('STATE_DB', 'MOUNT_POINTS|*')
+        for k1, v1 in mountdata.items():
+            for k2, v2 in v1.items():
+                self.update_state_db(k1, k2, v2)
+        return True
+
+
     def update_state_db(self, key1, key2, value2):
         self.state_db.set('STATE_DB', key1, key2, value2)
 
@@ -208,6 +250,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
             print("Must be root to run this daemon")
             sys.exit(1)
 
+        counter = 1
         while True:
             self.update_dockerstats_command()
             datetimeobj = datetime.now()
@@ -218,8 +261,16 @@ class ProcDockerStats(daemon_base.DaemonBase):
             self.update_fipsstats_command()
             self.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
 
+            if counter == 5:
+                self.update_mountpointstats_command()
+                self.update_state_db('MOUNT_POINTS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+                counter = 1
+
             # Data need to be updated every 2 mins. hence adding delay of 120 seconds
             time.sleep(120)
+
+        # Adding a counter to ensure mount points only updates every 10 mins, instead of 2 mins
+        counter += 1
 
         self.log_info("Exiting ...")
 
