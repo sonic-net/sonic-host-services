@@ -54,13 +54,18 @@ LINUX_DEFAULT_PASS_MAX_DAYS = 99999
 LINUX_DEFAULT_PASS_WARN_AGE = 7
 
 # Ssh min-max values
-SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1}
-SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600, "ports": 65535}
-SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "LoginGraceTime"}
+SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1,
+                "inactivity_timeout": 0, "max_sessions": 0}
+SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600,
+                "ports": 65535, "inactivity_timeout": 35000,
+                "max_sessions": 100}
+SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries",
+                  "login_timeout": "LoginGraceTime", "ports": "Port",
+                  "inactivity_timeout": "ClientAliveInterval"}
 
 ACCOUNT_NAME = 0 # index of account name
-AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
-            'WARN_DAYS': {'REGEX_DAYS': r'^PASS_WARN_AGE[ \t]*(?P<warn_days>\d*)', 'DAYS': 'warn_days', 'CHAGE_FLAG': '-W '}
+AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>-?\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
+            'WARN_DAYS': {'REGEX_DAYS': r'^PASS_WARN_AGE[ \t]*(?P<warn_days>-?\d*)', 'DAYS': 'warn_days', 'CHAGE_FLAG': '-W '}
             }
 PAM_LIMITS_CONF_TEMPLATE = "/usr/share/sonic/templates/pam_limits.j2"
 LIMITS_CONF_TEMPLATE = "/usr/share/sonic/templates/limits.conf.j2"
@@ -612,8 +617,8 @@ class AaaCfg(object):
             e_operations = [item for sublist in zip(e_list, operations) for item in sublist]
             with open(filename+'.new', 'w') as f:
                 subprocess.call(["sed"] + e_operations + [filename], stdout=f)
-            subprocess.call(["mv", '-f', filename, filename+'.old'])
-            subprocess.call(['mv', '-f', filename+'.new', filename])
+            subprocess.call(["cp", '-f', filename, filename+'.old'])
+            subprocess.call(['cp', '-f', filename+'.new', filename])
 
         self.check_file_not_empty(filename)
 
@@ -916,15 +921,11 @@ class PasswHardening(object):
         if passw_policies:
             if 'state' in passw_policies:
                 if passw_policies['state'] == 'enabled':
-                    if 'expiration' in passw_policies:
-                        if int(self.passw_policies['expiration']) != 0: # value '0' meaning age policy is disabled
-                            #  the logic is to modify the expiration time according the last updated modificatiion
-                            #
-                            curr_expiration = int(passw_policies['expiration'])
-
-                    if 'expiration_warning' in passw_policies:
-                        if int(self.passw_policies['expiration_warning']) != 0: # value '0' meaning age policy is disabled
-                            curr_expiration_warning = int(passw_policies['expiration_warning'])
+                    # Special values of expiration/expiration warning
+                    # 0: meaning password will be expired/warning immediately.
+                    # -1: meaning password expired/warning never.
+                    curr_expiration = int(passw_policies.get('expiration', -1))
+                    curr_expiration_warning = int(passw_policies.get('expiration_warning', -1))
 
         if self.is_passwd_aging_expire_update(curr_expiration, 'MAX_DAYS'):
             # Set aging policy for existing users
@@ -1105,9 +1106,15 @@ class SshServer(object):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format(key, value))
             elif key in SSH_CONFIG_NAMES:
                 # search replace configuration - if not in config file - append
+                if key == "inactivity_timeout":
+                    # translate min to sec.
+                    value = int(value) * 60
                 kv_str = "{} {}".format(SSH_CONFIG_NAMES[key], str(value)) # name +' '+ value format
                 modify_single_file_inplace(SSH_CONFG_TMP,['-E', "/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
                  kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}"])
+            elif key in ['max_sessions']:
+                # Ignore, these parameters handled in other modules
+                continue
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
 
@@ -1322,15 +1329,30 @@ class PamLimitsCfg(object):
         self.config_db = config_db
         self.hwsku = ""
         self.type = ""
+        self.max_sessions = None
 
     # Load config from ConfigDb and render config file/
     def update_config_file(self):
         device_metadata = self.config_db.get_table('DEVICE_METADATA')
-        if "localhost" not in device_metadata:
+        ssh_server_policies = {}
+        try: 
+            ssh_server_policies = self.config_db.get_table('SSH_SERVER')
+        except KeyError:
+            """Dont throw except in case we don`t have SSH_SERVER config."""
+            pass
+	
+        if "localhost" not in device_metadata and "POLICIES" not in ssh_server_policies:
             return
 
         self.read_localhost_config(device_metadata["localhost"])
+        self.read_max_sessions_config(ssh_server_policies.get("POLICIES", None))
         self.render_conf_file()
+
+    # Read max_sessions config
+    def read_max_sessions_config(self, ssh_server_policies):
+        if ssh_server_policies is not None:
+            max_sess_cfg = ssh_server_policies.get('max_sessions', 0)
+            self.max_sessions = max_sess_cfg if max_sess_cfg != 0 else None
 
     # Read localhost config
     def read_localhost_config(self, localhost):
@@ -1348,7 +1370,6 @@ class PamLimitsCfg(object):
     def render_conf_file(self):
         env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
         env.filters['sub'] = sub
-
         try:
             template_file = os.path.abspath(PAM_LIMITS_CONF_TEMPLATE)
             template = env.get_template(template_file)
@@ -1362,7 +1383,8 @@ class PamLimitsCfg(object):
             template = env.get_template(template_file)
             limits_conf = template.render(
                                         hwsku=self.hwsku,
-                                        type=self.type)
+                                        type=self.type,
+                                        max_sessions=self.max_sessions)
             with open(LIMITS_CONF, 'w') as f:
                 f.write(limits_conf)
         except Exception as e:
@@ -1695,6 +1717,38 @@ class FipsCfg(object):
         loader.set_fips(image, self.enforce)
 
 
+class SerialConsoleCfg:
+
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, cli_sessions_conf):
+        self.cache = cli_sessions_conf or {}
+        syslog.syslog(syslog.LOG_INFO,
+                      f'SerialConsoleCfg: Initial config: {self.cache}')
+
+    def update_serial_console_cfg(self, key, data):
+        '''
+            Apply config flow:
+                inactivity_timeout | set here AND in ssh_config flow | serial-config.service restarted.
+                max_sessions | set by PamLimitsCfg | serial-config.service DOESNT restarted.
+                sysrq_capabilities | set here | serial-config.service restarted.
+        '''
+
+        if self.cache.get(key, {}) != data:
+            ''' Config changed, need to restart the serial-config.service '''
+            syslog.syslog(syslog.LOG_INFO, f'Set serial-config parameter {key} value: {data}')
+            try:
+                run_cmd(['sudo', 'service', 'serial-config', 'restart'],
+                        True, True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to update {key} serial-config.service config')
+                return
+            self.cache.update({key: data})
+
+        return
+
+
 class BannerCfg(object):
     """
     Banner Config Daemon
@@ -1824,6 +1878,9 @@ class HostConfigDaemon:
         # Initialize FipsCfg
         self.fipscfg = FipsCfg(self.state_db_conn)
 
+        # Initialize SerialConsoleCfg
+        self.serialconscfg = SerialConsoleCfg()
+
         # Initialize BannerCfg
         self.bannermsgcfg = BannerCfg()
 
@@ -1849,6 +1906,7 @@ class HostConfigDaemon:
         ntp_global = init_data.get(swsscommon.CFG_NTP_GLOBAL_TABLE_NAME)
         ntp_servers = init_data.get(swsscommon.CFG_NTP_SERVER_TABLE_NAME)
         ntp_keys = init_data.get(swsscommon.CFG_NTP_KEY_TABLE_NAME)
+        serial_console = init_data.get('SERIAL_CONSOLE', {})
         banner_messages = init_data.get(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME)
 
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
@@ -1858,12 +1916,14 @@ class HostConfigDaemon:
         self.sshscfg.load(ssh_server)
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
-
         self.rsyslogcfg.load(syslog_cfg, syslog_srv)
         self.dnscfg.load(dns)
         self.fipscfg.load(fips_cfg)
         self.ntpcfg.load(ntp_global, ntp_servers, ntp_keys)
+        self.serialconscfg.load(serial_console)
         self.bannermsgcfg.load(banner_messages)
+
+        self.pamLimitsCfg.update_config_file()
 
         # Update AAA with the hostname
         self.aaacfg.hostname_update(self.devmetacfg.hostname)
@@ -1885,6 +1945,8 @@ class HostConfigDaemon:
 
     def ssh_handler(self, key, op, data):
         self.sshscfg.policies_update(key, data)
+        self.pamLimitsCfg.update_config_file()
+
         syslog.syslog(syslog.LOG_INFO, 'SSH Update: key: {}, op: {}, data: {}'.format(key, op, data))
 
     def tacacs_server_handler(self, key, op, data):
@@ -2010,6 +2072,10 @@ class HostConfigDaemon:
         data = self.config_db.get_table("FIPS")
         self.fipscfg.fips_handler(data)
 
+    def serial_console_config_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'SERIAL_CONSOLE table handler...')
+        self.serialconscfg.update_serial_console_cfg(key, data)
+
     def banner_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'BANNER_MESSAGE table handler...')
         self.bannermsgcfg.banner_message(key, data)
@@ -2043,6 +2109,8 @@ class HostConfigDaemon:
         self.config_db.subscribe('LDAP_SERVER', make_callback(self.ldap_server_handler))
         self.config_db.subscribe('PASSW_HARDENING', make_callback(self.passwh_handler))
         self.config_db.subscribe('SSH_SERVER', make_callback(self.ssh_handler))
+        # Handle SERIAL_CONSOLE
+        self.config_db.subscribe('SERIAL_CONSOLE', make_callback(self.serial_console_config_handler))
         # Handle IPTables configuration
         self.config_db.subscribe('LOOPBACK_INTERFACE', make_callback(self.lpbk_handler))
         # Handle updates to src intf changes in radius
