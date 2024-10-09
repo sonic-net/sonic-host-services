@@ -1180,12 +1180,12 @@ class KdumpCfg(object):
 class NtpCfg(object):
     """
     NtpCfg Config Daemon
-    1) ntp-config.service handles the configuration updates and then starts ntp.service
-    2) Both of them start after all the feature services start
+    1) chrony.service's ExecStartPre handles the configuration updates
+    2) They start after all the feature services start
     3) Purpose of this daemon is to propagate runtime config changes in
        NTP, NTP_SERVER, NTP_KEY, and LOOPBACK_INTERFACE
     """
-    NTP_CONF_RESTART = ['systemctl', 'restart', 'ntp-config']
+    CHRONY_RESTART = ['systemctl', 'restart', 'chrony']
 
     def __init__(self):
         self.cache = {}
@@ -1195,7 +1195,7 @@ class NtpCfg(object):
         """Load initial NTP configuration
 
         Force load cache on init. NTP config should be taken at boot-time by
-        ntp and ntp-config services. So loading whole config here.
+        chrony services. So loading whole config here.
 
         Args:
             ntp_global_conf:    Global configuration
@@ -1209,7 +1209,7 @@ class NtpCfg(object):
             ntp_global_conf = {}
 
         # Force load cache on init.
-        # NTP config should be taken at boot-time by ntp and ntp-config
+        # NTP config should be taken at boot-time by chrony
         # services.
         self.cache = {
             'global': ntp_global_conf.get('global', {}),
@@ -1228,19 +1228,19 @@ class NtpCfg(object):
         if intf_name not in ifs:
             return
 
-        # Just restart ntp config
+        # Just restart chrony
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
-                                          'ntp-config service')
+                                          'chrony service')
             return
 
     def ntp_global_update(self, key: str, data: dict):
         """Update NTP global configuration
 
         The table holds NTP global configuration. It has some configs that
-        require reloading only but some other require restarting ntp daemon.
+        require reloading only but some other require restarting chrony daemon.
         Handle each of them accordingly.
 
         Args:
@@ -1260,18 +1260,12 @@ class NtpCfg(object):
         new_dhcp = data.get('dhcp')
         new_vrf = data.get('vrf')
 
-        restart_ntpd = False
-        if new_dhcp != old_dhcp or new_vrf != old_vrf:
-            restart_ntpd = True
-
         # Restarting the service
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
-            if restart_ntpd:
-                run_cmd(['systemctl', 'restart', 'ntp'], True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
-            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart ntp '
-                                          'services')
+            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart chrony'
+                                          'service')
             return
 
         # Update the Local Cache
@@ -1309,10 +1303,10 @@ class NtpCfg(object):
 
         # Restarting the service
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart '
-                                          'ntp-config service')
+                                          'chrony service')
             return
 
         # Updating the cache
@@ -1504,7 +1498,6 @@ class MgmtIfaceCfg(object):
                                            f'config {cfg} for {iface}')
             try:
                 run_cmd(['sudo', 'systemctl', 'restart', 'interfaces-config'], True, True)
-                run_cmd(['sudo', 'systemctl', 'restart', 'ntp-config'], True, True)
             except subprocess.CalledProcessError:
                 syslog.syslog(syslog.LOG_ERR, f'Failed to restart management '
                               'interface services')
@@ -1527,9 +1520,9 @@ class MgmtIfaceCfg(object):
 
         # Restart related vrfs services
         try:
-            run_cmd(['service', 'ntp', 'stop'], True, True)
+            run_cmd(['systemctl', 'stop', 'chrony'], True, True)
             run_cmd(['systemctl', 'restart', 'interfaces-config'], True, True)
-            run_cmd(['service', 'ntp', 'start'], True, True)
+            run_cmd(['systemctl', 'start', 'chrony'], True, True)
         except subprocess.CalledProcessError:
             syslog.syslog(syslog.LOG_ERR, f'Failed to restart management vrf '
                           'services')
