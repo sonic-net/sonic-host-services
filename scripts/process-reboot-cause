@@ -69,6 +69,33 @@ def read_reboot_cause_files_and_save_state_db():
                 x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
                 os.remove(x)
 
+def read_dpu_reboot_cause_files_and_save_chassis_state_db():
+    # Get platform using device_info.get_platform()
+    platform_info = device_info.get_platform_info()
+    platform = platform_info['platform']
+
+    # Use os.path.join() to create the path to platform.json
+    platform_path = os.path.join("/usr/share/sonic/device", platform, "platform.json")
+    with open(platform_path, 'r') as f:
+        platform_data = json.load(f)
+
+    dpus = platform_data.get('DPUS', [])
+
+    for dpu in dpus:
+        history_dir = f"/host/reboot-cause/{dpu}/history"
+        latest_file = sorted(os.listdir(history_dir))[-1]
+        latest_cause_file = f"{history_dir}/{latest_file}"
+
+        with open(latest_cause_file, 'r') as f:
+            reboot_cause_data = json.load(f)
+
+        # Connect to ChassisStateDB
+        db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
+        db.connect(db.CHASSIS_STATE_DB)
+        "REBOOT_CAUSE|DPU0|
+        dpu = dpu.upper()
+        name = latest_cause_file['name']
+        db.mset(f"REBOOT_CAUSE|{dpu}|{name}", reboot_cause_data)
 
 def main():
     # Configure logger to log all messages INFO level and higher
@@ -98,6 +125,10 @@ def main():
     if os.path.exists(REBOOT_CAUSE_HISTORY_DIR):
         # Read the previous reboot cause from saved reboot-cause files and save the previous reboot cause upto 10 entry to the state db
         read_reboot_cause_files_and_save_state_db()
+
+    # For smartswitch platform store the DPU reboot-cause to CHASSIS_STATE_DB
+    if device_info.is_smartswitch():
+        read_dpu_reboot_cause_files_and_save_chassis_state_db()
 
 
 if __name__ == "__main__":
