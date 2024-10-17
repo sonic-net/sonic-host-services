@@ -1790,7 +1790,22 @@ class Memory_StatisticsCfg:
                 self.cache[key] = data
             except Exception as e:
                 syslog.syslog(syslog.LOG_ERR, f'Memory_StatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
- 
+                
+    def memory_statistics_message(self, key: str, value: str):
+        """
+        Process and log memory statistics configuration messages.
+
+        Args:
+            key (str): The configuration key being updated (e.g., "enabled", "retention_period", "sampling_interval").
+            value (str): The new value for the configuration key.
+        """
+        if key in self.VALID_KEYS:
+            syslog.syslog(syslog.LOG_INFO, f'Memory_StatisticsCfg: Setting "{key}" to "{value}"')
+            # Update the cache with the new value
+            self.cache[key] = value
+        else:
+            syslog.syslog(syslog.LOG_ERR, f'Memory_StatisticsCfg: Invalid configuration key "{key}"')
+
     def restart_memory_statistics(self):
         """Restart the memory statistics daemon."""
         self.shutdown_memory_statistics()  # Ensure the daemon is stopped before restarting
