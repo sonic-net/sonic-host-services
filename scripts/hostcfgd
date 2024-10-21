@@ -1856,7 +1856,7 @@ class LoggingCfg(object):
             syslog.syslog(syslog.LOG_INFO,
                           f'Set logging file {key} config: {data}')
             try:
-                run_cmd('sudo systemctl restart logrotate-config', True, True)
+                run_cmd(['systemctl', 'restart', 'logrotate-config'], True, True)
             except Exception:
                 syslog.syslog(syslog.LOG_ERR, f'Failed to update {key} message')
                 return
