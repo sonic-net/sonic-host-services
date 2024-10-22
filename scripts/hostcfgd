@@ -1719,37 +1719,36 @@ class FipsCfg(object):
             return
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
-
+        
 class Memory_StatisticsCfg:
     """
     Memory_StatisticsCfg class handles the configuration updates for the MemoryStatisticsDaemon.
     It listens to ConfigDB changes and applies them by restarting, shutting down, or reloading
     the MemoryStatisticsDaemon.
     """
-    
+
     VALID_KEYS = ["enabled", "sampling_interval", "retention_period"]  # Define valid keys for configuration
-    
+
     def __init__(self, config_db):
         self.cache = {
             "enabled": "false",
             "sampling_interval": "5",
-            "retention_period": "15"    
+            "retention_period": "15"
         }
         self.config_db = config_db  # Store config_db instance for further use
 
- 
     def load(self, memory_statistics_config: dict):
         """Load initial memory statistics configuration."""
         syslog.syslog(syslog.LOG_INFO, 'Memory_StatisticsCfg: Load initial configuration')
-        
+
         if not memory_statistics_config:
             memory_statistics_config = {}
-        
+
         # Handle the initial config load for each key with validation
-        self.memory_statistics_message("enabled", memory_statistics_config.get("enabled", "false"))
-        self.memory_statistics_message("retention_period", memory_statistics_config.get("retention_period", "15"))
-        self.memory_statistics_message("sampling_interval", memory_statistics_config.get("sampling_interval", "5"))
- 
+        self.memory_statistics_update("enabled", memory_statistics_config.get("enabled", "false"))
+        self.memory_statistics_update("retention_period", memory_statistics_config.get("retention_period", "15"))
+        self.memory_statistics_update("sampling_interval", memory_statistics_config.get("sampling_interval", "5"))
+
     def memory_statistics_update(self, key, data):
         """
         Apply memory statistics settings handler.
@@ -1765,17 +1764,19 @@ class Memory_StatisticsCfg:
         # Ensure data is a string or convertible to the required value
         if not isinstance(data, str):
             data = str(data)
-        
+
         # Validate numeric keys (retention_period and sampling_interval)
         if key in ["retention_period", "sampling_interval"]:
             if not data.isdigit() or int(data) <= 0:
                 syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Invalid value '{data}' for key '{key}'. Must be a positive integer.")
                 return
-        
+
         # Check if any value has changed
         if data != self.cache.get(key):
-            syslog.syslog(syslog.LOG_INFO, f"Memory_StatisticsCfg: Detected change in '{key}'")
+            syslog.syslog(syslog.LOG_INFO, f"Memory_StatisticsCfg: Detected change in '{key}' to '{data}'")
+
             try:
+                # Handle 'enabled' key to start or stop the daemon
                 if key == "enabled":
                     enabled = data.lower() == "true"
                     if enabled:
@@ -1785,37 +1786,23 @@ class Memory_StatisticsCfg:
                 else:
                     # If other keys (like sampling_interval/retention_period) are changed, just reload the daemon config
                     self.reload_memory_statistics()
-                
+
                 # Update cache with the new value
                 self.cache[key] = data
+
             except Exception as e:
                 syslog.syslog(syslog.LOG_ERR, f'Memory_StatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
-                
-    def memory_statistics_message(self, key: str, value: str):
-        """
-        Process and log memory statistics configuration messages.
-
-        Args:
-            key (str): The configuration key being updated (e.g., "enabled", "retention_period", "sampling_interval").
-            value (str): The new value for the configuration key.
-        """
-        if key in self.VALID_KEYS:
-            syslog.syslog(syslog.LOG_INFO, f'Memory_StatisticsCfg: Setting "{key}" to "{value}"')
-            # Update the cache with the new value
-            self.cache[key] = value
-        else:
-            syslog.syslog(syslog.LOG_ERR, f'Memory_StatisticsCfg: Invalid configuration key "{key}"')
 
     def restart_memory_statistics(self):
         """Restart the memory statistics daemon."""
         self.shutdown_memory_statistics()  # Ensure the daemon is stopped before restarting
-        time.sleep(1)  
+        time.sleep(1)  # Optional: slight delay to ensure proper restart
         syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Starting MemoryStatisticsDaemon")
         try:
-            subprocess.Popen(['/usr/bin/memorystatsd'])  
+            subprocess.Popen(['/usr/bin/memorystatsd'])  # Replace with the correct daemon path
         except Exception as e:
             syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Failed to start MemoryStatisticsDaemon: {e}")
-    
+
     def reload_memory_statistics(self):
         """Send SIGHUP to the MemoryStatisticsDaemon to reload its configuration."""
         pid = self.get_memory_statistics_pid()
@@ -1825,7 +1812,7 @@ class Memory_StatisticsCfg:
                 syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Sent SIGHUP to reload daemon configuration")
             except Exception as e:
                 syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Failed to reload MemoryStatisticsDaemon: {e}")
-    
+
     def shutdown_memory_statistics(self):
         """Send SIGTERM to stop the MemoryStatisticsDaemon gracefully."""
         pid = self.get_memory_statistics_pid()
@@ -1835,7 +1822,7 @@ class Memory_StatisticsCfg:
                 syslog.syslog(syslog.LOG_INFO, "Memory_StatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
             except Exception as e:
                 syslog.syslog(syslog.LOG_ERR, f"Memory_StatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: {e}")
-    
+
     def get_memory_statistics_pid(self):
         """Retrieve the PID of the running MemoryStatisticsDaemon."""
         try:
