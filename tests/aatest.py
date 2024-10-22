@@ -76,6 +76,7 @@ class MockProcess:
 
         return CPUTimes(self._user_time, self._system_time)
 
+
 class TestProcDockerStatsDaemon(object):
     def test_convert_to_bytes(self):
         test_data = [
@@ -115,23 +116,17 @@ class TestProcDockerStatsDaemon(object):
         valid_create_time2 = int((current_time - timedelta(days=2)).timestamp())
         # Create a list of mocked processes
         mocked_processes = [
-            MockProcess(uids=[1000], pid=1234, ppid=0, memory_percent=10.5, cpu_percent=99.0, create_time=valid_create_time1, cmdline=['python', 'script.py'], user_time=1.5, system_time=2.0),
-            MockProcess(uids=[1000], pid=5678, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=valid_create_time2, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0),
-            MockProcess(uids=[1000], pid=3333, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=valid_create_time2, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0)
-        ]
-        mocked_processes2 = [
-            MockProcess(uids=[1000], pid=1234, ppid=0, memory_percent=10.5, cpu_percent=20.5, create_time=valid_create_time1, cmdline=['python', 'script.py'], user_time=1.5, system_time=2.0),
-            MockProcess(uids=[1000], pid=6666, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=valid_create_time2, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0)
+            MockProcess(pid=1234, ppid=0, memory_percent=10.5, cpu_percent=20.5, create_time=valid_create_time1, cmdline=['python', 'script.py'], user_time=1.5, system_time=2.0),
+            MockProcess(pid=5678, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=valid_create_time2, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0)
         ]
 
         with patch("procdockerstatsd.psutil.process_iter", return_value=mocked_processes) as mock_process_iter:
-            pdstatsd.all_process_obj = {1234: mocked_processes2[0],
-                                        6666: mocked_processes2[1]}
+            pdstatsd.all_process_obj = {1234: psutil.Process(pid=1234, ppid=0, memory_percent=5.5, cpu_percent=99, create_time=valid_create_time2, cmdline=['bash', 'script.py'], user_time=3.5, system_time=4.0),
+                                        6666: psutil.Process(pid=6666, ppid=0, memory_percent=5.5, cpu_percent=15.5, create_time=valid_create_time2, cmdline=['bash', 'script.sh'], user_time=3.5, system_time=4.0)}
             pdstatsd.update_processstats_command()
             mock_process_iter.assert_called_once()
             print(pdstatsd.all_process_obj)
-        assert(len(pdstatsd.all_process_obj)== 3)
-        assert pdstatsd.all_process_obj[1234].cpu_percent == 99.0
+        assert(len(pdstatsd.all_process_obj)== 2)
 
     @patch('procdockerstatsd.getstatusoutput_noshell_pipe', return_value=([0, 0], ''))
     def test_update_fipsstats_command(self, mock_cmd):

@@ -24,6 +24,7 @@ REDIS_HOSTIP = "127.0.0.1"
 
 
 class ProcDockerStats(daemon_base.DaemonBase):
+    all_process_obj = {}
 
     def __init__(self, log_identifier):
         super(ProcDockerStats, self).__init__(log_identifier)
@@ -138,10 +139,25 @@ class ProcDockerStats(daemon_base.DaemonBase):
 
     def update_processstats_command(self):
         processdata = []
-        for process in psutil.process_iter(['pid', 'ppid', 'memory_percent', 'cpu_percent', 'create_time', 'cmdline']):
+        pid_set = set()
+
+        processes_all = []
+        for process_obj in psutil.process_iter(['pid', 'ppid', 'memory_percent', 'cpu_percent', 'create_time', 'cmdline']):
+            processes_all.append(process_obj)
+        sorted_processes = sorted(processes_all, key=lambda x: x.cpu_percent(), reverse=True)
+        top_processes = sorted_processes[:1024]
+
+        for process_obj in top_processes:
             try:
+                pid = process_obj.pid
+                pid_set.add(pid)
+                # store process object and reuse for CPU utilization
+                if pid in self.all_process_obj:
+                    process = self.all_process_obj[pid]
+                else:
+                    self.all_process_obj[pid] = process_obj
+                    process = process_obj
                 uid = process.uids()[0]
-                pid = process.pid
                 ppid = process.ppid()
                 mem = process.memory_percent()
                 cpu = process.cpu_percent()
@@ -156,6 +172,14 @@ class ProcDockerStats(daemon_base.DaemonBase):
                 processdata.append(row)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
+
+        # erase dead process  
+        remove_keys = []
+        for id in self.all_process_obj:
+            if id not in pid_set:
+                remove_keys.append(id)
+        for id in remove_keys:
+            del self.all_process_obj[id]
 
         # wipe out all data before updating with new values
         self.state_db.delete_all_by_pattern('STATE_DB', 'PROCESS_STATS|*')
