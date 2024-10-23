@@ -14,6 +14,7 @@ try:
 
     from swsscommon import swsscommon
     from sonic_py_common import syslogger
+    from sonic_py_common import device_info
 except ImportError as err:
     raise ImportError("%s - required module not found" % str(err))
 
@@ -82,20 +83,32 @@ def read_dpu_reboot_cause_files_and_save_chassis_state_db():
     dpus = platform_data.get('DPUS', [])
 
     for dpu in dpus:
-        history_dir = f"/host/reboot-cause/{dpu}/history"
-        latest_file = sorted(os.listdir(history_dir))[-1]
-        latest_cause_file = f"{history_dir}/{latest_file}"
+        history_dir = f"/host/reboot-cause/module/{dpu}/history"
+        if not os.path.isdir(history_dir):
+            continue
 
-        with open(latest_cause_file, 'r') as f:
-            reboot_cause_data = json.load(f)
+        try:
+            files = os.listdir(history_dir)
+            if not files:
+                continue
 
-        # Connect to ChassisStateDB
-        db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
-        db.connect(db.CHASSIS_STATE_DB)
-        "REBOOT_CAUSE|DPU0|
-        dpu = dpu.upper()
-        name = latest_cause_file['name']
-        db.mset(f"REBOOT_CAUSE|{dpu}|{name}", reboot_cause_data)
+            # Sort and get the latest file
+            latest_file = sorted(files)[-1]
+            latest_cause_file = f"{history_dir}/{latest_file}"
+            sonic_logger.log_info(f"Latest cause file: {latest_cause_file}")
+
+            with open(latest_cause_file, 'r') as f:
+                reboot_cause_data = json.load(f)
+
+            # Connect to ChassisStateDB
+            db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
+            db.connect(db.CHASSIS_STATE_DB)
+            dpu = dpu.upper()
+            name = latest_cause_file['name']
+            db.mset(f"REBOOT_CAUSE|{dpu}|{name}", reboot_cause_data)
+
+        except Exception as e:
+            sonic_logger.log_error(f"Error processing {history_dir}: {e}")
 
 def main():
     # Configure logger to log all messages INFO level and higher

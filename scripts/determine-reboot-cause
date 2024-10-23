@@ -25,6 +25,7 @@ SYSLOG_IDENTIFIER = "determine-reboot-cause"
 
 MAX_HISTORY_FILES = 10
 REBOOT_CAUSE_DIR = "/host/reboot-cause/"
+REBOOT_CAUSE_MODULE_DIR = "/host/reboot-cause/module"
 REBOOT_CAUSE_HISTORY_DIR = "/host/reboot-cause/history/"
 REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR, "reboot-cause.txt")
 PREVIOUS_REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR,  "previous-reboot-cause.json")
@@ -230,7 +231,7 @@ def check_and_create_dpu_dirs():
 
     # Create directories for each DPU and its history
     for dpu in dpus:
-        dpu_dir = os.path.join(REBOOT_CAUSE_DIR, dpu)
+        dpu_dir = os.path.join(REBOOT_CAUSE_MODULE_DIR, dpu)
         history_dir = os.path.join(dpu_dir, "history")
 
         # Create the DPU directory if it doesn't exist
@@ -240,62 +241,6 @@ def check_and_create_dpu_dirs():
         # Create the history directory if it doesn't exist
         if not os.path.exists(history_dir):
             os.makedirs(history_dir)
-
-def update_reboot_cause_from_platform(dpu, reboot_cause_data):
-    """
-    Updates the reboot cause information for the specified DPU and stores it in a history file.
-
-    Arguments:
-    dpu -- The DPU identifier (e.g., 'DPU0', 'DPU1', etc.), will be converted to lowercase.
-    reboot_cause_data -- A dictionary containing the reboot cause information.
-    """
-
-    # Convert DPU to lowercase
-    dpu = dpu.lower()
-
-    # Create the path to the history directory for the given DPU
-    history_dir = os.path.join(REBOOT_CAUSE_DIR, dpu, "history")
-
-    # Ensure the history directory exists
-    if not os.path.exists(history_dir):
-        os.makedirs(history_dir)
-        sonic_logger.log_info(f"Created history directory {history_dir}")
-
-    # Check if 'gen_time' is available in reboot_cause_data
-    gen_time = reboot_cause_data.get("gen_time", "")
-
-    # If gen_time is not empty, use it; otherwise, use the current timestamp
-    if gen_time:
-        file_name_timestamp = gen_time
-    else:
-        file_name_timestamp = time.strftime("%Y_%m_%d_%H_%M_%S")
-
-    reboot_cause_file = f"reboot-cause-{file_name_timestamp}.json"
-
-    # Create the full path to the new reboot cause file
-    reboot_cause_path = os.path.join(history_dir, reboot_cause_file)
-
-    # Write the reboot cause data to the file
-    with open(reboot_cause_path, 'w') as f:
-        json.dump(reboot_cause_data, f, indent=4)
-        sonic_logger.log_info(f"Saved reboot cause data to {reboot_cause_path}")
-
-    # Create or update the symbolic link to the latest reboot cause file
-    symlink_path = os.path.join(REBOOT_CAUSE_DIR, dpu, "previous-reboot-cause.json")
-    if os.path.exists(symlink_path):
-        os.remove(symlink_path)  # Remove the existing symlink
-    os.symlink(reboot_cause_path, symlink_path)
-    sonic_logger.log_info(f"Updated symbolic link to {reboot_cause_path}")
-
-    # Perform file rotation if the number of history files exceeds MAX_HISTORY_FILES
-    files = sorted(os.listdir(history_dir))
-
-    # If the number of history files exceeds the limit, remove the oldest files
-    if len(files) > MAX_HISTORY_FILES:
-        for old_file in files[MAX_HISTORY_FILES:]:
-            old_file_path = os.path.join(history_dir, old_file)
-            os.remove(old_file_path)
-            sonic_logger.log_info(f"Removed old history file {old_file_path}")
 
 def main():
     # Configure logger to log all messages INFO level and higher
