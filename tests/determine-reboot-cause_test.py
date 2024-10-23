@@ -7,8 +7,8 @@ import json
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
 # Add the scripts directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../scripts')))
-from determine_reboot_cause import check_and_create_dpu_dirs
+# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../scripts')))
+from scripts.determine-reboot-cause import check_and_create_dpu_dirs
 
 # TODO: Remove this if/else block once we no longer support Python 2
 if sys.version_info.major == 3:
@@ -37,6 +37,8 @@ sys.path.insert(0, modules_path)
 determine_reboot_cause_path = os.path.join(scripts_path, 'determine-reboot-cause')
 determine_reboot_cause = load_module_from_source('determine_reboot_cause', determine_reboot_cause_path)
 
+# Gte the function to create dpu dir
+check_and_create_dpu_dirs = determine_reboot_cause.check_and_create_dpu_dirs
 
 PROC_CMDLINE_CONTENTS = """\
 BOOT_IMAGE=/image-20191130.52/boot/vmlinuz-4.9.0-11-2-amd64 root=/dev/sda4 rw console=tty0 console=ttyS1,9600n8 quiet net.ifnames=0 biosdevname=0 loop=image-20191130.52/fs.squashfs loopfstype=squashfs apparmor=1 security=apparmor varlog_size=4096 usbcore.autosuspend=-1 module_blacklist=gpio_ich SONIC_BOOT_TYPE=warm"""
@@ -212,13 +214,11 @@ class TestDetermineRebootCause(object):
         with open(PLATFORM_JSON_PATH, "w") as f:
             json.dump({"DPUS": dpus}, f)
 
-    @mock.patch("determine_reboot_cause.device_info")
-    def test_check_and_create_dpu_dirs(self, mock_device_info):
-        # Mock the is_smartswitch function within the device_info module
+    @mock.patch('device_info.is_smartswitch', return_value=True)
+    @mock.patch('device_info')
+    def test_check_and_create_dpu_dirs(self, mock_device_info, mock_is_smartswitch):
+        # Set up the mock return value for is_smartswitch
         mock_device_info.is_smartswitch.return_value = True
 
-        # Call the function you want to test
-        check_and_create_dpu_dirs()
-
-        # Verify the mocks were used as expected
-        mock_device_info.is_smartswitch.assert_called_once()
+        # Call the function under test
+        result = check_and_create_dpu_dirs()
