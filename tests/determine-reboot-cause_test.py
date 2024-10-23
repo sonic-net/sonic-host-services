@@ -212,11 +212,8 @@ class TestDetermineRebootCause(object):
             json.dump({"DPUS": dpus}, f)
 
     @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
-    @mock.patch('sonic_py_common.device_info')
-    def test_check_and_create_dpu_dirs(self, mock_device_info, mock_is_smartswitch):
-        # Set up the mock return value for is_smartswitch
-        mock_device_info.is_smartswitch.return_value = True
-
+    @mock.patch('sonic_py_common.device_info.get_platform', return_value='some_platform')
+    def test_check_and_create_dpu_dirs(self, mock_get_platform, mock_is_smartswitch):
         # Call the function under test
         result = check_and_create_dpu_dirs()
         assert result is not None
