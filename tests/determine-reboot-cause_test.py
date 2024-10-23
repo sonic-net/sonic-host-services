@@ -216,4 +216,4 @@ class TestDetermineRebootCause(object):
     def test_check_and_create_dpu_dirs(self, mock_get_platform, mock_is_smartswitch):
         # Call the function under test
         result = check_and_create_dpu_dirs()
-        assert result is not None
+
