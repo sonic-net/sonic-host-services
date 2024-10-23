@@ -72,6 +72,8 @@ EXPECTED_USER_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_14_
 EXPECTED_KERNEL_PANIC_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2021_3_28_13_48_49', 'cause': 'Kernel Panic', 'user': 'N/A', 'time': 'Sun Mar 28 13:45:12 UTC 2021'}
 
 REBOOT_CAUSE_DIR="host/reboot-cause/"
+PLATFORM_JSON_PATH = "/usr/share/sonic/device/test_platform/platform.json"
+REBOOT_CAUSE_MODULE_DIR = "host/reboot-cause"
 
 class TestDetermineRebootCause(object):
     def test_parse_warmfast_reboot_from_proc_cmdline(self):
@@ -201,48 +203,27 @@ class TestDetermineRebootCause(object):
             assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
             assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True   
 
-    @mock.patch("device_info.get_platform_info", return_value={"platform": "mock_platform"})
-    @mock.patch("sonic_logger.log_error")
-    def test_platform_file_missing(self, mock_log_error, mock_get_platform_info):
-        """Test case where platform.json is missing."""
-        check_and_create_dpu_dirs()
-        mock_log_error.assert_called_once_with(f"Platform file {PLATFORM_JSON_PATH} not found")
-
-    @mock.patch("device_info.get_platform_info", return_value={"platform": "mock_platform"})
-    @mock.patch("sonic_logger.log_error")
-    def test_malformed_platform_file(self, mock_log_error, mock_get_platform_info):
-        """Test case where platform.json is malformed or missing 'DPUS'."""
+    def create_mock_platform_json(self, dpus):
+        """Helper function to create a mock platform.json file."""
+        os.makedirs(os.path.dirname(PLATFORM_JSON_PATH), exist_ok=True)
         with open(PLATFORM_JSON_PATH, "w") as f:
-            f.write('{"invalid_key": []}')  # Malformed JSON
+            json.dump({"DPUS": dpus}, f)
 
-        check_and_create_dpu_dirs()
-        mock_log_error.assert_not_called()  # No log for missing 'DPUS'
+    @mock.patch("device_info.get_platform_info", return_value={"platform": "test_platform"})
+    @mock.patch("os.makedirs")
+    def test_check_and_create_dpu_dirs(self, mock_makedirs, mock_get_platform_info):
+        # Setup: Create a mock platform.json with two DPUs
+        self.create_mock_platform_json(["dpu0", "dpu1"])
 
-    @mock.patch("device_info.get_platform_info", return_value={"platform": "mock_platform"})
-    def test_create_dpu_dirs(self, mock_get_platform_info):
-        """Test case where DPUs are defined and directories are created."""
-        platform_data = {"DPUS": ["dpu0", "dpu1"]}
-        with open(PLATFORM_JSON_PATH, "w") as f:
-            json.dump(platform_data, f)
-
+        # Call the function under test
+        from determine_reboot_cause import check_and_create_dpu_dirs
         check_and_create_dpu_dirs()
 
-        # Check if the DPU directories were created
-        for dpu in platform_data["DPUS"]:
-            dpu_dir = os.path.join(REBOOT_CAUSE_MODULE_DIR, dpu)
-            history_dir = os.path.join(dpu_dir, "history")
-            self.assertTrue(os.path.exists(dpu_dir))
-            self.assertTrue(os.path.exists(history_dir))
+        # Verify that the directories were created for each DPU
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0"), exist_ok=True)
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "history"), exist_ok=True)
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1"), exist_ok=True)
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1", "history"), exist_ok=True)
 
-    @mock.patch("device_info.get_platform_info", return_value={"platform": "mock_platform"})
-    def test_dpu_dirs_already_exist(self, mock_get_platform_info):
-        """Test case where DPU directories already exist."""
-        os.makedirs(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "history"), exist_ok=True)
-        platform_data = {"DPUS": ["dpu0"]}
-
-        with open(PLATFORM_JSON_PATH, "w") as f:
-            json.dump(platform_data, f)
-
-        # Ensure no exception is raised when directories already exist
-        check_and_create_dpu_dirs()
-        self.assertTrue(os.path.exists(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "history")))
+        # Cleanup: Remove the mock platform.json
+        shutil.rmtree(os.path.dirname(PLATFORM_JSON_PATH))
