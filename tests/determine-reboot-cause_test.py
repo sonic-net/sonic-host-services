@@ -217,3 +217,22 @@ class TestDetermineRebootCause(object):
         # Call the function under test
         result = check_and_create_dpu_dirs()
 
+    @mock.patch('sonic_py_common.device_info.get_platform_info', return_value={'platform': 'some_platform'})
+    @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
+    @mock.patch('os.path.exists')
+    @mock.patch('builtins.open', new_callable=mock.mock_open, read_data='{"DPUS": ["dpu0", "dpu1"]}')
+    @mock.patch('os.makedirs')
+    def test_check_and_create_dpu_dirs_with_platform_json(self, mock_makedirs, mock_open, mock_exists, mock_is_smartswitch, mock_get_platform_info):
+        # Mock the platform.json existence
+        mock_exists.side_effect = lambda path: path == "/usr/share/sonic/device/some_platform/platform.json"
+
+        # Call the function under test
+        check_and_create_dpu_dirs()
+
+        # Assert that open was called correctly
+        mock_open.assert_called_once_with("/usr/share/sonic/device/some_platform/platform.json", 'r')
+
+        # Assert that makedirs was called for the DPU directories
+        mock_makedirs.assert_any_call(os.path.join('REBOOT_CAUSE_MODULE_DIR', 'dpu0'))
+        mock_makedirs.assert_any_call(os.path.join('REBOOT_CAUSE_MODULE_DIR', 'dpu1'))
+
