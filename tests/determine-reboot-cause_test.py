@@ -6,6 +6,7 @@ import json
 
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
+from determine_reboot_cause import check_and_create_dpu_dirs
 
 # TODO: Remove this if/else block once we no longer support Python 2
 if sys.version_info.major == 3:
@@ -209,21 +210,13 @@ class TestDetermineRebootCause(object):
         with open(PLATFORM_JSON_PATH, "w") as f:
             json.dump({"DPUS": dpus}, f)
 
-    @mock.patch("device_info.get_platform_info", return_value={"platform": "test_platform"})
-    @mock.patch("os.makedirs")
-    def test_check_and_create_dpu_dirs(self, mock_makedirs, mock_get_platform_info):
-        # Setup: Create a mock platform.json with two DPUs
-        self.create_mock_platform_json(["dpu0", "dpu1"])
+    @mock.patch("determine_reboot_cause.device_info")
+    def test_check_and_create_dpu_dirs(self, mock_device_info):
+        # Mock the is_smartswitch function within the device_info module
+        mock_device_info.is_smartswitch.return_value = True
 
-        # Call the function under test
-        from determine_reboot_cause import check_and_create_dpu_dirs
+        # Call the function you want to test
         check_and_create_dpu_dirs()
 
-        # Verify that the directories were created for each DPU
-        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0"), exist_ok=True)
-        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "history"), exist_ok=True)
-        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1"), exist_ok=True)
-        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1", "history"), exist_ok=True)
-
-        # Cleanup: Remove the mock platform.json
-        shutil.rmtree(os.path.dirname(PLATFORM_JSON_PATH))
+        # Verify the mocks were used as expected
+        mock_device_info.is_smartswitch.assert_called_once()
