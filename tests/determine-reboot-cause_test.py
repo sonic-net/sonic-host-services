@@ -6,7 +6,9 @@ import json
 
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
-from scripts.determine_reboot_cause import check_and_create_dpu_dirs
+# Add the scripts directory to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../scripts')))
+from determine_reboot_cause import check_and_create_dpu_dirs
 
 # TODO: Remove this if/else block once we no longer support Python 2
 if sys.version_info.major == 3:
