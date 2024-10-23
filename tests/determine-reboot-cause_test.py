@@ -219,4 +219,4 @@ class TestDetermineRebootCause(object):
 
         # Call the function under test
         result = check_and_create_dpu_dirs()
-        asser result is not None
+        assert result is not None
