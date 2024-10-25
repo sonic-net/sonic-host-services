@@ -11,20 +11,17 @@ import re
 import jinja2
 import time
 import json
-import importlib
 from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
-from swsscommon import RestartWaiter
 from sonic_installer import bootloader
 hostcfg_file_path = os.path.abspath(__file__)
 hostcfg_dir_path = os.path.dirname(hostcfg_file_path)
 sys.path.append(hostcfg_dir_path)
 import ldap
-importlib.reload(swsscommon)
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
