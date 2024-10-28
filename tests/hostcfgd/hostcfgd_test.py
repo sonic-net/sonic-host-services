@@ -10,7 +10,6 @@ from unittest import TestCase, mock
 
 from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
-from unittest.mock import patch
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
 from unittest.mock import call
@@ -215,7 +214,6 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
-
     def test_devicemeta_event(self):
         """
         Test handling DEVICE_METADATA events.
@@ -323,40 +321,6 @@ class TestHostcfgdDaemon(TestCase):
                     call(['cat', '/proc/net/route'], ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"], ['wc', '-l'])
                 ]
                 mocked_check_output.assert_has_calls(expected)
-
-    @patch('sonic_py_common.ConfigDBConnector', autospec=True)
-    def test_memory_statistics_event(self, mock_config_db_connector):
-        # Mock the ConfigDBConnector instance methods
-        mock_instance = mock_config_db_connector.return_value
-        # Ensure get_table returns the correct nested structur
-        mock_instance.get_table.return_value = HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics']
-
-        # Patch subprocess.Popen and check_call
-        with mock.patch('hostcfgd.subprocess.Popen') as mocked_popen, \
-            mock.patch('hostcfgd.subprocess.check_call') as mocked_check_call:
-            
-            # Create the daemon instance
-            daemon = hostcfgd.HostConfigDaemon()
-            # Load config using the correct nested dictionary
-            daemon.memory_statisticsCfg.load(HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics'])
-
-            # Mock subprocess.Popen behavior
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_popen.return_value = popen_mock
-
-            # Trigger the event handler via event queue
-            daemon.event_queue.append(('MEMORY_STATISTICS', 'memory_statistics'))
-            daemon.memory_statistics_handler('enabled', 'SET', 'true')
-
-            # Define expected subprocess calls
-            expected_calls = [
-                mock.call(['/usr/bin/memorystatsd']),
-            ]
-
-            # Check if subprocess Popen was called with correct arguments
-            mocked_popen.assert_has_calls(expected_calls, any_order=True)
         
     def test_dns_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
@@ -406,4 +370,32 @@ class TestBannerCfg:
         banner_cfg.banner_message(None, {'test': 'test'})
 
         mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'banner-config'], True, True)])
-        
+
+class TestMemoryStatisticsCfg(TestCase):
+    """
+    Test hostcfgd daemon - MemoryStatisticsCfg
+    """
+
+    def setUp(self):
+        # Set up any required initial configurations for Memory_StatisticsCfg
+        MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'] = {
+            'global': {'enabled': 'true', 'sampling_interval': '60', 'retention_period': '1440'}
+        }
+
+    def tearDown(self):
+        # Clean up configurations
+        MockConfigDb.CONFIG_DB = {}
+
+    def test_memory_statistics_update(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            memcfg = hostcfgd.MemoryStatisticsCfg()
+            memcfg.update_statistics_cfg(
+                'global', MockConfigDb.CONFIG_DB['MEMORY_STATISTICS']['global'])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'restart', 'memory-statistics'])
+            ])
