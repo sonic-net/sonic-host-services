@@ -238,6 +238,11 @@ def check_and_create_dpu_dirs():
         if not os.path.exists(dpu_dir):
             os.makedirs(dpu_dir)
 
+        # Create reboot-cause.txt and write 'First boot' to it
+        reboot_file = os.path.join(dpu_dir, 'reboot-cause.txt')
+        with open(reboot_file, 'w') as f:
+            f.write('First boot\n')
+
         # Create the history directory if it doesn't exist
         if not os.path.exists(history_dir):
             os.makedirs(history_dir)

@@ -29,6 +29,7 @@ USER_ISSUED_REBOOT_CAUSE_REGEX ="User issued \'{}\' command [User: {}, Time: {}]
 
 REBOOT_CAUSE_UNKNOWN = "Unknown"
 REBOOT_CAUSE_TABLE_NAME = "REBOOT_CAUSE"
+MAX_HISTORY_FILES = 10
 
 REDIS_HOSTIP = "127.0.0.1"
 state_db = None
@@ -70,45 +71,84 @@ def read_reboot_cause_files_and_save_state_db():
                 x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
                 os.remove(x)
 
+def get_dpus():
+    """Retrieve the list of DPUs from the platform.json file."""
+    dpus = []
+
+    try:
+        # Get platform information
+        platform_info = device_info.get_platform_info()
+        platform = platform_info.get('platform')
+        if not platform:
+            raise KeyError("Platform key missing from platform_info")
+
+        # Path to platform.json
+        platform_path = os.path.join("/usr/share/sonic/device", platform, "platform.json")
+        sonic_logger.log_info(f"Reading platform JSON from: {platform_path}")
+
+        with open(platform_path, 'r') as f:
+            platform_data = json.load(f)
+
+        dpus = platform_data.get('DPUS', [])
+        if not dpus:
+            sonic_logger.log_warning("No DPUS found in platform.json")
+
+    except Exception as e:
+        sonic_logger.log_error(f"Error retrieving DPUs: {e}")
+
+    return dpus
+
+def get_sorted_reboot_cause_files(dpu_history_path):
+    """Retrieve and sort the reboot cause files for a specific DPU."""
+    try:
+        # Assuming you have a way to list the files in the directory
+        files = os.listdir(dpu_history_path)
+        # Filter and sort the files based on your criteria (e.g., by modification time)
+        sorted_files = sorted(
+            [os.path.join(dpu_history_path, f) for f in files if f.endswith('.json')],
+            key=os.path.getmtime,  # Sort by modification time
+            reverse=True  # Most recent first
+        )
+        return sorted_files
+    except Exception as e:
+        sonic_logger.log_error(f"Error retrieving reboot cause files for {dpu_history_path}: {e}")
+        return []
+
+
 def read_dpu_reboot_cause_files_and_save_chassis_state_db():
-    # Get platform using device_info.get_platform()
-    platform_info = device_info.get_platform_info()
-    platform = platform_info['platform']
+    """Retrieve reboot cause from history files and save them to StateDB."""
+    try:
+        # Get the DPUs from the platform configuration
+        dpus = get_dpus()
+        history_dir = '/host/reboot-cause/module'
 
-    # Use os.path.join() to create the path to platform.json
-    platform_path = os.path.join("/usr/share/sonic/device", platform, "platform.json")
-    with open(platform_path, 'r') as f:
-        platform_data = json.load(f)
+        for dpu in dpus:
+            dpu_history_path = os.path.join(history_dir, dpu)
 
-    dpus = platform_data.get('DPUS', [])
+            # Get sorted reboot cause files for the DPU
+            reboot_files = get_sorted_reboot_cause_files(os.path.join(dpu_history_path, "history"))
 
-    for dpu in dpus:
-        history_dir = f"/host/reboot-cause/module/{dpu}/history"
-        if not os.path.isdir(history_dir):
-            continue
+            for reboot_file in reboot_files:
+                if os.path.isfile(reboot_file):
+                    with open(reboot_file, "r") as cause_file:
+                        try:
+                            data = json.load(cause_file)
+                            # Ensure keys exist
+                            if 'gen_time' not in data:
+                                sonic_logger.log_warning(f"Missing 'gen_time' in data from {reboot_file}")
+                                continue  # Skip this file
 
-        try:
-            files = os.listdir(history_dir)
-            if not files:
-                continue
+                            _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{data['gen_time']}"
+                            state_db.set(state_db.STATE_DB, _hash, 'cause', data.get('cause', ''))
+                            state_db.set(state_db.STATE_DB, _hash, 'time', data.get('time', ''))
+                            state_db.set(state_db.STATE_DB, _hash, 'user', data.get('user', ''))
+                            state_db.set(state_db.STATE_DB, _hash, 'comment', data.get('comment', ''))
 
-            # Sort and get the latest file
-            latest_file = sorted(files)[-1]
-            latest_cause_file = f"{history_dir}/{latest_file}"
-            sonic_logger.log_info(f"Latest cause file: {latest_cause_file}")
-
-            with open(latest_cause_file, 'r') as f:
-                reboot_cause_data = json.load(f)
-
-            # Connect to ChassisStateDB
-            db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
-            db.connect(db.CHASSIS_STATE_DB)
-            dpu = dpu.upper()
-            name = latest_cause_file['name']
-            db.mset(f"REBOOT_CAUSE|{dpu}|{name}", reboot_cause_data)
-
-        except Exception as e:
-            sonic_logger.log_error(f"Error processing {history_dir}: {e}")
+                        except json.decoder.JSONDecodeError as je:
+                            sonic_logger.log_info(f"Unable to process reload cause file {reboot_file}: {je}")
+                            continue  # Skip this file
+    except Exception as e:
+        sonic_logger.log_err(f"Error reading DPU reboot causes: {e}")
 
 def main():
     # Configure logger to log all messages INFO level and higher
