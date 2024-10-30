@@ -82,10 +82,10 @@ HOSTCFG_DAEMON_CFG_DB = {
     },
     "MEMORY_STATISTICS": {
         "memory_statistics": {
-            "enabled": "true",
-            "retention_time": "15",
-            "sampling_interval": "5"
-    }
+            "enabled": "false",
+            "sampling_interval": "5",
+            "retention_period": "15"  
+        }
     },
     "MGMT_INTERFACE": {
         "eth0|1.2.3.4/24": {}

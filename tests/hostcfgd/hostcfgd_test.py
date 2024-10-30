@@ -7,10 +7,8 @@ from swsscommon import swsscommon
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
-
 from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
-from unittest.mock import patch
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
 from unittest.mock import call
@@ -324,40 +322,6 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
-    @patch('sonic_py_common.ConfigDBConnector', autospec=True)
-    def test_memory_statistics_event(self, mock_config_db_connector):
-        # Mock the ConfigDBConnector instance methods
-        mock_instance = mock_config_db_connector.return_value
-        # Ensure get_table returns the correct nested structur
-        mock_instance.get_table.return_value = HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics']
-
-        # Patch subprocess.Popen and check_call
-        with mock.patch('hostcfgd.subprocess.Popen') as mocked_popen, \
-            mock.patch('hostcfgd.subprocess.check_call') as mocked_check_call:
-            
-            # Create the daemon instance
-            daemon = hostcfgd.HostConfigDaemon()
-            # Load config using the correct nested dictionary
-            daemon.memory_statisticsCfg.load(HOSTCFG_DAEMON_CFG_DB['MEMORY_STATISTICS']['memory_statistics'])
-
-            # Mock subprocess.Popen behavior
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_popen.return_value = popen_mock
-
-            # Trigger the event handler via event queue
-            daemon.event_queue.append(('MEMORY_STATISTICS', 'memory_statistics'))
-            daemon.memory_statistics_handler('enabled', 'SET', 'true')
-
-            # Define expected subprocess calls
-            expected_calls = [
-                mock.call(['/usr/bin/memorystatsd']),
-            ]
-
-            # Check if subprocess Popen was called with correct arguments
-            mocked_popen.assert_has_calls(expected_calls, any_order=True)
-        
     def test_dns_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [('DNS_NAMESERVER', '1.1.1.1')]
@@ -390,9 +354,6 @@ class TestDnsHandler:
 
         dns_cfg.dns_update.assert_called()
 
-        dns_cfg.dns_update.assert_called()
-
-
 class TestBannerCfg:
     def test_load(self):
         banner_cfg = hostcfgd.BannerCfg()
@@ -409,3 +370,64 @@ class TestBannerCfg:
 
         mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'banner-config'], True, True)])
 
+
+class TestMemoryStatisticsCfgd(TestCase):
+    """
+    Test MemoryStatisticsCfg functionalities.
+    """
+
+    def setUp(self):
+        # Initial configuration for Memory Statistics
+        MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'] = {
+            'enabled': 'false',
+            'sampling_interval': '5',
+            'retention_period': '15'
+        }
+        self.mem_stat_cfg = hostcfgd.MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
+
+    def tearDown(self):
+        MockConfigDb.CONFIG_DB = {}
+
+    def test_memory_statistics_load(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            self.mem_stat_cfg.load(MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'])
+            mocked_subprocess.Popen.assert_called_once_with(['/usr/bin/memorystatsd'])
+            self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
+            self.assertEqual(self.mem_stat_cfg.cache['sampling_interval'], '5')
+            self.assertEqual(self.mem_stat_cfg.cache['retention_period'], '15')
+
+    def test_memory_statistics_update_enabled(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess, \
+             mock.patch('hostcfgd.os.kill') as mocked_kill:
+            self.mem_stat_cfg.memory_statistics_update('enabled', 'true')
+            mocked_kill.assert_called_once()
+            mocked_subprocess.Popen.assert_called_once_with(['/usr/bin/memorystatsd'])
+
+    def test_memory_statistics_is_caching_config(self):
+        self.mem_stat_cfg.cache['enabled'] = 'true'
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            self.mem_stat_cfg.memory_statistics_update('enabled', 'true')
+            mocked_subprocess.Popen.assert_not_called()
+            self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'true')  # Confirm no unnecessary cache update
+
+    def test_memory_statistics_update_sampling_interval(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            self.mem_stat_cfg.memory_statistics_update('sampling_interval', '3')
+            mocked_subprocess.Popen.assert_not_called()
+            self.assertEqual(self.mem_stat_cfg.cache['sampling_interval'], '3')
+
+    def test_memory_statistics_update_retention_period(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            self.mem_stat_cfg.memory_statistics_update('retention_period', '30')
+            mocked_subprocess.Popen.assert_not_called()
+            self.assertEqual(self.mem_stat_cfg.cache['retention_period'], '30')
+
+    def test_memory_statistics_update_invalid_sampling_interval(self):
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            self.mem_stat_cfg.memory_statistics_update('sampling_interval', '-10')
+            mocked_syslog.syslog.assert_called_with(syslog.LOG_ERR, "Memory_StatisticsCfg: Invalid value '-10' for key 'sampling_interval'. Must be a positive integer.")
+
+    def test_memory_statistics_update_invalid_retention_period(self):
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            self.mem_stat_cfg.memory_statistics_update('retention_period', 'not_a_number')
+            mocked_syslog.syslog.assert_called_with(syslog.LOG_ERR, "Memory_StatisticsCfg: Invalid value 'not_a_number' for key 'retention_period'. Must be a positive integer.")
