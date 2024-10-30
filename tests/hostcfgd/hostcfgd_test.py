@@ -12,6 +12,7 @@ from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
 from unittest.mock import call
+import syslog
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
