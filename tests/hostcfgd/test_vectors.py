@@ -15,6 +15,7 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "PASSW_HARDENING": {},
     "SSH_SERVER": {},
     "KDUMP": {},
+    "MEMORY_STATISTICS": {},
     "NTP": {},
     "NTP_SERVER": {},
     "LOOPBACK_INTERFACE": {},
@@ -77,6 +78,13 @@ HOSTCFG_DAEMON_CFG_DB = {
             "type": "ToRRouter",
             "hostname": "SomeNewHostname",
             "timezone": "Europe/Kyiv"
+        }
+    },
+    "MEMORY_STATISTICS": {
+        "memory_statistics": {
+            "enabled": "false",
+            "sampling_interval": "5",
+            "retention_period": "15"  
         }
     },
     "MGMT_INTERFACE": {
