@@ -230,7 +230,9 @@ class TestDetermineRebootCause(object):
         check_and_create_dpu_dirs()
 
         # Assert that open was called correctly
-        mock_open.assert_called_once_with("/usr/share/sonic/device/some_platform/platform.json", 'r')
+        mock_open.assert_any_call("/usr/share/sonic/device/some_platform/platform.json", 'r')
+        mock_open.assert_any_call('/host/reboot-cause/module/dpu0/reboot-cause.txt', 'w')
+        mock_open.assert_any_call('/host/reboot-cause/module/dpu1/reboot-cause.txt', 'w')
 
         # Assert that makedirs was called for the DPU directories
         mock_makedirs.assert_any_call(os.path.join('/host/reboot-cause/module', 'dpu0'))
