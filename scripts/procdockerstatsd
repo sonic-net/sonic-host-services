@@ -132,8 +132,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
         # wipe out all data from state_db before updating
         self.state_db.delete_all_by_pattern('STATE_DB', 'DOCKER_STATS|*')
         for k1,v1 in dockerdata.items():
-            for k2,v2 in v1.items():
-                self.update_state_db(k1, k2, v2)
+            self.batch_update_state_db(k1, v1)
         return True
 
     def update_processstats_command(self):
@@ -160,26 +159,28 @@ class ProcDockerStats(daemon_base.DaemonBase):
         # wipe out all data before updating with new values
         self.state_db.delete_all_by_pattern('STATE_DB', 'PROCESS_STATS|*')
 
+        update_value = {}
         for row in processdata:
             cid = row.get('PID')
             if cid:
                 value = 'PROCESS_STATS|{}'.format(cid)
                 uid = row.get('UID')
-                self.update_state_db(value, 'UID', uid)
+                update_value['UID'] = str(uid)
                 ppid = row.get('PPID')
-                self.update_state_db(value, 'PPID', ppid)
+                update_value['PPID'] = str(ppid)
                 cpu = row.get('%CPU')
-                self.update_state_db(value, '%CPU', str(cpu))
+                update_value['CPU'] = str(cpu)
                 mem = round(row.get('%MEM'), 1)
-                self.update_state_db(value, '%MEM', str(mem))
+                update_value['MEM'] = str(mem)
                 stime = row.get('STIME')
-                self.update_state_db(value, 'STIME', stime)
+                update_value['STIME'] = str(stime)
                 tty = row.get('TT')
-                self.update_state_db(value, 'TT', tty)
+                update_value['TT'] = str(tty)
                 time = row.get('TIME')
-                self.update_state_db(value, 'TIME', time)
+                update_value['TIME'] = str(time)
                 cmd = row.get('CMD')
-                self.update_state_db(value, 'CMD', cmd)
+                update_value['CMD'] = cmd
+                self.batch_update_state_db(value, update_value)
 
     def update_fipsstats_command(self):
         fips_db_key = 'FIPS_STATS|state'
@@ -192,14 +193,18 @@ class ProcDockerStats(daemon_base.DaemonBase):
         # Check if FIPS runtime status
         exitcode, _ = getstatusoutput_noshell_pipe(['sudo', 'openssl', 'engine', '-vv'], ['grep', '-i', 'symcryp'])
         enabled = not any(exitcode)
-
-        self.update_state_db(fips_db_key, 'timestamp', datetime.utcnow().isoformat())
-        self.update_state_db(fips_db_key, 'enforced', str(enforced))
-        self.update_state_db(fips_db_key, 'enabled', str(enabled))
+        update_value = {}
+        update_value['timestamp'] = datetime.utcnow().isoformat()
+        update_value['enforced'] = str(enforced)
+        update_value['enabled'] = str(enabled)
+        self.batch_update_state_db(fips_db_key, update_value)
 
     def update_state_db(self, key1, key2, value2):
         self.state_db.set('STATE_DB', key1, key2, value2)
 
+    def batch_update_state_db(self, key1, fvs):
+        self.state_db.hmset('STATE_DB', key1, fvs)
+  
     def run(self):
         self.log_info("Starting up ...")
 
