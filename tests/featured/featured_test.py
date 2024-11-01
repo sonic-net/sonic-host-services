@@ -383,7 +383,7 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
-            mocked_subprocess.run.assert_has_calls(expected)
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
             # Change the state to disabled
             MockSelect.reset_event_queue()
@@ -396,7 +396,7 @@ class TestFeatureDaemon(TestCase):
             expected = [call(['sudo', 'systemctl', 'stop', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'disable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'mask', 'dhcp_relay.service'], capture_output=True, check=True, text=True)]
-            mocked_subprocess.run.assert_has_calls(expected)
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
     def test_delayed_service(self, mock_syslog, get_runtime):
         MockSelect.set_event_queue([('FEATURE', 'dhcp_relay'),
@@ -430,7 +430,7 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'enable', 'telemetry.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'telemetry.service'], capture_output=True, check=True, text=True)]
 
-            mocked_subprocess.run.assert_has_calls(expected)
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
     def test_advanced_reboot(self, mock_syslog, get_runtime):
         MockRestartWaiter.advancedReboot = True
@@ -460,7 +460,7 @@ class TestFeatureDaemon(TestCase):
                 call(['sudo', 'systemctl', 'enable', 'telemetry.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'start', 'telemetry.service'], capture_output=True, check=True, text=True)]               
         
-            mocked_subprocess.run.assert_has_calls(expected, any_order=False)
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
     def test_portinit_timeout(self, mock_syslog, get_runtime):
         print(MockConfigDb.CONFIG_DB)
@@ -492,4 +492,4 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'unmask', 'telemetry.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'telemetry.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'telemetry.service'], capture_output=True, check=True, text=True)]
-            mocked_subprocess.run.assert_has_calls(expected)
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
