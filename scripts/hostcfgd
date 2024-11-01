@@ -1827,6 +1827,44 @@ class BannerCfg(object):
             self.cache[k] = v
 
 
+class LoggingCfg(object):
+    """Logging Config Daemon
+
+    Handles changes in LOGGING table.
+    1) Handle change of debug/syslog log files config
+    """
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, logging_cfg={}):
+        # Get initial logging file configuration
+        self.cache = logging_cfg
+        syslog.syslog(syslog.LOG_DEBUG, f'Initial logging config: {self.cache}')
+
+    def update_logging_cfg(self, key, data):
+        """Apply logging configuration
+
+        The daemon restarts logrotate-config which will regenerate logrotate
+        config files.
+        Args:
+            key:    DB table's key that was triggered change (basically it is a
+                    config file)
+            data:   File's config data
+        """
+        syslog.syslog(syslog.LOG_DEBUG, 'LoggingCfg: logging files cfg update')
+        if self.cache.get(key) != data:
+            syslog.syslog(syslog.LOG_INFO,
+                          f'Set logging file {key} config: {data}')
+            try:
+                run_cmd(['systemctl', 'restart', 'logrotate-config'], True, True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to update {key} message')
+                return
+
+        # Update cache
+        self.cache[key] = data
+
+
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
@@ -1884,6 +1922,9 @@ class HostConfigDaemon:
         # Initialize BannerCfg
         self.bannermsgcfg = BannerCfg()
 
+        # Initialize LoggingCfg
+        self.loggingcfg = LoggingCfg()
+
     def load(self, init_data):
         aaa = init_data['AAA']
         tacacs_global = init_data['TACPLUS']
@@ -1908,6 +1949,7 @@ class HostConfigDaemon:
         ntp_keys = init_data.get(swsscommon.CFG_NTP_KEY_TABLE_NAME)
         serial_console = init_data.get('SERIAL_CONSOLE', {})
         banner_messages = init_data.get(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME)
+        logging = init_data.get(swsscommon.CFG_LOGGING_TABLE_NAME, {})
 
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
@@ -1922,6 +1964,7 @@ class HostConfigDaemon:
         self.ntpcfg.load(ntp_global, ntp_servers, ntp_keys)
         self.serialconscfg.load(serial_console)
         self.bannermsgcfg.load(banner_messages)
+        self.loggingcfg.load(logging)
 
         self.pamLimitsCfg.update_config_file()
 
@@ -2080,6 +2123,10 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'BANNER_MESSAGE table handler...')
         self.bannermsgcfg.banner_message(key, data)
 
+    def logging_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'LOGGING table handler...')
+        self.loggingcfg.update_logging_cfg(key, data)
+
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
         # flag
@@ -2150,6 +2197,10 @@ class HostConfigDaemon:
         # Handle BANNER_MESSAGE changes
         self.config_db.subscribe(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME,
                                  make_callback(self.banner_handler))
+
+        # Handle LOGGING changes
+        self.config_db.subscribe(swsscommon.CFG_LOGGING_TABLE_NAME,
+                                 make_callback(self.logging_handler))
 
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
