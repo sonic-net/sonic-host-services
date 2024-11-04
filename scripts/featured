@@ -76,8 +76,8 @@ class Feature(object):
         self.name = feature_name
         self.state = self._get_feature_table_key_render_value(feature_cfg.get('state'), device_config or {}, ['enabled', 'disabled', 'always_enabled', 'always_disabled'])
         self.auto_restart = feature_cfg.get('auto_restart', 'disabled')
-        self.delayed = safe_eval(feature_cfg.get('delayed', 'False'))
-        self.has_global_scope = safe_eval(feature_cfg.get('has_global_scope', 'True'))
+        self.delayed = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('delayed', 'False'), device_config or {}, ['True', 'False']))
+        self.has_global_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_global_scope', 'True'), device_config or {}, ['True', 'False']))
         self.has_per_asic_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_per_asic_scope', 'False'), device_config or {}, ['True', 'False']))
         self.has_per_dpu_scope = safe_eval(feature_cfg.get('has_per_dpu_scope', 'False'))
 
@@ -166,7 +166,7 @@ class FeatureHandler(object):
     def port_listener(self, key, op, data):
         if not key:
             return 
-        if op == 'SET' and key == 'PortInitDone' and not self.is_delayed_enabled:
+        if op == 'SET' and key == 'PortInitDone':
             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
             self.enable_delayed_services()
 
@@ -198,7 +198,7 @@ class FeatureHandler(object):
         # Enable/disable the container service if the feature state was changed from its previous state.
         if self._cached_config[feature_name].state != feature.state:
             if self.update_feature_state(feature):
-                self.sync_feature_asic_scope(feature)
+                self.sync_feature_scope(feature)
                 self._cached_config[feature_name] = feature
             else:
                 self.resync_feature_state(self._cached_config[feature_name])
@@ -222,8 +222,9 @@ class FeatureHandler(object):
             self._cached_config.setdefault(feature_name, feature)
             self.update_systemd_config(feature)
             self.update_feature_state(feature)
-            self.sync_feature_asic_scope(feature)
+            self.sync_feature_scope(feature)
             self.resync_feature_state(feature)
+            self.sync_feature_delay_state(feature)
 
     def update_feature_state(self, feature):
         cached_feature = self._cached_config[feature.name]
@@ -270,10 +271,10 @@ class FeatureHandler(object):
 
         return True
 
-    def sync_feature_asic_scope(self, feature_config):
-        """Updates the has_per_asic_scope field in the FEATURE|* tables as the field
+    def sync_feature_scope(self, feature_config):
+        """Updates the has_global_scope or has_per_asic_scope field in the FEATURE|* tables as the field
         might have to be rendered based on DEVICE_METADATA table or Device Running configuration.
-        Disable the ASIC instance service unit file it the render value is False and update config
+        Disable the Global/ASIC instance service unit file it the render value is False and update config
 
         Args:
             feature: An object represents a feature's configuration in `FEATURE`
@@ -284,12 +285,13 @@ class FeatureHandler(object):
         """
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config, True)
         for feature_name in feature_names:
-            if '@' not in feature_name:
-                continue
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
             if not unit_file_state:
                 continue
-            if unit_file_state != "disabled" and not feature_config.has_per_asic_scope:
+            if not self.is_multi_npu:
+                continue
+            if unit_file_state != "masked" and \
+              ((not feature_config.has_per_asic_scope and '@' in feature_name) or (not feature_config.has_global_scope and '@' not in feature_name)):
                 cmds = []
                 for suffix in reversed(feature_suffixes):
                     cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])
@@ -305,10 +307,12 @@ class FeatureHandler(object):
                         self.set_feature_state(feature_config, self.FEATURE_STATE_FAILED)
                         return
         self._config_db.mod_entry(FEATURE_TBL, feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
+        self._config_db.mod_entry(FEATURE_TBL, feature_config.name, {'has_global_scope': str(feature_config.has_global_scope)})
 
         # sync has_per_asic_scope to CONFIG_DB in namespaces in multi-asic platform
         for ns, db in self.ns_cfg_db.items():
             db.mod_entry(FEATURE_TBL, feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
+            db.mod_entry(FEATURE_TBL, feature_config.name, {'has_global_scope': str(feature_config.has_global_scope)})
     
     def update_systemd_config(self, feature_config):
         """Updates `Restart=` field in feature's systemd configuration file
@@ -364,7 +368,7 @@ class FeatureHandler(object):
     def get_multiasic_feature_instances(self, feature, all_instance=False):
         # Create feature name suffix depending feature is running in host or namespace or in both
         feature_names = (
-            ([feature.name] if feature.has_global_scope or not self.is_multi_npu else []) +
+            ([feature.name] if feature.has_global_scope or all_instance or not self.is_multi_npu else []) +
             ([(feature.name + '@' + str(asic_inst)) for asic_inst in range(device_info.get_num_npus())
                 if self.is_multi_npu and (all_instance or feature.has_per_asic_scope)]) + 
             ([(feature.name + '@' + device_info.DPU_NAME_PREFIX + str(dpu_inst)) for dpu_inst in range(self.num_dpus)
@@ -468,6 +472,17 @@ class FeatureHandler(object):
             # resync the feature state to CONFIG_DB in namespaces in multi-asic platform
             for ns, db in self.ns_cfg_db.items():
                 db.mod_entry('FEATURE', feature.name, {'state': feature.state})
+
+    def sync_feature_delay_state(self, feature):
+        current_entry = self._config_db.get_entry('FEATURE', feature.name)
+        current_feature_delay_state = current_entry.get('delayed') if current_entry else None
+
+        if str(feature.delayed) == str(current_feature_delay_state):
+            return
+
+        self._config_db.mod_entry('FEATURE', feature.name, {'delayed': str(feature.delayed)})
+        for ns, db in self.ns_cfg_db.items():
+            db.mod_entry('FEATURE', feature.name, {'delayed': str(feature.delayed)})
 
     def set_feature_state(self, feature, state):
         self._feature_state_table.set(feature.name, [('state', state)])

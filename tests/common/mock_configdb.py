@@ -51,12 +51,16 @@ class MockConfigDb(object):
 
     def get_table(self, table_name):
         data = {}
-        for k, v in MockConfigDb.CONFIG_DB[table_name].items():
-            data[self.deserialize_key(k)] = v
+        if table_name in MockConfigDb.CONFIG_DB:
+            for k, v in MockConfigDb.CONFIG_DB[table_name].items():
+                data[self.deserialize_key(k)] = v
         return data
 
     def subscribe(self, table_name, callback):
         self.handlers[table_name] = callback
+
+    def publish(self, table_name, key, op, data):
+        self.handlers[table_name](key, op, data)
 
     def listen(self, init_data_handler=None):
         for e in MockConfigDb.event_queue:

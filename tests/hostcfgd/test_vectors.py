@@ -10,6 +10,8 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "TACPLUS_SERVER": {},
     "RADIUS": {},
     "RADIUS_SERVER": {},
+    "LDAP": {},
+    "LDAP_SERVER": {},
     "PASSW_HARDENING": {},
     "SSH_SERVER": {},
     "KDUMP": {},

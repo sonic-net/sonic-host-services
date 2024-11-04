@@ -121,6 +121,48 @@ class TesNtpCfgd(TestCase):
             ])
 
 
+class TestSerialConsoleCfgd(TestCase):
+    """
+        Test hostcfd daemon - SerialConsoleCfg
+    """
+    def setUp(self):
+        MockConfigDb.CONFIG_DB['SERIAL_CONSOLE'] = {
+            'POLICIES': {'inactivity-timeout': '15', 'sysrq-capabilities': 'disabled'}
+        }
+
+    def tearDown(self):
+        MockConfigDb.CONFIG_DB = {}
+
+    def test_serial_console_update_cfg(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            serialcfg = hostcfgd.SerialConsoleCfg()
+            serialcfg.update_serial_console_cfg(
+                'POLICIES', MockConfigDb.CONFIG_DB['SERIAL_CONSOLE']['POLICIES'])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['sudo', 'service', 'serial-config', 'restart']),
+            ])
+
+    def test_serial_console_is_caching_config(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            serialcfg = hostcfgd.SerialConsoleCfg()
+            serialcfg.cache['POLICIES'] = MockConfigDb.CONFIG_DB['SERIAL_CONSOLE']['POLICIES']
+
+            serialcfg.update_serial_console_cfg(
+                'POLICIES', MockConfigDb.CONFIG_DB['SERIAL_CONSOLE']['POLICIES'])
+
+            mocked_subprocess.check_call.assert_not_called()
+
+
 class TestHostcfgdDaemon(TestCase):
 
     def setUp(self):
@@ -312,3 +354,20 @@ class TestDnsHandler:
         data = {}
         dns_cfg.load(data)
         dns_cfg.dns_update.assert_called()
+
+
+class TestBannerCfg:
+    def test_load(self):
+        banner_cfg = hostcfgd.BannerCfg()
+        banner_cfg.banner_message = mock.MagicMock()
+
+        data = {}
+        banner_cfg.load(data)
+        banner_cfg.banner_message.assert_called()
+
+    @mock.patch('hostcfgd.run_cmd')
+    def test_banner_message(self, mock_run_cmd):
+        banner_cfg = hostcfgd.BannerCfg()
+        banner_cfg.banner_message(None, {'test': 'test'})
+
+        mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'banner-config'], True, True)])

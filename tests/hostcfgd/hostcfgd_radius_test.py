@@ -91,7 +91,7 @@ class TestHostcfgdRADIUS(TestCase):
         except:
             radius_server = []
 
-        host_config_daemon.aaacfg.load(aaa,[],[],radius_global,radius_server)
+        host_config_daemon.aaacfg.load(aaa,[],[],radius_global,radius_server, {}, {})
         dcmp = filecmp.dircmp(sop_path, op_path)
         diff_output = ""
         for name in dcmp.diff_files:

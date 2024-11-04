@@ -40,13 +40,16 @@ setup(
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
-        'scripts/sonic-host-server'
+        'scripts/sonic-host-server',
+        'scripts/ldap.py'
     ],
     install_requires = [
         'dbus-python',
         'systemd-python',
         'Jinja2>=2.10',
         'PyGObject',
+        'pycairo==1.26.1',
+        'psutil'
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',
@@ -57,7 +60,8 @@ setup(
         'pytest',
         'pyfakefs',
         'sonic-py-common',
-        'deepdiff==6.2.2'
+        'deepdiff==6.2.2',
+        'psutil'
     ],
     extras_require = {
         "testing": [
