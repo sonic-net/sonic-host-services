@@ -2,6 +2,7 @@ import sys
 import os
 import shutil
 import pytest
+import json
 
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
@@ -33,6 +34,8 @@ sys.path.insert(0, modules_path)
 determine_reboot_cause_path = os.path.join(scripts_path, 'determine-reboot-cause')
 determine_reboot_cause = load_module_from_source('determine_reboot_cause', determine_reboot_cause_path)
 
+# Gte the function to create dpu dir
+check_and_create_dpu_dirs = determine_reboot_cause.check_and_create_dpu_dirs
 
 PROC_CMDLINE_CONTENTS = """\
 BOOT_IMAGE=/image-20191130.52/boot/vmlinuz-4.9.0-11-2-amd64 root=/dev/sda4 rw console=tty0 console=ttyS1,9600n8 quiet net.ifnames=0 biosdevname=0 loop=image-20191130.52/fs.squashfs loopfstype=squashfs apparmor=1 security=apparmor varlog_size=4096 usbcore.autosuspend=-1 module_blacklist=gpio_ich SONIC_BOOT_TYPE=warm"""
@@ -71,6 +74,8 @@ EXPECTED_USER_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_14_
 EXPECTED_KERNEL_PANIC_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2021_3_28_13_48_49', 'cause': 'Kernel Panic', 'user': 'N/A', 'time': 'Sun Mar 28 13:45:12 UTC 2021'}
 
 REBOOT_CAUSE_DIR="host/reboot-cause/"
+PLATFORM_JSON_PATH = "/usr/share/sonic/device/test_platform/platform.json"
+REBOOT_CAUSE_MODULE_DIR = "host/reboot-cause"
 
 class TestDetermineRebootCause(object):
     def test_parse_warmfast_reboot_from_proc_cmdline(self):
@@ -199,3 +204,36 @@ class TestDetermineRebootCause(object):
             determine_reboot_cause.main()
             assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
             assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True   
+
+    def create_mock_platform_json(self, dpus):
+        """Helper function to create a mock platform.json file."""
+        os.makedirs(os.path.dirname(PLATFORM_JSON_PATH), exist_ok=True)
+        with open(PLATFORM_JSON_PATH, "w") as f:
+            json.dump({"DPUS": dpus}, f)
+
+    @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
+    @mock.patch('sonic_py_common.device_info.get_platform', return_value='some_platform')
+    def test_check_and_create_dpu_dirs(self, mock_get_platform, mock_is_smartswitch):
+        # Call the function under test
+        result = check_and_create_dpu_dirs()
+
+    @mock.patch('sonic_py_common.device_info.get_platform_info', return_value={'platform': 'some_platform'})
+    @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
+    @mock.patch('os.path.exists')
+    @mock.patch('builtins.open', new_callable=mock.mock_open, read_data='{"DPUS": ["dpu0", "dpu1"]}')
+    @mock.patch('os.makedirs')
+    def test_check_and_create_dpu_dirs_with_platform_json(self, mock_makedirs, mock_open, mock_exists, mock_is_smartswitch, mock_get_platform_info):
+        # Mock the platform.json existence
+        mock_exists.side_effect = lambda path: path == "/usr/share/sonic/device/some_platform/platform.json"
+
+        # Call the function under test
+        check_and_create_dpu_dirs()
+
+        # Assert that open was called correctly
+        mock_open.assert_any_call("/usr/share/sonic/device/some_platform/platform.json", 'r')
+        mock_open.assert_any_call('/host/reboot-cause/module/dpu0/reboot-cause.txt', 'w')
+        mock_open.assert_any_call('/host/reboot-cause/module/dpu1/reboot-cause.txt', 'w')
+
+        # Assert that makedirs was called for the DPU directories
+        mock_makedirs.assert_any_call(os.path.join('/host/reboot-cause/module', 'dpu0'))
+        mock_makedirs.assert_any_call(os.path.join('/host/reboot-cause/module', 'dpu1'))
