@@ -47,15 +47,15 @@ class ImageService(host_service.HostModule):
 
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
-    def install(self, path):
+    def install(self, where):
         '''
         Install a a sonic image:
 
         Args:
-            path: the path for the image to be install.
+            where: either a local path or a remote url pointing to the image.
         '''
-        logger.info("Using sonic-installer to install the image at {}.".format(path))
-        cmd = ["sudo", "/usr/local/bin/sonic-installer", "install", "-y", path]
+        logger.info("Using sonic-installer to install the image at {}.".format(where))
+        cmd = ["sudo", "/usr/local/bin/sonic-installer", "install", "-y", where]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ''
         if result.returncode:
