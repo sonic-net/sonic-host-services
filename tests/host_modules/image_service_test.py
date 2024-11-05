@@ -1,3 +1,5 @@
+import hashlib
+import subprocess
 import sys
 import os
 import stat
@@ -126,3 +128,109 @@ class TestImageService(object):
             "404" in msg and "error" in msg.lower()
         ), "message should contain '404' and 'error'"
         mock_get.assert_called_once_with(image_url, stream=True)
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_install_success(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `install` method successfully installs an image.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        where = "/tmp/sonic_image.img"
+        mock_result = mock.Mock()
+        mock_result.returncode = 0
+        mock_result.stderr = b""
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.install(where)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert msg == "", "message should be empty on success"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "install", "-y", where],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_install_fail(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `install` method fails when the installation command returns a non-zero exit code.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        where = "/tmp/sonic_image.img"
+        mock_result = mock.Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = b"Error: Installation failed"
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.install(where)
+
+        # Assert
+        assert rc != 0, "wrong return value"
+        assert "Error" in msg, "message should contain 'Error'"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "install", "-y", where],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    
+    @pytest.mark.parametrize("algorithm, expected_checksum", [
+        ("sha256", hashlib.sha256(b"test data").hexdigest()),
+        ("sha512", hashlib.sha512(b"test data").hexdigest()),
+        ("md5", hashlib.md5(b"test data").hexdigest())
+    ])
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.path.isfile")
+    @mock.patch("builtins.open", new_callable=mock.mock_open, read_data=b"test data")
+    def test_checksum(self, mock_open, mock_isfile, MockInit, MockBusName, MockSystemBus, algorithm, expected_checksum):
+        """
+        Test that the `checksum` method correctly calculates the checksum of a file for different algorithms.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        file_path = "/tmp/test_file.img"
+        mock_isfile.return_value = True
+
+        # Act
+        rc, checksum = image_service.checksum(file_path, algorithm)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert checksum == expected_checksum, "checksum does not match expected value"
+        mock_isfile.assert_called_once_with(file_path)
+        mock_open.assert_called_once_with(file_path, "rb")
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.path.isfile")
+    def test_checksum_no_such_file(self, mock_isfile, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `checksum` method fails when the file does not exist.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        file_path = "/nonexistent_dir/test_file.img"
+        algorithm = "sha256"
+        mock_isfile.return_value = False
+
+        # Act
+        rc, msg = image_service.checksum(file_path, algorithm)
+
+        # Assert
+        assert rc != 0, "wrong return value"
+        assert "not exist" in msg.lower(), "message should contain 'not exist'"
+        mock_isfile.assert_called_once_with(file_path)

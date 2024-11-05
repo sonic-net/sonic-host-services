@@ -52,7 +52,9 @@ class ImageService(host_service.HostModule):
             return errno.EACCES, "Directory is not all writable"
         try:
             response = requests.get(image_url, stream=True)
-            response.raise_for_status()
+            if response.status_code != 200:
+                logger.error("Failed to download image: HTTP status code {}".format(response.status_code))
+                return errno.EIO, "HTTP error: {}".format(response.status_code)
             with open(save_as, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
