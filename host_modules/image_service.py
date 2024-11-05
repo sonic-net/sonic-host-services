@@ -58,7 +58,7 @@ class ImageService(host_service.HostModule):
             where: either a local path or a remote url pointing to the image.
         """
         logger.info("Using sonic-installer to install the image at {}.".format(where))
-        cmd = ["sudo", "/usr/local/bin/sonic-installer", "install", "-y", where]
+        cmd = ["/usr/local/bin/sonic-installer", "install", "-y", where]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ""
         if result.returncode:
