@@ -18,6 +18,7 @@ from host_modules import host_service
 MOD_NAME = "image_service"
 
 DEFAULT_IMAGE_SAVE_AS = "/tmp/downloaded-sonic.bin"
+TMP_IMAGE_FILE = "/tmp/tmp-sonic_image.bin"
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,12 @@ class ImageService(host_service.HostModule):
             if response.status_code != 200:
                 logger.error("Failed to download image: HTTP status code {}".format(response.status_code))
                 return errno.EIO, "HTTP error: {}".format(response.status_code)
-            with open(save_as, "wb") as f:
+            
+            with open(TMP_IMAGE_FILE, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-                return 0, "Download successful"
+            os.rename(TMP_IMAGE_FILE, save_as)
+            return 0, "Download successful"
         except requests.exceptions.RequestException as e:
             logger.error("Failed to download image: {}".format(e))
             return errno.EIO, str(e)
