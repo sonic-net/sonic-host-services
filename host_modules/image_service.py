@@ -37,7 +37,10 @@ class ImageService(host_service.HostModule):
              save_as: local path for the downloaded image. The directory must exist and be *all* writable.
         """
         logger.info("Download new sonic image from {} as {}".format(image_url, save_as))
-        # Check if the directory exists and has write permission.
+        # Check if the directory exists, is absolute and has write permission.
+        if not os.path.isabs(save_as):
+            logger.error("The path {} is not an absolute path".format(save_as))
+            return errno.EINVAL, "Path is not absolute"
         dir = os.path.dirname(save_as)
         if not os.path.isdir(dir):
             logger.error("Directory {} does not exist".format(dir))

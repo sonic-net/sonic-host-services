@@ -100,6 +100,27 @@ class TestImageService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
+    def test_download_failed_relative_path(
+        self, MockInit, MockBusName, MockSystemBus
+    ):
+        """
+        Test that the `download` method fails when the save_as path is not absolute.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image_url = "http://example.com/sonic_image.img"
+        save_as = "relative/path/sonic_image.img"
+
+        # Act
+        rc, msg = image_service.download(image_url, save_as)
+
+        # Assert
+        assert rc != 0, "wrong return value"
+        assert "absolute" in msg.lower(), "message should contain 'absolute'"
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
     @mock.patch("os.path.isdir")
     @mock.patch("os.stat")
     @mock.patch("requests.get")
