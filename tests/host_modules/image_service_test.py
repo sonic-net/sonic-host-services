@@ -184,18 +184,30 @@ class TestImageService(object):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-    
-    @pytest.mark.parametrize("algorithm, expected_checksum", [
-        ("sha256", hashlib.sha256(b"test data").hexdigest()),
-        ("sha512", hashlib.sha512(b"test data").hexdigest()),
-        ("md5", hashlib.md5(b"test data").hexdigest())
-    ])
+
+    @pytest.mark.parametrize(
+        "algorithm, expected_checksum",
+        [
+            ("sha256", hashlib.sha256(b"test data").hexdigest()),
+            ("sha512", hashlib.sha512(b"test data").hexdigest()),
+            ("md5", hashlib.md5(b"test data").hexdigest()),
+        ],
+    )
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("os.path.isfile")
     @mock.patch("builtins.open", new_callable=mock.mock_open, read_data=b"test data")
-    def test_checksum(self, mock_open, mock_isfile, MockInit, MockBusName, MockSystemBus, algorithm, expected_checksum):
+    def test_checksum(
+        self,
+        mock_open,
+        mock_isfile,
+        MockInit,
+        MockBusName,
+        MockSystemBus,
+        algorithm,
+        expected_checksum,
+    ):
         """
         Test that the `checksum` method correctly calculates the checksum of a file for different algorithms.
         """
@@ -217,7 +229,9 @@ class TestImageService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("os.path.isfile")
-    def test_checksum_no_such_file(self, mock_isfile, MockInit, MockBusName, MockSystemBus):
+    def test_checksum_no_such_file(
+        self, mock_isfile, MockInit, MockBusName, MockSystemBus
+    ):
         """
         Test that the `checksum` method fails when the file does not exist.
         """
