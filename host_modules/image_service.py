@@ -1,5 +1,7 @@
 """
-Installer module for downloading and installing images.
+Services related to SONiC images, such as:
+1) Download
+2) Install
 """
 
 import logging
@@ -8,18 +10,18 @@ import os
 
 from host_modules import host_service
 
-MOD_NAME="installer"
+MOD_NAME="image_service"
 
 DEFAULT_IMAGE_SAVE_AS="/host/downloaded-sonic"
 
 logger = logging.getLogger(__name__)
 
-class Installer(host_service.HostModule):
+class ImageService(host_service.HostModule):
     """DBus endpoint that handles downloading and installing SONiC images
     """
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='ss', out_signature='is')
-    def download_sonic_image(self, image_url, save_as):
+    def download(self, image_url, save_as):
         ''' 
         Download a SONiC image.
 
@@ -45,15 +47,15 @@ class Installer(host_service.HostModule):
 
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
-    def install_sonic_image(self, save_as):
+    def install(self, path):
         '''
         Install a a sonic image:
 
         Args:
-            save_as: the path for the image to be install.
+            path: the path for the image to be install.
         '''
-        logger.info("Using sonic-installer to install the image at {}.".format(save_as))
-        cmd = ["sudo", "/usr/local/bin/sonic-installer", "install", "-y", save_as]
+        logger.info("Using sonic-installer to install the image at {}.".format(path))
+        cmd = ["sudo", "/usr/local/bin/sonic-installer", "install", "-y", path]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ''
         if result.returncode:

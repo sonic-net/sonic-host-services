@@ -2,13 +2,13 @@ import sys
 import os
 import pytest
 from unittest import mock
-from host_modules.install_sonic import Installer
+from host_modules.image_service import ImageService
 
-class TestInstaller(object):
+class TestImageService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_download_sonic_image_success(self, MockInit, MockBusName, MockSystemBus):
+    def test_download_success(self, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `download_sonic_image` method runs the correct curl command
         when the directory path exists.
@@ -18,7 +18,7 @@ class TestInstaller(object):
             mock.patch("subprocess.run") as mock_run
         ):
             # Arrange: Set up an Installer instance and define the target path and URL
-            installer = Installer(mod_name="installer")
+            image_service = ImageService(mod_name="image_service")
             target_path = "/path/to/sonic_image.img"
             image_url = "https://example.com/sonic_image.img"
             run_ret = mock.Mock()
@@ -27,7 +27,7 @@ class TestInstaller(object):
             mock_run.return_value = run_ret
             
             # Act: Call the method to download the image
-            rc, msg = installer.download_sonic_image(image_url, target_path)
+            rc, msg = image_service.download(image_url, target_path)
 
             # Assert: Verify that os.path.exists was called to check directory existence
             mock_exists.assert_called_once_with(os.path.dirname(target_path))
@@ -44,7 +44,7 @@ class TestInstaller(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_install_sonic_image_success(self, MockInit, MockBusName, MockSystemBus):
+    def test_install_success(self, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `download_sonic_image` method runs the correct curl command
         when the directory path exists.
@@ -53,7 +53,7 @@ class TestInstaller(object):
             mock.patch("subprocess.run") as mock_run
         ):
             # Arrange: Set up an Installer instance and define the target path and URL
-            installer = Installer(mod_name="installer")
+            image_service = ImageService(mod_name="image_service")
             target_path = "/path/to/sonic_image.img"
             run_ret = mock.Mock()
             attrs = {"returncode": 0, "stderr": b""}
@@ -61,7 +61,7 @@ class TestInstaller(object):
             mock_run.return_value = run_ret
             
             # Act: Call the method to download the image
-            rc, msg = installer.install_sonic_image(target_path)
+            rc, msg = image_service.install(target_path)
 
             # Assert: Verify that os.path.exists was called to check directory existence
             assert rc == 0, "wrong return value"
@@ -77,7 +77,7 @@ class TestInstaller(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_download_sonic_image_mkdir(self, MockInit, MockBusName, MockSystemBus):
+    def test_download_mkdir(self, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `download_sonic_image` method runs the correct curl command
         when the directory path exists.
@@ -88,7 +88,7 @@ class TestInstaller(object):
             mock.patch("subprocess.run", return_value=0) as mock_run
         ):
             # Arrange: Set up an Installer instance and define the target path and URL
-            installer = Installer(mod_name="installer")
+            image_service = ImageService(mod_name="image_service")
             target_path = "/path/to/sonic_image.img"
             image_url = "https://example.com/sonic_image.img"
             run_ret = mock.Mock()
@@ -97,7 +97,7 @@ class TestInstaller(object):
             mock_run.return_value = run_ret
             
             # Act: Call the method to download the image
-            rc, msg = installer.download_sonic_image(image_url, target_path)
+            rc, msg = image_service.download(image_url, target_path)
             assert rc == 0, "wrong return value"
             assert msg == "", "non-empty return message"
 
@@ -114,7 +114,7 @@ class TestInstaller(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_download_sonic_image_download_fail(self, MockInit, MockBusName, MockSystemBus):
+    def test_download_download_fail(self, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `download_sonic_image` method runs the correct curl command
         when the directory path exists.
@@ -125,7 +125,7 @@ class TestInstaller(object):
             mock.patch("subprocess.run", return_value=0) as mock_run
         ):
             # Arrange: Set up an Installer instance and define the target path and URL
-            installer = Installer(mod_name="installer")
+            image_service = ImageService(mod_name="image_service")
             target_path = "/path/to/sonic_image.img"
             image_url = "https://example.com/sonic_image.img"
             run_ret = mock.Mock()
@@ -135,7 +135,7 @@ class TestInstaller(object):
             mock_run.return_value = run_ret
             
             # Act: Call the method to download the image
-            rc, msg = installer.download_sonic_image(image_url, target_path)
+            rc, msg = image_service.download(image_url, target_path)
             assert rc != 0, "wrong return value"
             assert "Error" in msg, "return message without error"
 
@@ -152,7 +152,7 @@ class TestInstaller(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_install_sonic_image_failed(self, MockInit, MockBusName, MockSystemBus):
+    def test_install_failed(self, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `download_sonic_image` method runs the correct curl command
         when the directory path exists.
@@ -161,7 +161,7 @@ class TestInstaller(object):
             mock.patch("subprocess.run") as mock_run
         ):
             # Arrange: Set up an Installer instance and define the target path and URL
-            installer = Installer(mod_name="installer")
+            image_service = ImageService(mod_name="image_service")
             target_path = "/path/to/sonic_image.img"
             run_ret = mock.Mock()
             attrs = {"returncode": 1, "stderr": b"Error: Install failed\nHello World!"}
@@ -169,7 +169,7 @@ class TestInstaller(object):
             mock_run.return_value = run_ret
             
             # Act: Call the method to download the image
-            rc, msg = installer.install_sonic_image(target_path)
+            rc, msg = image_service.install(target_path)
 
             # Assert: Verify that os.path.exists was called to check directory existence
             assert rc != 0, "wrong return value"
