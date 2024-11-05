@@ -65,8 +65,8 @@ class ImageService(host_service.HostModule):
                     f.write(chunk)
             os.rename(TMP_IMAGE_FILE, save_as)
             return 0, "Download successful"
-        except requests.exceptions.RequestException as e:
-            logger.error("Failed to download image: {}".format(e))
+        except Exception as e:
+            logger.error("Failed to write downloaded image to disk: {}".format(e))
             return errno.EIO, str(e)
 
     @host_service.method(
