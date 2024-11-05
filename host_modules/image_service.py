@@ -12,7 +12,7 @@ from host_modules import host_service
 
 MOD_NAME = "image_service"
 
-DEFAULT_IMAGE_SAVE_AS = "/host/downloaded-sonic"
+DEFAULT_IMAGE_SAVE_AS = "/tmp/downloaded-sonic.bin"
 
 logger = logging.getLogger(__name__)
 
