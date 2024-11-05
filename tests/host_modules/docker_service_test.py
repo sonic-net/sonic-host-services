@@ -114,7 +114,7 @@ class TestDockerService(object):
         assert "API error" in msg, "Message should contain 'API error'"
         mock_docker_client.containers.get.assert_called_once_with("container_name")
         mock_docker_client.containers.get.return_value.kill.assert_called_once()
-    
+
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
