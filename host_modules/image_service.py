@@ -7,6 +7,9 @@ Services related to SONiC images, such as:
 import logging
 import subprocess
 import os
+import stat
+import requests
+import errno
 
 from host_modules import host_service
 
@@ -29,23 +32,28 @@ class ImageService(host_service.HostModule):
 
         Args:
              image_url: url for remote image.
-             save_as: local path for the downloaded image
+             save_as: local path for the downloaded image. The directory must exist and be *all* writable.
         """
         logger.info("Download new sonic image from {} as {}".format(image_url, save_as))
-        # Create parent directory.
+        # Check if the directory exists and has write permission.
         dir = os.path.dirname(save_as)
-        if not os.path.exists(dir):
-            os.makedirs(dir)
-        cmd = ["/usr/bin/curl", "-Lo", save_as, image_url]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        msg = ""
-        if result.returncode:
-            lines = result.stderr.decode().split("\n")
-            for line in lines:
-                if "Error" in line:
-                    msg = line
-                    break
-        return result.returncode, msg
+        if not os.path.isdir(dir):
+            logger.error("Directory {} does not exist".format(dir))
+            return errno.ENOENT, "Directory does not exist"
+        st_mode = os.stat(dir).st_mode
+        if not (st_mode & stat.S_IWUSR) or not (st_mode & stat.S_IWGRP) or not (st_mode & stat.S_IWOTH):
+            logger.error("Directory {} is not all writable {}".format(dir, st_mode))
+            return errno.EACCES, "Directory is not all writable"
+        try:
+            response = requests.get(image_url, stream=True)
+            response.raise_for_status()
+            with open(save_as, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                return 0, "Download successful"
+        except requests.exceptions.RequestException as e:
+            logger.error("Failed to download image: {}".format(e))
+            return errno.EIO, str(e)
 
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
