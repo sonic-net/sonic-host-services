@@ -68,7 +68,7 @@ class ImageService(host_service.HostModule):
                 for chunk in response.iter_content(chunk_size=8192):
                     tmp_file.write(chunk)
                 temp_file_path = tmp_file.name
-            os.rename(temp_file_path, save_as)
+            os.replace(temp_file_path, save_as)
             return 0, "Download successful"
         except Exception as e:
             logger.error("Failed to write downloaded image to disk: {}".format(e))
