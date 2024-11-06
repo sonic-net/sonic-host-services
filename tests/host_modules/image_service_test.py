@@ -100,9 +100,7 @@ class TestImageService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_download_failed_relative_path(
-        self, MockInit, MockBusName, MockSystemBus
-    ):
+    def test_download_failed_relative_path(self, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `download` method fails when the save_as path is not absolute.
         """
@@ -158,7 +156,14 @@ class TestImageService(object):
     @mock.patch("requests.get")
     @mock.patch("tempfile.NamedTemporaryFile")
     def test_download_fail_write_io_exception(
-        self, mock_tempfile, mock_get, mock_stat, mock_isdir, MockInit, MockBusName, MockSystemBus
+        self,
+        mock_tempfile,
+        mock_get,
+        mock_stat,
+        mock_isdir,
+        MockInit,
+        MockBusName,
+        MockSystemBus,
     ):
         """
         Test that the `download` method fails when there is an IOError while writing the file.
@@ -180,9 +185,13 @@ class TestImageService(object):
 
         # Assert
         assert rc != 0, "wrong return value"
-        assert "disk write error" in msg.lower(), "message should contain 'disk write error'"
+        assert (
+            "disk write error" in msg.lower()
+        ), "message should contain 'disk write error'"
         mock_get.assert_called_once_with(image_url, stream=True)
-        mock_tempfile.assert_called_once_with(delete=False, dir=os.path.dirname(save_as))
+        mock_tempfile.assert_called_once_with(
+            delete=False, dir=os.path.dirname(save_as)
+        )
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
@@ -303,7 +312,7 @@ class TestImageService(object):
         assert rc != 0, "wrong return value"
         assert "not exist" in msg.lower(), "message should contain 'not exist'"
         mock_isfile.assert_called_once_with(file_path)
-    
+
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
@@ -325,7 +334,9 @@ class TestImageService(object):
 
         # Assert
         assert rc != 0, "wrong return value"
-        assert "unsupported algorithm" in msg.lower(), "message should contain 'unsupported algorithm'"
+        assert (
+            "unsupported algorithm" in msg.lower()
+        ), "message should contain 'unsupported algorithm'"
         mock_isfile.assert_called_once_with(file_path)
 
     @mock.patch("dbus.SystemBus")
@@ -354,6 +365,8 @@ class TestImageService(object):
 
             # Assert
             assert rc != 0, "wrong return value"
-            assert "general error" in msg.lower(), "message should contain 'general error'"
+            assert (
+                "general error" in msg.lower()
+            ), "message should contain 'general error'"
             mock_isfile.assert_called_once_with(file_path)
             mock_open.assert_called_once_with(file_path, "rb")

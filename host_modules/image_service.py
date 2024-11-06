@@ -57,10 +57,14 @@ class ImageService(host_service.HostModule):
         try:
             response = requests.get(image_url, stream=True)
             if response.status_code != 200:
-                logger.error("Failed to download image: HTTP status code {}".format(response.status_code))
+                logger.error(
+                    "Failed to download image: HTTP status code {}".format(
+                        response.status_code
+                    )
+                )
                 return errno.EIO, "HTTP error: {}".format(response.status_code)
-            
-            with tempfile.NamedTemporaryFile(dir='/tmp',delete=False) as tmp_file:
+
+            with tempfile.NamedTemporaryFile(dir="/tmp", delete=False) as tmp_file:
                 for chunk in response.iter_content(chunk_size=8192):
                     tmp_file.write(chunk)
                 temp_file_path = tmp_file.name
