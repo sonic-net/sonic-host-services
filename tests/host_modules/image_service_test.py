@@ -156,9 +156,9 @@ class TestImageService(object):
     @mock.patch("os.path.isdir")
     @mock.patch("os.stat")
     @mock.patch("requests.get")
-    @mock.patch("builtins.open", new_callable=mock.mock_open)
+    @mock.patch("tempfile.NamedTemporaryFile")
     def test_download_fail_write_io_exception(
-        self, mock_open, mock_get, mock_stat, mock_isdir, MockInit, MockBusName, MockSystemBus
+        self, mock_tempfile, mock_get, mock_stat, mock_isdir, MockInit, MockBusName, MockSystemBus
     ):
         """
         Test that the `download` method fails when there is an IOError while writing the file.
@@ -173,7 +173,7 @@ class TestImageService(object):
         mock_response.iter_content = lambda chunk_size: [b"data"]
         mock_response.status_code = 200
         mock_get.return_value = mock_response
-        mock_open.side_effect = IOError("Disk write error")
+        mock_tempfile.side_effect = IOError("Disk write error")
 
         # Act
         rc, msg = image_service.download(image_url, save_as)
@@ -182,7 +182,7 @@ class TestImageService(object):
         assert rc != 0, "wrong return value"
         assert "disk write error" in msg.lower(), "message should contain 'disk write error'"
         mock_get.assert_called_once_with(image_url, stream=True)
-        mock_open.assert_called_once_with("/tmp/tmp-sonic_image.bin", "wb")
+        mock_tempfile.assert_called_once_with(delete=False, dir=os.path.dirname(save_as))
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")

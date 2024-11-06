@@ -14,11 +14,11 @@ import stat
 import subprocess
 
 from host_modules import host_service
+import tempfile
 
 MOD_NAME = "image_service"
 
 DEFAULT_IMAGE_SAVE_AS = "/tmp/downloaded-sonic.bin"
-TMP_IMAGE_FILE = "/tmp/tmp-sonic_image.bin"
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +60,11 @@ class ImageService(host_service.HostModule):
                 logger.error("Failed to download image: HTTP status code {}".format(response.status_code))
                 return errno.EIO, "HTTP error: {}".format(response.status_code)
             
-            with open(TMP_IMAGE_FILE, "wb") as f:
+            with tempfile.NamedTemporaryFile(dir='/tmp',delete=False) as tmp_file:
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            os.rename(TMP_IMAGE_FILE, save_as)
+                    tmp_file.write(chunk)
+                temp_file_path = tmp_file.name
+            os.rename(temp_file_path, save_as)
             return 0, "Download successful"
         except Exception as e:
             logger.error("Failed to write downloaded image to disk: {}".format(e))
