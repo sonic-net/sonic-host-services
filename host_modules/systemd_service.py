@@ -55,7 +55,7 @@ class SystemdService(host_service.HostModule):
             msg = result.stderr.decode()
         return result.returncode, msg
 
-    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='i', out_signature='is')
     def execute_reboot(self, rebootmethod):
         if rebootmethod == RebootMethod.COLD:
             cmd = ['/usr/local/bin/reboot']
