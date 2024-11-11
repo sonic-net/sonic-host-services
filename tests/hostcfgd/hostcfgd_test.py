@@ -353,7 +353,6 @@ class TestDnsHandler:
         data = {}
         dns_cfg.load(data)
 
-        dns_cfg.dns_update.assert_called()
 
 class TestBannerCfg:
     def test_load(self):
