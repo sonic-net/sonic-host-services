@@ -1735,16 +1735,27 @@ class MemoryStatisticsCfg:
         }
         self.config_db = config_db  # Store config_db instance for further use
 
+    # def load(self, memory_statistics_config: dict):
+    #     """Load initial memory statistics configuration."""
+    #     syslog.syslog(syslog.LOG_INFO, 'MemoryStatisticsCfg: Load initial configuration')
+
+    #     # Use default values if no config provided
+    #     memory_statistics_config = memory_statistics_config or {}
+
+    #     # Load configuration for each valid key
+    #     for key in self.VALID_KEYS:
+    #         self.memory_statistics_update(key, memory_statistics_config.get(key, self.cache[key]))
     def load(self, memory_statistics_config: dict):
         """Load initial memory statistics configuration."""
-        syslog.syslog(syslog.LOG_INFO, 'MemoryStatisticsCfg: Load initial configuration')
+        syslog.syslog(syslog.LOG_INFO, 'Memory_StatisticsCfg: Load initial configuration')
 
-        # Use default values if no config provided
-        memory_statistics_config = memory_statistics_config or {}
+        if not memory_statistics_config:
+            memory_statistics_config = {}
 
-        # Load configuration for each valid key
-        for key in self.VALID_KEYS:
-            self.memory_statistics_update(key, memory_statistics_config.get(key, self.cache[key]))
+        # Handle the initial config load for each key with validation
+        self.memory_statistics_update("enabled", memory_statistics_config.get("enabled", "false"))
+        self.memory_statistics_update("retention_period", memory_statistics_config.get("retention_period", "15"))
+        self.memory_statistics_update("sampling_interval", memory_statistics_config.get("sampling_interval", "5"))    
 
     def memory_statistics_update(self, key, data):
         """
