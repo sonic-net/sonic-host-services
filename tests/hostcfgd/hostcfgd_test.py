@@ -371,7 +371,7 @@ class TestBannerCfg:
         mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'banner-config'], True, True)])
 
 
-class TestMemoryStatisticsCfgd:
+class TestMemoryStatisticsCfgd(TestCase):
     """
     Test MemoryStatisticsCfg functionalities.
     """
