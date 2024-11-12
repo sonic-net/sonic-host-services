@@ -371,78 +371,110 @@ class TestBannerCfg:
         mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'banner-config'], True, True)])
 
 
-class TestMemoryStatisticsCfgd(TestCase):
+
+class TestMemoryStatisticsCfg(TestCase):
     """
-    Test MemoryStatisticsCfg functionalities.
+        Test hostcfd daemon - MemoryStatisticsCfg
     """
 
     def setUp(self):
-        # Initial configuration for Memory Statistics
-        MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'] = {
-            'enabled': 'false',
-            'sampling_interval': '5',
-            'retention_period': '15'
-        }
-        self.mem_stat_cfg = hostcfgd.MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
+        self.config_db = MockConfigDb()
+        self.memorystatisticscfg = hostcfgd.MemoryStatisticsCfg(self.config_db)
 
     def tearDown(self):
-        MockConfigDb.CONFIG_DB = {}
+        self.config_db.CONFIG_DB = {}
 
-    # def test_memory_statistics_load(self):
-    #     with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-    #         self.mem_stat_cfg.load(MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'])
-            
-    #         # Check if subprocess.Popen was called correctly
-    #         try:
-    #             mocked_subprocess.Popen.assert_called_once_with(['/usr/bin/memorystatsd'])
-    #         except AssertionError as e:
-    #             print("Popen was not called as expected.")
-    #             print(str(e))
-    #             raise  # Re-raise to ensure the test fails
+    def test_load_initial_configuration(self):
+        initial_config = {
+            "memory_statistics": {
+                "enabled": "false",
+                "sampling_interval": "5",
+                "retention_period": "15"
+            }
+        }
+        self.memorystatisticscfg.load(initial_config)
 
-    #         self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
-    #         self.assertEqual(self.mem_stat_cfg.cache['sampling_interval'], '5')
-    #         self.assertEqual(self.mem_stat_cfg.cache['retention_period'], '15')
+        self.assertEqual(self.memorystatisticscfg.cache, initial_config)
 
+    def test_memory_statistics_update_valid_configuration(self):
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            mocked_syslog.LOG_INFO = syslog.LOG_INFO
 
-    # def test_memory_statistics_update_enabled(self):
-    #     with mock.patch('hostcfgd.subprocess') as mocked_subprocess, \
-    #          mock.patch('hostcfgd.os.kill') as mocked_kill:
-    #         self.mem_stat_cfg.memory_statistics_update('enabled', 'true')
-    #         mocked_kill.assert_called_once()
-    #         mocked_subprocess.Popen.assert_called_once_with(['/usr/bin/memorystatsd'])
+            new_config = {
+                "enabled": "true",
+                "sampling_interval": "10",
+                "retention_period": "30"
+            }
 
-    def test_memory_statistics_is_caching_config(self):
-        self.mem_stat_cfg.cache['enabled'] = 'true'
+            self.memorystatisticscfg.memory_statistics_update("enabled", "true")
+            self.memorystatisticscfg.memory_statistics_update("sampling_interval", "10")
+            self.memorystatisticscfg.memory_statistics_update("retention_period", "30")
+
+            self.assertEqual(self.memorystatisticscfg.cache, new_config)
+
+            expected_logs = [
+                call(syslog.LOG_INFO, 'MemoryStatisticsCfg: Detected change in \'enabled\' to \'true\''),
+                call(syslog.LOG_INFO, 'MemoryStatisticsCfg: Detected change in \'sampling_interval\' to \'10\''),
+                call(syslog.LOG_INFO, 'MemoryStatisticsCfg: Detected change in \'retention_period\' to \'30\'')
+            ]
+            mocked_syslog.syslog.assert_has_calls(expected_logs)
+
+    def test_memory_statistics_update_invalid_configuration(self):
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            mocked_syslog.LOG_ERR = syslog.LOG_ERR
+
+            self.memorystatisticscfg.memory_statistics_update("enabled", "invalid")
+            self.memorystatisticscfg.memory_statistics_update("sampling_interval", "-5")
+            self.memorystatisticscfg.memory_statistics_update("retention_period", "abc")
+
+            self.assertEqual(self.memorystatisticscfg.cache, {
+                "enabled": "false",
+                "sampling_interval": "5",
+                "retention_period": "15"
+            })
+
+            expected_logs = [
+                call(syslog.LOG_ERR, 'MemoryStatisticsCfg: Invalid value \'invalid\' for key \'enabled\'. Must be \'true\' or \'false\'.'),
+                call(syslog.LOG_ERR, 'MemoryStatisticsCfg: Invalid value \'-5\' for key \'sampling_interval\'. Must be a positive integer.'),
+                call(syslog.LOG_ERR, 'MemoryStatisticsCfg: Invalid value \'abc\' for key \'retention_period\'. Must be a positive integer.')
+            ]
+            mocked_syslog.syslog.assert_has_calls(expected_logs)
+
+    def test_apply_memory_statistics_configuration(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            self.mem_stat_cfg.memory_statistics_update('enabled', 'true')
-            mocked_subprocess.Popen.assert_not_called()
-            self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'true')  # Confirm no unnecessary cache update
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
 
-    def test_memory_statistics_update_sampling_interval(self):
-        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            self.mem_stat_cfg.memory_statistics_update('sampling_interval', '3')
-            mocked_subprocess.Popen.assert_not_called()
-            self.assertEqual(self.mem_stat_cfg.cache['sampling_interval'], '3')
+            self.memorystatisticscfg.cache = {
+                "enabled": "true",
+                "sampling_interval": "10",
+                "retention_period": "30"
+            }
 
-    def test_memory_statistics_update_retention_period(self):
-        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            self.mem_stat_cfg.memory_statistics_update('retention_period', '30')
-            mocked_subprocess.Popen.assert_not_called()
-            self.assertEqual(self.mem_stat_cfg.cache['retention_period'], '30')
+            self.memorystatisticscfg.apply_setting("enabled", "true")
+            self.memorystatisticscfg.apply_setting("sampling_interval", "10")
+            self.memorystatisticscfg.apply_setting("retention_period", "30")
 
-    # def test_memory_statistics_update_invalid_sampling_interval(self):
-    #     with mock.patch('hostcfgd.syslog') as mocked_syslog:
-    #         self.mem_stat_cfg.memory_statistics_update('sampling_interval', '-10')
-    #         mocked_syslog.syslog.assert_called_with(
-    #             syslog.LOG_ERR,
-    #             "Memory_StatisticsCfg: Invalid value '-10' for key 'sampling_interval'. Must be a positive integer."
-    #         )
+            expected_calls = [
+                call(['systemctl', 'restart', 'memory-statistics-service']),
+                call(['systemctl', 'restart', 'memory-statistics-service']),
+                call(['systemctl', 'restart', 'memory-statistics-service'])
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected_calls)
 
-    # def test_memory_statistics_update_invalid_retention_period(self):
-    #     with mock.patch('hostcfgd.syslog') as mocked_syslog:
-    #         self.mem_stat_cfg.memory_statistics_update('retention_period', 'not_a_number')
-    #         mocked_syslog.syslog.assert_called_with(
-    #             syslog.LOG_ERR,
-    #             "Memory_StatisticsCfg: Invalid value 'not_a_number' for key 'retention_period'. Must be a positive integer."
-    #         )
+    def test_get_memory_statistics_pid(self):
+        with mock.patch('hostcfgd.psutil') as mocked_psutil:
+            process_mock = mock.Mock()
+            process_mock.name.return_value = 'memory_statistics_service.py'
+            mocked_psutil.pid_exists.return_value = True
+            mocked_psutil.Process.return_value = process_mock
+
+            self.assertEqual(self.memorystatisticscfg.get_memory_statistics_pid(), 1234)
+
+            mocked_psutil.pid_exists.return_value = False
+            self.assertIsNone(self.memorystatisticscfg.get_memory_statistics_pid())
+
+            mocked_psutil.Process.return_value.name.return_value = 'other_process.py'
+            self.assertIsNone(self.memorystatisticscfg.get_memory_statistics_pid())
