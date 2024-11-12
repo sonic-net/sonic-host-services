@@ -370,8 +370,6 @@ class TestBannerCfg:
 
         mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'banner-config'], True, True)])
 
-
-
 class TestMemoryStatisticsCfg(TestCase):
     """
         Test hostcfd daemon - MemoryStatisticsCfg
@@ -440,29 +438,28 @@ class TestMemoryStatisticsCfg(TestCase):
             ]
             mocked_syslog.syslog.assert_has_calls(expected_logs)
 
-    def test_apply_memory_statistics_configuration(self):
-        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+def test_apply_memory_statistics_configuration(self):
+    with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+        popen_mock = mock.Mock()
+        attrs = {'communicate.return_value': ('output', 'error')}
+        popen_mock.configure_mock(**attrs)
+        mocked_subprocess.Popen.return_value = popen_mock
 
-            self.memorystatisticscfg.cache = {
-                "enabled": "true",
-                "sampling_interval": "10",
-                "retention_period": "30"
-            }
+        self.memorystatisticscfg.cache = {
+            "enabled": "true",
+            "sampling_interval": "10",
+            "retention_period": "30"
+        }
 
-            self.memorystatisticscfg.apply_setting("enabled", "true")
-            self.memorystatisticscfg.apply_setting("sampling_interval", "10")
-            self.memorystatisticscfg.apply_setting("retention_period", "30")
+        # Apply each setting individually and check for the call
+        self.memorystatisticscfg.apply_setting("enabled", "true")
+        mocked_subprocess.check_call.assert_called_with(['systemctl', 'restart', 'memory-statistics-service'])
 
-            expected_calls = [
-                call(['systemctl', 'restart', 'memory-statistics-service']),
-                call(['systemctl', 'restart', 'memory-statistics-service']),
-                call(['systemctl', 'restart', 'memory-statistics-service'])
-            ]
-            mocked_subprocess.check_call.assert_has_calls(expected_calls)
+        self.memorystatisticscfg.apply_setting("sampling_interval", "10")
+        mocked_subprocess.check_call.assert_called_with(['systemctl', 'restart', 'memory-statistics-service'])
+
+        self.memorystatisticscfg.apply_setting("retention_period", "30")
+        mocked_subprocess.check_call.assert_called_with(['systemctl', 'restart', 'memory-statistics-service'])
 
     def test_get_memory_statistics_pid(self):
         with mock.patch('hostcfgd.psutil') as mocked_psutil:
