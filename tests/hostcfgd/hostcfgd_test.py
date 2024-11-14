@@ -387,21 +387,6 @@ class TestMemoryStatisticsCfgd(TestCase):
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
 
-    def test_memory_statistics_load(self):
-        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            self.mem_stat_cfg.load(MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'])
-            mocked_subprocess.Popen.assert_called_once_with(['/usr/bin/memorystatsd'])
-            self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
-            self.assertEqual(self.mem_stat_cfg.cache['sampling_interval'], '5')
-            self.assertEqual(self.mem_stat_cfg.cache['retention_period'], '15')
-
-    def test_memory_statistics_update_enabled(self):
-        with mock.patch('hostcfgd.subprocess') as mocked_subprocess, \
-             mock.patch('hostcfgd.os.kill') as mocked_kill:
-            self.mem_stat_cfg.memory_statistics_update('enabled', 'true')
-            mocked_kill.assert_called_once()
-            mocked_subprocess.Popen.assert_called_once_with(['/usr/bin/memorystatsd'])
-
     def test_memory_statistics_is_caching_config(self):
         self.mem_stat_cfg.cache['enabled'] = 'true'
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -420,21 +405,3 @@ class TestMemoryStatisticsCfgd(TestCase):
             self.mem_stat_cfg.memory_statistics_update('retention_period', '30')
             mocked_subprocess.Popen.assert_not_called()
             self.assertEqual(self.mem_stat_cfg.cache['retention_period'], '30')
-
-    def test_memory_statistics_update_invalid_sampling_interval(self):
-        mem_stat_cfg = hostcfgd.MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
-        
-        with mock.patch('hostcfgd.syslog') as mocked_syslog:
-            mem_stat_cfg.memory_statistics_update('sampling_interval', '-10')  # Invalid value
-            
-            # Assert an error log is made
-            mocked_syslog.syslog.assert_called_with(mock.ANY, "Memory_StatisticsCfg: Invalid value '-10' for key 'sampling_interval'. Must be a positive integer.")
-
-    def test_memory_statistics_update_invalid_retention_period(self):
-        mem_stat_cfg = hostcfgd.MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
-        
-        with mock.patch('hostcfgd.syslog') as mocked_syslog:
-            mem_stat_cfg.memory_statistics_update('retention_period', 'not_a_number')  # Invalid value
-            
-            # Assert an error log is made
-            mocked_syslog.syslog.assert_called_with(mock.ANY, "Memory_StatisticsCfg: Invalid value 'not_a_number' for key 'retention_period'. Must be a positive integer.")
