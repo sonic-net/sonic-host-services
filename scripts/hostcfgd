@@ -1718,13 +1718,6 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
-import syslog
-import os
-import psutil
-import subprocess
-import signal
-import time
-
 class MemoryStatisticsCfg:
     """
     The MemoryStatisticsCfg class manages the configuration updates for the MemoryStatisticsDaemon, a daemon
@@ -1820,7 +1813,7 @@ class MemoryStatisticsCfg:
             else:
                 self.reload_memory_statistics()
         except Exception as e:
-            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Exception in apply_setting() for key '{key}': {e}")
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} in apply_setting() for key '{key}': {e}")
 
     def restart_memory_statistics(self):
         """Restarts the memory statistics daemon by first shutting it down (if running) and then starting it again."""
@@ -1895,10 +1888,9 @@ class MemoryStatisticsCfg:
         except ValueError:
             syslog.syslog(syslog.LOG_ERR, "MemoryStatisticsCfg: PID file contents invalid.")
         except Exception as e:
-            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to retrieve MemoryStatisticsDaemon PID: {e}")
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} failed to retrieve MemoryStatisticsDaemon PID: {e}")
         return None
-
-
+     
 class SerialConsoleCfg:
 
     def __init__(self):
