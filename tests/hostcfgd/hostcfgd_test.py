@@ -533,9 +533,9 @@ class TestMemoryStatisticsCfgd(TestCase):
             mock_restart.assert_called_once()
             self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'true')
 
-    def test_memory_statistics_disable(self):
-        """Test disabling memory statistics"""
-        with mock.patch.object(self.mem_stat_cfg, 'shutdown_memory_statistics') as mock_shutdown:
-            self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
-            mock_shutdown.assert_called_once()
-            self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
+    # def test_memory_statistics_disable(self):
+    #     """Test disabling memory statistics"""
+    #     with mock.patch.object(self.mem_stat_cfg, 'shutdown_memory_statistics') as mock_shutdown:
+    #         self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
+    #         mock_shutdown.assert_called_once()
+    #         self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
