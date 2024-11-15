@@ -545,12 +545,12 @@ import unittest
 from unittest import mock
 import signal
 import psutil
-from hostcfgd import MemoryStatisticsCfg
+# from hostcfgd import MemoryStatisticsCfg
 
 class MockConfigDb:
     CONFIG_DB = {}
 
-class TestMemoryStatisticsCfgd(unittest.TestCase):
+class TestMemoryStatisticsCfgd(TestCase):
     """Test MemoryStatisticsCfg functionalities."""
 
     def setUp(self):
@@ -560,7 +560,7 @@ class TestMemoryStatisticsCfgd(unittest.TestCase):
             'sampling_interval': '5',
             'retention_period': '15'
         }
-        self.mem_stat_cfg = MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
+        self.mem_stat_cfg = hostcfgd.MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
 
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
@@ -712,6 +712,3 @@ class TestMemoryStatisticsCfgd(unittest.TestCase):
                 with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                     self.mem_stat_cfg.shutdown_memory_statistics()
                     mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: Failed to send SIGTERM")
-
-if __name__ == '__main__':
-    unittest.main()
