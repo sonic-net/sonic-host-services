@@ -530,7 +530,21 @@ class TestMemoryStatisticsCfgd(TestCase):
                 pid = self.mem_stat_cfg.get_memory_statistics_pid()
                 self.assertIsNone(pid)
                 mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID does not exist.")
-                   
+
+    @mock.patch('hostcfgd.psutil.Process')
+    def test_get_memory_statistics_pid_exception(self, mock_process):
+        """Test general exception handling in get_memory_statistics_pid"""
+        mock_process.side_effect = Exception("Unexpected error")
+        mock_open = mock.mock_open(read_data="123")
+        
+        with mock.patch('hostcfgd.psutil.pid_exists', return_value=True):
+            with mock.patch('builtins.open', mock_open):
+                with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+                    pid = self.mem_stat_cfg.get_memory_statistics_pid()
+                    self.assertIsNone(pid)
+                    mock_syslog.assert_any_call(mock.ANY, 
+                        "MemoryStatisticsCfg: Exception failed to retrieve MemoryStatisticsDaemon PID: Unexpected error")
+                    
     def test_memory_statistics_handler(self):
         """Test memory_statistics_handler in HostConfigDaemon"""
         daemon = hostcfgd.HostConfigDaemon()
