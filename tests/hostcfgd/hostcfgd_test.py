@@ -540,3 +540,85 @@ class TestMemoryStatisticsCfgd(TestCase):
     #         mock_shutdown.assert_called_once()
     #         self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
 
+
+    def test_memory_statistics_update_same_value(self):
+        """Test update with same value (should not trigger apply_setting)"""
+        with mock.patch.object(self.mem_stat_cfg, 'apply_setting') as mock_apply:
+            self.mem_stat_cfg.memory_statistics_update('sampling_interval', '5')
+            mock_apply.assert_not_called()
+
+    def test_memory_statistics_update_exception_handling(self):
+        """Test exception handling in memory_statistics_update"""
+        with mock.patch.object(self.mem_stat_cfg, 'apply_setting', side_effect=Exception("Test error")):
+            with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+                self.mem_stat_cfg.memory_statistics_update('enabled', 'true')
+                mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to manage MemoryStatisticsDaemon: Test error")
+
+    def test_apply_setting_with_non_enabled_key(self):
+        """Test apply_setting with sampling_interval or retention_period"""
+        with mock.patch.object(self.mem_stat_cfg, 'reload_memory_statistics') as mock_reload:
+            self.mem_stat_cfg.apply_setting('sampling_interval', '10')
+            mock_reload.assert_called_once()
+
+    def test_apply_setting_with_enabled_false(self):
+        """Test apply_setting with enabled=false"""
+        with mock.patch.object(self.mem_stat_cfg, 'shutdown_memory_statistics') as mock_shutdown:
+            self.mem_stat_cfg.apply_setting('enabled', 'false')
+            mock_shutdown.assert_called_once()
+
+    def test_apply_setting_exception(self):
+        """Test exception handling in apply_setting"""
+        with mock.patch.object(self.mem_stat_cfg, 'restart_memory_statistics', 
+                             side_effect=Exception("Test error")):
+            with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+                self.mem_stat_cfg.apply_setting('enabled', 'true')
+                mock_syslog.assert_any_call(mock.ANY, 
+                    "MemoryStatisticsCfg: Exception in apply_setting() for key 'enabled': Test error")
+
+    @mock.patch('hostcfgd.psutil.pid_exists', return_value=False)
+    def test_get_memory_statistics_pid_nonexistent(self, mock_pid_exists):
+        """Test get_memory_statistics_pid when PID doesn't exist"""
+        mock_open = mock.mock_open(read_data="123")
+        with mock.patch('builtins.open', mock_open):
+            with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+                pid = self.mem_stat_cfg.get_memory_statistics_pid()
+                self.assertIsNone(pid)
+                mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID does not exist.")
+
+    @mock.patch('hostcfgd.psutil.Process')
+    def test_get_memory_statistics_pid_exception(self, mock_process):
+        """Test general exception handling in get_memory_statistics_pid"""
+        mock_process.side_effect = Exception("Unexpected error")
+        mock_open = mock.mock_open(read_data="123")
+        with mock.patch('builtins.open', mock_open):
+            with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+                pid = self.mem_stat_cfg.get_memory_statistics_pid()
+                self.assertIsNone(pid)
+                mock_syslog.assert_any_call(mock.ANY, 
+                    "MemoryStatisticsCfg: Exception failed to retrieve MemoryStatisticsDaemon PID: Unexpected error")
+
+    def test_memory_statistics_handler(self):
+        """Test memory_statistics_handler in HostConfigDaemon"""
+        daemon = hostcfgd.HostConfigDaemon()
+        with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update') as mock_update:
+            daemon.memory_statistics_handler('enabled', None, 'true')
+            mock_update.assert_called_once_with('enabled', 'true')
+
+    def test_memory_statistics_handler_exception(self):
+        """Test exception handling in memory_statistics_handler"""
+        daemon = hostcfgd.HostConfigDaemon()
+        with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update', 
+                             side_effect=Exception("Handler error")):
+            with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+                daemon.memory_statistics_handler('enabled', None, 'true')
+                mock_syslog.assert_any_call(mock.ANY, 
+                    "MemoryStatisticsCfg: Error while handling memory statistics update: Handler error")
+
+    @mock.patch('hostcfgd.psutil.Process')
+    def test_wait_for_shutdown_general_exception(self, mock_process):
+        """Test general exception handling in wait_for_shutdown"""
+        mock_process.side_effect = Exception("Unexpected shutdown error")
+        with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            self.mem_stat_cfg.wait_for_shutdown(123)
+            mock_syslog.assert_any_call(mock.ANY, 
+                "MemoryStatisticsCfg: Exception in wait_for_shutdown(): Unexpected shutdown error")
