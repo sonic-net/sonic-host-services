@@ -634,100 +634,100 @@ class TestMemoryStatisticsCfgd(TestCase):
 
 
 
-def test_reload_memory_statistics_success(self):
-    """Test successful reload of memory statistics daemon"""
-    with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
-         mock.patch('hostcfgd.os.kill') as mock_kill, \
-         mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-        
-        self.mem_stat_cfg.reload_memory_statistics()
-        
-        # Verify the method calls
-        mock_get_pid.assert_called_once()
-        mock_kill.assert_called_once_with(123, signal.SIGHUP)
-        mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Sent SIGHUP to reload daemon configuration")
+    def test_reload_memory_statistics_success(self):
+        """Test successful reload of memory statistics daemon"""
+        with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
+            mock.patch('hostcfgd.os.kill') as mock_kill, \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            
+            self.mem_stat_cfg.reload_memory_statistics()
+            
+            # Verify the method calls
+            mock_get_pid.assert_called_once()
+            mock_kill.assert_called_once_with(123, signal.SIGHUP)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Sent SIGHUP to reload daemon configuration")
 
-def test_reload_memory_statistics_no_pid(self):
-    """Test reload when no daemon is running"""
-    with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=None) as mock_get_pid, \
-         mock.patch('hostcfgd.os.kill') as mock_kill:
-        
-        self.mem_stat_cfg.reload_memory_statistics()
-        
-        # Verify the method calls
-        mock_get_pid.assert_called_once()
-        mock_kill.assert_not_called()
+    def test_reload_memory_statistics_no_pid(self):
+        """Test reload when no daemon is running"""
+        with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=None) as mock_get_pid, \
+            mock.patch('hostcfgd.os.kill') as mock_kill:
+            
+            self.mem_stat_cfg.reload_memory_statistics()
+            
+            # Verify the method calls
+            mock_get_pid.assert_called_once()
+            mock_kill.assert_not_called()
 
-def test_reload_memory_statistics_failure(self):
-    """Test reload failure with exception"""
-    with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
-         mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
-         mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-        
-        self.mem_stat_cfg.reload_memory_statistics()
-        
-        mock_get_pid.assert_called_once()
-        mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: Test error")
+    def test_reload_memory_statistics_failure(self):
+        """Test reload failure with exception"""
+        with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
+            mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            
+            self.mem_stat_cfg.reload_memory_statistics()
+            
+            mock_get_pid.assert_called_once()
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: Test error")
 
-def test_shutdown_memory_statistics_success(self):
-    """Test successful shutdown of memory statistics daemon"""
-    with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
-         mock.patch('hostcfgd.os.kill') as mock_kill, \
-         mock.patch.object(self.mem_stat_cfg, 'wait_for_shutdown') as mock_wait, \
-         mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-        
-        self.mem_stat_cfg.shutdown_memory_statistics()
-        
-        mock_get_pid.assert_called_once()
-        mock_kill.assert_called_once_with(123, signal.SIGTERM)
-        mock_wait.assert_called_once_with(123)
-        mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
+    def test_shutdown_memory_statistics_success(self):
+        """Test successful shutdown of memory statistics daemon"""
+        with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
+            mock.patch('hostcfgd.os.kill') as mock_kill, \
+            mock.patch.object(self.mem_stat_cfg, 'wait_for_shutdown') as mock_wait, \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            
+            self.mem_stat_cfg.shutdown_memory_statistics()
+            
+            mock_get_pid.assert_called_once()
+            mock_kill.assert_called_once_with(123, signal.SIGTERM)
+            mock_wait.assert_called_once_with(123)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
 
-def test_shutdown_memory_statistics_failure(self):
-    """Test shutdown failure with exception"""
-    with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
-         mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
-         mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-        
-        self.mem_stat_cfg.shutdown_memory_statistics()
-        
-        mock_get_pid.assert_called_once()
-        mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: Test error")
+    def test_shutdown_memory_statistics_failure(self):
+        """Test shutdown failure with exception"""
+        with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
+            mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            
+            self.mem_stat_cfg.shutdown_memory_statistics()
+            
+            mock_get_pid.assert_called_once()
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: Test error")
 
-def test_wait_for_shutdown_success(self):
-    """Test successful wait for shutdown"""
-    mock_process = mock.Mock()
-    with mock.patch('hostcfgd.psutil.Process', return_value=mock_process) as mock_process_class, \
-         mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-        
-        self.mem_stat_cfg.wait_for_shutdown(123)
-        
-        mock_process_class.assert_called_once_with(123)
-        mock_process.wait.assert_called_once_with(timeout=10)
-        mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: MemoryStatisticsDaemon stopped gracefully")
+    def test_wait_for_shutdown_success(self):
+        """Test successful wait for shutdown"""
+        mock_process = mock.Mock()
+        with mock.patch('hostcfgd.psutil.Process', return_value=mock_process) as mock_process_class, \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            
+            self.mem_stat_cfg.wait_for_shutdown(123)
+            
+            mock_process_class.assert_called_once_with(123)
+            mock_process.wait.assert_called_once_with(timeout=10)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: MemoryStatisticsDaemon stopped gracefully")
 
-def test_main_function(self):
-    """Test the main function"""
-    with mock.patch('hostcfgd.HostConfigDaemon') as mock_daemon:
-        hostcfgd.main()
-        
-        # Verify daemon was instantiated and started
-        mock_daemon.assert_called_once()
-        mock_instance = mock_daemon.return_value
-        mock_instance.register_callbacks.assert_called_once()
-        mock_instance.start.assert_called_once()
+    def test_main_function(self):
+        """Test the main function"""
+        with mock.patch('hostcfgd.HostConfigDaemon') as mock_daemon:
+            hostcfgd.main()
+            
+            # Verify daemon was instantiated and started
+            mock_daemon.assert_called_once()
+            mock_instance = mock_daemon.return_value
+            mock_instance.register_callbacks.assert_called_once()
+            mock_instance.start.assert_called_once()
 
-def test_process_name_mismatch(self):
-    """Test when process name doesn't match expected daemon name"""
-    mock_process = mock.Mock()
-    mock_process.name.return_value = "wrong_process_name"
-    
-    with mock.patch('builtins.open', mock.mock_open(read_data="123")), \
-         mock.patch('hostcfgd.psutil.pid_exists', return_value=True), \
-         mock.patch('hostcfgd.psutil.Process', return_value=mock_process), \
-         mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+    def test_process_name_mismatch(self):
+        """Test when process name doesn't match expected daemon name"""
+        mock_process = mock.Mock()
+        mock_process.name.return_value = "wrong_process_name"
         
-        pid = self.mem_stat_cfg.get_memory_statistics_pid()
-        
-        self.assertIsNone(pid)
-        mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID 123 does not correspond to memory_statistics_service.py.")
+        with mock.patch('builtins.open', mock.mock_open(read_data="123")), \
+            mock.patch('hostcfgd.psutil.pid_exists', return_value=True), \
+            mock.patch('hostcfgd.psutil.Process', return_value=mock_process), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            
+            pid = self.mem_stat_cfg.get_memory_statistics_pid()
+            
+            self.assertIsNone(pid)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID 123 does not correspond to memory_statistics_service.py.")
