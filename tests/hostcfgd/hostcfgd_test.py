@@ -897,3 +897,82 @@ class TestMemoryStatisticsCfgd(TestCase):
             daemon.memory_statistics_handler('enabled', None, 'true')
             mock_syslog.assert_any_call(mock.ANY, 
                 "MemoryStatisticsCfg: Error while handling memory statistics update: Handler error")
+            
+    
+
+
+    def test_reload_memory_statistics(self):
+        """Test reloading the daemon configuration via SIGHUP."""
+        with mock.patch('hostcfgd.os.kill') as mock_kill, \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog, \
+            mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123):
+            # Successful reload
+            self.mem_stat_cfg.reload_memory_statistics()
+            mock_kill.assert_called_with(123, signal.SIGHUP)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Sent SIGHUP to reload daemon configuration")
+
+            # Reload failure
+            mock_kill.side_effect = Exception("Reload error")
+            self.mem_stat_cfg.reload_memory_statistics()
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: Reload error")
+
+    def test_restart_memory_statistics_exceptions(self):
+        """Test restarting the daemon with exceptions."""
+        # Restart failure after shutdown
+        with mock.patch('hostcfgd.os.kill') as mock_kill, \
+            mock.patch('hostcfgd.subprocess.Popen', side_effect=Exception("Start error")), \
+            mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            self.mem_stat_cfg.restart_memory_statistics()
+            mock_kill.assert_called_with(123, signal.SIGTERM)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to start MemoryStatisticsDaemon: Start error")
+
+    def test_shutdown_memory_statistics_exceptions(self):
+        """Test shutdown with various exceptions."""
+        with mock.patch('hostcfgd.os.kill') as mock_kill, \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog, \
+            mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123):
+            # SIGTERM failure
+            mock_kill.side_effect = Exception("Shutdown error")
+            self.mem_stat_cfg.shutdown_memory_statistics()
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: Shutdown error")
+
+            # No running PID
+            with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=None):
+                self.mem_stat_cfg.shutdown_memory_statistics()
+                mock_kill.assert_not_called()
+
+    def test_wait_for_shutdown_exceptions(self):
+        """Test waiting for daemon shutdown with exceptions."""
+        mock_process = mock.Mock()
+        with mock.patch('hostcfgd.psutil.Process', return_value=mock_process), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            # Generic exception
+            mock_process.wait.side_effect = Exception("Wait error")
+            self.mem_stat_cfg.wait_for_shutdown(123)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Exception in wait_for_shutdown(): Wait error")
+
+    def test_apply_setting_exceptions(self):
+        """Test error handling in apply_setting."""
+        with mock.patch.object(self.mem_stat_cfg, 'restart_memory_statistics', side_effect=Exception("Restart error")), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            self.mem_stat_cfg.apply_setting('enabled', 'true')
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Exception in apply_setting() for key 'enabled': Restart error")
+
+    def test_get_memory_statistics_pid_exceptions(self):
+        """Test exception handling in PID retrieval."""
+        # Generic exception during PID file read
+        with mock.patch('builtins.open', side_effect=Exception("PID file error")), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            pid = self.mem_stat_cfg.get_memory_statistics_pid()
+            self.assertIsNone(pid)
+            mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Exception failed to retrieve MemoryStatisticsDaemon PID: PID file error")
+
+    def test_memory_statistics_update_reload_logic(self):
+        """Test logic path for triggering reload instead of restart."""
+        with mock.patch.object(self.mem_stat_cfg, 'reload_memory_statistics') as mock_reload, \
+            mock.patch.object(self.mem_stat_cfg, 'restart_memory_statistics') as mock_restart:
+            self.mem_stat_cfg.cache['sampling_interval'] = '10'
+            self.mem_stat_cfg.memory_statistics_update('sampling_interval', '10')
+            mock_reload.assert_called_once()
+            mock_restart.assert_not_called()
