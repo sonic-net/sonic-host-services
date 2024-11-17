@@ -9,7 +9,9 @@ import syslog
 import signal
 import re
 import jinja2
+import time
 import json
+import psutil
 from shutil import copy2
 from datetime import datetime
 from sonic_py_common import device_info
@@ -1716,7 +1718,179 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
+class MemoryStatisticsCfg:
+    """
+    The MemoryStatisticsCfg class manages the configuration updates for the MemoryStatisticsDaemon, a daemon
+    responsible for collecting memory usage statistics. It monitors configuration changes in ConfigDB and, based 
+    on those updates, performs actions such as restarting, shutting down, or reloading the daemon.
 
+    Attributes:
+        VALID_KEYS (list): List of valid configuration keys ("enabled", "sampling_interval", "retention_period").
+        PID_FILE_PATH (str): Path where the daemon’s process ID (PID) is stored.
+        DAEMON_EXEC_PATH (str): Path to the executable file of the memory statistics daemon.
+        DAEMON_PROCESS_NAME (str): Name of the daemon process used for validation.
+    """
+    VALID_KEYS = ["enabled", "sampling_interval", "retention_period"]
+    PID_FILE_PATH = '/var/run/memory_statistics_daemon.pid'
+    DAEMON_EXEC_PATH = '/usr/bin/memory_statistics_service.py'
+    DAEMON_PROCESS_NAME = 'memory_statistics_service.py'
+
+    def __init__(self, config_db):
+        """
+        Initialize MemoryStatisticsCfg with a configuration database.
+
+        Parameters:
+            config_db (object): Instance of the configuration database (ConfigDB) used to retrieve and
+                                apply configuration changes.
+        """
+        self.cache = {
+            "enabled": "false",
+            "sampling_interval": "5",
+            "retention_period": "15"
+        }
+        self.config_db = config_db
+
+    def load(self, memory_statistics_config: dict):
+        """
+        Load the initial memory statistics configuration from a provided dictionary.
+
+        Parameters:
+            memory_statistics_config (dict): Dictionary containing the initial configuration values.
+        """
+        syslog.syslog(syslog.LOG_INFO, 'MemoryStatisticsCfg: Loading initial configuration')
+
+        if not memory_statistics_config:
+            memory_statistics_config = {}
+
+        for key, value in memory_statistics_config.items():
+            if key not in self.VALID_KEYS:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid key '{key}' in initial configuration.")
+                continue
+            self.memory_statistics_update(key, value)
+
+    def memory_statistics_update(self, key, data):
+        """
+        Handles updates for each configuration setting, validates the data, and updates the cache if the value changes.
+
+        Parameters:
+            key (str): Configuration key, e.g., "enabled", "sampling_interval", or "retention_period".
+            data (str): The new value for the configuration key.
+        """
+        if key not in self.VALID_KEYS:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid key '{key}' received.")
+            return
+
+        data = str(data)  
+
+        if key in ["retention_period", "sampling_interval"] and (not data.isdigit() or int(data) <= 0):
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid value '{data}' for key '{key}'. Must be a positive integer.")
+            return
+
+        if data != self.cache.get(key):
+            syslog.syslog(syslog.LOG_INFO, f"MemoryStatisticsCfg: Detected change in '{key}' to '{data}'")
+
+            try:
+                self.apply_setting(key, data)
+                self.cache[key] = data  
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f'MemoryStatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
+
+    def apply_setting(self, key, data):
+        """
+        Apply the setting based on the key. If "enabled" is set to true or false, start or stop the daemon.
+        For other keys, reload the daemon configuration.
+
+        Parameters:
+            key (str): The specific configuration setting being updated.
+            data (str): The value for the setting.
+        """
+        try:
+            if key == "enabled":
+                if data.lower() == "true":
+                    self.restart_memory_statistics()
+                else:
+                    self.shutdown_memory_statistics()
+            else:
+                self.reload_memory_statistics()
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} in apply_setting() for key '{key}': {e}")
+
+    def restart_memory_statistics(self):
+        """Restarts the memory statistics daemon by first shutting it down (if running) and then starting it again."""
+        try:
+            self.shutdown_memory_statistics()
+            time.sleep(1)  
+            syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Starting MemoryStatisticsDaemon")
+            subprocess.Popen([self.DAEMON_EXEC_PATH])
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to start MemoryStatisticsDaemon: {e}")
+
+    def reload_memory_statistics(self):
+        """Sends a SIGHUP signal to the daemon to reload its configuration without restarting."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGHUP)
+                syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Sent SIGHUP to reload daemon configuration")
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: {e}")
+
+    def shutdown_memory_statistics(self):
+        """Sends a SIGTERM signal to gracefully shut down the daemon."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
+                self.wait_for_shutdown(pid)
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: {e}")
+
+    def wait_for_shutdown(self, pid, timeout=10):
+        """
+        Waits for the daemon process to terminate gracefully within a given timeout.
+
+        Parameters:
+            pid (int): Process ID of the daemon to shut down.
+            timeout (int): Maximum wait time in seconds for the process to terminate (default is 10 seconds).
+        """
+        try:
+            process = psutil.Process(pid)
+            process.wait(timeout=timeout)
+            syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: MemoryStatisticsDaemon stopped gracefully")
+        except psutil.TimeoutExpired:
+            syslog.syslog(syslog.LOG_WARNING, f"MemoryStatisticsCfg: Timed out while waiting for daemon (PID {pid}) to shut down.")
+        except psutil.NoSuchProcess:
+            syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: MemoryStatisticsDaemon process not found.")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Exception in wait_for_shutdown(): {e}")
+
+    def get_memory_statistics_pid(self):
+        """
+        Retrieves the PID of the currently running daemon from the PID file, verifying it matches the expected daemon.
+
+        Returns:
+            int or None: Returns the PID if the process is running and matches the expected daemon; otherwise, returns None.
+        """
+        try:
+            with open(self.PID_FILE_PATH, 'r') as pid_file:
+                pid = int(pid_file.read().strip())
+            if psutil.pid_exists(pid):
+                process = psutil.Process(pid)
+                if process.name() == self.DAEMON_PROCESS_NAME:
+                    return pid
+                else:
+                    syslog.syslog(syslog.LOG_WARNING, f"MemoryStatisticsCfg: PID {pid} does not correspond to {self.DAEMON_PROCESS_NAME}.")
+            else:
+                syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: PID does not exist.")
+        except FileNotFoundError:
+            syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: PID file not found. Daemon might not be running.")
+        except ValueError:
+            syslog.syslog(syslog.LOG_ERR, "MemoryStatisticsCfg: PID file contents invalid.")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} failed to retrieve MemoryStatisticsDaemon PID: {e}")
+        return None
+     
 class SerialConsoleCfg:
 
     def __init__(self):
@@ -1747,7 +1921,6 @@ class SerialConsoleCfg:
             self.cache.update({key: data})
 
         return
-
 
 class BannerCfg(object):
     """
@@ -1826,7 +1999,6 @@ class BannerCfg(object):
         for k,v in data.items():
             self.cache[k] = v
 
-
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
@@ -1841,6 +2013,9 @@ class HostConfigDaemon:
 
         # Initialize KDump Config and set the config to default if nothing is provided
         self.kdumpCfg = KdumpCfg(self.config_db)
+
+        # Initialize MemoryStatisticsCfg
+        self.memorystatisticscfg = MemoryStatisticsCfg(self.config_db)
 
         # Initialize IpTables
         self.iptables = Iptables()
@@ -1896,6 +2071,7 @@ class HostConfigDaemon:
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
+        memory_statistics = init_data["MEMORY_STATISTICS"]
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
@@ -1912,6 +2088,7 @@ class HostConfigDaemon:
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
         self.kdumpCfg.load(kdump)
+        self.memorystatisticscfg.load(memory_statistics)
         self.passwcfg.load(passwh)
         self.sshscfg.load(ssh_server)
         self.devmetacfg.load(dev_meta)
@@ -2043,6 +2220,14 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
 
+    def memory_statistics_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'Memory_Statistics handler...')
+        try:
+            self.memorystatisticscfg.memory_statistics_update(key, data)
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Error while handling memory statistics update: {e}")
+
+
     def device_metadata_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
@@ -2099,6 +2284,7 @@ class HostConfigDaemon:
             return callback
 
         self.config_db.subscribe('KDUMP', make_callback(self.kdump_handler))
+        self.config_db.subscribe('MEMORY_STATISTICS',make_callback(self.memory_statistics_handler))
         # Handle AAA, TACACS and RADIUS related tables
         self.config_db.subscribe('AAA', make_callback(self.aaa_handler))
         self.config_db.subscribe('TACPLUS', make_callback(self.tacacs_global_handler))
@@ -2123,6 +2309,9 @@ class HostConfigDaemon:
         # Handle DEVICE_MEATADATA changes
         self.config_db.subscribe(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
                                  make_callback(self.device_metadata_handler))
+        
+        # self.config_db.subscribe(swsscommon.CFG_MEMORY_STATISTICS_TABLE_NAME,
+        #                          make_callback(self.memory_statistics_handler))
 
         # Handle MGMT_VRF_CONFIG changes
         self.config_db.subscribe(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME,
@@ -2170,4 +2359,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
