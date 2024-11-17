@@ -376,12 +376,23 @@ class TestBannerCfg:
 class TestMemoryStatisticsCfgd(TestCase):
     """Test MemoryStatisticsCfg functionalities."""
 
+    # def setUp(self):
+    #     # Initial configuration for Memory Statistics
+    #     MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'] = {
+    #         'enabled': 'false',
+    #         'sampling_interval': '5',
+    #         'retention_period': '15'
+    #     }
+    #     self.mem_stat_cfg = hostcfgd.MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
+
     def setUp(self):
         # Initial configuration for Memory Statistics
         MockConfigDb.CONFIG_DB['MEMORY_STATISTICS'] = {
-            'enabled': 'false',
-            'sampling_interval': '5',
-            'retention_period': '15'
+            'memory_statistics': {
+                'enabled': 'false',
+                'sampling_interval': '5',
+                'retention_period': '15'
+            }
         }
         self.mem_stat_cfg = hostcfgd.MemoryStatisticsCfg(MockConfigDb.CONFIG_DB)
 
