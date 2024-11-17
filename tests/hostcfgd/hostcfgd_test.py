@@ -469,6 +469,34 @@ class TestMemoryStatisticsCfgd(TestCase):
                 self.assertIsNone(pid)
                 mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID 123 does not correspond to memory_statistics_service.py.")
 
+
+    def test_get_memory_statistics_pid_success(self):
+        """Test successful PID retrieval when process exists and name matches"""
+        # Create a mock process with the correct name
+        mock_process = mock.Mock()
+        mock_process.name.return_value = "memory_statistics_service.py"  # Match DAEMON_PROCESS_NAME
+        
+        # Set up all the mocks
+        mock_open = mock.mock_open(read_data="123")
+        
+        with mock.patch('builtins.open', mock_open), \
+            mock.patch('hostcfgd.psutil.pid_exists', return_value=True), \
+            mock.patch('hostcfgd.psutil.Process', return_value=mock_process), \
+            mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            
+            # Call the method
+            pid = self.mem_stat_cfg.get_memory_statistics_pid()
+            
+            # Verify the result
+            self.assertEqual(pid, 123)
+            
+            # Verify the mocks were called correctly
+            mock_open.assert_called_once_with(self.mem_stat_cfg.PID_FILE_PATH, 'r')
+            mock_process.name.assert_called_once()
+            mock_syslog.assert_not_called()  # No warnings should be logged for successful case
+
+
+
     # Test daemon shutdown
     @mock.patch('hostcfgd.psutil.Process')
     def test_wait_for_shutdown_timeout(self, mock_process):
