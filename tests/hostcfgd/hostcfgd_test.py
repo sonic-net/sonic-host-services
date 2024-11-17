@@ -733,11 +733,6 @@ class TestBannerCfg:
 #             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID 123 does not correspond to memory_statistics_service.py.")
 
 
-# from unittest import TestCase, mock
-import signal
-import psutil
-import hostcfgd
-
 class TestMemoryStatisticsCfgValidation(TestCase):
     """Tests for configuration validation in MemoryStatisticsCfg."""
 
@@ -753,6 +748,7 @@ class TestMemoryStatisticsCfgValidation(TestCase):
         for key, value, expected_msg in invalid_cases:
             with self.subTest(key=key, value=value), mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                 self.mem_stat_cfg.memory_statistics_update(key, value)
+                # Check if the syslog was called with the expected message
                 mock_syslog.assert_any_call(mock.ANY, f"MemoryStatisticsCfg: {expected_msg}")
 
     def test_valid_update_with_reload(self):
@@ -785,6 +781,7 @@ class TestMemoryStatisticsDaemonManagement(TestCase):
             mock_kill.assert_called_once_with(123, signal.SIGTERM)
             mock_wait.assert_called_once_with(123)
 
+
 class TestMemoryStatisticsPIDHandling(TestCase):
     """Tests for PID handling in MemoryStatisticsCfg."""
 
@@ -816,6 +813,7 @@ class TestMemoryStatisticsPIDHandling(TestCase):
             self.assertIsNone(pid)
             mock_syslog.assert_any_call(mock.ANY, "PID does not exist.")
 
+
 class TestMemoryStatisticsIntegration(TestCase):
     """Integration tests for MemoryStatisticsCfgd and HostConfigDaemon."""
 
@@ -823,14 +821,15 @@ class TestMemoryStatisticsIntegration(TestCase):
         """Test enabling and disabling memory statistics."""
         self.mem_stat_cfg = hostcfgd.MemoryStatisticsCfg({'enabled': 'false'})
         with mock.patch.object(self.mem_stat_cfg, 'apply_setting') as mock_apply:
+            # Test enabling
             self.mem_stat_cfg.memory_statistics_update('enabled', 'true')
             mock_apply.assert_called_once_with('enabled', 'true')
             self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'true')
 
-        # Test disabling
-        self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
-        mock_apply.assert_called_with('enabled', 'false')
-        self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
+            # Test disabling
+            self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
+            mock_apply.assert_called_with('enabled', 'false')
+            self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
 
     def test_memory_statistics_handler(self):
         """Test handler integration in HostConfigDaemon."""
@@ -838,7 +837,6 @@ class TestMemoryStatisticsIntegration(TestCase):
         with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update') as mock_update:
             daemon.memory_statistics_handler('enabled', None, 'true')
             mock_update.assert_called_once_with('enabled', 'true')
-
 
 
 
