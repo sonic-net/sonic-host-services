@@ -22,7 +22,6 @@ class TestDockerService(object):
         mock_docker_client.containers.get.assert_called_once_with("syncd")
         mock_docker_client.containers.get.return_value.stop.assert_called_once()
 
-
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
@@ -37,7 +36,6 @@ class TestDockerService(object):
         assert (
             "not" in msg and "allowed" in msg
         ), "Message should contain 'not' and 'allowed'"
-
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
