@@ -7,6 +7,42 @@ import errno
 
 MOD_NAME = "docker_service"
 
+# The set of allowed containers that can be managed by this service.
+# First element is the image name, second element is the container name.
+ALLOWED_CONTAINERS = [
+    ("docker-syncd-brcm", "syncd"),
+    ("docker-acms", "acms"),
+    ("docker-sonic-gnmi", "gnmi"),
+    ("docker-sonic-telemetry", "telemetry"),
+    ("docker-snmp", "snmp"),
+    ("docker-platform-monitor", "pmon"),
+    ("docker-lldp", "lldp"),
+    ("docker-dhcp-relay", "dhcp_relay"),
+    ("docker-router-advertiser", "radv"),
+    ("docker-teamd", "teamd"),
+    ("docker-fpm-frr", "bgp"),
+    ("docker-orchagent", "swss"),
+    ("docker-sonic-restapi", "restapi"),
+    ("docker-eventd", "eventd"),
+    ("docker-database", "database"),
+]
+
+
+def is_allowed_container(container):
+    """
+    Check if the container is allowed to be managed by this service.
+
+    Args:
+        container (str): The container name.
+
+    Returns:
+        bool: True if the container is allowed, False otherwise.
+    """
+    for _, allowed_container in ALLOWED_CONTAINERS:
+        if container == allowed_container:
+            return True
+    return False
+
 
 class DockerService(host_service.HostModule):
     """
@@ -28,6 +64,13 @@ class DockerService(host_service.HostModule):
         """
         try:
             client = docker.from_env()
+            if not is_allowed_container(container):
+                return (
+                    errno.EPERM,
+                    "Container {} is not allowed to be managed by this service.".format(
+                        container
+                    ),
+                )
             container = client.containers.get(container)
             container.stop()
             return 0, "Container {} has been stopped.".format(container.name)
@@ -52,6 +95,13 @@ class DockerService(host_service.HostModule):
         """
         try:
             client = docker.from_env()
+            if not is_allowed_container(container):
+                return (
+                    errno.EPERM,
+                    "Container {} is not allowed to be managed by this service.".format(
+                        container
+                    ),
+                )
             container = client.containers.get(container)
             container.kill(signal=signal)
             return 0, "Container {} has been killed with signal {}.".format(
@@ -77,6 +127,13 @@ class DockerService(host_service.HostModule):
         """
         try:
             client = docker.from_env()
+            if not is_allowed_container(container):
+                return (
+                    errno.EPERM,
+                    "Container {} is not allowed to be managed by this service.".format(
+                        container
+                    ),
+                )
             container = client.containers.get(container)
             container.restart()
             return 0, "Container {} has been restarted.".format(container.name)
