@@ -1189,16 +1189,16 @@ class KdumpCfg(object):
             run_cmd(["sonic-kdump-config", "--remote", remote])
 
             # SSH key
-            ssh_key = self.kdump_defaults["SSH_KEY"]
-            if data.get("SSH_KEY") is not None:
-                ssh_key = data.get("SSH_KEY")
-            run_cmd(["sonic-kdump-config", "--ssh_key", ssh_key])
+            if remote.lower() == "true":
+                ssh_key = self.kdump_defaults["SSH_KEY"]
+                if data.get("SSH_KEY") is not None:
+                    ssh_key = data.get("SSH_KEY")
+                run_cmd(["sonic-kdump-config", "--ssh_key", ssh_key])
 
-            # SSH path
-            ssh_path = self.kdump_defaults["SSH_PATH"]
-            if data.get("SSH_PATH") is not None:
-                ssh_path = data.get("SSH_PATH")
-            run_cmd(["sonic-kdump-config", "--ssh_path", ssh_path])
+                ssh_path = self.kdump_defaults["SSH_PATH"]
+                if data.get("SSH_PATH") is not None:
+                    ssh_path = data.get("SSH_PATH")
+                run_cmd(["sonic-kdump-config", "--ssh_path", ssh_path])
 
 
 class NtpCfg(object):
