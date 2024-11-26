@@ -71,33 +71,6 @@ def read_reboot_cause_files_and_save_state_db():
                 x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
                 os.remove(x)
 
-def get_dpus():
-    """Retrieve the list of DPUs from the platform.json file."""
-    dpus = []
-
-    try:
-        # Get platform information
-        platform_info = device_info.get_platform_info()
-        platform = platform_info.get('platform')
-        if not platform:
-            raise KeyError("Platform key missing from platform_info")
-
-        # Path to platform.json
-        platform_path = os.path.join("/usr/share/sonic/device", platform, "platform.json")
-        sonic_logger.log_info(f"Reading platform JSON from: {platform_path}")
-
-        with open(platform_path, 'r') as f:
-            platform_data = json.load(f)
-
-        dpus = platform_data.get('DPUS', [])
-        if not dpus:
-            sonic_logger.log_warning("No DPUS found in platform.json")
-
-    except Exception as e:
-        sonic_logger.log_error(f"Error retrieving DPUs: {e}")
-
-    return dpus
-
 def get_sorted_reboot_cause_files(dpu_history_path):
     """Retrieve and sort the reboot cause files for a specific DPU."""
     try:
@@ -121,8 +94,7 @@ def read_dpu_reboot_cause_files_and_save_chassis_state_db():
     chassis_state_db.connect(chassis_state_db.CHASSIS_STATE_DB)
 
     try:
-        # Use the helper API get_dpu_list from device_info when ready
-        dpus = get_dpus()
+        dpus = device_info.get_dpu_list()
 
         for dpu in dpus:
             # Get sorted reboot cause files for the DPU
