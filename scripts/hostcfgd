@@ -1200,7 +1200,6 @@ class KdumpCfg(object):
                     ssh_path = data.get("SSH_PATH")
                 run_cmd(["sonic-kdump-config", "--ssh_path", ssh_path])
 
-
 class NtpCfg(object):
     """
     NtpCfg Config Daemon
