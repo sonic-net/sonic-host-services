@@ -23,13 +23,13 @@ TEST_INACTIVE_RESPONSE_DATA = "{\"active\": false, \"when\": 0, \"reason\": \"\"
 
 REBOOTMETHOD_UNKNOWN_ENUM = 0
 REBOOTMETHOD_COLD_BOOT_ENUM = 1
-REBOOTMETHOD_NSF_ENUM = 5
+REBOOTMETHOD_WARM_BOOT_ENUM = 4
 
 TEST_TIMESTAMP = 1618942253.831912040
 REPORT_CRITICAL_STATE_FULL_COMMAND = "redis-cli -n 6 HSET COMPONENT_STATE_TABLE|host state ERROR reason \"cold reboot has failed\" essential true timestamp \"2021-04-20 18:10:53\" timestamp-seconds 1618942253 timestamp-nanoseconds 831912040"
 
 VALID_REBOOT_REQUEST_COLD = "{\"method\": 1, \"message\": \"test reboot request reason\"}"
-VALID_REBOOT_REQUEST_NSF = "{\"method\": \"NSF\", \"message\": \"test reboot request reason\"}"
+VALID_REBOOT_REQUEST_WARM = "{\"method\": \"WARM\", \"message\": \"test reboot request reason\"}"
 INVALID_REBOOT_REQUEST = "\"method\": 1, \"message\": \"test reboot request reason\""
 
 imp.load_source("host_service", host_modules_path + "/host_service.py")
@@ -62,14 +62,14 @@ class TestGnoiReboot(object):
         assert result[0] == 0
         assert result[1] == ""
 
-    def test_validate_reboot_request_success_nsf_enum_method(self):
-        reboot_request = {"method": REBOOTMETHOD_NSF_ENUM, "reason": "test reboot request reason"}
+    def test_validate_reboot_request_success_warm_enum_method(self):
+        reboot_request = {"method": REBOOTMETHOD_WARM_BOOT_ENUM, "reason": "test reboot request reason"}
         result = self.gnoi_reboot_module.validate_reboot_request(reboot_request)
         assert result[0] == 0
         assert result[1] == ""
 
-    def test_validate_reboot_request_success_nsf_enum_method(self):
-        reboot_request = {"method": "NSF", "reason": "test reboot request reason"}
+    def test_validate_reboot_request_success_WARM_enum_method(self):
+        reboot_request = {"method": "WARM", "reason": "test reboot request reason"}
         result = self.gnoi_reboot_module.validate_reboot_request(reboot_request)
         assert result[0] == 0
         assert result[1] == ""
@@ -98,9 +98,9 @@ class TestGnoiReboot(object):
             mock.patch("time.sleep") as mock_sleep,
             mock.patch("gnoi_reboot.GnoiReboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
         ):
-            mock_run_command.return_value = (0, ["stdout: execute NSF reboot"], ["stderror: execute NSF reboot"])
-            self.gnoi_reboot_module.execute_reboot("NSF")
-            mock_run_command.assert_called_once_with("/etc/init.d/gpins-nsf-boot nsf-reboot")
+            mock_run_command.return_value = (0, ["stdout: execute WARM reboot"], ["stderror: execute WARM reboot"])
+            self.gnoi_reboot_module.execute_reboot("WARM")
+            mock_run_command.assert_called_once_with("/usr/local/bin/warm-reboot -v")
             mock_sleep.assert_called_once_with(260)
             mock_populate_reboot_status_flag.assert_called_once_with()
 
@@ -124,17 +124,17 @@ class TestGnoiReboot(object):
             assert caplog.records[0].message == msg
             mock_populate_reboot_status_flag.assert_called_once_with()
 
-    def test_execute_reboot_fail_issue_reboot_command_nsf(self, caplog):
+    def test_execute_reboot_fail_issue_reboot_command_warm(self, caplog):
         with (
             mock.patch("gnoi_reboot._run_command") as mock_run_command,
             mock.patch("gnoi_reboot.GnoiReboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
             caplog.at_level(logging.ERROR),
         ):
-            mock_run_command.return_value = (1, ["stdout: execute NSF reboot"], ["stderror: execute NSF reboot"])
-            self.gnoi_reboot_module.execute_reboot("NSF")
+            mock_run_command.return_value = (1, ["stdout: execute WARM reboot"], ["stderror: execute WARM reboot"])
+            self.gnoi_reboot_module.execute_reboot("WARM")
             msg = ("gnoi_reboot: Reboot failed execution with "
-                    "stdout: ['stdout: execute NSF reboot'], stderr: "
-                    "['stderror: execute NSF reboot']")
+                    "stdout: ['stdout: execute WARM reboot'], stderr: "
+                    "['stderror: execute WARM reboot']")
             assert caplog.records[0].message == msg
             mock_populate_reboot_status_flag.assert_called_once_with()
 
@@ -153,18 +153,18 @@ class TestGnoiReboot(object):
             )
             mock_thread.return_value.start.assert_called_once_with()
 
-    def test_issue_reboot_success_nsf(self):
+    def test_issue_reboot_success_warm(self):
         with (
             mock.patch("threading.Thread") as mock_thread,
             mock.patch("gnoi_reboot.GnoiReboot.validate_reboot_request", return_value=(0, "")),
         ):
             self.gnoi_reboot_module.populate_reboot_status_flag()
-            result = self.gnoi_reboot_module.issue_reboot([VALID_REBOOT_REQUEST_NSF])
+            result = self.gnoi_reboot_module.issue_reboot([VALID_REBOOT_REQUEST_WARM])
             assert result[0] == 0
             assert result[1] == "Successfully issued reboot"
             mock_thread.assert_called_once_with(
                 target=self.gnoi_reboot_module.execute_reboot,
-                args=("NSF",),
+                args=("WARM",),
             )
             mock_thread.return_value.start.assert_called_once_with()
 
