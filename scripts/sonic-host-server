@@ -21,7 +21,7 @@ def register_dbus():
             'config': config_engine.Config('config'),
             'gcu': gcu.GCU('gcu'),
             'host_service': host_service.HostService('host_service'),
-            'reboot': reboot.Reboot('reboot'),
+	    'reboot': reboot.Reboot('reboot'),
             'showtech': showtech.Showtech('showtech'),
             'systemd': systemd_service.SystemdService('systemd'),
             'image_service': image_service.ImageService('image_service'),

@@ -4,21 +4,25 @@ import json
 import logging
 import threading
 import time
+import docker
 from host_modules import host_service
 from utils.run_cmd import _run_command
 
 MOD_NAME = 'reboot'
 # Reboot method in reboot request
 # Both enum and string representations are supported
-REBOOTMETHOD_COLD_BOOT_VALUES = {1, "COLD"}
-REBOOTMETHOD_WARM_BOOT_VALUES = {4, "WARM"}
-REBOOTMETHOD_NSF_VALUES = {5, "NSF"}
+# Define an Enum for Reboot Methods which are defined as in https://github.com/openconfig/gnoi/blob/main/system/system.pb.go#L27
+REBOOT_METHOD_COLD_BOOT_VALUES = {1, "COLD"}
+REBOOT_METHOD_HALT_BOOT_VALUES = {3, "HALT"}
+REBOOT_METHOD_WARM_BOOT_VALUES = {4, "WARM"}
 
 # Timeout for SONiC Host Service to be killed during reboot
 REBOOT_TIMEOUT = 260
+HALT_TIMEOUT = 60
 
 EXECUTE_COLD_REBOOT_COMMAND = "sudo reboot"
-EXECUTE_NSF_REBOOT_COMMAND = "/etc/init.d/gpins-nsf-boot nsf-reboot"
+EXECUTE_HALT_REBOOT_COMMAND = "sudo reboot -p"
+EXECUTE_WARM_REBOOT_COMMAND = "sudo warm-reboot"
 
 logger = logging.getLogger(__name__)
 
@@ -52,30 +56,45 @@ class Reboot(host_service.HostModule):
             return 1, "Reboot request must contain a reboot method"
 
         # Check whether reboot method is valid.
-        rebootmethod = reboot_request["method"]
-        valid_method = False
-        for values in [REBOOTMETHOD_COLD_BOOT_VALUES, REBOOTMETHOD_NSF_VALUES]:
-            if rebootmethod in values:
-                valid_method = True
-        if not valid_method:
-            return 1, "Invalid reboot method: " + str(rebootmethod)
+        reboot_method = reboot_request["method"]
+        valid_reboot_method = REBOOT_METHOD_COLD_BOOT_VALUES | REBOOT_METHOD_HALT_BOOT_VALUES | REBOOT_METHOD_WARM_BOOT_VALUES
+        if reboot_method not in valid_reboot_method:
+            return 1, "Unsupported reboot method: " + str(reboot_method)
 
         # Check whether delay is non-zero. delay key will not exist in reboot_request if it is zero
         if "delay" in reboot_request and reboot_request["delay"] != 0:
             return 1, "Delayed reboot is not supported"
         return 0, ""
 
-    def execute_reboot(self, rebootmethod):
-        """Execute reboot and reset reboot_status_flag when reboot fails"""
+    def is_container_running(self, container_name):
+        """Check if a given container is running using the Docker SDK."""
+        try:
+            client = docker.from_env()
+            containers = client.containers.list(filters={"name": container_name})
 
-        if rebootmethod in REBOOTMETHOD_COLD_BOOT_VALUES:
+            for container in containers:
+                if container.name == container_name and container.status == "running":
+                    return True
+            return False
+        except Exception as e:
+            logger.error("%s: Error checking container status for %s: [%s]", MOD_NAME, container_name, str(e))
+            return False
+
+    def execute_reboot(self, reboot_method):
+        """Executes reboot command based on the reboot_method initialised 
+           and reset reboot_status_flag when reboot fails."""
+
+        if reboot_method in REBOOT_METHOD_COLD_BOOT_VALUES:
             command = EXECUTE_COLD_REBOOT_COMMAND
             logger.warning("%s: Issuing cold reboot", MOD_NAME)
-        elif rebootmethod in REBOOTMETHOD_NSF_VALUES:
-            command = EXECUTE_NSF_REBOOT_COMMAND
-            logger.warning("%s: Issuing NSF reboot", MOD_NAME)
+        elif reboot_method in REBOOT_METHOD_HALT_BOOT_VALUES:
+            command = EXECUTE_HALT_REBOOT_COMMAND
+            logger.warning("%s: Issuing halt reboot", MOD_NAME)
+        elif reboot_method in REBOOT_METHOD_WARM_BOOT_VALUES:
+            command = EXECUTE_WARM_REBOOT_COMMAND
+            logger.warning("%s: Issuing WARM reboot", MOD_NAME)
         else:
-            logger.error("%s: Invalid reboot method: %d", MOD_NAME, rebootmethod)
+            logger.error("%s: Unsupported reboot method: %d", MOD_NAME, reboot_method)
             return
 
         rc, stdout, stderr = _run_command(command)
@@ -84,20 +103,36 @@ class Reboot(host_service.HostModule):
             logger.error("%s: Reboot failed execution with stdout: %s, "
                          "stderr: %s", MOD_NAME, stdout, stderr)
             return
-
-        """Wait for 260 seconds for the reboot to complete. Here, we expect that SONiC Host Service
+        
+        """wait for the reboot to complete. Here, we expect that SONiC Host Service
            will be killed during this waiting period if the reboot is successful. If this module
            is still alive after the below waiting period, we can conclude that the reboot has failed.
            Each container can take up to 20 seconds to get killed. In total, there are 10 containers,
-           and adding a buffer of 1 minute brings up the delay value to be 260 seconds."""
-        time.sleep(REBOOT_TIMEOUT)
-        # Conclude that the reboot has failed if we reach this point
-        self.populate_reboot_status_flag()
-        return
+           and adding a buffer of 1 minute brings up the delay value.
+           For Halt reboot_method, wait for 60 secs timeout. we expect pmon, syncd containers are killed, 
+           if Halt reboot is Successful."""
+        if reboot_method in REBOOT_METHOD_HALT_BOOT_VALUES:
+            time.sleep(HALT_TIMEOUT)
+            is_pmon_running = self.is_container_running("pmon")
+            if is_pmon_running:
+                #Halt reboot has failed, as pmon is still running.
+                logger.error("%s: HALT reboot failed: pmon is still running", MOD_NAME)
+                self.populate_reboot_status_flag()
+                return
+            else:
+                logger.warning("%s: Pmon conatiner has stopped after Halt reboot execution", MOD_NAME)
+
+        else:
+            time.sleep(REBOOT_TIMEOUT)
+            # Conclude that the reboot has failed if we reach this point
+            self.populate_reboot_status_flag()
+            return
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='as', out_signature='is')
+
     def issue_reboot(self, options):
-        """Issues reboot after performing the following steps sequentially:
+        """Initializes reboot thorugh RPC based on the reboot flag assigned.
+           Issues reboot after performing the following steps sequentially:
           1. Checks that reboot_status_flag is not set
           2. Validates the reboot request
           3. Sets the reboot_status_flag

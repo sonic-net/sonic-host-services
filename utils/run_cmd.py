@@ -12,7 +12,7 @@ def _run_command(cmd):
   @param cmd (str) Command to execute. Since we execute the command directly, and not within the
                    context of the shell, the full path needs to be provided ($PATH is not used).
                    Command parameters are simply separated by a space.
-                   Should be either string or a list
+                   Should be either string or a list.
   '''
   try:
     if not cmd:
