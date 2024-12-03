@@ -271,7 +271,7 @@ class TestHostcfgdDaemon(TestCase):
             with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
                 mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
                 try:
-                    daemon.start()
+                    daemon.start() 
                 except TimeoutError:
                     pass
 
