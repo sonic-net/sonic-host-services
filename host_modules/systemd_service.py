@@ -1,5 +1,6 @@
 """Systemd service handler"""
 
+from enum import Enum
 from host_modules import host_service
 import subprocess
 
@@ -7,6 +8,11 @@ MOD_NAME = 'systemd'
 ALLOWED_SERVICES = ['snmp', 'swss', 'dhcp_relay', 'radv', 'restapi', 'lldp', 'sshd', 'pmon', 'rsyslog', 'telemetry']
 EXIT_FAILURE = 1
 
+# Define an Enum for Reboot Methods which are defined as in 
+# https://github.com/openconfig/gnoi/blob/main/system/system.pb.go#L27
+class RebootMethod(Enum):
+    COLD = 1
+    HALT = 3
 
 class SystemdService(host_service.HostModule):
     """
@@ -47,4 +53,20 @@ class SystemdService(host_service.HostModule):
         msg = ''
         if result.returncode:
             msg = result.stderr.decode()
+        return result.returncode, msg
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='i', out_signature='is')
+    def execute_reboot(self, rebootmethod):
+        if rebootmethod == RebootMethod.COLD:
+            cmd = ['/usr/local/bin/reboot']
+        elif rebootmethod == RebootMethod.HALT:
+            cmd = ['/usr/local/bin/reboot','-p']
+        else:
+            return EXIT_FAILURE, "{}: Invalid reboot method: {}".format(MOD_NAME, rebootmethod)
+
+        result = subprocess.run(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        msg = ''
+        if result.returncode:
+            msg = result.stderr.decode()
+
         return result.returncode, msg
