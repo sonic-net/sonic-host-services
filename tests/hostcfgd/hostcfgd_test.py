@@ -264,7 +264,7 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
 
-        daemon.devmetacfg.hostname = "SameHostName"
+        daemon.devmetacfg.hostname = "SameHostName" 
         HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["hostname"] = daemon.devmetacfg.hostname
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         with mock.patch('hostcfgd.syslog') as mocked_syslog:
