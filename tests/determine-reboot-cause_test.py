@@ -39,8 +39,10 @@ BOOT_IMAGE=/image-20191130.52/boot/vmlinuz-4.9.0-11-2-amd64 root=/dev/sda4 rw co
 
 EXPECTED_PARSE_WARMFAST_REBOOT_FROM_PROC_CMDLINE = "warm"
 
-PROC_CMDLINE_CONTENTS = """\
-BOOT_IMAGE=/image-20191130.52/boot/vmlinuz-4.9.0-11-2-amd64 root=/dev/sda4 rw console=tty0 console=ttyS1,9600n8 quiet net.ifnames=0 biosdevname=0 loop=image-20191130.52/fs.squashfs loopfstype=squashfs apparmor=1 security=apparmor varlog_size=4096 usbcore.autosuspend=-1 module_blacklist=gpio_ich SONIC_BOOT_TYPE=warm"""
+PROC_CMDLINE_EXPRESS_BOOT_CONTENTS = """\
+BOOT_IMAGE=/image-20191130.52/boot/vmlinuz-4.9.0-11-2-amd64 root=/dev/sda4 rw console=tty0 console=ttyS1,9600n8 quiet net.ifnames=0 biosdevname=0 loop=image-20191130.52/fs.squashfs loopfstype=squashfs apparmor=1 security=apparmor varlog_size=4096 usbcore.autosuspend=-1 module_blacklist=gpio_ich SONIC_BOOT_TYPE=express"""
+
+EXPECTED_PARSE_EXPRESS_REBOOT_FROM_PROC_CMDLINE = "express-reboot"
 
 REBOOT_CAUSE_CONTENTS = """\
 User issued 'warm-reboot' command [User: admin, Time: Mon Nov  2 22:37:45 UTC 2020]"""
@@ -81,6 +83,11 @@ class TestDetermineRebootCause(object):
                 result = determine_reboot_cause.parse_warmfast_reboot_from_proc_cmdline()
                 assert result == EXPECTED_PARSE_WARMFAST_REBOOT_FROM_PROC_CMDLINE
                 open_mocked.assert_called_once_with("/proc/cmdline")
+            express_mocked = mock.mock_open(read_data=PROC_CMDLINE_EXPRESS_BOOT_CONTENTS)
+            with mock.patch("{}.open".format(BUILTINS), express_mocked):
+                result = determine_reboot_cause.parse_warmfast_reboot_from_proc_cmdline()
+                assert result == EXPECTED_PARSE_EXPRESS_REBOOT_FROM_PROC_CMDLINE
+                express_mocked.assert_called_once_with("/proc/cmdline")
 
     def test_find_software_reboot_cause_user(self):
         with mock.patch("os.path.isfile") as mock_isfile:
