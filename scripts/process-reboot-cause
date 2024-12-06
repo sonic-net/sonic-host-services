@@ -19,6 +19,7 @@ except ImportError as err:
     raise ImportError("%s - required module not found" % str(err))
 
 VERSION = "1.0"
+CHASSIS_SERVER_PORT = 6380
 
 SYSLOG_IDENTIFIER = "process-reboot-cause"
 
@@ -88,9 +89,9 @@ def get_sorted_reboot_cause_files(dpu_history_path):
         return []
 
 
-def read_dpu_reboot_cause_files_and_save_chassis_state_db():
+def save_dpu_reboot_cause_files_to_chassis_state_db():
     """Retrieve reboot cause from history files and save them to chassisStateDB."""
-    chassis_state_db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=6380)
+    chassis_state_db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
     chassis_state_db.connect(chassis_state_db.CHASSIS_STATE_DB)
 
     try:
@@ -154,7 +155,7 @@ def main():
 
     # For smartswitch platform store the DPU reboot-cause to CHASSIS_STATE_DB
     if device_info.is_smartswitch():
-        read_dpu_reboot_cause_files_and_save_chassis_state_db()
+        save_dpu_reboot_cause_files_to_chassis_state_db()
 
 
 if __name__ == "__main__":
