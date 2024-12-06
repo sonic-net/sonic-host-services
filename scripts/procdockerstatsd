@@ -24,6 +24,7 @@ REDIS_HOSTIP = "127.0.0.1"
 
 
 class ProcDockerStats(daemon_base.DaemonBase):
+    all_process_obj = {}
 
     def __init__(self, log_identifier):
         super(ProcDockerStats, self).__init__(log_identifier)
@@ -132,16 +133,30 @@ class ProcDockerStats(daemon_base.DaemonBase):
         # wipe out all data from state_db before updating
         self.state_db.delete_all_by_pattern('STATE_DB', 'DOCKER_STATS|*')
         for k1,v1 in dockerdata.items():
-            for k2,v2 in v1.items():
-                self.update_state_db(k1, k2, v2)
+            self.batch_update_state_db(k1, v1)
         return True
 
     def update_processstats_command(self):
         processdata = []
-        for process in psutil.process_iter(['pid', 'ppid', 'memory_percent', 'cpu_percent', 'create_time', 'cmdline']):
+        pid_set = set()
+
+        processes_all = []
+        for process_obj in psutil.process_iter(['pid', 'ppid', 'memory_percent', 'cpu_percent', 'create_time', 'cmdline']):
+            processes_all.append(process_obj)
+        sorted_processes = sorted(processes_all, key=lambda x: x.cpu_percent(), reverse=True)
+        top_processes = sorted_processes[:1024]
+
+        for process_obj in top_processes:
             try:
+                pid = process_obj.pid
+                pid_set.add(pid)
+                # store process object and reuse for CPU utilization
+                if pid in self.all_process_obj:
+                    process = self.all_process_obj[pid]
+                else:
+                    self.all_process_obj[pid] = process_obj
+                    process = process_obj
                 uid = process.uids()[0]
-                pid = process.pid
                 ppid = process.ppid()
                 mem = process.memory_percent()
                 cpu = process.cpu_percent()
@@ -157,29 +172,39 @@ class ProcDockerStats(daemon_base.DaemonBase):
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
 
+        # erase dead process
+        remove_keys = []
+        for id in self.all_process_obj:
+            if id not in pid_set:
+                remove_keys.append(id)
+        for id in remove_keys:
+            del self.all_process_obj[id]
+
         # wipe out all data before updating with new values
         self.state_db.delete_all_by_pattern('STATE_DB', 'PROCESS_STATS|*')
 
+        update_value = {}
         for row in processdata:
             cid = row.get('PID')
             if cid:
                 value = 'PROCESS_STATS|{}'.format(cid)
                 uid = row.get('UID')
-                self.update_state_db(value, 'UID', uid)
+                update_value['UID'] = str(uid)
                 ppid = row.get('PPID')
-                self.update_state_db(value, 'PPID', ppid)
+                update_value['PPID'] = str(ppid)
                 cpu = row.get('%CPU')
-                self.update_state_db(value, '%CPU', str(cpu))
+                update_value['CPU'] = str(cpu)
                 mem = round(row.get('%MEM'), 1)
-                self.update_state_db(value, '%MEM', str(mem))
+                update_value['MEM'] = str(mem)
                 stime = row.get('STIME')
-                self.update_state_db(value, 'STIME', stime)
+                update_value['STIME'] = str(stime)
                 tty = row.get('TT')
-                self.update_state_db(value, 'TT', tty)
+                update_value['TT'] = str(tty)
                 time = row.get('TIME')
-                self.update_state_db(value, 'TIME', time)
+                update_value['TIME'] = str(time)
                 cmd = row.get('CMD')
-                self.update_state_db(value, 'CMD', cmd)
+                update_value['CMD'] = cmd
+                self.batch_update_state_db(value, update_value)
 
     def update_fipsstats_command(self):
         fips_db_key = 'FIPS_STATS|state'
@@ -192,14 +217,18 @@ class ProcDockerStats(daemon_base.DaemonBase):
         # Check if FIPS runtime status
         exitcode, _ = getstatusoutput_noshell_pipe(['sudo', 'openssl', 'engine', '-vv'], ['grep', '-i', 'symcryp'])
         enabled = not any(exitcode)
-
-        self.update_state_db(fips_db_key, 'timestamp', datetime.utcnow().isoformat())
-        self.update_state_db(fips_db_key, 'enforced', str(enforced))
-        self.update_state_db(fips_db_key, 'enabled', str(enabled))
+        update_value = {}
+        update_value['timestamp'] = datetime.utcnow().isoformat()
+        update_value['enforced'] = str(enforced)
+        update_value['enabled'] = str(enabled)
+        self.batch_update_state_db(fips_db_key, update_value)
 
     def update_state_db(self, key1, key2, value2):
         self.state_db.set('STATE_DB', key1, key2, value2)
 
+    def batch_update_state_db(self, key1, fvs):
+        self.state_db.hmset('STATE_DB', key1, fvs)
+  
     def run(self):
         self.log_info("Starting up ...")
 

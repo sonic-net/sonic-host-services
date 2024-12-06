@@ -354,3 +354,20 @@ class TestDnsHandler:
         data = {}
         dns_cfg.load(data)
         dns_cfg.dns_update.assert_called()
+
+
+class TestBannerCfg:
+    def test_load(self):
+        banner_cfg = hostcfgd.BannerCfg()
+        banner_cfg.banner_message = mock.MagicMock()
+
+        data = {}
+        banner_cfg.load(data)
+        banner_cfg.banner_message.assert_called()
+
+    @mock.patch('hostcfgd.run_cmd')
+    def test_banner_message(self, mock_run_cmd):
+        banner_cfg = hostcfgd.BannerCfg()
+        banner_cfg.banner_message(None, {'test': 'test'})
+
+        mock_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'banner-config'], True, True)])
