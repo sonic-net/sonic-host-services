@@ -141,3 +141,27 @@ class DockerService(host_service.HostModule):
             return errno.ENOENT, "Container {} does not exist.".format(container)
         except Exception as e:
             return 1, "Failed to restart container {}: {}".format(container, str(e))
+
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="ssa{sv}", out_signature="is"
+    )
+    def run(self, image, command, kwargs):
+        """
+        Run a Docker container.
+
+        Args:
+            image (str): The name of the Docker image to run.
+            command (str): The command to run in the container
+            kwargs (dict): Additional keyword arguments to pass to the Docker API.
+
+        Returns:
+            tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
+        """
+        try:
+            client = docker.from_env()
+            container = client.containers.run(image, command, **kwargs)
+            return 0, "Container {} has been started.".format(container.name)
+        except docker.errors.ImageNotFound:
+            return errno.ENOENT, "Image {} not found.".format(image)
+        except Exception as e:
+            return 1, "Failed to run container {}: {}".format(image, str(e))
