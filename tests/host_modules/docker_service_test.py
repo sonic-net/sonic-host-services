@@ -272,12 +272,19 @@ class TestDockerService(object):
         self, MockInit, MockBusName, MockSystemBus
     ):
         mock_docker_client = mock.Mock()
-        mock_docker_client.images.list.return_value = [
-            mock.Mock(tags=["image_name:tag"])
-        ]
-
         with mock.patch.object(docker, "from_env", return_value=mock_docker_client):
             docker_service = DockerService(MOD_NAME)
-            rc, msg = docker_service.run("wrong_image_name", "command", {})
+            rc, msg = docker_service.run("wrong_image_name", "", {})
         assert rc == errno.EPERM, "Return code is wrong"
-        assert "not allowed" in msg, "Message should contain 'not allowed'"
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_docker_run_fail_non_empty_command(
+        self, MockInit, MockBusName, MockSystemBus
+    ):
+        mock_docker_client = mock.Mock()
+        with mock.patch.object(docker, "from_env", return_value=mock_docker_client):
+            docker_service = DockerService(MOD_NAME)
+            rc, msg = docker_service.run("docker-syncd-brcm:latest", "rm -rf /", {})
+        assert rc == errno.EPERM, "Return code is wrong"
