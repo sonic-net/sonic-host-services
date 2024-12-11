@@ -43,6 +43,22 @@ def is_allowed_container(container):
             return True
     return False
 
+def is_allowed_image(image):
+    """
+    Check if the image is allowed to be managed by this service.
+
+    Args:
+        image (str): The image name.
+
+    Returns:
+        bool: True if the image is allowed, False otherwise.
+    """
+    image_name = image.split(":")[0]  # Remove tag if present
+    for allowed_image, _ in ALLOWED_CONTAINERS:
+        if image_name == allowed_image:
+            return True
+    return False
+
 
 class DockerService(host_service.HostModule):
     """
@@ -159,30 +175,20 @@ class DockerService(host_service.HostModule):
         """
         try:
             client = docker.from_env()
-            image_list = client.images.list(all=True)
-
-            def _validate_image_name(image_name):
-                base_name_list = list(
-                    set(
-                        image.tags[0].split(":")[0]
-                        for image in image_list
-                        if image.tags
-                    )
+            
+            if not is_allowed_image(image):
+                return (
+                    errno.EPERM,
+                    "Image {} is not allowed to be managed by this service.".format(
+                        image
+                    ),
                 )
-                base_name = image_name.split(":")[0]
-                if base_name in base_name_list:
-                    return True
-                return False
 
-            if not _validate_image_name(image):
-                return errno.EPERM, "Image {} is not allowed.".format(image)
-
-            def _validate_command(command):
-                # Only allow empty command.
-                return command == ""
-
-            if not _validate_command(command):
-                return errno.EPERM, "Command {} is not allowed.".format(command)
+            if command:
+                return (
+                    errno.EPERM,
+                    "Only empty command is allowed to be managed by this service."
+                )
 
             # Semgrep cannot detect codes for validating image and command.
             # nosemgrep: python.docker.security.audit.docker-arbitrary-container-run.docker-arbitrary-container-run
