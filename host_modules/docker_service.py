@@ -159,59 +159,34 @@ class DockerService(host_service.HostModule):
         """
         try:
             client = docker.from_env()
-            if not DockerService.validate_image(image):
+            image_list = client.images.list(all=True)
+
+            def _validate_image_name(image_name):
+                base_name_list = list(
+                    set(
+                        image.tags[0].split(":")[0]
+                        for image in image_list
+                        if image.tags
+                    )
+                )
+                base_name = image_name.split(":")[0]
+                if base_name in base_name_list:
+                    return True
+                return False
+
+            if not _validate_image_name(image):
                 return errno.EPERM, "Image {} is not allowed.".format(image)
-            if not DockerService.validate_command(command):
+
+            def _validate_command(command):
+                # Only allow empty command.
+                return command == ""
+
+            if not _validate_command(command):
                 return errno.EPERM, "Command {} is not allowed.".format(command)
+
             container = client.containers.run(image, command, **kwargs)
             return 0, "Container {} has been started.".format(container.name)
         except docker.errors.ImageNotFound:
             return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:
             return 1, "Failed to run container {}: {}".format(image, str(e))
-
-    @staticmethod
-    def get_used_images_name():
-        """
-        Get the list of used images.
-
-        Returns:
-            list: A list of image names.
-        """
-        try:
-            client = docker.from_env()
-            images = client.images.list(all=True)
-            return list(set(image.tags[0].split(":")[0] for image in images if image.tags))
-        except Exception as e:
-            return "Failed to get used images: {}".format(str(e))
-
-    @staticmethod
-    def validate_image(image):
-        """
-        Validate the image name.
-
-        Args:
-            image (str): The name of the Docker image.
-
-        Returns:
-            bool: True if the image is allowed to be use for run/create command.
-        """
-        base_image_name = image.split(":")[0]
-        known_images = DockerService.get_used_images_name()
-        return base_image_name in known_images
-
-
-    @staticmethod
-    def validate_command(command):
-        """
-        Validate the command.
-
-        Args:
-            command (str): The command to run in the container.
-
-        Returns:
-            bool: True if the command is allowed to be use for run/create command.
-        """
-        if command != "":
-            return False
-        return True
