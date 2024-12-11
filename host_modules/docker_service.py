@@ -161,6 +161,8 @@ class DockerService(host_service.HostModule):
             client = docker.from_env()
             if not DockerService.validate_image(image):
                 return errno.EPERM, "Image {} is not allowed.".format(image)
+            if not DockerService.validate_command(command):
+                return errno.EPERM, "Command {} is not allowed.".format(command)
             container = client.containers.run(image, command, **kwargs)
             return 0, "Container {} has been started.".format(container.name)
         except docker.errors.ImageNotFound:
@@ -197,3 +199,19 @@ class DockerService(host_service.HostModule):
         base_image_name = image.split(":")[0]
         known_images = DockerService.get_used_images_name()
         return base_image_name in known_images
+
+
+    @staticmethod
+    def validate_command(command):
+        """
+        Validate the command.
+
+        Args:
+            command (str): The command to run in the container.
+
+        Returns:
+            bool: True if the command is allowed to be use for run/create command.
+        """
+        if command != "":
+            return False
+        return True
