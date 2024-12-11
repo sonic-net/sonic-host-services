@@ -157,6 +157,8 @@ class DockerService(host_service.HostModule):
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
+        if not DockerService.is_safe_image_and_command(image, command):
+            return errno.EPERM, "Image {} and command {} are not safe to run together.".format(image, command)
         try:
             client = docker.from_env()
             container = client.containers.run(image, command, **kwargs)
@@ -165,3 +167,9 @@ class DockerService(host_service.HostModule):
             return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:
             return 1, "Failed to run container {}: {}".format(image, str(e))
+    
+    @staticmethod
+    def is_safe_image_and_command(image, command):
+            # Placeholder function to check if the image and command are safe to run together
+            # Implement your logic here
+            return True
