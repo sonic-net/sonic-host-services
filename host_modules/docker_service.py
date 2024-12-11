@@ -187,7 +187,7 @@ class DockerService(host_service.HostModule):
             if command:
                 return (
                     errno.EPERM,
-                    "Only empty command is allowed to be managed by this service."
+                    "Only empty string command is allowed to be managed by this service."
                 )
 
             # Semgrep cannot detect codes for validating image and command.
@@ -197,4 +197,4 @@ class DockerService(host_service.HostModule):
         except docker.errors.ImageNotFound:
             return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:
-            return 1, "Failed to run container {}: {}".format(image, str(e))
+            return 1, "Failed to run image {}: {}".format(image, str(e))
