@@ -159,11 +159,7 @@ class DockerService(host_service.HostModule):
         """
         try:
             client = docker.from_env()
-            base_image_name = image.split(":")[0]
-            print(base_image_name)
-            known_images = self.get_used_images_name()
-            print(known_images)
-            if base_image_name not in known_images:
+            if not DockerService.validate_image(image):
                 return errno.EPERM, "Image {} is not allowed.".format(image)
             container = client.containers.run(image, command, **kwargs)
             return 0, "Container {} has been started.".format(container.name)
@@ -186,3 +182,18 @@ class DockerService(host_service.HostModule):
             return list(set(image.tags[0].split(":")[0] for image in images if image.tags))
         except Exception as e:
             return "Failed to get used images: {}".format(str(e))
+
+    @staticmethod
+    def validate_image(image):
+        """
+        Validate the image name.
+
+        Args:
+            image (str): The name of the Docker image.
+
+        Returns:
+            bool: True if the image is allowed to be use for run/create command.
+        """
+        base_image_name = image.split(":")[0]
+        known_images = DockerService.get_used_images_name()
+        return base_image_name in known_images
