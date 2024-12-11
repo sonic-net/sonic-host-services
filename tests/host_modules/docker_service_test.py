@@ -221,14 +221,20 @@ class TestDockerService(object):
 
         assert rc == 0, "Return code is wrong"
         assert "started" in msg, "Message should contain 'started'"
-        mock_docker_client.containers.run.assert_called_once_with("docker-syncd-brcm:latest", "", **{})
+        mock_docker_client.containers.run.assert_called_once_with(
+            "docker-syncd-brcm:latest", "", **{}
+        )
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_docker_run_fail_image_not_found(self, MockInit, MockBusName, MockSystemBus):
+    def test_docker_run_fail_image_not_found(
+        self, MockInit, MockBusName, MockSystemBus
+    ):
         mock_docker_client = mock.Mock()
-        mock_docker_client.containers.run.side_effect = docker.errors.ImageNotFound("Image not found")
+        mock_docker_client.containers.run.side_effect = docker.errors.ImageNotFound(
+            "Image not found"
+        )
 
         with mock.patch.object(docker, "from_env", return_value=mock_docker_client):
             docker_service = DockerService(MOD_NAME)
@@ -236,14 +242,18 @@ class TestDockerService(object):
 
         assert rc == errno.ENOENT, "Return code is wrong"
         assert "not found" in msg, "Message should contain 'not found'"
-        mock_docker_client.containers.run.assert_called_once_with("docker-syncd-brcm:latest", "", **{})
+        mock_docker_client.containers.run.assert_called_once_with(
+            "docker-syncd-brcm:latest", "", **{}
+        )
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     def test_docker_run_fail_api_error(self, MockInit, MockBusName, MockSystemBus):
         mock_docker_client = mock.Mock()
-        mock_docker_client.containers.run.side_effect = docker.errors.APIError("API error")
+        mock_docker_client.containers.run.side_effect = docker.errors.APIError(
+            "API error"
+        )
 
         with mock.patch.object(docker, "from_env", return_value=mock_docker_client):
             docker_service = DockerService(MOD_NAME)
@@ -251,14 +261,20 @@ class TestDockerService(object):
 
         assert rc != 0, "Return code is wrong"
         assert "API error" in msg, "Message should contain 'API error'"
-        mock_docker_client.containers.run.assert_called_once_with("docker-syncd-brcm:latest", "", **{})
+        mock_docker_client.containers.run.assert_called_once_with(
+            "docker-syncd-brcm:latest", "", **{}
+        )
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_docker_run_fail_image_not_allowed(self, MockInit, MockBusName, MockSystemBus):
+    def test_docker_run_fail_image_not_allowed(
+        self, MockInit, MockBusName, MockSystemBus
+    ):
         mock_docker_client = mock.Mock()
-        mock_docker_client.images.list.return_value = [mock.Mock(tags=["image_name:tag"])]
+        mock_docker_client.images.list.return_value = [
+            mock.Mock(tags=["image_name:tag"])
+        ]
 
         with mock.patch.object(docker, "from_env", return_value=mock_docker_client):
             docker_service = DockerService(MOD_NAME)

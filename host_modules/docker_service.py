@@ -43,6 +43,7 @@ def is_allowed_container(container):
             return True
     return False
 
+
 def is_allowed_image(image):
     """
     Check if the image is allowed to be managed by this service.
@@ -175,7 +176,7 @@ class DockerService(host_service.HostModule):
         """
         try:
             client = docker.from_env()
-            
+
             if not is_allowed_image(image):
                 return (
                     errno.EPERM,
@@ -187,7 +188,7 @@ class DockerService(host_service.HostModule):
             if command:
                 return (
                     errno.EPERM,
-                    "Only empty string command is allowed to be managed by this service."
+                    "Only an empty string command is allowed. Non-empty commands are not permitted by this service.",
                 )
 
             # Semgrep cannot detect codes for validating image and command.
