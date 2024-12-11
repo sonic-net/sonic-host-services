@@ -157,19 +157,32 @@ class DockerService(host_service.HostModule):
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
-        if not DockerService.is_safe_image_and_command(image, command):
-            return errno.EPERM, "Image {} and command {} are not safe to run together.".format(image, command)
         try:
             client = docker.from_env()
+            base_image_name = image.split(":")[0]
+            print(base_image_name)
+            known_images = self.get_used_images_name()
+            print(known_images)
+            if base_image_name not in known_images:
+                return errno.EPERM, "Image {} is not allowed.".format(image)
             container = client.containers.run(image, command, **kwargs)
             return 0, "Container {} has been started.".format(container.name)
         except docker.errors.ImageNotFound:
             return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:
             return 1, "Failed to run container {}: {}".format(image, str(e))
-    
+
     @staticmethod
-    def is_safe_image_and_command(image, command):
-            # Placeholder function to check if the image and command are safe to run together
-            # Implement your logic here
-            return True
+    def get_used_images_name():
+        """
+        Get the list of used images.
+
+        Returns:
+            list: A list of image names.
+        """
+        try:
+            client = docker.from_env()
+            images = client.images.list(all=True)
+            return list(set(image.tags[0].split(":")[0] for image in images if image.tags))
+        except Exception as e:
+            return "Failed to get used images: {}".format(str(e))
