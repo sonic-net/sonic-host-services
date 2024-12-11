@@ -184,6 +184,7 @@ class DockerService(host_service.HostModule):
             if not _validate_command(command):
                 return errno.EPERM, "Command {} is not allowed.".format(command)
 
+            # nosemgrep: python.docker.security.audit.docker-arbitrary-container-run.docker-arbitrary-container-run
             container = client.containers.run(image, command, **kwargs)
             return 0, "Container {} has been started.".format(container.name)
         except docker.errors.ImageNotFound:
