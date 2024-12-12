@@ -32,6 +32,7 @@ class TestProcessRebootCause(TestCase):
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
     @patch("sys.stdout", new_callable=StringIO)
+    @patch("os.geteuid", return_value=0)
     def test_process_reboot_cause(self, mock_stdout, mock_is_smartswitch, mock_connector, mock_remove, mock_exists, mock_isfile, mock_listdir, mock_open):
         # Mock DB
         mock_db = MagicMock()
@@ -57,6 +58,7 @@ class TestProcessRebootCause(TestCase):
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
     @patch("sys.stdout", new_callable=StringIO)
+    @patch("os.geteuid", return_value=0)
     def test_invalid_json(self, mock_stdout, mock_is_smartswitch, mock_connector, mock_exists, mock_isfile, mock_listdir, mock_open):
         # Mock DB
         mock_db = MagicMock()
