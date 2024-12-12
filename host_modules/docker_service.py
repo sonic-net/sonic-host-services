@@ -8,24 +8,43 @@ import errno
 MOD_NAME = "docker_service"
 
 # The set of allowed containers that can be managed by this service.
-# First element is the image name, second element is the container name.
-ALLOWED_CONTAINERS = [
-    ("docker-syncd-brcm", "syncd"),
-    ("docker-acms", "acms"),
-    ("docker-sonic-gnmi", "gnmi"),
-    ("docker-sonic-telemetry", "telemetry"),
-    ("docker-snmp", "snmp"),
-    ("docker-platform-monitor", "pmon"),
-    ("docker-lldp", "lldp"),
-    ("docker-dhcp-relay", "dhcp_relay"),
-    ("docker-router-advertiser", "radv"),
-    ("docker-teamd", "teamd"),
-    ("docker-fpm-frr", "bgp"),
-    ("docker-orchagent", "swss"),
-    ("docker-sonic-restapi", "restapi"),
-    ("docker-eventd", "eventd"),
-    ("docker-database", "database"),
-]
+ALLOWED_CONTAINERS = {
+    "syncd",
+    "acms",
+    "gnmi",
+    "telemetry",
+    "snmp",
+    "pmon",
+    "lldp",
+    "dhcp_relay",
+    "radv",
+    "teamd",
+    "bgp",
+    "swss",
+    "restapi",
+    "eventd",
+    "database",
+}
+
+# The set of allowed images that can be managed by this service.
+ALLOWED_IMAGES = {
+    "docker-syncd-brcm",
+    "docker-syncd-cisco"
+    "docker-acms",
+    "docker-sonic-gnmi",
+    "docker-sonic-telemetry",
+    "docker-snmp",
+    "docker-platform-monitor",
+    "docker-lldp",
+    "docker-dhcp-relay",
+    "docker-router-advertiser",
+    "docker-teamd",
+    "docker-fpm-frr",
+    "docker-orchagent",
+    "docker-sonic-restapi",
+    "docker-eventd",
+    "docker-database",
+}
 
 
 def is_allowed_container(container):
@@ -38,10 +57,7 @@ def is_allowed_container(container):
     Returns:
         bool: True if the container is allowed, False otherwise.
     """
-    for _, allowed_container in ALLOWED_CONTAINERS:
-        if container == allowed_container:
-            return True
-    return False
+    return container in ALLOWED_CONTAINERS
 
 
 def is_allowed_image(image):
@@ -55,10 +71,7 @@ def is_allowed_image(image):
         bool: True if the image is allowed, False otherwise.
     """
     image_name = image.split(":")[0]  # Remove tag if present
-    for allowed_image, _ in ALLOWED_CONTAINERS:
-        if image_name == allowed_image:
-            return True
-    return False
+    return image_name in ALLOWED_IMAGES
 
 
 class DockerService(host_service.HostModule):
