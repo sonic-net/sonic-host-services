@@ -13,8 +13,11 @@ def load_module_from_source(module_name, path):
 
 class TestProcessRebootCause(unittest.TestCase):
     def setUp(self):
-        # Setup the path to the script under test
-        self.scripts_path = '/path/to/scripts'
+        # Setup the path
+        self.test_path = os.path.dirname(os.path.abspath(__file__))
+        self.modules_path = os.path.dirname(test_path)
+        self.scripts_path = os.path.join(modules_path, "scripts")
+        self.sys.path.insert(0, modules_path)
         self.process_reboot_cause_path = os.path.join(self.scripts_path, 'process-reboot-cause.py')
         self.process_reboot_cause = load_module_from_source('process_reboot_cause', self.process_reboot_cause_path)
 
