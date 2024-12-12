@@ -75,12 +75,10 @@ def read_reboot_cause_files_and_save_state_db():
 def get_sorted_reboot_cause_files(dpu_history_path):
     """Retrieve and sort the reboot cause files for a specific DPU."""
     try:
-        # Assuming you have a way to list the files in the directory
         files = os.listdir(dpu_history_path)
-        # Filter and sort the files based on your criteria (e.g., by modification time)
         sorted_files = sorted(
             [os.path.join(dpu_history_path, f) for f in files if f.endswith('.txt')],
-            key=os.path.getmtime,  # Sort by modification time
+            key=os.path.getmtime,
             reverse=True  # Most recent first
         )
         return sorted_files
@@ -89,7 +87,7 @@ def get_sorted_reboot_cause_files(dpu_history_path):
         return []
 
 
-def save_dpu_reboot_cause_files_to_chassis_state_db():
+def update_dpu_reboot_cause_to_chassis_state_db():
     """Retrieve reboot cause from history files and save them to chassisStateDB."""
     chassis_state_db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
     chassis_state_db.connect(chassis_state_db.CHASSIS_STATE_DB)
@@ -155,7 +153,7 @@ def main():
 
     # For smartswitch platform store the DPU reboot-cause to CHASSIS_STATE_DB
     if device_info.is_smartswitch():
-        save_dpu_reboot_cause_files_to_chassis_state_db()
+        update_dpu_reboot_cause_to_chassis_state_db()
 
 
 if __name__ == "__main__":
