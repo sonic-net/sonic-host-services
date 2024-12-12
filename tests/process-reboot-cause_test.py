@@ -20,7 +20,7 @@ sys.path.insert(0, modules_path)
 
 # Load the process-reboot-cause module using the helper function
 process_reboot_cause_path = os.path.join(scripts_path, "process-reboot-cause")
-process_reboot_cause = load_module_from_source(process_reboot_cause_path)
+process_reboot_cause = load_module_from_source('process_reboot_cause', process_reboot_cause_path)
 
 # Now proceed with your test class and mocks
 class TestProcessRebootCause(TestCase):
