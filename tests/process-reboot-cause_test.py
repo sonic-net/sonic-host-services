@@ -1,41 +1,33 @@
-import os
 import sys
-import unittest
-from unittest.mock import patch, mock_open, MagicMock
+import os
+from unittest import TestCase
+from unittest.mock import patch, MagicMock, mock_open
 from io import StringIO
-import importlib.util
+from sonic_py_common.general import load_module_from_source
 
-# Paths setup
+# Mock the connector
+from .mock_connector import MockConnector
+import swsscommon
+
+# Mock the SonicV2Connector
+swsscommon.SonicV2Connector = MockConnector
+
+# Define the path to the script and load it using the helper function
 test_path = os.path.dirname(os.path.abspath(__file__))
 modules_path = os.path.dirname(test_path)
 scripts_path = os.path.join(modules_path, "scripts")
-process_reboot_cause_path = os.path.join(scripts_path, 'process-reboot-cause')
+sys.path.insert(0, modules_path)
 
-# Check if the file exists (ensure mocks don’t interfere)
-real_exists = os.path.exists
-if not real_exists(process_reboot_cause_path):
-    raise FileNotFoundError(f"File not found: {process_reboot_cause_path}")
+# Load the process-reboot-cause module using the helper function
+process_reboot_cause_path = os.path.join(scripts_path, "process-reboot-cause")
+process_reboot_cause = load_module_from_source(process_reboot_cause_path)
 
-def load_module_from_source(module_name, path):
-    if not os.access(path, os.R_OK):
-        raise PermissionError(f"File is not readable: {path}")
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None:
-        raise ImportError(f"Could not load spec for {module_name} from {path}")
-    module = importlib.util.module_from_spec(spec)
-    if spec.loader is None:
-        raise ImportError(f"No loader found for module: {module_name}")
-    spec.loader.exec_module(module)
-    return module
-
-# Load the module
-process_reboot_cause = load_module_from_source('process_reboot_cause', process_reboot_cause_path)
-
-class TestProcessRebootCause(unittest.TestCase):
+# Now proceed with your test class and mocks
+class TestProcessRebootCause(TestCase):
     @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "PowerLoss", "user": "admin", "time": "2024-12-10", "comment": "test"}')
     @patch("os.listdir", return_value=["file1.json", "file2.json"])
     @patch("os.path.isfile", return_value=True)
-    @patch("os.path.exists", side_effect=lambda path: real_exists(path) or path.endswith('file1.json') or path.endswith('file2.json'))
+    @patch("os.path.exists", side_effect=lambda path: os.path.exists(path) or path.endswith('file1.json') or path.endswith('file2.json'))
     @patch("os.remove")
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
@@ -61,7 +53,7 @@ class TestProcessRebootCause(unittest.TestCase):
     @patch("builtins.open", new_callable=mock_open, read_data='{"invalid_json}')
     @patch("os.listdir", return_value=["file1.json"])
     @patch("os.path.isfile", return_value=True)
-    @patch("os.path.exists", side_effect=lambda path: real_exists(path) or path.endswith('file1.json'))
+    @patch("os.path.exists", side_effect=lambda path: os.path.exists(path) or path.endswith('file1.json'))
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
     @patch("sys.stdout", new_callable=StringIO)
