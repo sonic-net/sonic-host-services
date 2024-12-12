@@ -17,7 +17,7 @@ def load_module_from_source(module_name, path):
     spec.loader.exec_module(module)
     return module
 
-process_reboot_cause_path = os.path.join(scripts_path, 'process-reboot-cause.py')
+process_reboot_cause_path = os.path.join(scripts_path, 'process-reboot-cause')
 process_reboot_cause = load_module_from_source('process_reboot_cause', process_reboot_cause_path)
 
 class TestProcessRebootCause(unittest.TestCase):
