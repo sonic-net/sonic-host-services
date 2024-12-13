@@ -10,7 +10,6 @@ MOD_NAME = "docker_service"
 
 # The set of allowed containers that can be managed by this service.
 ALLOWED_CONTAINERS = {
-    "acms",
     "bgp",
     "bmp",
     "database",
@@ -30,7 +29,6 @@ ALLOWED_CONTAINERS = {
 
 # The set of allowed images that can be managed by this service.
 ALLOWED_IMAGES = {
-    "docker-acms",
     "docker-database",
     "docker-dhcp-relay",
     "docker-eventd",
