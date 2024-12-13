@@ -79,6 +79,37 @@ def get_sonic_container(container_id):
     return container
 
 
+def validate_docker_run_options(kwargs):
+    """
+    Validate the keyword arguments passed to the Docker container run API.
+    """
+    # Validate the keyword arguments here if needed
+    # Disallow priviledge mode for security reasons
+    if kwargs.get("privileged", False):
+        raise ValueError("Privileged mode is not allowed for security reasons.")
+    # Disallow sensitive directories to be mounted.
+    sensitive_dirs = ["/etc", "/var", "/usr"]
+    for bind in kwargs.get("volumes", {}).keys():
+        for sensitive_dir in sensitive_dirs:
+            if bind.startswith(sensitive_dir):
+                raise ValueError(
+                    "Mounting sensitive directories is not allowed for security reasons."
+                )
+    # Disallow running containers as root.
+    if kwargs.get("user", None) == "root":
+        raise ValueError(
+            "Running containers as root is not allowed for security reasons."
+        )
+    # Disallow cap_add for security reasons.
+    if kwargs.get("cap_add", None):
+        raise ValueError(
+            "Adding capabilities to containers is not allowed for security reasons."
+        )
+    # Disallow access to sensitive devices.
+    if kwargs.get("devices", None):
+        raise ValueError("Access to devices is not allowed for security reasons.")
+
+
 class DockerService(host_service.HostModule):
     """
     DBus endpoint that executes the docker command
@@ -210,10 +241,14 @@ class DockerService(host_service.HostModule):
                     "Only an empty string command is allowed. Non-empty commands are not permitted by this service.",
                 )
 
+            validate_docker_run_options(kwargs)
+
             # Semgrep cannot detect codes for validating image and command.
             # nosemgrep: python.docker.security.audit.docker-arbitrary-container-run.docker-arbitrary-container-run
             container = client.containers.run(image, command, **kwargs)
-            return 0, "Container {} has been started.".format(container.name)
+            return errno.EINVAL, "Invalid argument.".format(str(e))
+        except ValueError as e:
+            return 1, "Failed to run image {}: {}".format(image, str(e))
         except docker.errors.ImageNotFound:
             return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:
