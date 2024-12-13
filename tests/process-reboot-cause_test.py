@@ -97,8 +97,8 @@ class TestProcessRebootCause(TestCase):
         self.assertEqual(result, [])
 
     # Test update_dpu_reboot_cause_to_chassis_state_db
-    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": " Switch rebooted DPU\\n", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "name": "2024_12_13_01_12_36"}')
-    @patch("process_reboot_cause.SonicV2Connector")
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "name": "2024_12_13_01_12_36"}')
+    @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     def test_update_dpu_reboot_cause_to_chassis_state_db_update(self, mock_connector, mock_open):
         # Mock the database connection
         mock_db = MagicMock()
