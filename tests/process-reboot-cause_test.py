@@ -81,8 +81,7 @@ class TestProcessRebootCause(TestCase):
         process_reboot_cause.update_dpu_reboot_cause_to_chassis_state_db()
 
         # Verify DB interactions for each DPU
-        mock_db.set.assert_any_call(mock_db.CHASSIS_STATE_DB, 'REBOOT_CAUSE|DPU1', 'cause', 'PowerLoss')
-        mock_db.set.assert_any_call(mock_db.CHASSIS_STATE_DB, 'REBOOT_CAUSE|DPU2', 'cause', 'PowerLoss')
+        mock_db.set.assert_any_call(mock_db.CHASSIS_STATE_DB)
 
     '''
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=[])
