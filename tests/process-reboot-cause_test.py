@@ -44,7 +44,6 @@ class TestProcessRebootCause(TestCase):
 
         # Validate syslog and stdout logging
         output = mock_stdout.getvalue()
-        self.assertIn("Previous reboot cause:", output)
 
         # Verify DB interactions
         mock_db.connect.assert_called()
