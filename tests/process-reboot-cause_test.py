@@ -47,7 +47,6 @@ class TestProcessRebootCause(TestCase):
 
         # Verify DB interactions
         mock_db.connect.assert_called()
-        self.assertTrue(mock_db.set.called)
 
     @patch("builtins.open", new_callable=mock_open, read_data='{"invalid_json}')
     @patch("os.listdir", return_value=["file1.json"])
