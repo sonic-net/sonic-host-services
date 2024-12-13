@@ -246,9 +246,9 @@ class DockerService(host_service.HostModule):
             # Semgrep cannot detect codes for validating image and command.
             # nosemgrep: python.docker.security.audit.docker-arbitrary-container-run.docker-arbitrary-container-run
             container = client.containers.run(image, command, **kwargs)
-            return errno.EINVAL, "Invalid argument.".format(str(e))
+            return 0, "Container {} has been created.".format(container.name)
         except ValueError as e:
-            return 1, "Failed to run image {}: {}".format(image, str(e))
+            return errno.EINVAL, "Invalid argument.".format(str(e))
         except docker.errors.ImageNotFound:
             return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:

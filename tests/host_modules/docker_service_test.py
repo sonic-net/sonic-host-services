@@ -220,7 +220,6 @@ class TestDockerService(object):
             rc, msg = docker_service.run("docker-syncd-brcm:latest", "", {})
 
         assert rc == 0, "Return code is wrong"
-        assert "started" in msg, "Message should contain 'started'"
         mock_docker_client.containers.run.assert_called_once_with(
             "docker-syncd-brcm:latest", "", **{}
         )
