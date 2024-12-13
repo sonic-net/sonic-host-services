@@ -95,3 +95,20 @@ class TestProcessRebootCause(TestCase):
         # Call the function and check the result
         result = process_reboot_cause.get_sorted_reboot_cause_files("/mock/dpu_history")
         self.assertEqual(result, [])
+
+    # Test update_dpu_reboot_cause_to_chassis_state_db
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": " Switch rebooted DPU\\n", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "name": "2024_12_13_01_12_36"}')
+    @patch("process_reboot_cause.SonicV2Connector")
+    def test_update_dpu_reboot_cause_to_chassis_state_db_update(self, mock_connector, mock_open):
+        # Mock the database connection
+        mock_db = MagicMock()
+        mock_connector.return_value = mock_db
+
+        # Simulate a valid file (matching DPU0)
+        file_path = "/mock/dpu_history/2024_12_13_01_12_36_reboot_cause.txt"
+
+        # Call the function that reads the file and updates the DB
+        process_reboot_cause.update_dpu_reboot_cause_to_chassis_state_db()
+
+        # Verify that the set method was called, without checking exact values
+        mock_db.set.assert_called()  # Ensure the set method was called
