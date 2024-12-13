@@ -68,3 +68,25 @@ class TestProcessRebootCause(TestCase):
         # Check invalid JSON handling
         output = mock_stdout.getvalue()
         self.assertTrue(mock_connector.called)
+
+    @patch("process_reboot_cause.swsscommon.SonicV2Connector")
+    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
+    def test_update_dpu_reboot_cause_to_chassis_state_db(self, mock_get_dpu_list, mock_connector):
+        # Mock DB
+        mock_db = MagicMock()
+        mock_connector.return_value = mock_db
+
+        # Call the function
+        process_reboot_cause.update_dpu_reboot_cause_to_chassis_state_db()
+
+        # Verify DB interactions for each DPU
+        mock_db.set.assert_any_call(mock_db.CHASSIS_STATE_DB, "REBOOT_CAUSE|DPU1", "cause", "PowerLoss")
+        mock_db.set.assert_any_call(mock_db.CHASSIS_STATE_DB, "REBOOT_CAUSE|DPU1", "time", "2024-12-10")
+
+    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=[])
+    def test_invalid_dpu_list(self, mock_get_dpu_list):
+        # Call the function with an empty DPU list
+        process_reboot_cause.update_dpu_reboot_cause_to_chassis_state_db()
+
+        # Ensure no DB interactions occur when DPU list is empty
+        mock_get_dpu_list.assert_called_once()
