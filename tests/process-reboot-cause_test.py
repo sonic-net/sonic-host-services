@@ -69,26 +69,29 @@ class TestProcessRebootCause(TestCase):
         output = mock_stdout.getvalue()
         self.assertTrue(mock_connector.called)
 
-    @patch("process_reboot_cause.swsscommon.SonicV2Connector")
-    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
-    @patch("process_reboot_cause.os.listdir", return_value=["reboot-cause-file-1", "reboot-cause-file-2"])
-    def test_update_dpu_reboot_cause_to_chassis_state_db(self, mock_listdir, mock_get_dpu_list, mock_connector):
-        # Mock DB
-        mock_db = MagicMock()
-        mock_connector.return_value = mock_db
+    # Test get_sorted_reboot_cause_files
+    @patch("process_reboot_cause.os.listdir")
+    @patch("process_reboot_cause.os.path.getmtime")
+    def test_get_sorted_reboot_cause_files_success(self, mock_getmtime, mock_listdir):
+        # Setup mock data
+        mock_listdir.return_value = ["file1.txt", "file2.txt", "file3.txt"]
+        mock_getmtime.side_effect = [100, 200, 50]  # Mock modification times
 
         # Call the function
-        process_reboot_cause.update_dpu_reboot_cause_to_chassis_state_db()
+        result = process_reboot_cause.get_sorted_reboot_cause_files("/mock/dpu_history")
 
-        # Verify DB interactions for each DPU
-        mock_db.set.assert_any_call(mock_db.CHASSIS_STATE_DB)
+        # Assert the files are sorted by modification time in descending order
+        self.assertEqual(result, [
+            "/mock/dpu_history/file2.txt",
+            "/mock/dpu_history/file1.txt",
+            "/mock/dpu_history/file3.txt"
+        ])
 
-    '''
-    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=[])
-    def test_invalid_dpu_list(self, mock_get_dpu_list):
-        # Call the function with an empty DPU list
-        process_reboot_cause.update_dpu_reboot_cause_to_chassis_state_db()
+    @patch("process_reboot_cause.os.listdir")
+    def test_get_sorted_reboot_cause_files_error(self, mock_listdir):
+        # Simulate an exception during file listing
+        mock_listdir.side_effect = Exception("Mocked error")
 
-        # Ensure no DB interactions occur when DPU list is empty
-        mock_get_dpu_list.assert_called_once()
-    '''
+        # Call the function and check the result
+        result = process_reboot_cause.get_sorted_reboot_cause_files("/mock/dpu_history")
+        self.assertEqual(result, [])
