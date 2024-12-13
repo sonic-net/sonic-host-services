@@ -4,6 +4,7 @@ from host_modules import host_service
 import docker
 import signal
 import errno
+import logging
 
 MOD_NAME = "docker_service"
 
@@ -29,8 +30,7 @@ ALLOWED_CONTAINERS = {
 # The set of allowed images that can be managed by this service.
 ALLOWED_IMAGES = {
     "docker-syncd-brcm",
-    "docker-syncd-cisco"
-    "docker-acms",
+    "docker-syncd-cisco" "docker-acms",
     "docker-sonic-gnmi",
     "docker-sonic-telemetry",
     "docker-snmp",
@@ -47,19 +47,6 @@ ALLOWED_IMAGES = {
 }
 
 
-def is_allowed_container(container):
-    """
-    Check if the container is allowed to be managed by this service.
-
-    Args:
-        container (str): The container name.
-
-    Returns:
-        bool: True if the container is allowed, False otherwise.
-    """
-    return container in ALLOWED_CONTAINERS
-
-
 def is_allowed_image(image):
     """
     Check if the image is allowed to be managed by this service.
@@ -74,6 +61,21 @@ def is_allowed_image(image):
     return image_name in ALLOWED_IMAGES
 
 
+def get_sonic_container(container_id):
+    """
+    Get a Sonic docker container by name. If the container is not a Sonic container, raise PermissionError.
+    """
+    client = docker.from_env()
+    if container_id not in ALLOWED_CONTAINERS:
+        raise PermissionError(
+            "Container {} is not allowed to be managed by this service.".format(
+                container_id
+            )
+        )
+    container = client.containers.get(container_id)
+    return container
+
+
 class DockerService(host_service.HostModule):
     """
     DBus endpoint that executes the docker command
@@ -82,95 +84,96 @@ class DockerService(host_service.HostModule):
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
     )
-    def stop(self, container):
+    def stop(self, container_id):
         """
         Stop a running Docker container.
 
         Args:
-            container (str): The name or ID of the Docker container.
+            container_id (str): The name of the Docker container.
 
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
         try:
-            client = docker.from_env()
-            if not is_allowed_container(container):
-                return (
-                    errno.EPERM,
-                    "Container {} is not allowed to be managed by this service.".format(
-                        container
-                    ),
-                )
-            container = client.containers.get(container)
+            container = get_sonic_container(container_id)
             container.stop()
             return 0, "Container {} has been stopped.".format(container.name)
+        except PermissionError:
+            msg = "Container {} is not allowed to be managed by this service.".format(
+                container_id
+            )
+            logging.error(msg)
+            return errno.EPERM, msg
         except docker.errors.NotFound:
-            return errno.ENOENT, "Container {} does not exist.".format(container)
+            msg = "Container {} does not exist.".format(container_id)
+            logging.error(msg)
+            return errno.ENOENT, msg
         except Exception as e:
-            return 1, "Failed to stop container {}: {}".format(container, str(e))
+            msg = "Failed to stop container {}: {}".format(container_id, str(e))
+            logging.error(msg)
+            return 1, msg
 
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="si", out_signature="is"
     )
-    def kill(self, container, signal=signal.SIGKILL):
+    def kill(self, container_id, signal=signal.SIGKILL):
         """
         Kill or send a signal to a running Docker container.
 
         Args:
-            container (str): The name or ID of the Docker container.
+            container_id (str): The name or ID of the Docker container.
             signal (int): The signal to send. Defaults to SIGKILL.
 
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
         try:
-            client = docker.from_env()
-            if not is_allowed_container(container):
-                return (
-                    errno.EPERM,
-                    "Container {} is not allowed to be managed by this service.".format(
-                        container
-                    ),
-                )
-            container = client.containers.get(container)
+            container = get_sonic_container(container_id)
             container.kill(signal=signal)
             return 0, "Container {} has been killed with signal {}.".format(
                 container.name, signal
             )
+        except PermissionError:
+            msg = "Container {} is not allowed to be managed by this service.".format(
+                container_id
+            )
+            logging.error(msg)
+            return errno.EPERM, msg
         except docker.errors.NotFound:
-            return errno.ENOENT, "Container {} does not exist.".format(container)
+            msg = "Container {} does not exist.".format(container_id)
+            logging.error(msg)
+            return errno.ENOENT, msg
         except Exception as e:
-            return 1, "Failed to kill container {}: {}".format(container, str(e))
+            return 1, "Failed to kill container {}: {}".format(container_id, str(e))
 
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
     )
-    def restart(self, container):
+    def restart(self, container_id):
         """
         Restart a running Docker container.
 
         Args:
-            container (str): The name or ID of the Docker container.
+            container_id (str): The name or ID of the Docker container.
 
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
         try:
-            client = docker.from_env()
-            if not is_allowed_container(container):
-                return (
-                    errno.EPERM,
-                    "Container {} is not allowed to be managed by this service.".format(
-                        container
-                    ),
-                )
-            container = client.containers.get(container)
+            container = get_sonic_container(container_id)
             container.restart()
             return 0, "Container {} has been restarted.".format(container.name)
+        except PermissionError:
+            return (
+                errno.EPERM,
+                "Container {} is not allowed to be managed by this service.".format(
+                    container_id
+                ),
+            )
         except docker.errors.NotFound:
-            return errno.ENOENT, "Container {} does not exist.".format(container)
+            return errno.ENOENT, "Container {} does not exist.".format(container_id)
         except Exception as e:
-            return 1, "Failed to restart container {}: {}".format(container, str(e))
+            return 1, "Failed to restart container {}: {}".format(container_id, str(e))
 
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="ssa{sv}", out_signature="is"
