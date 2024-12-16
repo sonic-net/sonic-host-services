@@ -23,7 +23,9 @@ VERSION = "1.0"
 
 SYSLOG_IDENTIFIER = "determine-reboot-cause"
 
+MAX_HISTORY_FILES = 10
 REBOOT_CAUSE_DIR = "/host/reboot-cause/"
+REBOOT_CAUSE_MODULE_DIR = "/host/reboot-cause/module"
 REBOOT_CAUSE_HISTORY_DIR = "/host/reboot-cause/history/"
 REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR, "reboot-cause.txt")
 PREVIOUS_REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR,  "previous-reboot-cause.json")
@@ -211,6 +213,43 @@ def determine_reboot_cause():
 
     return previous_reboot_cause, additional_reboot_info
 
+def check_and_create_dpu_dirs():
+    # Get platform using device_info.get_platform()
+    platform_info = device_info.get_platform_info()
+    platform = platform_info['platform']
+
+    # Use os.path.join() to create the path to platform.json
+    platform_path = os.path.join("/usr/share/sonic/device", platform, "platform.json")
+
+    # Check if platform.json exists
+    if not os.path.exists(platform_path):
+        sonic_logger.log_error(f"Platform file {platform_path} not found")
+        return
+
+    # Read the platform.json file to get DPU information
+    with open(platform_path, 'r') as f:
+        platform_data = json.load(f)
+
+    # Get the list of DPUs from the platform data
+    dpus = platform_data.get('DPUS', [])
+
+    # Create directories for each DPU and its history
+    for dpu in dpus:
+        dpu_dir = os.path.join(REBOOT_CAUSE_MODULE_DIR, dpu)
+        history_dir = os.path.join(dpu_dir, "history")
+
+        # Create the DPU directory if it doesn't exist
+        if not os.path.exists(dpu_dir):
+            os.makedirs(dpu_dir)
+
+        # Create reboot-cause.txt and write 'First boot' to it
+        reboot_file = os.path.join(dpu_dir, 'reboot-cause.txt')
+        with open(reboot_file, 'w') as f:
+            f.write('First boot\n')
+
+        # Create the history directory if it doesn't exist
+        if not os.path.exists(history_dir):
+            os.makedirs(history_dir)
 
 def main():
     # Configure logger to log all messages INFO level and higher
@@ -260,6 +299,10 @@ def main():
     # Write a new default reboot cause file for the next reboot
     with open(REBOOT_CAUSE_FILE, "w") as cause_file:
         cause_file.write(REBOOT_CAUSE_UNKNOWN)
+
+    # Craete directories for DPUs in SmartSwitch platforms
+    if device_info.is_smartswitch():
+        check_and_create_dpu_dirs()
 
 
 if __name__ == "__main__":
