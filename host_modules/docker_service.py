@@ -4,44 +4,108 @@ from host_modules import host_service
 import docker
 import signal
 import errno
+import logging
 
 MOD_NAME = "docker_service"
 
 # The set of allowed containers that can be managed by this service.
-# First element is the image name, second element is the container name.
-ALLOWED_CONTAINERS = [
-    ("docker-syncd-brcm", "syncd"),
-    ("docker-acms", "acms"),
-    ("docker-sonic-gnmi", "gnmi"),
-    ("docker-sonic-telemetry", "telemetry"),
-    ("docker-snmp", "snmp"),
-    ("docker-platform-monitor", "pmon"),
-    ("docker-lldp", "lldp"),
-    ("docker-dhcp-relay", "dhcp_relay"),
-    ("docker-router-advertiser", "radv"),
-    ("docker-teamd", "teamd"),
-    ("docker-fpm-frr", "bgp"),
-    ("docker-orchagent", "swss"),
-    ("docker-sonic-restapi", "restapi"),
-    ("docker-eventd", "eventd"),
-    ("docker-database", "database"),
-]
+ALLOWED_CONTAINERS = {
+    "bgp",
+    "bmp",
+    "database",
+    "dhcp_relay",
+    "eventd",
+    "gnmi",
+    "lldp",
+    "pmon",
+    "radv",
+    "restapi",
+    "snmp",
+    "swss",
+    "syncd",
+    "teamd",
+    "telemetry",
+}
+
+# The set of allowed images that can be managed by this service.
+ALLOWED_IMAGES = {
+    "docker-database",
+    "docker-dhcp-relay",
+    "docker-eventd",
+    "docker-fpm-frr",
+    "docker-lldp",
+    "docker-orchagent",
+    "docker-platform-monitor",
+    "docker-router-advertiser",
+    "docker-snmp",
+    "docker-sonic-bmp",
+    "docker-sonic-gnmi",
+    "docker-sonic-restapi",
+    "docker-sonic-telemetry",
+    "docker-syncd-brcm",
+    "docker-syncd-cisco",
+    "docker-teamd",
+}
 
 
-def is_allowed_container(container):
+def is_allowed_image(image):
     """
-    Check if the container is allowed to be managed by this service.
+    Check if the image is allowed to be managed by this service.
 
     Args:
-        container (str): The container name.
+        image (str): The image name.
 
     Returns:
-        bool: True if the container is allowed, False otherwise.
+        bool: True if the image is allowed, False otherwise.
     """
-    for _, allowed_container in ALLOWED_CONTAINERS:
-        if container == allowed_container:
-            return True
-    return False
+    image_name = image.split(":")[0]  # Remove tag if present
+    return image_name in ALLOWED_IMAGES
+
+
+def get_sonic_container(container_id):
+    """
+    Get a Sonic docker container by name. If the container is not a Sonic container, raise PermissionError.
+    """
+    client = docker.from_env()
+    if container_id not in ALLOWED_CONTAINERS:
+        raise PermissionError(
+            "Container {} is not allowed to be managed by this service.".format(
+                container_id
+            )
+        )
+    container = client.containers.get(container_id)
+    return container
+
+
+def validate_docker_run_options(kwargs):
+    """
+    Validate the keyword arguments passed to the Docker container run API.
+    """
+    # Validate the keyword arguments here if needed
+    # Disallow priviledge mode for security reasons
+    if kwargs.get("privileged", False):
+        raise ValueError("Privileged mode is not allowed for security reasons.")
+    # Disallow sensitive directories to be mounted.
+    sensitive_dirs = ["/etc", "/var", "/usr"]
+    for bind in kwargs.get("volumes", {}).keys():
+        for sensitive_dir in sensitive_dirs:
+            if bind.startswith(sensitive_dir):
+                raise ValueError(
+                    "Mounting sensitive directories is not allowed for security reasons."
+                )
+    # Disallow running containers as root.
+    if kwargs.get("user", None) == "root":
+        raise ValueError(
+            "Running containers as root is not allowed for security reasons."
+        )
+    # Disallow cap_add for security reasons.
+    if kwargs.get("cap_add", None):
+        raise ValueError(
+            "Adding capabilities to containers is not allowed for security reasons."
+        )
+    # Disallow access to sensitive devices.
+    if kwargs.get("devices", None):
+        raise ValueError("Access to devices is not allowed for security reasons.")
 
 
 class DockerService(host_service.HostModule):
@@ -52,92 +116,138 @@ class DockerService(host_service.HostModule):
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
     )
-    def stop(self, container):
+    def stop(self, container_id):
         """
         Stop a running Docker container.
 
         Args:
-            container (str): The name or ID of the Docker container.
+            container_id (str): The name of the Docker container.
 
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
         try:
-            client = docker.from_env()
-            if not is_allowed_container(container):
-                return (
-                    errno.EPERM,
-                    "Container {} is not allowed to be managed by this service.".format(
-                        container
-                    ),
-                )
-            container = client.containers.get(container)
+            container = get_sonic_container(container_id)
             container.stop()
             return 0, "Container {} has been stopped.".format(container.name)
+        except PermissionError:
+            msg = "Container {} is not allowed to be managed by this service.".format(
+                container_id
+            )
+            logging.error(msg)
+            return errno.EPERM, msg
         except docker.errors.NotFound:
-            return errno.ENOENT, "Container {} does not exist.".format(container)
+            msg = "Container {} does not exist.".format(container_id)
+            logging.error(msg)
+            return errno.ENOENT, msg
         except Exception as e:
-            return 1, "Failed to stop container {}: {}".format(container, str(e))
+            msg = "Failed to stop container {}: {}".format(container_id, str(e))
+            logging.error(msg)
+            return 1, msg
 
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="si", out_signature="is"
     )
-    def kill(self, container, signal=signal.SIGKILL):
+    def kill(self, container_id, signal=signal.SIGKILL):
         """
         Kill or send a signal to a running Docker container.
 
         Args:
-            container (str): The name or ID of the Docker container.
+            container_id (str): The name or ID of the Docker container.
             signal (int): The signal to send. Defaults to SIGKILL.
 
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
         try:
-            client = docker.from_env()
-            if not is_allowed_container(container):
-                return (
-                    errno.EPERM,
-                    "Container {} is not allowed to be managed by this service.".format(
-                        container
-                    ),
-                )
-            container = client.containers.get(container)
+            container = get_sonic_container(container_id)
             container.kill(signal=signal)
             return 0, "Container {} has been killed with signal {}.".format(
                 container.name, signal
             )
+        except PermissionError:
+            msg = "Container {} is not allowed to be managed by this service.".format(
+                container_id
+            )
+            logging.error(msg)
+            return errno.EPERM, msg
         except docker.errors.NotFound:
-            return errno.ENOENT, "Container {} does not exist.".format(container)
+            msg = "Container {} does not exist.".format(container_id)
+            logging.error(msg)
+            return errno.ENOENT, msg
         except Exception as e:
-            return 1, "Failed to kill container {}: {}".format(container, str(e))
+            return 1, "Failed to kill container {}: {}".format(container_id, str(e))
 
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
     )
-    def restart(self, container):
+    def restart(self, container_id):
         """
         Restart a running Docker container.
 
         Args:
-            container (str): The name or ID of the Docker container.
+            container_id (str): The name or ID of the Docker container.
+
+        Returns:
+            tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
+        """
+        try:
+            container = get_sonic_container(container_id)
+            container.restart()
+            return 0, "Container {} has been restarted.".format(container.name)
+        except PermissionError:
+            return (
+                errno.EPERM,
+                "Container {} is not allowed to be managed by this service.".format(
+                    container_id
+                ),
+            )
+        except docker.errors.NotFound:
+            return errno.ENOENT, "Container {} does not exist.".format(container_id)
+        except Exception as e:
+            return 1, "Failed to restart container {}: {}".format(container_id, str(e))
+
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="ssa{sv}", out_signature="is"
+    )
+    def run(self, image, command, kwargs):
+        """
+        Run a Docker container.
+
+        Args:
+            image (str): The name of the Docker image to run.
+            command (str): The command to run in the container
+            kwargs (dict): Additional keyword arguments to pass to the Docker API.
 
         Returns:
             tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
         """
         try:
             client = docker.from_env()
-            if not is_allowed_container(container):
+
+            if not is_allowed_image(image):
                 return (
                     errno.EPERM,
-                    "Container {} is not allowed to be managed by this service.".format(
-                        container
+                    "Image {} is not allowed to be managed by this service.".format(
+                        image
                     ),
                 )
-            container = client.containers.get(container)
-            container.restart()
-            return 0, "Container {} has been restarted.".format(container.name)
-        except docker.errors.NotFound:
-            return errno.ENOENT, "Container {} does not exist.".format(container)
+
+            if command:
+                return (
+                    errno.EPERM,
+                    "Only an empty string command is allowed. Non-empty commands are not permitted by this service.",
+                )
+
+            validate_docker_run_options(kwargs)
+
+            # Semgrep cannot detect codes for validating image and command.
+            # nosemgrep: python.docker.security.audit.docker-arbitrary-container-run.docker-arbitrary-container-run
+            container = client.containers.run(image, command, **kwargs)
+            return 0, "Container {} has been created.".format(container.name)
+        except ValueError as e:
+            return errno.EINVAL, "Invalid argument.".format(str(e))
+        except docker.errors.ImageNotFound:
+            return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:
-            return 1, "Failed to restart container {}: {}".format(container, str(e))
+            return 1, "Failed to run image {}: {}".format(image, str(e))
