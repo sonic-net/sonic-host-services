@@ -711,7 +711,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                                 table_ip_version = 4
 
                         # Read DST_PORT info from Config DB, insert it back to ACL_SERVICES
-                        if acl_service == 'EXTERNAL_CLIENT':# and "L4_DST_PORT" in rule_props:
+                        if acl_service == 'EXTERNAL_CLIENT' and "L4_DST_PORT" in rule_props:
                             dst_ports = [rule_props["L4_DST_PORT"]]
                             self.ACL_SERVICES[acl_service]["dst_ports"] = dst_ports
                         elif acl_service == 'EXTERNAL_CLIENT' and "L4_DST_PORT_RANGE" in rule_props:
