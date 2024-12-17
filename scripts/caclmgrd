@@ -132,7 +132,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         self.update_thread = {}
         self.lock = {}
         self.num_changes = {}
-        self.stop_event = threading.Event()
 
         # Initialize update-thread-specific data for default namespace
         self.update_thread[DEFAULT_NAMESPACE] = None
@@ -902,7 +901,6 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             for tb_line in msg:
                 for tb_line_split in tb_line.splitlines():
                     self.log_error(tb_line_split)
-            #self.stop_event.set()
             exc_info = traceback.format_exc()
             exception_queue.put((namespace, repr(e), exc_info))  # Add the exception to the queue
             self.log_error("Exiting thread {}, put it into exception_queue {}".format(
