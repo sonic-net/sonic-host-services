@@ -6,11 +6,7 @@ from unittest import TestCase, mock
 from tests.common.mock_configdb import MockConfigDb
 from sonic_py_common.general import load_module_from_source
 import threading
-import time
 import sys
-from .test_basic_vectors import CACLMGRD_BASIC_TEST_VECTOR
-from parameterized import parameterized
-from pyfakefs.fake_filesystem_unittest import patchfs
 from queue import Queue
 
 
