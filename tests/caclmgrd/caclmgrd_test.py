@@ -100,6 +100,7 @@ class TestCaclmgrd(TestCase):
             mock_swsscommon.Select.OBJECT,
             MagicMock(),
         )
+        mock_swsscommon.SubscriberStateTable.return_value.getTableNameSeparator.return_value = "|"
         pop_values = [
             ("key1", "SET", [("mark", "0x11"), ("field2", "value2")]),
             (None, None, None),
@@ -107,19 +108,19 @@ class TestCaclmgrd(TestCase):
             (None, None, None),
             ("key3", "SET", [("mark", "0x11")]),
             (None, None, None),
-            ("key4", "DEL", []),
-            (None, None, None),
+            ("SSH_ONLY", "SET", (('policy_desc', 'SSH_ONLY'), ('services', 'SSH'), ('stage', 'ingress'), ('type', 'CTRLPLANE'))),
+            ('', None, None),
             ("key5", "SET", [("mark", "0x11"), ("field4", "value4")]),
-            (None, None, None),
+            ('', None, None),
             ("key6", "SET", [("mark", "0x11"), ("field5", "value5")]),
             (None, None, None),
-            ("key7", "SET", [("mark", "0x11"), ("field6", "value6")]),
-            (None, None, None),
+            ("SSH_ONLY", "SET", (('policy_desc', 'SSH_ONLY'), ('services', 'SSH'), ('stage', 'ingress'), ('type', 'CTRLPLANE'))),
+            ('', None, None),
         ]
         mock_swsscommon.SubscriberStateTable.return_value.pop.side_effect = pop_values
         mock_swsscommon.CastSelectableToRedisSelectObj.return_value.getDbConnector.return_value.getNamespace.return_value = ""
 
-        mock_swsscommon.CastSelectableToRedisSelectObj.return_value.getDbConnector.return_value.getDbId.return_value = 6
+        mock_swsscommon.CastSelectableToRedisSelectObj.return_value.getDbConnector.return_value.getDbId.side_effect = [6, 4, 4]
         # Creating an instance of ControlPlaneAclManager
         self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = MagicMock()
         self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = MagicMock()
@@ -131,7 +132,7 @@ class TestCaclmgrd(TestCase):
         manager.DualToR = True
         manager.iptables_cmd_ns_prefix = {"": []}
         manager.lock = {"": threading.Lock()}
-        manager.num_changes = {"": 0}
+        manager.num_changes = {"": 2}
         manager.update_thread = {"": None}
         manager.bfdAllowed = False
         manager.VxlanAllowed = True
