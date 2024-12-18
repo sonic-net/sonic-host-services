@@ -125,7 +125,7 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
         check_output_pipe(cmd0, cmd1, cmd2)
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+            syslog.syslog(syslog.LOG_WARNING, "{} - failed: return code - {}, output:\n{}"
                   .format(err.cmd, err.returncode, err.output))
         if raise_exception:
             raise
@@ -1537,6 +1537,9 @@ class MgmtIfaceCfg(object):
                           'services')
             return
 
+        # Update cache
+        self.mgmt_vrf_enabled = enabled
+
         # Remove mgmt if route
         if enabled == 'true':
             """
@@ -1555,15 +1558,11 @@ class MgmtIfaceCfg(object):
                 cmd2 = ['wc', '-l']
                 run_cmd_pipe(cmd0, cmd1, cmd2, True, True)
             except subprocess.CalledProcessError:
-                syslog.syslog(syslog.LOG_ERR, 'MgmtIfaceCfg: Could not delete '
+                syslog.syslog(syslog.LOG_WARNING, 'MgmtIfaceCfg: Could not delete '
                                               'eth0 route')
                 return
 
             run_cmd(["ip", "-4", "route", "del", "default", "dev", "eth0", "metric", "202"], False)
-
-        # Update cache
-        self.mgmt_vrf_enabled = enabled
-
 
 class RSyslogCfg(object):
     """Remote syslog config daemon
