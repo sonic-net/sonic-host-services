@@ -67,77 +67,6 @@ class TestCaclmgrd(TestCase):
         self.assertEqual(exc_info[0], "")
         self.assertIn("Test exception", exc_info[1])
 
-    @patch("caclmgrd.swsscommon")
-    @patch("os.geteuid", return_value=0)
-    @patch("os.kill")
-    @patch("signal.SIGKILL", return_value=9)
-    @patch("sys.exit")
-    @patch("traceback.format_exception")
-    def test_run(
-        self,
-        mock_format_exception,
-        mock_exit,
-        mock_sigkill,
-        mock_kill,
-        mock_geteuid,
-        mock_swsscommon,
-    ):
-        # Setup
-        mock_select_instance = MagicMock()
-        mock_Select.return_value = mock_select_instance
-
-        mock_getDbId.side_effect = lambda db_name: {"STATE_DB": 1, "CONFIG_DB": 2}.get(
-            db_name, 0
-        )
-
-        mock_db_connector = MagicMock()
-        mock_DBConnector.return_value = mock_db_connector
-
-        exception_queue = Queue()
-
-        # Mock self object and its attributes
-        self_mock = MagicMock()
-        self_mock.DualToR = True
-        self_mock.bfdAllowed = False
-        self_mock.VxlanAllowed = False
-        self_mock.config_db_map = {"DEFAULT_NAMESPACE": MagicMock()}
-        self_mock.lock = {"DEFAULT_NAMESPACE": threading.Lock()}
-        self_mock.num_changes = {"DEFAULT_NAMESPACE": 0}
-        self_mock.update_thread = {"DEFAULT_NAMESPACE": None}
-        self_mock.MUX_CABLE_TABLE = "MUX_CABLE_TABLE"
-        self_mock.BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
-        self_mock.VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL_TABLE"
-        self_mock.ACL_TABLE = "ACL_TABLE"
-        self_mock.ACL_TABLE_TYPE_CTRLPLANE = "CTRLPLANE"
-
-        # Define expected behavior for self.log_error and self.log_info
-        self_mock.log_error = MagicMock()
-        self_mock.log_info = MagicMock()
-
-        # Mock traceback formatting
-        mock_format_exception.return_value = ["Traceback line 1", "Traceback line 2"]
-
-        # Execute the `run` function
-        try:
-            TestRunFunction.run(self_mock)
-        except SystemExit:
-            pass  # Ignore the SystemExit exception
-
-        # Assertions
-        self_mock.log_info.assert_called_with("Starting up ...")
-        mock_DBConnector.assert_any_call("STATE_DB", 0)
-        mock_DBConnector.assert_any_call("CONFIG_DB", 0)
-        self_mock.log_error.assert_not_called_with("Must be root to run this daemon")
-        mock_initializeGlobalConfig.assert_called_once()
-        mock_Select.assert_called_once()
-
-        # Ensure signals were set correctly during exception
-        if not exception_queue.empty():
-            self_mock.log_error.assert_called()
-            mock_kill.assert_called_once_with(os.getpid(), signal.SIGKILL)
-
-        # Validate exit handling
-        mock_exit.assert_not_called()
 
     @patch("caclmgrd.swsscommon")
     @patch("os.geteuid", return_value=0)
@@ -155,35 +84,57 @@ class TestCaclmgrd(TestCase):
         mock_swsscommon,
     ):
         mock_swsscommon.SonicDBConfig.getDbId.side_effect = lambda db_name: (
-            0 if db_name == "STATE_DB" else 1
+            6 if db_name == "STATE_DB" else 1
         )
+        mock_state_db_connector = MagicMock()
+        mock_config_db_connector = MagicMock()
+        mock_swsscommon.DBConnector.side_effect = [mock_state_db_connector, mock_config_db_connector, mock_state_db_connector] 
         mock_swsscommon.Select.OBJECT = 1
         mock_swsscommon.Select.return_value.select.return_value = (
             mock_swsscommon.Select.OBJECT,
             MagicMock(),
         )
+        mock_swsscommon.Select.return_value.removeSelectable.return_value = MagicMock()
+
         mock_swsscommon.SubscriberStateTable.return_value.select.return_value = (
             mock_swsscommon.Select.OBJECT,
             MagicMock(),
         )
-        mock_swsscommon.CastSelectableToRedisSelectObj.return_value.getDbConnector.return_value.getNamespace.return_value = (
-            "default"
-        )
-        mock_swsscommon.CastSelectableToRedisSelectObj.return_value.getDbConnector.return_value.getDbId.side_effect = (
-            lambda: 0
-        )
+        pop_values = [
+            ("key1", "SET", [("mark", "0x11"), ("field2", "value2")]),
+            (None, None, None),
+            ("key2", "DEL", []),
+            (None, None, None),
+            ("key3", "SET", [("mark", "0x11")]),
+            (None, None, None),
+            ("key4", "DEL", []),
+            (None, None, None),
+            ("key5", "SET", [("mark", "0x11"), ("field4", "value4")]),
+            (None, None, None),
+            ("key6", "SET", [("mark", "0x11"), ("field5", "value5")]),
+            (None, None, None),
+            ("key7", "SET", [("mark", "0x11"), ("field6", "value6")]),
+            (None, None, None),
+        ]
+        mock_swsscommon.SubscriberStateTable.return_value.pop.side_effect = pop_values
+        mock_swsscommon.CastSelectableToRedisSelectObj.return_value.getDbConnector.return_value.getNamespace.return_value = ""
 
+        mock_swsscommon.CastSelectableToRedisSelectObj.return_value.getDbConnector.return_value.getDbId.return_value = 6
         # Creating an instance of ControlPlaneAclManager
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = MagicMock()
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = MagicMock()
         manager = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
 
         # Setting necessary attributes
+        manager.log_info = MagicMock()
+        manager.log_error = MagicMock()
         manager.DualToR = True
         manager.iptables_cmd_ns_prefix = {"": []}
         manager.lock = {"": threading.Lock()}
         manager.num_changes = {"": 0}
         manager.update_thread = {"": None}
         manager.bfdAllowed = False
-        manager.VxlanAllowed = False
+        manager.VxlanAllowed = True
         manager.VxlanSrcIP = ""
         manager.MUX_CABLE_TABLE = "MUX_CABLE_TABLE"
         manager.BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
@@ -193,6 +144,7 @@ class TestCaclmgrd(TestCase):
         manager.ACL_TABLE_TYPE_CTRLPLANE = "CTRLPLANE"
 
         # Mocking methods
+        manager.removeSelectable = MagicMock()
         manager.update_control_plane_acls = MagicMock()
         manager.allow_bfd_protocol = MagicMock()
         manager.allow_vxlan_port = MagicMock()
@@ -205,9 +157,9 @@ class TestCaclmgrd(TestCase):
 
         # Asserting the method calls
         manager.update_control_plane_acls.assert_called()
-        manager.allow_bfd_protocol.assert_not_called()
+        manager.allow_bfd_protocol.assert_called()
         manager.allow_vxlan_port.assert_not_called()
         manager.block_vxlan_port.assert_not_called()
-        manager.update_dhcp_acl_for_mark_change.assert_not_called()
-        manager.update_dhcp_acl.assert_not_called()
+        manager.update_dhcp_acl_for_mark_change.assert_called()
+        manager.update_dhcp_acl.assert_called()
         manager.setup_dhcp_chain.assert_called()
