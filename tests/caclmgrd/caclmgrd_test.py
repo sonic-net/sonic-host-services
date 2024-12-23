@@ -8,7 +8,7 @@ from sonic_py_common.general import load_module_from_source
 import threading
 import sys
 from queue import Queue
-
+import queue
 
 DBCONFIG_PATH = "/var/run/redis/sonic-db/database_config.json"
 
@@ -113,7 +113,9 @@ class TestCaclmgrd(TestCase):
             ("key5", "SET", [("mark", "0x11"), ("field4", "value4")]),
             ('', None, None),
             ("key6", "SET", [("mark", "0x11"), ("field5", "value5")]),
-            (None, None, None),
+            ('', None, None),
+            ("SSH_ONLY", "SET", (('policy_desc', 'SSH_ONLY'), ('services', 'SSH'), ('stage', 'ingress'), ('type', 'CTRLPLANE'))),
+            ('', None, None),
             ("SSH_ONLY", "SET", (('policy_desc', 'SSH_ONLY'), ('services', 'SSH'), ('stage', 'ingress'), ('type', 'CTRLPLANE'))),
             ('', None, None),
         ]
@@ -153,8 +155,11 @@ class TestCaclmgrd(TestCase):
         manager.update_dhcp_acl_for_mark_change = MagicMock()
         manager.update_dhcp_acl = MagicMock()
         manager.setup_dhcp_chain = MagicMock()
-
-        manager.run()
+        try:
+            manager.run()
+        except StopIteration as e:
+            # This is expected to happen
+            pass
 
         # Asserting the method calls
         manager.update_control_plane_acls.assert_called()
