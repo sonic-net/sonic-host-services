@@ -59,7 +59,7 @@ class TestCaclmgrdVxlan(TestCase):
                 caclmgrd_daemon.allow_vxlan_port('', data)
                 mocked_subprocess.Popen.reset_mock()
                 caclmgrd_daemon.num_changes[''] = 1
-                exception_queue = Queue()
-                caclmgrd_daemon.check_and_update_control_plane_acls('', 1, exception_queue)
+                caclmgrd_daemon.exception_queue = Queue()
+                caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
 

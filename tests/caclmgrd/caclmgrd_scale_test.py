@@ -48,6 +48,5 @@ class TestCaclmgrdScale(TestCase):
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
                 caclmgrd_daemon.num_changes[''] = 150
-                exception_queue = Queue()
-                caclmgrd_daemon.check_and_update_control_plane_acls('', 150, exception_queue)
+                caclmgrd_daemon.check_and_update_control_plane_acls('', 150)
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)

@@ -53,8 +53,7 @@ class TestCaclmgrdBfd(TestCase):
                 caclmgrd_daemon.bfdAllowed = True
                 mocked_subprocess.Popen.reset_mock()
                 caclmgrd_daemon.num_changes[''] = 1
-                exception_queue = Queue()
-                caclmgrd_daemon.check_and_update_control_plane_acls('', 1, exception_queue)
+                caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
 
                 #Ensure BFD rules are installed before ip2me rules to avoid traffic loss during update of control plane acl rules
                 bfd_ipv4_idx = 0
