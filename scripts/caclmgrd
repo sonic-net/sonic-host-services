@@ -895,7 +895,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         self.update_thread[namespace] = None
                         return
         except Exception as e:
-            self.log_error("Exception occured at {} thread due to {}".format(threading.current_thread().getName(), repr(e)))
+            self.log_error("Exception occured at {} thread due to {}".format(threading.current_thread().name, repr(e)))
             exc_type, exc_value, exc_traceback = sys.exc_info()
             full_traceback = traceback.format_exception(exc_type, exc_value, exc_traceback)
             self.exception_queue.put((namespace, repr(e), full_traceback))  # Add the exception to the queue
@@ -1051,7 +1051,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 for tb_line in exc_info:
                     for tb_line_split in tb_line.splitlines():
                         self.log_error(tb_line_split)
-                self.log_error("Detect exception in Child thread {} , generating SIGKILL for main thread".format(self.update_thread[namespace].getName()))
+                self.log_error("Detect exception in Child thread {} , generating SIGKILL for main thread".format(self.update_thread[namespace].name))
                 os.kill(os.getpid(), signal.SIGKILL)
             except Empty:
                 # No exceptions in the queue
