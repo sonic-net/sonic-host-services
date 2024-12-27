@@ -791,6 +791,11 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                             # Append the packet action as the jump target
                             rule_cmd += ["-j", "{}".format(rule_props["PACKET_ACTION"])]
 
+                            if (dst_port not in self.ACL_SERVICES["NTP"]["dst_ports"] and
+                                dst_port not in self.ACL_SERVICES["SNMP"]["dst_ports"] and
+                                dst_port not in self.ACL_SERVICES["SSH"]["dst_ports"]):
+                                rule_cmd = self.exclude_mgmt_port(rule_cmd)
+
                             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + rule_cmd)
                             num_ctrl_plane_acl_rules += 1
 
