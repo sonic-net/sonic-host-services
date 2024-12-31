@@ -17,6 +17,9 @@ try:
     import sys
     import threading
     import time
+    import traceback
+    import signal
+    from queue import Empty, Queue
     from sonic_py_common.general import getstatusoutput_noshell_pipe
     from sonic_py_common import daemon_base, device_info, multi_asic
     from swsscommon import swsscommon
@@ -134,6 +137,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         self.update_thread[DEFAULT_NAMESPACE] = None
         self.lock[DEFAULT_NAMESPACE] = threading.Lock()
         self.num_changes[DEFAULT_NAMESPACE] = 0
+        self.exception_queue = Queue()
 
         if device_info.is_multi_npu():
             swsscommon.SonicDBConfig.load_sonic_global_db_config()
@@ -890,6 +894,11 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         self.num_changes[namespace] = 0
                         self.update_thread[namespace] = None
                         return
+        except Exception as e:
+            self.log_error("Exception occured at {} thread due to {}".format(threading.current_thread().name, repr(e)))
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            full_traceback = traceback.format_exception(exc_type, exc_value, exc_traceback)
+            self.exception_queue.put((namespace, repr(e), full_traceback))  # Add the exception to the queue
         finally:
             new_config_db_connector.close("CONFIG_DB")
 
@@ -1034,6 +1043,19 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
         # Loop on select to see if any event happen on state db or config db of any namespace
         while True:
+            # Periodically check for exceptions from child threads
+            try:
+                namespace, error, exc_info = self.exception_queue.get_nowait()  # Non-blocking
+                self.log_error("Exception in namespace '{}': {}".format(namespace, error))
+                self.log_error("Full traceback from child thread:")
+                for tb_line in exc_info:
+                    for tb_line_split in tb_line.splitlines():
+                        self.log_error(tb_line_split)
+                self.log_error("Detect exception in Child thread {} , generating SIGKILL for main thread".format(self.update_thread[namespace].name))
+                os.kill(os.getpid(), signal.SIGKILL)
+            except Empty:
+                # No exceptions in the queue
+                pass
             (state, selectableObj) = sel.select(SELECT_TIMEOUT_MS)
             # Continue if select is timeout or selectable object is not return
             if state != swsscommon.Select.OBJECT:
@@ -1126,7 +1148,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     if not self.update_thread[namespace]:
                         self.log_info("Spawning ACL update thread for namepsace '{}' ...".format(namespace))
                         self.update_thread[namespace] = threading.Thread(target=self.check_and_update_control_plane_acls,
-                                                                         args=(namespace, self.num_changes[namespace]))
+                                                                        args=(namespace, self.num_changes[namespace]))
                         self.update_thread[namespace].start()
 
 # ============================= Functions =============================
