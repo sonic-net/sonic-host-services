@@ -287,3 +287,34 @@ class TestDockerService(object):
             docker_service = DockerService(MOD_NAME)
             rc, msg = docker_service.run("docker-syncd-brcm:latest", "rm -rf /", {})
         assert rc == errno.EPERM, "Return code is wrong"
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_docker_load_success(self, MockInit, MockBusName, MockSystemBus):
+        mock_docker_client = mock.Mock()
+        mock_docker_client.images.load.return_value = ["loaded_image"]
+
+        with mock.patch("builtins.open", mock.mock_open(read_data="data")) as MockOpen, \
+             mock.patch.object(docker, "from_env", return_value=mock_docker_client):
+            docker_service = DockerService(MOD_NAME)
+            rc, _ = docker_service.load("image.tar")
+
+        assert rc == 0, "Return code is wrong"
+        mock_docker_client.images.load.assert_called_once_with(MockOpen.return_value)
+        MockOpen.assert_called_once_with("image.tar", "rb")
+        
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_docker_load_file_not_found(self, MockInit, MockBusName, MockSystemBus):
+        mock_docker_client = mock.Mock()
+
+        with mock.patch("builtins.open", mock.mock_open()) as MockOpen, \
+             mock.patch.object(docker, "from_env", return_value=mock_docker_client):
+            MockOpen.side_effect = FileNotFoundError
+            docker_service = DockerService(MOD_NAME)
+            rc, _ = docker_service.load("non_existent_image.tar")
+
+        assert rc == errno.ENOENT, "Return code is wrong"
+        MockOpen.assert_called_once_with("non_existent_image.tar", "rb")
