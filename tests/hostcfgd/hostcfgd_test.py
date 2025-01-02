@@ -4,6 +4,7 @@ import time
 import signal
 import psutil
 import swsscommon as swsscommon_package
+from subprocess import CalledProcessError
 from sonic_py_common import device_info
 from swsscommon import swsscommon
 from parameterized import parameterized
@@ -323,6 +324,29 @@ class TestHostcfgdDaemon(TestCase):
                     call(['cat', '/proc/net/route'], ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"], ['wc', '-l'])
                 ]
                 mocked_check_output.assert_has_calls(expected)
+
+    def test_mgmtvrf_route_check_failed(self):
+        mgmtiface = hostcfgd.MgmtIfaceCfg()
+        mgmtiface.load({}, {'mgmtVrfEnabled' : "false"})
+        with mock.patch('hostcfgd.check_output_pipe') as mocked_check_output:
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                popen_mock = mock.Mock()
+                attrs = {'communicate.return_value': ('output', 'error')}
+                popen_mock.configure_mock(**attrs)
+                mocked_subprocess.Popen.return_value = popen_mock
+                mocked_subprocess.CalledProcessError = CalledProcessError
+                # Simulate the case where there is no default route
+                mocked_check_output.side_effect = CalledProcessError(returncode=1, cmd="", output="")
+
+                mgmtiface.update_mgmt_vrf({'mgmtVrfEnabled' : "true"})
+                expected = [
+                    call(['cat', '/proc/net/route'], ['grep', '-E', r"eth0\s+00000000\s+[0-9A-Z]+\s+[0-9]+\s+[0-9]+\s+[0-9]+\s+202"], ['wc', '-l'])
+                ]
+                mocked_check_output.assert_has_calls(expected)
+                assert mgmtiface.mgmt_vrf_enabled == "true"
+
+                mgmtiface.update_mgmt_vrf({'mgmtVrfEnabled' : "false"})
+                assert mgmtiface.mgmt_vrf_enabled == "false"
 
     def test_dns_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
