@@ -23,7 +23,6 @@ VERSION = "1.0"
 
 SYSLOG_IDENTIFIER = "determine-reboot-cause"
 
-MAX_HISTORY_FILES = 10
 REBOOT_CAUSE_DIR = "/host/reboot-cause/"
 REBOOT_CAUSE_MODULE_DIR = "/host/reboot-cause/module"
 REBOOT_CAUSE_HISTORY_DIR = "/host/reboot-cause/history/"

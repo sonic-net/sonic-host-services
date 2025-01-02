@@ -51,7 +51,7 @@ def read_reboot_cause_files_and_save_state_db():
 
     data = []
     # Read each sorted previous reboot cause file and update the state db with previous reboot cause information
-    for i in range(min(10, len(TIME_SORTED_FULL_REBOOT_FILE_LIST))):
+    for i in range(min(MAX_HISTORY_FILES, len(TIME_SORTED_FULL_REBOOT_FILE_LIST))):
         x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
         if os.path.isfile(x):
             with open(x, "r") as cause_file:
@@ -66,9 +66,9 @@ def read_reboot_cause_files_and_save_state_db():
                     sonic_logger.log_info("Unable to process reload cause file {}: {}".format(x, je))
                     pass
 
-    if len(TIME_SORTED_FULL_REBOOT_FILE_LIST) > 10:
+    if len(TIME_SORTED_FULL_REBOOT_FILE_LIST) > MAX_HISTORY_FILES:
         for i in range(len(TIME_SORTED_FULL_REBOOT_FILE_LIST)):
-            if i >= 10:
+            if i >= MAX_HISTORY_FILES:
                 x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
                 os.remove(x)
 
@@ -107,7 +107,7 @@ def update_dpu_reboot_cause_to_chassis_state_db():
                             data = json.load(cause_file)
                             # Ensure keys exist
                             if 'name' not in data:
-                                sonic_logger.log_warning(f"Missing 'time' in data from {reboot_file}")
+                                sonic_logger.log_warning(f"Missing 'name' in data from {reboot_file}")
                                 continue  # Skip this file
 
                             _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{dpu.upper()}|{data['name']}"
