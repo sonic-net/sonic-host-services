@@ -133,10 +133,10 @@ def find_hardware_reboot_cause():
 
 
 def get_reboot_cause_dict(previous_reboot_cause, comment, gen_time):
-    """Store the key infomation of device reboot into a dictionary by parsing the string in
+    """Store the key information of device reboot into a dictionary by parsing the string in
     previous_reboot_cause.
 
-    If user issused a command to reboot device, then user, command and time will be
+    If user issued a command to reboot device, then user, command and time will be
     stored into a dictionary.
 
     If device was rebooted due to the kernel panic, then the string `Kernel Panic` 
@@ -182,7 +182,7 @@ def determine_reboot_cause():
 
     # The main decision logic of the reboot cause:
     # If there is a valid hardware reboot cause indicated by platform API, 
-    #    check the software reboot cause to add additional rebot cause.
+    #    check the software reboot cause to add additional reboot cause.
     # If there is a reboot cause indicated by /proc/cmdline, and/or warmreboot/fastreboot/softreboot
     #   the software_reboot_cause which is the content of /hosts/reboot-cause/reboot-cause.txt
     #   will be treated as the additional reboot cause
@@ -209,24 +209,8 @@ def determine_reboot_cause():
     return previous_reboot_cause, additional_reboot_info
 
 def check_and_create_dpu_dirs():
-    # Get platform using device_info.get_platform()
-    platform_info = device_info.get_platform_info()
-    platform = platform_info['platform']
-
-    # Use os.path.join() to create the path to platform.json
-    platform_path = os.path.join("/usr/share/sonic/device", platform, "platform.json")
-
-    # Check if platform.json exists
-    if not os.path.exists(platform_path):
-        sonic_logger.log_error(f"Platform file {platform_path} not found")
-        return
-
-    # Read the platform.json file to get DPU information
-    with open(platform_path, 'r') as f:
-        platform_data = json.load(f)
-
-    # Get the list of DPUs from the platform data
-    dpus = platform_data.get('DPUS', [])
+    # Get the list of DPUs
+    dpus = device_info.get_dpu_list()
 
     # Create directories for each DPU and its history
     for dpu in dpus:
@@ -295,7 +279,7 @@ def main():
     with open(REBOOT_CAUSE_FILE, "w") as cause_file:
         cause_file.write(REBOOT_CAUSE_UNKNOWN)
 
-    # Craete directories for DPUs in SmartSwitch platforms
+    # Create directories for DPUs in SmartSwitch platforms
     if device_info.is_smartswitch():
         check_and_create_dpu_dirs()
 
