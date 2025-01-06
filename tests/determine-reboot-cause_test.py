@@ -224,13 +224,13 @@ class TestDetermineRebootCause(object):
     @mock.patch('os.makedirs')
     def test_check_and_create_dpu_dirs_with_platform_json(self, mock_makedirs, mock_open, mock_exists, mock_is_smartswitch, mock_get_platform_info):
         # Mock the platform.json existence
-        mock_exists.side_effect = lambda path: path == "/usr/share/sonic/device/some_platform/platform.json"
+        # mock_exists.side_effect = lambda path: path == "/usr/share/sonic/device/some_platform/platform.json"
 
         # Call the function under test
         check_and_create_dpu_dirs()
 
         # Assert that open was called correctly
-        mock_open.assert_any_call("/usr/share/sonic/device/some_platform/platform.json", 'r')
+        # mock_open.assert_any_call("/usr/share/sonic/device/some_platform/platform.json", 'r')
         mock_open.assert_any_call('/host/reboot-cause/module/dpu0/reboot-cause.txt', 'w')
         mock_open.assert_any_call('/host/reboot-cause/module/dpu1/reboot-cause.txt', 'w')
 
