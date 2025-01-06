@@ -212,17 +212,17 @@ class TestDetermineRebootCause(object):
             json.dump({"DPUS": dpus}, f)
 
     @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
-    @mock.patch('sonic_py_common.device_info.get_platform', return_value='some_platform')
-    def test_check_and_create_dpu_dirs(self, mock_get_platform, mock_is_smartswitch):
+    @mock.patch('sonic_py_common.device_info.get_dpu_list', return_value=["dpu0", "dpu1"])
+    def test_check_and_create_dpu_dirs(self, mock_get_dpu_list, mock_is_smartswitch):
         # Call the function under test
         result = check_and_create_dpu_dirs()
 
-    @mock.patch('sonic_py_common.device_info.get_platform_info', return_value={'platform': 'some_platform'})
+    @mock.patch('sonic_py_common.device_info.get_dpu_list', return_value=["dpu0", "dpu1"])
     @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
     @mock.patch('os.path.exists')
     @mock.patch('builtins.open', new_callable=mock.mock_open, read_data='{"DPUS": ["dpu0", "dpu1"]}')
     @mock.patch('os.makedirs')
-    def test_check_and_create_dpu_dirs_with_platform_json(self, mock_makedirs, mock_open, mock_exists, mock_is_smartswitch, mock_get_platform_info):
+    def test_check_and_create_dpu_dirs_with_platform_json(self, mock_makedirs, mock_open, mock_exists, mock_is_smartswitch, mock_get_dpu_list):
         # Mock the platform.json existence
         # mock_exists.side_effect = lambda path: path == "/usr/share/sonic/device/some_platform/platform.json"
 
