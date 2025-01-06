@@ -211,29 +211,27 @@ class TestDetermineRebootCause(object):
         with open(PLATFORM_JSON_PATH, "w") as f:
             json.dump({"DPUS": dpus}, f)
 
-    @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
-    @mock.patch('sonic_py_common.device_info.get_dpu_list', return_value=["dpu0", "dpu1"])
-    def test_check_and_create_dpu_dirs(self, mock_get_dpu_list, mock_is_smartswitch):
-        # Call the function under test
-        result = check_and_create_dpu_dirs()
-
-    @mock.patch('sonic_py_common.device_info.get_dpu_list', return_value=["dpu0", "dpu1"])
-    @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
-    @mock.patch('os.path.exists')
-    @mock.patch('builtins.open', new_callable=mock.mock_open, read_data='{"DPUS": ["dpu0", "dpu1"]}')
     @mock.patch('os.makedirs')
-    def test_check_and_create_dpu_dirs_with_platform_json(self, mock_makedirs, mock_open, mock_exists, mock_is_smartswitch, mock_get_dpu_list):
-        # Mock the platform.json existence
-        # mock_exists.side_effect = lambda path: path == "/usr/share/sonic/device/some_platform/platform.json"
-
+    @mock.patch('builtins.open', new_callable=mock.mock_open)
+    @mock.patch('os.path.exists', side_effect=lambda path: False)
+    @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
+    @mock.patch('sonic_py_common.device_info.get_dpu_list', return_value=["dpu0", "dpu1"])
+    def test_check_and_create_dpu_dirs(
+        mock_get_dpu_list,
+        mock_is_smartswitch,
+        mock_exists,
+        mock_open,
+        mock_makedirs
+    ):
         # Call the function under test
         check_and_create_dpu_dirs()
 
-        # Assert that open was called correctly
-        # mock_open.assert_any_call("/usr/share/sonic/device/some_platform/platform.json", 'r')
-        mock_open.assert_any_call('/host/reboot-cause/module/dpu0/reboot-cause.txt', 'w')
-        mock_open.assert_any_call('/host/reboot-cause/module/dpu1/reboot-cause.txt', 'w')
+        # Assert that directories were created for each DPU
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0"))
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1"))
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "history"))
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1", "history"))
 
-        # Assert that makedirs was called for the DPU directories
-        mock_makedirs.assert_any_call(os.path.join('/host/reboot-cause/module', 'dpu0'))
-        mock_makedirs.assert_any_call(os.path.join('/host/reboot-cause/module', 'dpu1'))
+        # Assert that reboot-cause.txt was created for each DPU
+        mock_open.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "reboot-cause.txt"), 'w')
+        mock_open.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1", "reboot-cause.txt"), 'w')
