@@ -75,7 +75,7 @@ EXPECTED_KERNEL_PANIC_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2021_3_28
 
 REBOOT_CAUSE_DIR="host/reboot-cause/"
 PLATFORM_JSON_PATH = "/usr/share/sonic/device/test_platform/platform.json"
-REBOOT_CAUSE_MODULE_DIR = "/host/reboot-cause"
+REBOOT_CAUSE_MODULE_DIR = "/host/reboot-cause/module"
 
 class TestDetermineRebootCause(object):
     def test_parse_warmfast_reboot_from_proc_cmdline(self):
