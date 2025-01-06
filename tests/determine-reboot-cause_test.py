@@ -217,6 +217,7 @@ class TestDetermineRebootCause(object):
     @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
     @mock.patch('sonic_py_common.device_info.get_dpu_list', return_value=["dpu0", "dpu1"])
     def test_check_and_create_dpu_dirs(
+        self,
         mock_get_dpu_list,
         mock_is_smartswitch,
         mock_exists,
