@@ -34,7 +34,7 @@ sys.path.insert(0, modules_path)
 determine_reboot_cause_path = os.path.join(scripts_path, 'determine-reboot-cause')
 determine_reboot_cause = load_module_from_source('determine_reboot_cause', determine_reboot_cause_path)
 
-# Gte the function to create dpu dir
+# Get the function to create dpu dir
 check_and_create_dpu_dirs = determine_reboot_cause.check_and_create_dpu_dirs
 
 PROC_CMDLINE_CONTENTS = """\
