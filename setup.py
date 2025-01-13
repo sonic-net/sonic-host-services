@@ -50,6 +50,7 @@ setup(
         'PyGObject',
         'pycairo==1.26.1',
         'psutil'
+        'pysetns'
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',
