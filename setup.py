@@ -49,7 +49,8 @@ setup(
         'Jinja2>=2.10',
         'PyGObject',
         'pycairo==1.26.1',
-        'psutil'
+        'psutil',
+        'pysetns'
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',
