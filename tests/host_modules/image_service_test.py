@@ -370,3 +370,59 @@ class TestImageService(object):
             ), "message should contain 'general error'"
             mock_isfile.assert_called_once_with(file_path)
             mock_open.assert_called_once_with(file_path, "rb")
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_success(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `list` method successfully lists the current, next, and available SONiC images.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_output = (
+            "Current: current_image\n"
+            "Next: next_image\n"
+            "Available:\n"
+            "image1\n"
+            "image2\n"
+        )
+        mock_check_output.return_value = mock_output.encode()
+
+        # Act
+        rc, images = image_service.list()
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert images["current"] == "current_image", "current image does not match"
+        assert images["next"] == "next_image", "next image does not match"
+        assert images["available"] == ["image1", "image2"], "available images do not match"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_failed(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `list` method fails when the subprocess command returns a non-zero exit code.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_check_output.side_effect = subprocess.CalledProcessError(
+            returncode=1, cmd="sonic-installer list", output=b"Error: command failed"
+        )
+
+        # Act
+        rc, msg = image_service.list()
+
+        # Assert
+        assert rc != 0, "wrong return value"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
