@@ -133,3 +133,45 @@ class ImageService(host_service.HostModule):
         except Exception as e:
             logger.error("Failed to calculate checksum: {}".format(e))
             return errno.EIO, str(e)
+
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="", out_signature="a{ss}"
+    )
+    def list(self):
+        """
+        List the current, next, and available SONiC images.
+
+        Returns:
+            A dictionary with keys "current", "next", and "available".
+        """
+        logger.info("Listing SONiC images")
+
+        try:
+            output = subprocess.check_output(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+            ).decode().strip().split("\n")
+
+            current_image = ""
+            next_image = ""
+            available_images = []
+
+            for line in output:
+                if line.startswith("Current:"):
+                    current_image = line.split("Current:")[1].strip()
+                elif line.startswith("Next:"):
+                    next_image = line.split("Next:")[1].strip()
+                elif line.startswith("Available:"):
+                    continue
+                else:
+                    available_images.append(line.strip())
+
+        except subprocess.CalledProcessError as e:
+            logger.error("Failed to list images: {}".format(e.output.decode()))
+            return errno.EIO, "Failed to list images"
+
+        return 0, {
+            "current": current_image,
+            "next": next_image,
+            "available": available_images,
+        }
