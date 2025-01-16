@@ -171,7 +171,7 @@ class ImageService(host_service.HostModule):
             return errno.EIO, "Failed to list images"
 
         return 0, {
-            "current": current_image,
-            "next": next_image,
-            "available": available_images,
+            "current": current_image or "",
+            "next": next_image or "",
+            "available": available_images or [],
         }
