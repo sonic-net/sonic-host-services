@@ -4,6 +4,7 @@ import sys
 import os
 import stat
 import pytest
+import json
 from unittest import mock
 from host_modules.image_service import ImageService
 
@@ -375,9 +376,9 @@ class TestImageService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("subprocess.check_output")
-    def test_list_success(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+    def test_list_image_success(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
         """
-        Test that the `list` method successfully lists the current, next, and available SONiC images.
+        Test that the `list_images` method successfully lists the current, next, and available SONiC images.
         """
         # Arrange
         image_service = ImageService(mod_name="image_service")
@@ -391,7 +392,8 @@ class TestImageService(object):
         mock_check_output.return_value = mock_output.encode()
 
         # Act
-        rc, images = image_service.list()
+        rc, images_json = image_service.list_images()
+        images = json.loads(images_json)
 
         # Assert
         assert rc == 0, "wrong return value"
@@ -407,9 +409,9 @@ class TestImageService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("subprocess.check_output")
-    def test_list_failed(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+    def test_list_image_failed(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
         """
-        Test that the `list` method fails when the subprocess command returns a non-zero exit code.
+        Test that the `list_image` method fails when the subprocess command returns a non-zero exit code.
         """
         # Arrange
         image_service = ImageService(mod_name="image_service")
@@ -418,7 +420,7 @@ class TestImageService(object):
         )
 
         # Act
-        rc, msg = image_service.list()
+        rc, msg = image_service.list_images()
 
         # Assert
         assert rc != 0, "wrong return value"
