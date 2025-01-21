@@ -149,30 +149,42 @@ class ImageService(host_service.HostModule):
 
         try:
             output = subprocess.check_output(
-                ["/usr/local/bin/sonic-installer", "list"],
-                stderr=subprocess.STDOUT,
-            ).decode().strip().split("\n")
-
-            current_image = ""
-            next_image = ""
-            available_images = []
-
-            for line in output:
-                if line.startswith("Current:"):
-                    current_image = line.split("Current:")[1].strip()
-                elif line.startswith("Next:"):
-                    next_image = line.split("Next:")[1].strip()
-                elif line.startswith("Available:"):
-                    continue
-                else:
-                    available_images.append(line.strip())
-
-            result = {
-                "current": current_image or "",
-                "next": next_image or "",
-                "available": available_images or [],
-            }
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+            ).decode().strip()
+            result = self._parse_sonic_installer_list(output)
+            logger.info("List result: {}".format(result))
             return 0, json.dumps(result)
         except subprocess.CalledProcessError as e:
-            logger.error("Failed to list images: {}".format(e.output.decode()))
-            return errno.EIO, json.dumps({"error": "Failed to list images: {}".format(e.output.decode())})
+            logger.error("Failed to list images: {} with return code {}".format(e.output.decode(), e.returncode))
+            return e.returncode, json.dumps({"error": "Failed to list images: {}".format(e.output.decode())})
+
+    def _parse_sonic_installer_list(self, output):
+        """
+        Parse the output of the sonic-installer list command.
+
+        Args:
+            output: The output of the sonic-installer list command.
+
+        Returns:
+            A dictionary with keys "current", "next", and "available" containing the respective images.
+        """
+        current_image = ""
+        next_image = ""
+        available_images = []
+
+        for line in output.split("\n"):
+            if "current:" in line.lower():
+                current_image = line.split(":")[1].strip()
+            elif "next:" in line.lower():
+                next_image = line.split(":")[1].strip()
+            elif "available:" in line.lower():
+                continue
+            else:
+                available_images.append(line.strip())
+
+        return {
+            "current": current_image or "",
+            "next": next_image or "",
+            "available": available_images or [],
+        }
