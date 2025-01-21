@@ -1155,6 +1155,10 @@ class KdumpCfg(object):
             value = self.kdump_defaults.get(row)
             if not kdump_conf.get(row):
                 self.config_db.mod_entry("KDUMP", "config", {row: value})
+        
+        # Configure num_dumps
+        num_dumps = kdump_conf.get("num_dumps") or self.kdump_defaults["num_dumps"]
+        run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
 
     def kdump_update(self, key, data):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
