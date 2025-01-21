@@ -12,6 +12,7 @@ import os
 import requests
 import stat
 import subprocess
+import json
 
 from host_modules import host_service
 import tempfile
@@ -135,21 +136,21 @@ class ImageService(host_service.HostModule):
             return errno.EIO, str(e)
 
     @host_service.method(
-        host_service.bus_name(MOD_NAME), in_signature="", out_signature="a{ss}"
+        host_service.bus_name(MOD_NAME), in_signature="", out_signature="is"
     )
     def list(self):
         """
         List the current, next, and available SONiC images.
 
         Returns:
-            A dictionary with keys "current", "next", and "available".
+            A tuple with an error code and a JSON string with keys "current", "next", and "available" or an error message.
         """
         logger.info("Listing SONiC images")
 
         try:
             output = subprocess.check_output(
-            ["/usr/local/bin/sonic-installer", "list"],
-            stderr=subprocess.STDOUT,
+                ["/usr/local/bin/sonic-installer", "list"],
+                stderr=subprocess.STDOUT,
             ).decode().strip().split("\n")
 
             current_image = ""
@@ -166,12 +167,12 @@ class ImageService(host_service.HostModule):
                 else:
                     available_images.append(line.strip())
 
+            result = {
+                "current": current_image or "",
+                "next": next_image or "",
+                "available": available_images or [],
+            }
+            return 0, json.dumps(result)
         except subprocess.CalledProcessError as e:
             logger.error("Failed to list images: {}".format(e.output.decode()))
-            return errno.EIO, "Failed to list images"
-
-        return 0, {
-            "current": current_image or "",
-            "next": next_image or "",
-            "available": available_images or [],
-        }
+            return errno.EIO, json.dumps({"error": "Failed to list images: {}".format(e.output.decode())})
