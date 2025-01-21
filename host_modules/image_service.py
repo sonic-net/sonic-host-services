@@ -138,7 +138,7 @@ class ImageService(host_service.HostModule):
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="", out_signature="is"
     )
-    def list(self):
+    def list_images(self):
         """
         List the current, next, and available SONiC images.
 
@@ -149,8 +149,8 @@ class ImageService(host_service.HostModule):
 
         try:
             output = subprocess.check_output(
-            ["/usr/local/bin/sonic-installer", "list"],
-            stderr=subprocess.STDOUT,
+                ["/usr/local/bin/sonic-installer", "list"],
+                stderr=subprocess.STDOUT,
             ).decode().strip()
             result = self._parse_sonic_installer_list(output)
             logger.info("List result: {}".format(result))
