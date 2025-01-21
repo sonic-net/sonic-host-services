@@ -376,7 +376,7 @@ class TestImageService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("subprocess.check_output")
-    def test_list_image_success(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+    def test_list_images_success(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `list_images` method successfully lists the current, next, and available SONiC images.
         """
@@ -392,7 +392,7 @@ class TestImageService(object):
         mock_check_output.return_value = mock_output.encode()
 
         # Act
-        rc, images_json = image_service.list_image()
+        rc, images_json = image_service.list_images()
         images = json.loads(images_json)
 
         # Assert
@@ -409,7 +409,7 @@ class TestImageService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("subprocess.check_output")
-    def test_list_image_failed(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+    def test_list_images_failed(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
         """
         Test that the `list_image` method fails when the subprocess command returns a non-zero exit code.
         """

@@ -138,7 +138,7 @@ class ImageService(host_service.HostModule):
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="", out_signature="is"
     )
-    def list_image(self):
+    def list_images(self):
         """
         List the current, next, and available SONiC images.
 
