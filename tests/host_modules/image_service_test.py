@@ -392,7 +392,7 @@ class TestImageService(object):
         mock_check_output.return_value = mock_output.encode()
 
         # Act
-        rc, images_json = image_service.list_images()
+        rc, images_json = image_service.list_image()
         images = json.loads(images_json)
 
         # Assert

@@ -138,7 +138,7 @@ class ImageService(host_service.HostModule):
     @host_service.method(
         host_service.bus_name(MOD_NAME), in_signature="", out_signature="is"
     )
-    def list_images(self):
+    def list_image(self):
         """
         List the current, next, and available SONiC images.
 
@@ -156,8 +156,9 @@ class ImageService(host_service.HostModule):
             logger.info("List result: {}".format(result))
             return 0, json.dumps(result)
         except subprocess.CalledProcessError as e:
-            logger.error("Failed to list images: {} with return code {}".format(e.output.decode(), e.returncode))
-            return e.returncode, json.dumps({"error": "Failed to list images: {}".format(e.output.decode())})
+            msg = "Failed to list images: command {} failed with return code {} and message {}".format(e.cmd, e.returncode, e.output.decode())
+            logger.error(msg)
+            return e.returncode, msg
 
     def _parse_sonic_installer_list(self, output):
         """
