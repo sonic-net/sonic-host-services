@@ -4,6 +4,7 @@ from host_modules import host_service
 import docker
 import signal
 import errno
+import json
 import logging
 
 MOD_NAME = "docker_service"
@@ -251,3 +252,59 @@ class DockerService(host_service.HostModule):
             return errno.ENOENT, "Image {} not found.".format(image)
         except Exception as e:
             return 1, "Failed to run image {}: {}".format(image, str(e))
+
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
+    )
+    def load(self, image):
+        """
+        Load a Docker image from a tar archive.
+
+        Args:
+            image (str): The path to the tar archive containing the Docker image.
+
+        Returns:
+            tuple: A tuple containing the exit code (int) and a message indicating the result of the operation.
+        """
+        try:
+            client = docker.from_env()
+            with open(image, 'rb') as image_tar:
+                client.images.load(image_tar)
+            return 0, "Image {} has been loaded.".format(image)
+        except FileNotFoundError:
+            return errno.ENOENT, "File {} not found.".format(image)
+        except Exception as e:
+            return 1, "Failed to load image {}: {}".format(image, str(e))
+
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="ba{sv}", out_signature="is"
+    )
+    def list(self, all, filter):
+        """
+        List Docker containers.
+
+        Args:
+            all (bool): Whether to list all containers or only running ones.
+            filter (dict): Filters to apply when listing containers.
+
+        Returns:
+            tuple: A tuple containing the exit code (int) and a JSON string of the container list.
+        """
+        try:
+            client = docker.from_env()
+            listed_containers = client.containers.list(all=all, filters=filter)
+            container_list = [
+                {
+                    "id": container.id,
+                    "name": container.name,
+                    "status": container.status,
+                    "image": container.image.tags[0] if container.image.tags else "",
+                    "labels": container.labels,
+                    "hash": container.image.id,
+                }
+                for container in listed_containers
+            ]
+            logging.info("List of containers: {}".format(container_list))
+            return 0, json.dumps(container_list)
+        except Exception as e:
+            return 1, "Failed to list containers: {} {}".format(str(e), container_list)
