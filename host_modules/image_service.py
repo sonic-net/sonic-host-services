@@ -188,6 +188,9 @@ class ImageService(host_service.HostModule):
             else:
                 available_images.append(line.strip())
 
+        logger.info("Current image: {}".format(current_image))
+        logger.info("Next image: {}".format(next_image))
+        logger.info("Available images: {}".format(available_images))
         return {
             "current": current_image or "",
             "next": next_image or "",
