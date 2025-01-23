@@ -175,11 +175,7 @@ class ImageService(host_service.HostModule):
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ""
         if result.returncode:
-            lines = result.stderr.decode().split("\n")
-            for line in lines:
-                if "Error" in line:
-                    msg = line
-                    break
+            msg = result.stderr.decode()
         return result.returncode, msg
 
 
