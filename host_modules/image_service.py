@@ -176,9 +176,13 @@ class ImageService(host_service.HostModule):
 
         for line in output.split("\n"):
             if "current:" in line.lower():
-                current_image = line.split(":")[1].strip()
+                parts = line.split(":")
+                if len(parts) > 1:
+                    current_image = parts[1].strip()
             elif "next:" in line.lower():
-                next_image = line.split(":")[1].strip()
+                parts = line.split(":")
+                if len(parts) > 1:
+                    next_image = parts[1].strip()
             elif "available:" in line.lower():
                 continue
             else:
