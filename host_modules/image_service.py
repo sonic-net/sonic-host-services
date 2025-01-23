@@ -12,6 +12,7 @@ import os
 import requests
 import stat
 import subprocess
+import json
 
 from host_modules import host_service
 import tempfile
@@ -133,3 +134,65 @@ class ImageService(host_service.HostModule):
         except Exception as e:
             logger.error("Failed to calculate checksum: {}".format(e))
             return errno.EIO, str(e)
+
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="", out_signature="is"
+    )
+    def list_images(self):
+        """
+        List the current, next, and available SONiC images.
+
+        Returns:
+            A tuple with an error code and a JSON string with keys "current", "next", and "available" or an error message.
+        """
+        logger.info("Listing SONiC images")
+
+        try:
+            output = subprocess.check_output(
+                ["/usr/local/bin/sonic-installer", "list"],
+                stderr=subprocess.STDOUT,
+            ).decode().strip()
+            result = self._parse_sonic_installer_list(output)
+            logger.info("List result: {}".format(result))
+            return 0, json.dumps(result)
+        except subprocess.CalledProcessError as e:
+            msg = "Failed to list images: command {} failed with return code {} and message {}".format(e.cmd, e.returncode, e.output.decode())
+            logger.error(msg)
+            return e.returncode, msg
+
+    def _parse_sonic_installer_list(self, output):
+        """
+        Parse the output of the sonic-installer list command.
+
+        Args:
+            output: The output of the sonic-installer list command.
+
+        Returns:
+            A dictionary with keys "current", "next", and "available" containing the respective images.
+        """
+        current_image = ""
+        next_image = ""
+        available_images = []
+
+        for line in output.split("\n"):
+            if "current:" in line.lower():
+                parts = line.split(":")
+                if len(parts) > 1:
+                    current_image = parts[1].strip()
+            elif "next:" in line.lower():
+                parts = line.split(":")
+                if len(parts) > 1:
+                    next_image = parts[1].strip()
+            elif "available:" in line.lower():
+                continue
+            else:
+                available_images.append(line.strip())
+
+        logger.info("Current image: {}".format(current_image))
+        logger.info("Next image: {}".format(next_image))
+        logger.info("Available images: {}".format(available_images))
+        return {
+            "current": current_image or "",
+            "next": next_image or "",
+            "available": available_images or [],
+        }
