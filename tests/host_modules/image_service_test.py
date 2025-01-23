@@ -405,23 +405,27 @@ class TestImageService(object):
             stderr=subprocess.STDOUT,
         )
 
+    @pytest.mark.parametrize(
+        "mock_output, expected_current, expected_next, expected_available",
+        [
+            ("Current: \nNext: next_image\nAvailable:\nimage1\nimage2\n", "", "next_image", ["image1", "image2"]),
+            ("Current: current_image\nNext: \nAvailable:\nimage1\nimage2\n", "current_image", "", ["image1", "image2"]),
+            ("Current: current_image\nNext: next_image\nAvailable:\n", "current_image", "next_image", []),
+        ],
+    )
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("subprocess.check_output")
-    def test_list_images_success_empty_current_image(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+    def test_list_images_success_empty_image_output(
+        self, mock_check_output, MockInit, MockBusName, MockSystemBus, mock_output, expected_current, expected_next, expected_available
+    ):
         """
-        Test that the `list_images` method successfully lists the current, next, and available SONiC images.
+        Test that the `list_images` method successfully lists the current, next, and available SONiC images even if
+        sonic-installer output empty string for the image name.
         """
         # Arrange
         image_service = ImageService(mod_name="image_service")
-        mock_output = (
-            "Current:\n"
-            "Next: next_image\n"
-            "Available:\n"
-            "image1\n"
-            "image2\n"
-        )
         mock_check_output.return_value = mock_output.encode()
 
         # Act
@@ -430,9 +434,47 @@ class TestImageService(object):
 
         # Assert
         assert rc == 0, "wrong return value"
-        assert images["current"] == "", "current image should be empty"
-        assert images["next"] == "next_image", "next image does not match"
-        assert images["available"] == ["image1", "image2"], "available images do not match"
+        assert images["current"] == expected_current, "current image does not match"
+        assert images["next"] == expected_next, "next image does not match"
+        assert images["available"] == expected_available, "available images do not match"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+    @pytest.mark.parametrize(
+        "mock_output, expected_current, expected_next, expected_available",
+        [
+            ("Next: next_image\nAvailable:\nimage1\nimage2\n", "", "next_image", ["image1", "image2"]),
+            ("Current: current_image\nAvailable:\nimage1\nimage2\n", "current_image", "", ["image1", "image2"]),
+            ("Current: current_image\nNext: next_image\n", "current_image", "next_image", []),
+            ("Available:\nimage1\nimage2\n", "", "", ["image1", "image2"]),
+            ("Current: current_image\nNext: next_image\nAvailable:\n", "current_image", "next_image", []),
+        ],
+    )
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_images_various_missing_lines(
+        self, mock_check_output, MockInit, MockBusName, MockSystemBus, mock_output, expected_current, expected_next, expected_available
+    ):
+        """
+        Test that the `list_images` method handles various scenarios where the sonic-installer output is missing lines for current, next, or available images.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_check_output.return_value = mock_output.encode()
+
+        # Act
+        rc, images_json = image_service.list_images()
+        images = json.loads(images_json)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert images["current"] == expected_current, "current image does not match"
+        assert images["next"] == expected_next, "next image does not match"
+        assert images["available"] == expected_available, "available images do not match"
         mock_check_output.assert_called_once_with(
             ["/usr/local/bin/sonic-installer", "list"],
             stderr=subprocess.STDOUT,
