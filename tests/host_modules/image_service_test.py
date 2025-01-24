@@ -589,7 +589,7 @@ class TestImageService(object):
 
         # Assert
         assert rc == 0, "wrong return value"
-        assert msg == "", "message should be empty on success"
+        assert image in msg, "message should contain the name of the new image"
         mock_run.assert_called_once_with(
             ["/usr/local/bin/sonic-installer", "set-next-boot", image],
             stdout=subprocess.PIPE,
