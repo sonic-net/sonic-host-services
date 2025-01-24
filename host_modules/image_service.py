@@ -173,8 +173,10 @@ class ImageService(host_service.HostModule):
         logger.info("Setting the next boot image to {}".format(image))
         cmd = ["/usr/local/bin/sonic-installer", "set-next-boot", image]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        msg = ""
+        msg = "Boot image set to {}".format(image)
+        logger.info(msg)
         if result.returncode:
+            logger.error("Failed to set next boot image: {}".format(result.stderr.decode()))
             msg = result.stderr.decode()
         return result.returncode, msg
 
