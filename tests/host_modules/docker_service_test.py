@@ -1,5 +1,6 @@
 import errno
 import docker
+import json
 from unittest import mock
 from host_modules.docker_service import DockerService
 
@@ -303,7 +304,7 @@ class TestDockerService(object):
         assert rc == 0, "Return code is wrong"
         mock_docker_client.images.load.assert_called_once_with(MockOpen.return_value)
         MockOpen.assert_called_once_with("image.tar", "rb")
-        
+
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
@@ -318,3 +319,43 @@ class TestDockerService(object):
 
         assert rc == errno.ENOENT, "Return code is wrong"
         MockOpen.assert_called_once_with("non_existent_image.tar", "rb")
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_docker_list_success(self, MockInit, MockBusName, MockSystemBus):
+        mock_docker_client = mock.Mock()
+        mock_container_1 = mock.Mock(id="1", status="running", image=mock.Mock(tags=["image1"], id="hash1"), labels={})
+        mock_container_2 = mock.Mock(id="2", status="exited", image=mock.Mock(tags=["image2"], id="hash2"), labels={})
+        # The name attribute needs to be explicitly set for the mock object.
+        mock_container_1.name = "container1"
+        mock_container_2.name = "container2"
+        mock_docker_client.containers.list.return_value = [
+            mock_container_1, mock_container_2
+        ]
+
+        with mock.patch.object(docker, "from_env", return_value=mock_docker_client):
+            docker_service = DockerService(MOD_NAME)
+            rc, containers = docker_service.list(True, {})
+
+        assert rc == 0, "Return code is wrong {}".format(containers)
+        expected_containers = [
+            {
+                "id": "1",
+                "name": "container1",
+                "status": "running",
+                "image": "image1",
+                "labels": {},
+                "hash": "hash1",
+            },
+            {
+                "id": "2",
+                "name": "container2",
+                "status": "exited",
+                "image": "image2",
+                "labels": {},
+                "hash": "hash2",
+            },
+        ]
+        assert json.loads(containers) == expected_containers, "Containers list is wrong"
+        mock_docker_client.containers.list.assert_called_once_with(all=True, filters={})

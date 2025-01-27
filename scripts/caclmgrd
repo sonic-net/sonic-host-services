@@ -18,7 +18,7 @@ try:
     import threading
     import time
     from sonic_py_common.general import getstatusoutput_noshell_pipe
-    from sonic_py_common import daemon_base, device_info, multi_asic
+    from sonic_py_common import logger, device_info, multi_asic
     from swsscommon import swsscommon
 except ImportError as err:
     raise ImportError("%s - required module not found" % str(err))
@@ -64,7 +64,7 @@ def get_ipv4_networks_from_interface_table(table, intf_name):
 # ============================== Classes ==============================
 
 
-class ControlPlaneAclManager(daemon_base.DaemonBase):
+class ControlPlaneAclManager(logger.Logger):
     """
     Class which reads control plane ACL tables and rules from Config DB,
     translates them into equivalent iptables commands and runs those

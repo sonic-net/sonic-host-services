@@ -31,7 +31,7 @@ setup(
     maintainer_email = 'jolevequ@microsoft.com',
     packages = [
         'host_modules',
-        'utils',
+	'utils',
     ],
     scripts = [
         'scripts/caclmgrd',

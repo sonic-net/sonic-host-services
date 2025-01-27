@@ -10,8 +10,8 @@ from utils.run_cmd import _run_command
 MOD_NAME = 'reboot'
 # Reboot method in reboot request
 # Both enum and string representations are supported
-REBOOTMETHOD_COLD_BOOT_VALUES = {1, "COLD"}
-REBOOTMETHOD_WARM_BOOT_VALUES = {4, "WARM"}
+REBOOT_METHOD_COLD_BOOT_VALUES = {1, "COLD"}
+REBOOT_METHOD_WARM_BOOT_VALUES = {4, "WARM"}
 
 # Timeout for SONiC Host Service to be killed during reboot
 REBOOT_TIMEOUT = 260
@@ -51,30 +51,28 @@ class Reboot(host_service.HostModule):
             return 1, "Reboot request must contain a reboot method"
 
         # Check whether reboot method is valid.
-        rebootmethod = reboot_request["method"]
+        reboot_method = reboot_request["method"]
         valid_method = False
-        for values in [REBOOTMETHOD_COLD_BOOT_VALUES, REBOOTMETHOD_WARM_BOOT_VALUES]:
-            if rebootmethod in values:
-                valid_method = True
-        if not valid_method:
-            return 1, "Invalid reboot method: " + str(rebootmethod)
+        valid_reboot_method = REBOOT_METHOD_COLD_BOOT_VALUES | REBOOT_METHOD_WARM_BOOT_VALUES
+        if reboot_method not in valid_reboot_method:
+            return 1, "Invalid reboot method: " + str(reboot_method)
 
         # Check whether delay is non-zero. delay key will not exist in reboot_request if it is zero
         if "delay" in reboot_request and reboot_request["delay"] != 0:
             return 1, "Delayed reboot is not supported"
         return 0, ""
 
-    def execute_reboot(self, rebootmethod):
+    def execute_reboot(self, reboot_method):
         """Execute reboot and reset reboot_status_flag when reboot fails"""
 
-        if rebootmethod in REBOOTMETHOD_COLD_BOOT_VALUES:
+        if reboot_method in REBOOT_METHOD_COLD_BOOT_VALUES:
             command = EXECUTE_COLD_REBOOT_COMMAND
             logger.warning("%s: Issuing cold reboot", MOD_NAME)
-        elif rebootmethod in REBOOTMETHOD_WARM_BOOT_VALUES:
+        elif reboot_method in REBOOT_METHOD_WARM_BOOT_VALUES:
             command = EXECUTE_WARM_REBOOT_COMMAND
             logger.warning("%s: Issuing WARM reboot", MOD_NAME)
         else:
-            logger.error("%s: Invalid reboot method: %d", MOD_NAME, rebootmethod)
+            logger.error("%s: Invalid reboot method: %d", MOD_NAME, reboot_method)
             return
 
         rc, stdout, stderr = _run_command(command)
