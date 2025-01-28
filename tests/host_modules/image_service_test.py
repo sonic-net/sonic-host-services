@@ -568,3 +568,59 @@ class TestImageService(object):
             stderr=subprocess.STDOUT,
         )
 
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_next_boot_success(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_next_boot` method successfully sets the next boot image.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "sonic_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = 0
+        mock_result.stderr = b""
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_next_boot(image)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert image in msg, "message should contain the name of the new image"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-next-boot", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_next_boot_fail_not_exists(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_next_boot` method fails when the image does not exist.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "nonexistent_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = b"Error: Image does not exist"
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_next_boot(image)
+
+        # Assert
+        assert rc != 0, "wrong return value"
+        assert "Error: Image does not exist" in msg, "message should contain 'Error: Image does not exist'"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-next-boot", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+

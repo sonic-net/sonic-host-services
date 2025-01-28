@@ -160,6 +160,27 @@ class ImageService(host_service.HostModule):
             logger.error(msg)
             return e.returncode, msg
 
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
+    )
+    def set_next_boot(self, image):
+        """
+        Set the image to be used for the next boot.
+
+        Args:
+            image: The name of the image to set for the next boot.
+        """
+        logger.info("Setting the next boot image to {}".format(image))
+        cmd = ["/usr/local/bin/sonic-installer", "set-next-boot", image]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        msg = "Boot image set to {}".format(image)
+        logger.info(msg)
+        if result.returncode:
+            logger.error("Failed to set next boot image: {}".format(result.stderr.decode()))
+            msg = result.stderr.decode()
+        return result.returncode, msg
+
+
     def _parse_sonic_installer_list(self, output):
         """
         Parse the output of the sonic-installer list command.
