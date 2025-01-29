@@ -1,3 +1,4 @@
+import errno
 import sys
 import os
 import pytest
@@ -55,3 +56,31 @@ class TestFileService(object):
 
         assert ret == 1
         assert "Dbus get_file_stat called with no path specified" in msg['error']
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.remove")
+    def test_file_remove(self, mock_remove, MockInit, MockBusName, MockSystemBus):
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        path = "test_path"
+        ret, msg = file_service_stub.remove(path)
+
+        mock_remove.assert_called_with(path)
+        assert ret == 0
+        assert msg == ""
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.remove")
+    def test_file_remove_error(self, mock_remove, MockInit, MockBusName, MockSystemBus):
+        err = errno.ENOENT
+        path = "test_path"
+        mock_remove.side_effect = FileNotFoundError(err, os.strerror(err), path)
+
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.remove(path)
+
+        assert ret == err
+        assert msg == f"[Errno {err}] {os.strerror(err)}: '{path}'"
