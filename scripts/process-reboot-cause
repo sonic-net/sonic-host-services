@@ -41,67 +41,57 @@ sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
 # ============================= Functions =============================
 def read_reboot_cause_files_and_save_to_db():
-    """
-    Reads reboot cause files and saves them to the appropriate state DB.
-    Uses CHASSIS_STATE_DB if the device is a SmartSwitch, otherwise uses STATE_DB.
-    """
-    is_smartswitch = device_info.is_smartswitch()
+    """Read reboot cause files and save them to the database based on device type."""
 
-    if is_smartswitch:
-        # Connect to chassis state DB
-        state_db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
-        state_db.connect(state_db.CHASSIS_STATE_DB)
+    # Connect to the appropriate DB based on whether it's a smart switch or not
+    if device_info.is_smartswitch():
+        # Connect to chassis state DB for smart switch
+        chassis_state_db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
+        chassis_state_db.connect(chassis_state_db.CHASSIS_STATE_DB)
         dpu_list = device_info.get_dpu_list()
+        reboot_files = [os.path.join(REBOOT_CAUSE_HISTORY_DIR, f"{dpu.upper()}_reboot_cause.json") for dpu in dpu_list]
     else:
-        # Connect to local state DB
+        # Connect to local state DB for non-smart switch
         state_db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
         state_db.connect(state_db.STATE_DB)
-        dpu_list = [None]  # Placeholder for non-DPU case
+        reboot_files = [os.path.join(REBOOT_CAUSE_HISTORY_DIR, f"npu_reboot_cause.json")]
 
-    for dpu in dpu_list:
-        # Determine file location
-        reboot_dir = os.path.join('/host/reboot-cause/module', dpu, 'history') if is_smartswitch else REBOOT_CAUSE_HISTORY_DIR
+    # Read and process reboot cause files for both cases
+    for reboot_file in reboot_files:
+        if os.path.isfile(reboot_file):
+            with open(reboot_file, "r") as cause_file:
+                try:
+                    data = json.load(cause_file)
 
-        # Get sorted reboot cause files
-        try:
-            reboot_files = sorted(
-                [os.path.join(reboot_dir, f) for f in os.listdir(reboot_dir) if f.endswith('.txt')],
-                key=os.path.getmtime,
-                reverse=True
-            )
-        except Exception as e:
-            sonic_logger.log_error(f"Error retrieving reboot cause files from {reboot_dir}: {e}")
-            continue
-
-        for reboot_file in reboot_files[:MAX_HISTORY_FILES]:
-            if os.path.isfile(reboot_file):
-                with open(reboot_file, "r") as cause_file:
-                    try:
-                        data = json.load(cause_file)
-
-                        # Formulate hash key
-                        if is_smartswitch:
-                            if 'name' not in data:
-                                sonic_logger.log_warning(f"Missing 'name' in data from {reboot_file}")
-                                continue  # Skip
+                    # Ensure the necessary keys exist for smart switch
+                    if device_info.is_smartswitch():
+                        if 'name' not in data:
+                            sonic_logger.log_warning(f"Missing 'name' in data from {reboot_file}")
+                            continue  # Skip this file
+                        for dpu in dpu_list:
                             _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{dpu.upper()}|{data['name']}"
-                        else:
-                            _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{data['gen_time']}"
+                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'cause', data.get('cause', ''))
+                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'time', data.get('time', ''))
+                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'user', data.get('user', ''))
+                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'comment', data.get('comment', ''))
+                    else:
+                        # For non-smart switch, use the regular state DB
+                        _hash = f'{REBOOT_CAUSE_TABLE_NAME}|{data["gen_time"]}'
+                        state_db.set(state_db.STATE_DB, _hash, 'cause', data.get('cause', ''))
+                        state_db.set(state_db.STATE_DB, _hash, 'time', data.get('time', ''))
+                        state_db.set(state_db.STATE_DB, _hash, 'user', data.get('user', ''))
+                        state_db.set(state_db.STATE_DB, _hash, 'comment', data.get('comment', ''))
 
-                        # Store data in state DB
-                        db_type = state_db.CHASSIS_STATE_DB if is_smartswitch else state_db.STATE_DB
-                        state_db.set(db_type, _hash, 'cause', data.get('cause', ''))
-                        state_db.set(db_type, _hash, 'time', data.get('time', ''))
-                        state_db.set(db_type, _hash, 'user', data.get('user', ''))
-                        state_db.set(db_type, _hash, 'comment', data.get('comment', ''))
+                except json.decoder.JSONDecodeError as je:
+                    sonic_logger.log_info(f"Unable to process reload cause file {reboot_file}: {je}")
+                    pass
 
-                    except json.decoder.JSONDecodeError as je:
-                        sonic_logger.log_error(f"Unable to process reboot-cause file {reboot_file}: {je}")
-                        continue  # Skip
-
-        # Remove excess files
-        for reboot_file in reboot_files[MAX_HISTORY_FILES:]:
-            os.remove(reboot_file)
+    # Clean up extra files if more than the max limit
+    if len(reboot_files) > MAX_HISTORY_FILES:
+        for i in range(len(reboot_files)):
+            if i >= MAX_HISTORY_FILES:
+                reboot_file = reboot_files[i]
+                os.remove(reboot_file)
 
 def main():
     # Configure logger to log all messages INFO level and higher
