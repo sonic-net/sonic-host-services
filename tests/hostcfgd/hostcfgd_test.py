@@ -221,6 +221,7 @@ class TestHostcfgdDaemon(TestCase):
             call(['sonic-kdump-config', '--ssh_key', '<user@server>']),  # Covering ssh_key
             call(['sonic-kdump-config', '--ssh_path', '<path>'])  # Covering ssh_path
         ]
+
         mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
     def test_devicemeta_event(self):
