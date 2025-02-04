@@ -83,7 +83,7 @@ def read_reboot_cause_files_and_save_to_db():
                         state_db.set(state_db.STATE_DB, _hash, 'comment', data.get('comment', ''))
 
                 except json.decoder.JSONDecodeError as je:
-                    sonic_logger.log_info(f"Unable to process reload cause file {reboot_file}: {je}")
+                    sonic_logger.log_error(f"Unable to process reload cause file {reboot_file}: {je}")
                     pass
 
     # Clean up extra files if more than the max limit
