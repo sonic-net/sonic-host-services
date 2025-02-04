@@ -217,7 +217,7 @@ class TestHostcfgdDaemon(TestCase):
                 call(['sonic-kdump-config', '--disable']),
                 call(['sonic-kdump-config', '--num_dumps', '3']),
                 call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M']),
-                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--remote', 'true']),  # Covering remote
                 call(['sonic-kdump-config', '--ssh_key', '<user@server>']),  # Covering ssh_key
                 call(['sonic-kdump-config', '--ssh_path', '<path>'])  # Covering ssh_path
             ]
