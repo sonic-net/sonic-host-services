@@ -84,6 +84,21 @@ class TestProcessRebootCause(TestCase):
         # Call the function that reads the file and updates the DB
         process_reboot_cause.read_reboot_cause_files_and_save_to_db()
 
+    # Test read_reboot_cause_files_and_save_to_db - smartswitch - name not in data
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
+    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
+    @patch("os.path.isfile", return_value=True)
+    @patch("process_reboot_cause.os.listdir", return_value=["2024_12_13_01_12_36_reboot_cause.txt", "2024_12_14_01_11_46_reboot_cause.txt"])
+    @patch("process_reboot_cause.swsscommon.SonicV2Connector")
+    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
+    def test_read_reboot_cause_files_name_not_in_data(self, mock_is_smartswitch, mock_connector, mock_listdir, mock_isfile, mock_get_dpu_list, mock_open):
+        # Mock the database connection
+        mock_db = MagicMock()
+        mock_connector.return_value = mock_db
+
+        # Call the function that reads the file and updates the DB
+        process_reboot_cause.read_reboot_cause_files_and_save_to_db()
+
     # Test read_reboot_cause_files_and_save_to_db - regular switch
     @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "gen_time": "2024_12_13_01_12_36"}')
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
@@ -91,7 +106,7 @@ class TestProcessRebootCause(TestCase):
     @patch("process_reboot_cause.os.listdir", return_value=["2024_12_13_01_12_36_reboot_cause.txt", "2024_12_14_01_11_46_reboot_cause.txt"])
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     @patch("process_reboot_cause.device_info.is_smartswitch", return_value=False)
-    def ead_reboot_cause_files_and_save_to_state_db(self, mock_is_smartswitch, mock_connector, mock_listdir, mock_isfile, mock_get_dpu_list, mock_open):
+    def test_read_reboot_cause_files_and_save_to_state_db(self, mock_is_smartswitch, mock_connector, mock_listdir, mock_isfile, mock_get_dpu_list, mock_open):
         # Mock the database connection
         mock_db = MagicMock()
         mock_connector.return_value = mock_db
