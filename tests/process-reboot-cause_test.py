@@ -69,44 +69,13 @@ class TestProcessRebootCause(TestCase):
         output = mock_stdout.getvalue()
         self.assertTrue(mock_connector.called)
 
-    # Test get_sorted_reboot_cause_files
-    @patch("process_reboot_cause.os.listdir")
-    @patch("process_reboot_cause.os.path.getmtime")
-    def test_get_sorted_reboot_cause_files_success(self, mock_getmtime, mock_listdir):
-        # Setup mock data
-        mock_listdir.return_value = ["file1.txt", "file2.txt", "file3.txt"]
-        mock_getmtime.side_effect = [100, 200, 50]  # Mock modification times
-
-        # Call the function
-        result = process_reboot_cause.get_sorted_reboot_cause_files("/mock/dpu_history")
-
-        # Assert the files are sorted by modification time in descending order
-        self.assertEqual(result, [
-            "/mock/dpu_history/file2.txt",
-            "/mock/dpu_history/file1.txt",
-            "/mock/dpu_history/file3.txt"
-        ])
-
-    @patch("process_reboot_cause.os.listdir")
-    def test_get_sorted_reboot_cause_files_error(self, mock_listdir):
-        # Simulate an exception during file listing
-        mock_listdir.side_effect = Exception("Mocked error")
-
-        # Call the function and check the result
-        result = process_reboot_cause.get_sorted_reboot_cause_files("/mock/dpu_history")
-        self.assertEqual(result, [])
-
     # Test read_reboot_cause_files_and_save_to_db
     @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "name": "2024_12_13_01_12_36"}')
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
     @patch("os.path.isfile", return_value=True)
-    @patch("process_reboot_cause.get_sorted_reboot_cause_files")
     @patch("process_reboot_cause.os.listdir", return_value=["2024_12_13_01_12_36_reboot_cause.txt", "2024_12_14_01_11_46_reboot_cause.txt"])
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
-    def test_update_dpu_reboot_cause_to_chassis_state_db_update(self, mock_connector,  mock_listdir,  mock_get_sorted_files, mock_isfile, mock_get_dpu_list, mock_open):
-        # Setup mocks
-        mock_get_sorted_files.return_value = ["/mock/dpu_history/2024_12_13_01_12_36_reboot_cause.txt"]
-
+    def test_update_dpu_reboot_cause_to_chassis_state_db_update(self, mock_connector, mock_listdir, mock_isfile, mock_get_dpu_list, mock_open):
         # Mock the database connection
         mock_db = MagicMock()
         mock_connector.return_value = mock_db
