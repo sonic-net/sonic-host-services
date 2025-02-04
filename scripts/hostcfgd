@@ -417,7 +417,7 @@ class AaaCfg(object):
             self.accounting = data
         if modify_conf:
             self.modify_conf_file()
-        
+
         if key == 'authentication':
             # Enable/Disable LDAP service (nslcd) according LDAP configuration.
             handle_nslcd_service(self.is_ldap_config_complete())
@@ -716,7 +716,7 @@ class AaaCfg(object):
         os.chmod(PAM_AUTH_CONF + ".tmp", 0o644)
         os.rename(PAM_AUTH_CONF + ".tmp", PAM_AUTH_CONF)
 
-        if os.path.isfile(PAM_SESSION_CONF): 
+        if os.path.isfile(PAM_SESSION_CONF):
             # Support to add home directory to LDAP AAA users
             if 'ldap' in authentication['login']:
                 if not is_match(MKHOME_DIR_LIB_REG, PAM_SESSION_CONF):
@@ -1141,8 +1141,8 @@ class KdumpCfg(object):
             "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
             "num_dumps": "3",
             "remote": "false",            # New feature: remote, default is "false"
-            "SSH_KEY": "<user@server>",   # New feature: SSH key, default value
-            "SSH_PATH": "<path>"          # New feature: SSH path, default value
+            "ssh_key": "<user@server>",   # New feature: SSH key, default value
+            "ssh_path": "<path>"          # New feature: SSH path, default value
         }
 
     def load(self, kdump_table):
@@ -1155,7 +1155,7 @@ class KdumpCfg(object):
             value = self.kdump_defaults.get(row)
             if not kdump_conf.get(row):
                 self.config_db.mod_entry("KDUMP", "config", {row: value})
-        
+
         # Configure num_dumps
         num_dumps = kdump_conf.get("num_dumps") or self.kdump_defaults["num_dumps"]
         run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
@@ -1195,11 +1195,11 @@ class KdumpCfg(object):
             run_cmd(["sonic-kdump-config", "--remote", remote])
 
             # SSH key
-            if data.get("SSH_KEY") is not None and (data.get("SSH_KEY") != self.kdump_defaults["SSH_KEY"]): 
-                    run_cmd(["sonic-kdump-config", "--ssh_key", data.get("SSH_KEY")])
-            # SSH_PATH
-            if data.get("SSH_PATH") is not None and (data.get("SSH_PATH") != self.kdump_defaults["SSH_PATH"]): 
-                    run_cmd(["sonic-kdump-config", "--ssh_path", data.get("SSH_PATH")])
+            if data.get("ssh_key") is not None and (data.get("ssh_key") != self.kdump_defaults["ssh_key"]):
+                    run_cmd(["sonic-kdump-config", "--ssh_key", data.get("ssh_key")])
+            # ssh_path
+            if data.get("ssh_path") is not None and (data.get("ssh_path") != self.kdump_defaults["ssh_path"]):
+                    run_cmd(["sonic-kdump-config", "--ssh_path", data.get("ssh_path")])
 
 class NtpCfg(object):
     """
@@ -1304,7 +1304,7 @@ class NtpCfg(object):
     def ntp_srv_key_update(self, ntp_servers: dict, ntp_keys: dict):
         """Update NTP server/key configuration
 
-        The tables holds only NTP servers config and/or NTP authentication keys 
+        The tables holds only NTP servers config and/or NTP authentication keys
         config, so any change to those tables should cause NTP config reload.
         It does not make sense to handle each of the separately. NTP config
         reload takes whole configuration, so once got to this handler - cache
@@ -1359,12 +1359,12 @@ class PamLimitsCfg(object):
     def update_config_file(self):
         device_metadata = self.config_db.get_table('DEVICE_METADATA')
         ssh_server_policies = {}
-        try: 
+        try:
             ssh_server_policies = self.config_db.get_table('SSH_SERVER')
         except KeyError:
             """Dont throw except in case we don`t have SSH_SERVER config."""
             pass
-	
+
         if "localhost" not in device_metadata and "POLICIES" not in ssh_server_policies:
             return
 
@@ -1738,11 +1738,11 @@ class FipsCfg(object):
             return
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
-        
+
 class MemoryStatisticsCfg:
     """
     The MemoryStatisticsCfg class manages the configuration updates for the MemoryStatisticsDaemon, a daemon
-    responsible for collecting memory usage statistics. It monitors configuration changes in ConfigDB and, based 
+    responsible for collecting memory usage statistics. It monitors configuration changes in ConfigDB and, based
     on those updates, performs actions such as restarting, shutting down, or reloading the daemon.
     Attributes:
         VALID_KEYS (list): List of valid configuration keys ("enabled", "sampling_interval", "retention_period").
@@ -1797,7 +1797,7 @@ class MemoryStatisticsCfg:
             syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid key '{key}' received.")
             return
 
-        data = str(data)  
+        data = str(data)
 
         if key in ["retention_period", "sampling_interval"] and (not data.isdigit() or int(data) <= 0):
             syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid value '{data}' for key '{key}'. Must be a positive integer.")
@@ -1807,7 +1807,7 @@ class MemoryStatisticsCfg:
             syslog.syslog(syslog.LOG_INFO, f"MemoryStatisticsCfg: Detected change in '{key}' to '{data}'")
             try:
                 self.apply_setting(key, data)
-                self.cache[key] = data  
+                self.cache[key] = data
             except Exception as e:
                 syslog.syslog(syslog.LOG_ERR, f'MemoryStatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
 
@@ -1834,7 +1834,7 @@ class MemoryStatisticsCfg:
         """Restarts the memory statistics daemon by first shutting it down (if running) and then starting it again."""
         try:
             self.shutdown_memory_statistics()
-            time.sleep(1)  
+            time.sleep(1)
             syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Starting MemoryStatisticsDaemon")
             subprocess.Popen([self.DAEMON_EXEC_PATH])
         except Exception as e:
@@ -2367,7 +2367,7 @@ class HostConfigDaemon:
         # Handle DEVICE_MEATADATA changes
         self.config_db.subscribe(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
                                  make_callback(self.device_metadata_handler))
-        
+
         # Handle MGMT_VRF_CONFIG changes
         self.config_db.subscribe(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME,
                                  make_callback(self.mgmt_vrf_handler))
