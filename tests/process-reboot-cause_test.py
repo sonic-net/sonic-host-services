@@ -96,7 +96,7 @@ class TestProcessRebootCause(TestCase):
         result = process_reboot_cause.get_sorted_reboot_cause_files("/mock/dpu_history")
         self.assertEqual(result, [])
 
-    # Test update_dpu_reboot_cause_to_chassis_state_db
+    # Test read_reboot_cause_files_and_save_to_db
     @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "name": "2024_12_13_01_12_36"}')
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
     @patch("os.path.isfile", return_value=True)
@@ -112,4 +112,4 @@ class TestProcessRebootCause(TestCase):
         mock_connector.return_value = mock_db
 
         # Call the function that reads the file and updates the DB
-        process_reboot_cause.update_dpu_reboot_cause_to_chassis_state_db()
+        process_reboot_cause.read_reboot_cause_files_and_save_to_db()
