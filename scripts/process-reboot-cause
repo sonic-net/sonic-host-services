@@ -40,11 +40,14 @@ sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
 
 # ============================= Functions =============================
+def is_smartswitch():
+    return hasattr(device_info, 'is_smartswitch') and device_info.is_smartswitch()
+
 def read_reboot_cause_files_and_save_to_db():
     """Read reboot cause files and save them to the database based on device type."""
 
     # Connect to the appropriate DB based on whether it's a smart switch or not
-    if device_info.is_smartswitch():
+    if is_smartswitch():
         # Connect to chassis state DB for smart switch
         chassis_state_db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
         chassis_state_db.connect(chassis_state_db.CHASSIS_STATE_DB)
@@ -64,7 +67,7 @@ def read_reboot_cause_files_and_save_to_db():
                     data = json.load(cause_file)
 
                     # Ensure the necessary keys exist for smart switch
-                    if device_info.is_smartswitch():
+                    if is_smartswitch():
                         if 'name' not in data:
                             sonic_logger.log_warning(f"Missing 'name' in data from {reboot_file}")
                             continue  # Skip this file
@@ -118,7 +121,7 @@ def main():
     # Log the last reboot cause to the syslog
     sonic_logger.log_info("Previous reboot cause: {}".format(previous_reboot_cause))
 
-    if os.path.exists(REBOOT_CAUSE_HISTORY_DIR) or device_info.is_smartswitch():
+    if os.path.exists(REBOOT_CAUSE_HISTORY_DIR) or is_smartswitch():
         # Read the previous reboot cause from saved reboot-cause files and save the previous reboot cause upto 10 entry to the state db
         read_reboot_cause_files_and_save_to_db()
 
