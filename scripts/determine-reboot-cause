@@ -115,6 +115,9 @@ def get_reboot_cause_from_platform():
     except (ImportError, FileNotFoundError):
         sonic_logger.log_warning("sonic_platform package not installed. Unable to detect hardware reboot causes.")
         hardware_reboot_cause_major, hardware_reboot_cause_minor = REBOOT_CAUSE_NON_HARDWARE, "N/A"
+    except (NotImplementedError):
+        sonic_logger.log_warning("sonic_platform package not implemented. Unable to detect hardware reboot causes.")
+        hardware_reboot_cause_major, hardware_reboot_cause_minor = REBOOT_CAUSE_NON_HARDWARE, "N/A"
 
     return hardware_reboot_cause_major, hardware_reboot_cause_minor
 
@@ -142,7 +145,7 @@ def get_reboot_cause_dict(previous_reboot_cause, comment, gen_time):
     If user issused a command to reboot device, then user, command and time will be
     stored into a dictionary.
 
-    If device was rebooted due to the kernel panic, then the string `Kernel Panic` 
+    If device was rebooted due to the kernel panic, then the string `Kernel Panic`
     and time will be stored into a dictionary.
     """
     reboot_cause_dict = {}
@@ -164,7 +167,7 @@ def get_reboot_cause_dict(previous_reboot_cause, comment, gen_time):
         if match is not None:
             reboot_cause_dict['cause'] = "Kernel Panic"
             reboot_cause_dict['time'] = match.group(1)
- 
+
     return reboot_cause_dict
 
 def determine_reboot_cause():
@@ -184,12 +187,12 @@ def determine_reboot_cause():
     software_reboot_cause = find_software_reboot_cause()
 
     # The main decision logic of the reboot cause:
-    # If there is a valid hardware reboot cause indicated by platform API, 
+    # If there is a valid hardware reboot cause indicated by platform API,
     #    check the software reboot cause to add additional rebot cause.
     # If there is a reboot cause indicated by /proc/cmdline, and/or warmreboot/fastreboot/softreboot
     #   the software_reboot_cause which is the content of /hosts/reboot-cause/reboot-cause.txt
     #   will be treated as the additional reboot cause
-    # Elif there is a cmdline reboot cause, 
+    # Elif there is a cmdline reboot cause,
     #   the software_reboot_cause will be treated as the reboot cause if it's not unknown
     #   otherwise, the cmdline_reboot_cause will be treated as the reboot cause if it's not none
     # Else the software_reboot_cause will be treated as the reboot cause
@@ -244,7 +247,7 @@ def main():
     # Write the previous reboot cause to REBOOT_CAUSE_HISTORY_FILE as a JSON format
     with open(REBOOT_CAUSE_HISTORY_FILE, "w") as reboot_cause_history_file:
         json.dump(reboot_cause_dict, reboot_cause_history_file)
- 
+
     # Remove stale PREVIOUS_REBOOT_CAUSE_FILE if it exists
     if os.path.exists(PREVIOUS_REBOOT_CAUSE_FILE) or os.path.islink(PREVIOUS_REBOOT_CAUSE_FILE):
         os.remove(PREVIOUS_REBOOT_CAUSE_FILE)
