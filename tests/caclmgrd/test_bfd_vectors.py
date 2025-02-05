@@ -27,14 +27,14 @@ CACLMGRD_BFD_TEST_VECTOR = [
                 },
             },
             "expected_subprocess_calls": [
-                call(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'], universal_newlines=True, stdout=subprocess.PIPE),
-                call(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'], universal_newlines=True, stdout=subprocess.PIPE),
+                call(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT', '!', '-i', 'eth0'], universal_newlines=True, stdout=subprocess.PIPE),
+                call(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT', '!', '-i', 'eth0'], universal_newlines=True, stdout=subprocess.PIPE),
                 call(['iptables', '-A', 'INPUT', '-d', '2.2.2.1/32', '-j', 'DROP'],universal_newlines=True, stdout=subprocess.PIPE),
                 call(['ip6tables', '-A', 'INPUT', '-d', '2001:db8:10::/128', '-j', 'DROP'],universal_newlines=True, stdout=subprocess.PIPE)
             ],
             "expected_bfd_subprocess_calls": [
-                call(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'], universal_newlines=True, stdout=subprocess.PIPE),
-                call(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'], universal_newlines=True, stdout=subprocess.PIPE)
+                call(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT', '!', '-i', 'eth0'], universal_newlines=True, stdout=subprocess.PIPE),
+                call(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT', '!', '-i', 'eth0'], universal_newlines=True, stdout=subprocess.PIPE)
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),
