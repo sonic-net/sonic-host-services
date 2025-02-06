@@ -81,32 +81,53 @@ class TestProcessRebootCause(TestCase):
         output = mock_stdout.getvalue()
         # assert "Failed to parse JSON" in output
 
-    # Test read_reboot_cause_files_and_save_to_db - smartswitch - name not in data
-    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
-    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
+    # Test read_reboot_cause_files_and_save_to_db - smartswitch
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "name": "2024_12_13_01_12_36", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
+    @patch("os.listdir", return_value=["file1.json"])
     @patch("os.path.isfile", return_value=True)
-    @patch("process_reboot_cause.os.listdir", return_value=["2024_12_13_01_12_36_reboot_cause.txt", "2024_12_14_01_11_46_reboot_cause.txt"])
+    @patch("os.path.exists", return_value=True)
+    @patch("os.path.getmtime", side_effect=lambda path: 1700000000 if "file1.json" in path else 1700001000)
+    @patch("os.remove")
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
-    def test_read_reboot_cause_files_name_not_in_data(self, mock_is_smartswitch, mock_connector, mock_listdir, mock_isfile, mock_get_dpu_list, mock_open):
-        # Mock the database connection
+    @patch("sys.stdout", new_callable=StringIO)
+    @patch("os.geteuid", return_value=0)
+    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1"])
+    def test_read_reboot_cause_files_and_save_to_db(
+        self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch,
+        mock_connector, mock_remove, mock_getmtime, mock_exists, mock_isfile,
+        mock_listdir, mock_open
+    ):
+        # Mock DB
         mock_db = MagicMock()
         mock_connector.return_value = mock_db
 
-        # Call the function that reads the file and updates the DB
-        process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu1')
+        # Simulate running the script
+        with patch.object(sys, "argv", ["process-reboot-cause"]):
+            process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu1')
 
-    # Test read_reboot_cause_files_and_save_to_db - regular switch
-    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "gen_time": "2024_12_13_01_12_36"}')
-    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
+    # Test read_reboot_cause_files_and_save_to_db - smartswitch - name not in data
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
+    @patch("os.listdir", return_value=["file1.json"])
     @patch("os.path.isfile", return_value=True)
-    @patch("process_reboot_cause.os.listdir", return_value=["2024_12_13_01_12_36_reboot_cause.txt", "2024_12_14_01_11_46_reboot_cause.txt"])
+    @patch("os.path.exists", return_value=True)
+    @patch("os.path.getmtime", side_effect=lambda path: 1700000000 if "file1.json" in path else 1700001000)
+    @patch("os.remove")
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
-    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=False)
-    def test_read_reboot_cause_files_and_save_to_state_db(self, mock_is_smartswitch, mock_connector, mock_listdir, mock_isfile, mock_get_dpu_list, mock_open):
-        # Mock the database connection
+    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
+    @patch("sys.stdout", new_callable=StringIO)
+    @patch("os.geteuid", return_value=0)
+    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1"])
+    def test_read_reboot_cause_files_name_not_in_data(
+        self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch,
+        mock_connector, mock_remove, mock_getmtime, mock_exists, mock_isfile,
+        mock_listdir, mock_open
+    ):
+        # Mock DB
         mock_db = MagicMock()
         mock_connector.return_value = mock_db
 
-        # Call the function that reads the file and updates the DB
-        process_reboot_cause.read_reboot_cause_files_and_save_to_db('npu')
+        # Simulate running the script
+        with patch.object(sys, "argv", ["process-reboot-cause"]):
+            process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu1')
+
