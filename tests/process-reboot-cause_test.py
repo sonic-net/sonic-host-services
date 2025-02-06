@@ -79,7 +79,6 @@ class TestProcessRebootCause(TestCase):
 
         # Check invalid JSON handling
         output = mock_stdout.getvalue()
-        # assert "Failed to parse JSON" in output
 
     # Test read_reboot_cause_files_and_save_to_db - smartswitch
     @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "name": "2024_12_13_01_12_36", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
