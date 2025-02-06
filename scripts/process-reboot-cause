@@ -77,7 +77,7 @@ def read_reboot_cause_files_and_save_to_db(device='npu'):
                     db.set(table, _hash, 'user', data.get('user', ''))
                     db.set(table, _hash, 'comment', data.get('comment', ''))
                 except json.decoder.JSONDecodeError as je:
-                    sonic_logger.log_info("Unable to process reload cause file {}: {}".format(x, je))
+                    sonic_logger.log_error("Unable to process reload cause file {}: {}".format(x, je))
                     pass
 
     if len(TIME_SORTED_FULL_REBOOT_FILE_LIST) > MAX_HISTORY_FILES:
