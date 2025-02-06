@@ -40,58 +40,51 @@ sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
 
 # ============================= Functions =============================
-def read_reboot_cause_files_and_save_to_db():
-    """Read reboot cause files and save them to the database based on device type."""
-
-    # Connect to the appropriate DB based on whether it's a smart switch or not
-    if device_info.is_smartswitch():
-        # Connect to chassis state DB for smart switch
-        chassis_state_db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
-        chassis_state_db.connect(chassis_state_db.CHASSIS_STATE_DB)
-        dpu_list = device_info.get_dpu_list()
-        reboot_files = [os.path.join(REBOOT_CAUSE_HISTORY_DIR, f"{dpu.upper()}_reboot_cause.json") for dpu in dpu_list]
+def read_reboot_cause_files_and_save_to_db(device='npu'):
+    # Connect State DB
+    if device == 'npu':
+        db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
+        table = db.STATE_DB
+        history_dir = REBOOT_CAUSE_HISTORY_DIR
     else:
-        # Connect to local state DB for non-smart switch
-        state_db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
-        state_db.connect(state_db.STATE_DB)
-        reboot_files = [os.path.join(REBOOT_CAUSE_HISTORY_DIR, f"npu_reboot_cause.json")]
+        db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
+        table = db.CHASSIS_STATE_DB
+        history_dir = os.path.join('/host/reboot-cause/module', device , 'history')
+    db.connect(table)
 
-    # Read and process reboot cause files for both cases
-    for reboot_file in reboot_files:
-        if os.path.isfile(reboot_file):
-            with open(reboot_file, "r") as cause_file:
+    # Sort the previous reboot cause files by creation time
+    REBOOT_FILE_LIST = [os.path.join(history_dir, i) for i in os.listdir(history_dir)]
+    TIME_SORTED_FULL_REBOOT_FILE_LIST = sorted(REBOOT_FILE_LIST, key=os.path.getmtime, reverse=True)
+
+    data = []
+    # Read each sorted previous reboot cause file and update the state db with previous reboot cause information
+    for i in range(min(MAX_HISTORY_FILES, len(TIME_SORTED_FULL_REBOOT_FILE_LIST))):
+        x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
+        if os.path.isfile(x):
+            with open(x, "r") as cause_file:
                 try:
                     data = json.load(cause_file)
-
-                    # Ensure the necessary keys exist for smart switch
-                    if device_info.is_smartswitch():
+                    if device == 'npu':
+                        _hash = '{}|{}'.format(REBOOT_CAUSE_TABLE_NAME, data['gen_time'])
+                    else:
+                        # Ensure keys exist
                         if 'name' not in data:
                             sonic_logger.log_warning(f"Missing 'name' in data from {reboot_file}")
                             continue  # Skip this file
-                        for dpu in dpu_list:
-                            _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{dpu.upper()}|{data['name']}"
-                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'cause', data.get('cause', ''))
-                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'time', data.get('time', ''))
-                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'user', data.get('user', ''))
-                            chassis_state_db.set(chassis_state_db.CHASSIS_STATE_DB, _hash, 'comment', data.get('comment', ''))
-                    else:
-                        # For non-smart switch, use the regular state DB
-                        _hash = f'{REBOOT_CAUSE_TABLE_NAME}|{data["gen_time"]}'
-                        state_db.set(state_db.STATE_DB, _hash, 'cause', data.get('cause', ''))
-                        state_db.set(state_db.STATE_DB, _hash, 'time', data.get('time', ''))
-                        state_db.set(state_db.STATE_DB, _hash, 'user', data.get('user', ''))
-                        state_db.set(state_db.STATE_DB, _hash, 'comment', data.get('comment', ''))
-
+                        _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{device.upper()}|{data['name']}"
+                    db.set(table, _hash, 'cause', data.get('cause', ''))
+                    db.set(table, _hash, 'time', data.get('time', ''))
+                    db.set(table, _hash, 'user', data.get('user', ''))
+                    db.set(table, _hash, 'comment', data.get('comment', ''))
                 except json.decoder.JSONDecodeError as je:
-                    sonic_logger.log_error(f"Unable to process reload cause file {reboot_file}: {je}")
+                    sonic_logger.log_info("Unable to process reload cause file {}: {}".format(x, je))
                     pass
 
-    # Clean up extra files if more than the max limit
-    if len(reboot_files) > MAX_HISTORY_FILES:
-        for i in range(len(reboot_files)):
+    if len(TIME_SORTED_FULL_REBOOT_FILE_LIST) > MAX_HISTORY_FILES:
+        for i in range(len(TIME_SORTED_FULL_REBOOT_FILE_LIST)):
             if i >= MAX_HISTORY_FILES:
-                reboot_file = reboot_files[i]
-                os.remove(reboot_file)
+                x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
+                os.remove(x)
 
 def main():
     # Configure logger to log all messages INFO level and higher
@@ -118,9 +111,16 @@ def main():
     # Log the last reboot cause to the syslog
     sonic_logger.log_info("Previous reboot cause: {}".format(previous_reboot_cause))
 
-    if os.path.exists(REBOOT_CAUSE_HISTORY_DIR) or device_info.is_smartswitch():
-        # Read the previous reboot cause from saved reboot-cause files and save the previous reboot cause upto 10 entry to the state db
-        read_reboot_cause_files_and_save_to_db()
+    if os.path.exists(REBOOT_CAUSE_HISTORY_DIR):
+        # Read the previous npu reboot cause from saved reboot-cause files
+        # Save the previous npu reboot cause upto 10 entry to the state db
+        read_reboot_cause_files_and_save_to_db('npu')
+        # Read the previous dpu reboot cause from saved reboot-cause files
+        # Save the previous dpu reboot cause upto 10 entry to the state db
+        if device_info.is_smartswitch():
+            dpu_list = device_info.get_dpu_list()
+            for dpu in dpu_list:
+                read_reboot_cause_files_and_save_to_db(dpu)
 
 if __name__ == "__main__":
     main()

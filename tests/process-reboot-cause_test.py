@@ -97,7 +97,9 @@ class TestProcessRebootCause(TestCase):
         mock_connector.return_value = mock_db
 
         # Call the function that reads the file and updates the DB
-        process_reboot_cause.read_reboot_cause_files_and_save_to_db()
+        process_reboot_cause.read_reboot_cause_files_and_save_to_db('npu')
+        process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu1')
+        process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu2')
 
     # Test read_reboot_cause_files_and_save_to_db - regular switch
     @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "gen_time": "2024_12_13_01_12_36"}')
@@ -112,4 +114,4 @@ class TestProcessRebootCause(TestCase):
         mock_connector.return_value = mock_db
 
         # Call the function that reads the file and updates the DB
-        process_reboot_cause.read_reboot_cause_files_and_save_to_db()
+        process_reboot_cause.read_reboot_cause_files_and_save_to_db('NPU')
