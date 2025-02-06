@@ -24,7 +24,7 @@ process_reboot_cause = load_module_from_source('process_reboot_cause', process_r
 
 # Now proceed with your test class and mocks
 class TestProcessRebootCause(TestCase):
-    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "PowerLoss", "user": "admin", "time": "2024-12-10", "comment": "test"}')
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "gen_time": "2024_12_13_01_12_36"}')
     @patch("os.listdir", return_value=["file1.json", "file2.json"])
     @patch("os.path.isfile", return_value=True)
     @patch("os.path.exists", return_value=True)
@@ -61,7 +61,7 @@ class TestProcessRebootCause(TestCase):
     @patch("sys.stdout", new_callable=StringIO)
     @patch("os.geteuid", return_value=0)
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
-    def test_invalid_json(self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch, mock_connector, mock_remove, mock_getmtime, mock_exists, mock_isfile, mock_listdir, mock_openn):
+    def test_invalid_json(self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch, mock_connector, mock_remove, mock_getmtime, mock_exists, mock_isfile, mock_listdir, mock_open):
         # Mock DB
         mock_db = MagicMock()
         mock_connector.return_value = mock_db
