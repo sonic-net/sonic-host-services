@@ -28,14 +28,14 @@ class TestProcessRebootCause(TestCase):
     @patch("os.listdir", return_value=["file1.json", "file2.json"])
     @patch("os.path.isfile", return_value=True)
     @patch("os.path.exists", return_value=True)
-    #@patch("os.path.exists", side_effect=lambda path: path.endswith('file1.json') or path.endswith('file2.json'))
+    @patch("os.path.getmtime", side_effect=lambda path: 1700000000 if "file1.json" in path else 1700001000)
     @patch("os.remove")
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
     @patch("process_reboot_cause.device_info.is_smartswitch", return_value=False)
     @patch("sys.stdout", new_callable=StringIO)
     @patch("os.geteuid", return_value=0)
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
-    def test_process_reboot_cause(self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch, mock_connector, mock_remove, mock_exists, mock_isfile, mock_listdir, mock_open):
+    def test_process_reboot_cause(self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch, mock_connector, mock_remove, mock_getmtime, mock_exists, mock_isfile, mock_listdir, mock_open):
         # Mock DB
         mock_db = MagicMock()
         mock_connector.return_value = mock_db
@@ -53,13 +53,15 @@ class TestProcessRebootCause(TestCase):
     @patch("builtins.open", new_callable=mock_open, read_data='{"invalid_json}')
     @patch("os.listdir", return_value=["file1.json"])
     @patch("os.path.isfile", return_value=True)
-    @patch("os.path.exists", side_effect=lambda path: path.endswith('file1.json'))
+    @patch("os.path.exists", return_value=True)
+    @patch("os.path.getmtime", side_effect=lambda path: 1700000000 if "file1.json" in path else 1700001000)
+    @patch("os.remove")
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
-    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
+    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=False)
     @patch("sys.stdout", new_callable=StringIO)
     @patch("os.geteuid", return_value=0)
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1", "dpu2"])
-    def test_invalid_json(self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch, mock_connector, mock_exists, mock_isfile, mock_listdir, mock_open):
+    def test_invalid_json(self, mock_get_dpu_list, mock_geteuid, mock_stdout, mock_is_smartswitch, mock_connector, mock_remove, mock_getmtime, mock_exists, mock_isfile, mock_listdir, mock_openn):
         # Mock DB
         mock_db = MagicMock()
         mock_connector.return_value = mock_db
