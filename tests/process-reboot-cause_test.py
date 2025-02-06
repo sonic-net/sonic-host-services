@@ -31,7 +31,7 @@ class TestProcessRebootCause(TestCase):
     @patch("os.path.getmtime", side_effect=lambda path: 1700000000 if "file1.json" in path else 1700001000)
     @patch("os.remove")
     @patch("process_reboot_cause.swsscommon.SonicV2Connector")
-    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
+    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=test_read_reboot_cause_files_and_save_to_state_db)
     @patch("sys.stdout", new_callable=StringIO)
     @patch("os.geteuid", return_value=0)
     @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1"])
