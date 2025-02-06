@@ -69,7 +69,7 @@ def read_reboot_cause_files_and_save_to_db(device='npu'):
                     else:
                         # Ensure keys exist
                         if 'name' not in data:
-                            sonic_logger.log_warning(f"Missing 'name' in data from {reboot_file}")
+                            sonic_logger.log_warning(f"Missing 'name' in reboot-cause file")
                             continue  # Skip this file
                         _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{device.upper()}|{data['name']}"
                     db.set(table, _hash, 'cause', data.get('cause', ''))
