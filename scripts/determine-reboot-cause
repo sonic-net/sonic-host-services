@@ -189,7 +189,7 @@ def determine_reboot_cause():
 
     # The main decision logic of the reboot cause:
     # If there is a valid hardware reboot cause indicated by platform API,
-    #    check the software reboot cause to add additional rebot cause.
+    #    check the software reboot cause to add additional reboot cause.
     # If there is a reboot cause indicated by /proc/cmdline, and/or warmreboot/fastreboot/softreboot
     #   the software_reboot_cause which is the content of /hosts/reboot-cause/reboot-cause.txt
     #   will be treated as the additional reboot cause
