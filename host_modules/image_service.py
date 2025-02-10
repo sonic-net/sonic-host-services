@@ -178,6 +178,9 @@ class ImageService(host_service.HostModule):
         if result.returncode:
             logger.error("Failed to set next boot image: {}".format(result.stderr.decode()))
             msg = result.stderr.decode()
+            # sonic-installer might not return a proper error code, so we need to check the message.
+            if "not" in msg.lower() and ("exist" in msg.lower() or "found" in msg.lower()):
+                return errno.ENOENT, msg
         return result.returncode, msg
 
 

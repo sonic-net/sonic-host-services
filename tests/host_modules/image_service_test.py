@@ -5,6 +5,7 @@ import os
 import stat
 import pytest
 import json
+import errno
 from unittest import mock
 from host_modules.image_service import ImageService
 
@@ -608,7 +609,7 @@ class TestImageService(object):
         image_service = ImageService(mod_name="image_service")
         image = "nonexistent_image"
         mock_result = mock.Mock()
-        mock_result.returncode = 1
+        mock_result.returncode = errno.ENOENT
         mock_result.stderr = b"Error: Image does not exist"
         mock_run.return_value = mock_result
 
@@ -617,7 +618,40 @@ class TestImageService(object):
 
         # Assert
         assert rc != 0, "wrong return value"
-        assert "Error: Image does not exist" in msg, "message should contain 'Error: Image does not exist'"
+        assert (
+            "not" in msg.lower() and ("exist" in msg.lower() or "found" in msg.lower())
+        ), "message should contain 'not' and 'exist' or 'found'"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-next-boot", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_next_boot_fail_not_exists_generic_rc(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_next_boot` method fails when the image does not exist, and sonic-installer returns a generic error code
+        instead of errno.ENOENT.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "nonexistent_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = 1  # returns generic error code
+        mock_result.stderr = b"Error: Image does not exist"
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_next_boot(image)
+
+        # Assert
+        assert rc == errno.ENOENT, "wrong return value"
+        assert (
+            "not" in msg.lower() and ("exist" in msg.lower() or "found" in msg.lower())
+        ), "message should contain 'not' and 'exist' or 'found'"
         mock_run.assert_called_once_with(
             ["/usr/local/bin/sonic-installer", "set-next-boot", image],
             stdout=subprocess.PIPE,
