@@ -1019,7 +1019,6 @@ class PasswHardening(object):
             if account_number >= uid_min and account_number <= uid_max:
                 normal_accounts.append(account_spl[ACCOUNT_NAME])
 
-        normal_accounts.append('root') # root is also a candidate to be age modify.
         return normal_accounts
 
     def modify_passw_conf_file(self):
