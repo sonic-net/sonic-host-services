@@ -130,9 +130,9 @@ class TestDetermineRebootCause(object):
             result = determine_reboot_cause.find_hardware_reboot_cause()
             assert result == "Powerloss (under-voltage)"
 
-    def test_find_hardware_reboot_cause_not_implemented(self):
+    def test_find_hardware_reboot_cause_not_installed_or_not_implemented(self):
         result = determine_reboot_cause.find_hardware_reboot_cause()
-        assert result == REBOOT_CAUSE_NON_HARDWARE + " (Platform pkg not implemented)"
+        assert result == REBOOT_CAUSE_NON_HARDWARE + " (N/A)"
 
     def test_get_reboot_cause_dict_watchdog(self):
         reboot_cause_dict = determine_reboot_cause.get_reboot_cause_dict(REBOOT_CAUSE_WATCHDOG, "", GEN_TIME_WATCHDOG)

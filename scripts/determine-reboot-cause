@@ -113,12 +113,9 @@ def get_reboot_cause_from_platform():
         chassis  = platform.get_chassis()
         hardware_reboot_cause_major, hardware_reboot_cause_minor = chassis.get_reboot_cause()
         sonic_logger.log_info("Platform api returns reboot cause {}, {}".format(hardware_reboot_cause_major, hardware_reboot_cause_minor))
-    except (ImportError, FileNotFoundError):
-        sonic_logger.log_warning("sonic_platform package not installed. Unable to detect hardware reboot causes.")
+    except (ImportError, FileNotFoundError, NotImplementedError):
+        sonic_logger.log_warning("sonic_platform package not installed or not implemented. Unable to detect hardware reboot causes.")
         hardware_reboot_cause_major, hardware_reboot_cause_minor = REBOOT_CAUSE_NON_HARDWARE, "N/A"
-    except (NotImplementedError):
-        sonic_logger.log_warning("sonic_platform package not implemented. Unable to detect hardware reboot causes.")
-        hardware_reboot_cause_major, hardware_reboot_cause_minor = REBOOT_CAUSE_NON_HARDWARE, "Platform pkg not implemented"
 
     return hardware_reboot_cause_major, hardware_reboot_cause_minor
 
