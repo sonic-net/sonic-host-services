@@ -212,9 +212,14 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['sonic-kdump-config', '--disable']),
-                        call(['sonic-kdump-config', '--num_dumps', '3']),
-                        call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])]
+            expected = [
+                call(['sonic-kdump-config', '--disable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M']),
+                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--ssh_key', '<user@server>']),  # Covering ssh_key
+                call(['sonic-kdump-config', '--ssh_path', '<path>'])  # Covering ssh_path
+            ]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
     def test_devicemeta_event(self):
@@ -272,7 +277,7 @@ class TestHostcfgdDaemon(TestCase):
             with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
                 mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
                 try:
-                    daemon.start() 
+                    daemon.start()
                 except TimeoutError:
                     pass
 
@@ -496,7 +501,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         """
         mock_process = mock.Mock()
         mock_process.name.return_value = "memory_statistics_service.py"
-        
+
         with mock.patch('builtins.open', mock.mock_open(read_data="123")), \
              mock.patch('hostcfgd.psutil.pid_exists', return_value=True), \
              mock.patch('hostcfgd.psutil.Process', return_value=mock_process):
@@ -536,7 +541,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         mock_process_instance = mock.Mock()
         mock_process_instance.name.return_value = "wrong_process"
         mock_process.return_value = mock_process_instance
-        
+
         mock_open = mock.mock_open(read_data="123")
         with mock.patch('builtins.open', mock_open):
             with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
@@ -591,28 +596,28 @@ class TestMemoryStatisticsCfgd(TestCase):
     def test_memory_statistics_disable_with_shutdown(self):
         """Test disabling memory statistics with full shutdown chain"""
         self.mem_stat_cfg.cache['enabled'] = 'true'
-        
+
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
              mock.patch('hostcfgd.os.kill') as mock_kill, \
              mock.patch.object(self.mem_stat_cfg, 'wait_for_shutdown') as mock_wait:
-            
+
             self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
-            
+
             mock_get_pid.assert_called_once()
             mock_kill.assert_called_once_with(123, signal.SIGTERM)
             mock_wait.assert_called_once_with(123)
-            
+
             self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
 
     def test_memory_statistics_disable_no_running_daemon(self):
         """Test disabling memory statistics when daemon is not running"""
         self.mem_stat_cfg.cache['enabled'] = 'true'
-        
+
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=None) as mock_get_pid:
             self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
-            
+
             mock_get_pid.assert_called_once()
-            
+
             self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
 
     # Group 6: Reload Tests
@@ -642,9 +647,9 @@ class TestMemoryStatisticsCfgd(TestCase):
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
             mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
             mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-            
+
             self.mem_stat_cfg.reload_memory_statistics()
-            
+
             mock_get_pid.assert_called_once()
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: Test error")
 
@@ -677,7 +682,7 @@ class TestMemoryStatisticsCfgd(TestCase):
     def test_wait_for_shutdown_no_process(self, mock_process):
         """Test shutdown waiting when process doesn't exist"""
         mock_process.side_effect = psutil.NoSuchProcess(123)
-        
+
         with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
             self.mem_stat_cfg.wait_for_shutdown(123)
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: MemoryStatisticsDaemon process not found.")
@@ -687,9 +692,9 @@ class TestMemoryStatisticsCfgd(TestCase):
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
             mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
             mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-            
+
             self.mem_stat_cfg.shutdown_memory_statistics()
-            
+
             mock_get_pid.assert_called_once()
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: Test error")
 
@@ -698,9 +703,9 @@ class TestMemoryStatisticsCfgd(TestCase):
         mock_process = mock.Mock()
         with mock.patch('hostcfgd.psutil.Process', return_value=mock_process) as mock_process_class, \
             mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-            
+
             self.mem_stat_cfg.wait_for_shutdown(123)
-            
+
             mock_process_class.assert_called_once_with(123)
             mock_process.wait.assert_called_once_with(timeout=10)
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: MemoryStatisticsDaemon stopped gracefully")
@@ -718,11 +723,11 @@ class TestMemoryStatisticsCfgd(TestCase):
 
     def test_apply_setting_exception(self):
         """Test exception handling in apply_setting"""
-        with mock.patch.object(self.mem_stat_cfg, 'restart_memory_statistics', 
+        with mock.patch.object(self.mem_stat_cfg, 'restart_memory_statistics',
                              side_effect=Exception("Test error")):
             with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                 self.mem_stat_cfg.apply_setting('enabled', 'true')
-                mock_syslog.assert_any_call(mock.ANY, 
+                mock_syslog.assert_any_call(mock.ANY,
                     "MemoryStatisticsCfg: Exception in apply_setting() for key 'enabled': Test error")
 
     @mock.patch('hostcfgd.psutil.Process')
@@ -730,23 +735,23 @@ class TestMemoryStatisticsCfgd(TestCase):
         """Test general exception handling in get_memory_statistics_pid"""
         mock_process.side_effect = Exception("Unexpected error")
         mock_open = mock.mock_open(read_data="123")
-        
+
         with mock.patch('hostcfgd.psutil.pid_exists', return_value=True):
             with mock.patch('builtins.open', mock_open):
                 with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                     pid = self.mem_stat_cfg.get_memory_statistics_pid()
                     self.assertIsNone(pid)
-                    mock_syslog.assert_any_call(mock.ANY, 
+                    mock_syslog.assert_any_call(mock.ANY,
                         "MemoryStatisticsCfg: Exception failed to retrieve MemoryStatisticsDaemon PID: Unexpected error")
-                    
+
     def test_memory_statistics_handler_exception(self):
         """Test exception handling in memory_statistics_handler"""
         daemon = hostcfgd.HostConfigDaemon()
-        with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update', 
+        with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update',
                              side_effect=Exception("Handler error")):
             with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                 daemon.memory_statistics_handler('enabled', None, 'true')
-                mock_syslog.assert_any_call(mock.ANY, 
+                mock_syslog.assert_any_call(mock.ANY,
                     "MemoryStatisticsCfg: Error while handling memory statistics update: Handler error")
 
     @mock.patch('hostcfgd.psutil.Process')
@@ -755,7 +760,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         mock_process.side_effect = Exception("Unexpected shutdown error")
         with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
             self.mem_stat_cfg.wait_for_shutdown(123)
-            mock_syslog.assert_any_call(mock.ANY, 
+            mock_syslog.assert_any_call(mock.ANY,
                 "MemoryStatisticsCfg: Exception in wait_for_shutdown(): Unexpected shutdown error")
 
     def test_process_name_mismatch(self):
@@ -765,7 +770,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         """
         mock_process = mock.Mock()
         mock_process.name.return_value = "wrong_process_name"
-        
+
         with mock.patch('builtins.open', mock.mock_open(read_data="123")), \
              mock.patch('hostcfgd.psutil.pid_exists', return_value=True), \
              mock.patch('hostcfgd.psutil.Process', return_value=mock_process), \
