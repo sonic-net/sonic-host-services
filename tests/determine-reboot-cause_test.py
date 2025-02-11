@@ -130,6 +130,10 @@ class TestDetermineRebootCause(object):
             result = determine_reboot_cause.find_hardware_reboot_cause()
             assert result == "Powerloss (under-voltage)"
 
+    def test_find_hardware_reboot_cause_not_installed_or_not_implemented(self):
+        result = determine_reboot_cause.find_hardware_reboot_cause()
+        assert result == REBOOT_CAUSE_NON_HARDWARE + " (N/A)"
+
     def test_get_reboot_cause_dict_watchdog(self):
         reboot_cause_dict = determine_reboot_cause.get_reboot_cause_dict(REBOOT_CAUSE_WATCHDOG, "", GEN_TIME_WATCHDOG)
         assert reboot_cause_dict == EXPECTED_WATCHDOG_REBOOT_CAUSE_DICT
@@ -210,7 +214,7 @@ class TestDetermineRebootCause(object):
         with mock.patch("os.geteuid", return_value=0):
             determine_reboot_cause.main()
             assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
-            assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True   
+            assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True
 
     def create_mock_platform_json(self, dpus):
         """Helper function to create a mock platform.json file."""
