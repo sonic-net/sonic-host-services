@@ -1141,7 +1141,7 @@ class KdumpCfg(object):
             "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
             "num_dumps": "3",
             "remote": "false",            # New feature: remote, default is "false"
-            "ssh_key": "<user@server>",   # New feature: SSH key, default value
+            "ssh_string": "<user@server>",   # New feature: SSH key, default value
             "ssh_path": "<path>"          # New feature: SSH path, default value
         }
 
@@ -1194,9 +1194,9 @@ class KdumpCfg(object):
                 remote = data.get("remote")
             run_cmd(["sonic-kdump-config", "--remote", remote])
 
-            ssh_key = self.kdump_defaults["ssh_key"]
-            if data.get("ssh_key") is not None:
-                    run_cmd(["sonic-kdump-config", "--ssh_key", ssh_key])
+            ssh_string = self.kdump_defaults["ssh_string"]
+            if data.get("ssh_string") is not None:
+                    run_cmd(["sonic-kdump-config", "--ssh_string", ssh_string])
             # ssh_path
             ssh_path= self.kdump_defaults["ssh_path"]
             if data.get("ssh_path") is not None:
