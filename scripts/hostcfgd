@@ -1156,7 +1156,7 @@ class KdumpCfg(object):
             if not kdump_conf.get(row):
                 self.config_db.mod_entry("KDUMP", "config", {row: value})
             else:
-                value = kdump_conf.get(row)
+                value = kdump_conf[row]
             data[row] = value
         self.kdump_update("config", data)
 
