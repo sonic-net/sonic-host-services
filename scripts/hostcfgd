@@ -440,7 +440,7 @@ class AaaCfg(object):
             if new_ipv4_addr != "" and new_ipv6_addr != "":
                 break
             ip_str = it[1].split("/")[0]
-            ip_addr = ipaddress.IPAddress(ip_str)
+            ip_addr = ipaddress.ip_address(ip_str)
             # Pick the first IP address from the table that matches the source interface
             if isinstance(ip_addr, ipaddress.IPv6Address):
                 if new_ipv6_addr != "":
