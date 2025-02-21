@@ -342,7 +342,8 @@ class Iptables(object):
 
 
 class AaaCfg(object):
-    def __init__(self):
+    def __init__(self, config_db):
+        self.config_db = config_db
         self.authentication_default = {
             'login': 'local',
         }
@@ -2076,7 +2077,7 @@ class HostConfigDaemon:
         self.is_multi_npu = device_info.is_multi_npu()
 
         # Initialize AAACfg
-        self.aaacfg = AaaCfg()
+        self.aaacfg = AaaCfg(self.config_db)
 
         # Initialize PasswHardening
         self.passwcfg = PasswHardening()
