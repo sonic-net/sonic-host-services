@@ -678,9 +678,9 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf found. Ignoring src_ip".format(addr))
                     # RADIUS: If server.src_intf, then get the corresponding
                     # src_ip based on the server.ip, and set it.
-                    src_ip = self.get_interface_ip(server['src_intf'], addr)
-                    if len(src_ip) > 0:
-                        server['src_ip'] = src_ip
+                    rad_src_ip = self.get_interface_ip(server['src_intf'], addr)
+                    if len(rad_src_ip) > 0:
+                        server['src_ip'] = rad_src_ip
                     elif 'src_ip' in server:
                         syslog.syslog(syslog.LOG_INFO, \
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
