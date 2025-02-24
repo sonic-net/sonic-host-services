@@ -24,6 +24,7 @@ VERSION = "1.0"
 SYSLOG_IDENTIFIER = "determine-reboot-cause"
 
 REBOOT_CAUSE_DIR = "/host/reboot-cause/"
+REBOOT_CAUSE_MODULE_DIR = "/host/reboot-cause/module"
 REBOOT_CAUSE_HISTORY_DIR = "/host/reboot-cause/history/"
 REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR, "reboot-cause.txt")
 PREVIOUS_REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR,  "previous-reboot-cause.json")
@@ -112,8 +113,8 @@ def get_reboot_cause_from_platform():
         chassis  = platform.get_chassis()
         hardware_reboot_cause_major, hardware_reboot_cause_minor = chassis.get_reboot_cause()
         sonic_logger.log_info("Platform api returns reboot cause {}, {}".format(hardware_reboot_cause_major, hardware_reboot_cause_minor))
-    except (ImportError, FileNotFoundError):
-        sonic_logger.log_warning("sonic_platform package not installed. Unable to detect hardware reboot causes.")
+    except (ImportError, FileNotFoundError, NotImplementedError):
+        sonic_logger.log_warning("sonic_platform package not installed or not implemented. Unable to detect hardware reboot causes.")
         hardware_reboot_cause_major, hardware_reboot_cause_minor = REBOOT_CAUSE_NON_HARDWARE, "N/A"
 
     return hardware_reboot_cause_major, hardware_reboot_cause_minor
@@ -136,13 +137,13 @@ def find_hardware_reboot_cause():
 
 
 def get_reboot_cause_dict(previous_reboot_cause, comment, gen_time):
-    """Store the key infomation of device reboot into a dictionary by parsing the string in
+    """Store the key information of device reboot into a dictionary by parsing the string in
     previous_reboot_cause.
 
-    If user issused a command to reboot device, then user, command and time will be
+    If user issued a command to reboot device, then user, command and time will be
     stored into a dictionary.
 
-    If device was rebooted due to the kernel panic, then the string `Kernel Panic` 
+    If device was rebooted due to the kernel panic, then the string `Kernel Panic`
     and time will be stored into a dictionary.
     """
     reboot_cause_dict = {}
@@ -164,7 +165,7 @@ def get_reboot_cause_dict(previous_reboot_cause, comment, gen_time):
         if match is not None:
             reboot_cause_dict['cause'] = "Kernel Panic"
             reboot_cause_dict['time'] = match.group(1)
- 
+
     return reboot_cause_dict
 
 def determine_reboot_cause():
@@ -184,12 +185,12 @@ def determine_reboot_cause():
     software_reboot_cause = find_software_reboot_cause()
 
     # The main decision logic of the reboot cause:
-    # If there is a valid hardware reboot cause indicated by platform API, 
-    #    check the software reboot cause to add additional rebot cause.
+    # If there is a valid hardware reboot cause indicated by platform API,
+    #    check the software reboot cause to add additional reboot cause.
     # If there is a reboot cause indicated by /proc/cmdline, and/or warmreboot/fastreboot/softreboot
     #   the software_reboot_cause which is the content of /hosts/reboot-cause/reboot-cause.txt
     #   will be treated as the additional reboot cause
-    # Elif there is a cmdline reboot cause, 
+    # Elif there is a cmdline reboot cause,
     #   the software_reboot_cause will be treated as the reboot cause if it's not unknown
     #   otherwise, the cmdline_reboot_cause will be treated as the reboot cause if it's not none
     # Else the software_reboot_cause will be treated as the reboot cause
@@ -211,6 +212,27 @@ def determine_reboot_cause():
 
     return previous_reboot_cause, additional_reboot_info
 
+def check_and_create_dpu_dirs():
+    # Get the list of DPUs
+    dpus = device_info.get_dpu_list()
+
+    # Create directories for each DPU and its history
+    for dpu in dpus:
+        dpu_dir = os.path.join(REBOOT_CAUSE_MODULE_DIR, dpu)
+        history_dir = os.path.join(dpu_dir, "history")
+
+        # Create the DPU directory if it doesn't exist
+        if not os.path.exists(dpu_dir):
+            os.makedirs(dpu_dir)
+
+        # Create reboot-cause.txt and write 'First boot' to it
+        reboot_file = os.path.join(dpu_dir, 'reboot-cause.txt')
+        with open(reboot_file, 'w') as f:
+            f.write('First boot\n')
+
+        # Create the history directory if it doesn't exist
+        if not os.path.exists(history_dir):
+            os.makedirs(history_dir)
 
 def main():
     # Configure logger to log all messages INFO level and higher
@@ -244,7 +266,7 @@ def main():
     # Write the previous reboot cause to REBOOT_CAUSE_HISTORY_FILE as a JSON format
     with open(REBOOT_CAUSE_HISTORY_FILE, "w") as reboot_cause_history_file:
         json.dump(reboot_cause_dict, reboot_cause_history_file)
- 
+
     # Remove stale PREVIOUS_REBOOT_CAUSE_FILE if it exists
     if os.path.exists(PREVIOUS_REBOOT_CAUSE_FILE) or os.path.islink(PREVIOUS_REBOOT_CAUSE_FILE):
         os.remove(PREVIOUS_REBOOT_CAUSE_FILE)
@@ -260,6 +282,10 @@ def main():
     # Write a new default reboot cause file for the next reboot
     with open(REBOOT_CAUSE_FILE, "w") as cause_file:
         cause_file.write(REBOOT_CAUSE_UNKNOWN)
+
+    # Create directories for DPUs in SmartSwitch platforms
+    if device_info.is_smartswitch():
+        check_and_create_dpu_dirs()
 
 
 if __name__ == "__main__":
