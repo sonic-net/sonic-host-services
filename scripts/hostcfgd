@@ -342,7 +342,8 @@ class Iptables(object):
 
 
 class AaaCfg(object):
-    def __init__(self):
+    def __init__(self, CfgDb):
+        self.config_db = CfgDb
         self.authentication_default = {
             'login': 'local',
         }
@@ -439,7 +440,7 @@ class AaaCfg(object):
             if new_ipv4_addr != "" and new_ipv6_addr != "":
                 break
             ip_str = it[1].split("/")[0]
-            ip_addr = ipaddress.IPAddress(ip_str)
+            ip_addr = ipaddress.ip_address(ip_str)
             # Pick the first IP address from the table that matches the source interface
             if isinstance(ip_addr, ipaddress.IPv6Address):
                 if new_ipv6_addr != "":
@@ -677,9 +678,9 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf found. Ignoring src_ip".format(addr))
                     # RADIUS: If server.src_intf, then get the corresponding
                     # src_ip based on the server.ip, and set it.
-                    src_ip = self.get_interface_ip(server['src_intf'], addr)
-                    if len(src_ip) > 0:
-                        server['src_ip'] = src_ip
+                    rad_src_ip = self.get_interface_ip(server['src_intf'], addr)
+                    if len(rad_src_ip) > 0:
+                        server['src_ip'] = rad_src_ip
                     elif 'src_ip' in server:
                         syslog.syslog(syslog.LOG_INFO, \
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
@@ -2076,7 +2077,7 @@ class HostConfigDaemon:
         self.is_multi_npu = device_info.is_multi_npu()
 
         # Initialize AAACfg
-        self.aaacfg = AaaCfg()
+        self.aaacfg = AaaCfg(self.config_db)
 
         # Initialize PasswHardening
         self.passwcfg = PasswHardening()
