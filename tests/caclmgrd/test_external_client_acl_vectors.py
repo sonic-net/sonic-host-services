@@ -139,7 +139,7 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
                         "DST_IP": "0.0.0.0/0",
-                        "INC_INTF": "mgmt"
+                        "IN_PORTS": "mgmt"
                     },
                 },
                 "DEVICE_METADATA": {

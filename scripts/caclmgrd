@@ -773,8 +773,8 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                             elif "DST_IP" in rule_props and rule_props["DST_IP"]:
                                 rule_cmd += ["-d", str(rule_props["DST_IP"])]
 
-                            if "INC_INTF" in rule_props and rule_props["INC_INTF"]:
-                                rule_cmd += ["-i", str(rule_props["INC_INTF"])]
+                            if "IN_PORTS" in rule_props and rule_props["IN_PORTS"]:
+                                rule_cmd += ["-i", str(rule_props["IN_PORTS"])]
 
                             # Destination port 0 is reserved/unused port, so, using it to apply the rule to all ports.
                             if dst_port != "0":
