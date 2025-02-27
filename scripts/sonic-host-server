@@ -24,6 +24,8 @@ def register_dbus():
             'reboot': reboot.Reboot('reboot'),
             'showtech': showtech.Showtech('showtech'),
             'systemd': systemd_service.SystemdService('systemd'),
+            'image_service': image_service.ImageService('image_service'),
+            'docker_service': docker_service.DockerService('docker_service'),
             'file_stat': file_service.FileService('file')
             }
     for mod_name, handler_class in mod_dict.items():
