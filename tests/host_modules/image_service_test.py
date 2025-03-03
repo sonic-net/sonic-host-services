@@ -4,6 +4,8 @@ import sys
 import os
 import stat
 import pytest
+import json
+import errno
 from unittest import mock
 from host_modules.image_service import ImageService
 
@@ -370,3 +372,289 @@ class TestImageService(object):
             ), "message should contain 'general error'"
             mock_isfile.assert_called_once_with(file_path)
             mock_open.assert_called_once_with(file_path, "rb")
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_images_success(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `list_images` method successfully lists the current, next, and available SONiC images.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_output = (
+            "Current: current_image\n"
+            "Next: next_image\n"
+            "Available:\n"
+            "image1\n"
+            "image2\n"
+        )
+        mock_check_output.return_value = mock_output.encode()
+
+        # Act
+        rc, images_json = image_service.list_images()
+        images = json.loads(images_json)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert images["current"] == "current_image", "current image does not match"
+        assert images["next"] == "next_image", "next image does not match"
+        assert images["available"] == ["image1", "image2"], "available images do not match"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_images_success_lowercase_output(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `list_images` method successfully lists the current, next, and available SONiC images
+        even if the output from sonic-installer is in lowercase.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_output = (
+            "current: current_image\n"
+            "next: next_image\n"
+            "available:\n"
+            "image1\n"
+            "image2\n"
+        )
+        mock_check_output.return_value = mock_output.encode()
+
+        # Act
+        rc, images_json = image_service.list_images()
+        images = json.loads(images_json)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert images["current"] == "current_image", "current image does not match"
+        assert images["next"] == "next_image", "next image does not match"
+        assert images["available"] == ["image1", "image2"], "available images do not match"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+    @pytest.mark.parametrize(
+        "mock_output, expected_current, expected_next, expected_available",
+        [
+            ("Current: \nNext: next_image\nAvailable:\nimage1\nimage2\n", "", "next_image", ["image1", "image2"]),
+            ("Current: current_image\nNext: \nAvailable:\nimage1\nimage2\n", "current_image", "", ["image1", "image2"]),
+            ("Current: current_image\nNext: next_image\nAvailable:\n", "current_image", "next_image", []),
+        ],
+    )
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_images_success_empty_image_output(
+        self, mock_check_output, MockInit, MockBusName, MockSystemBus, mock_output, expected_current, expected_next, expected_available
+    ):
+        """
+        Test that the `list_images` method successfully lists the current, next, and available SONiC images even if
+        sonic-installer output empty string for the image name.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_check_output.return_value = mock_output.encode()
+
+        # Act
+        rc, images_json = image_service.list_images()
+        images = json.loads(images_json)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert images["current"] == expected_current, "current image does not match"
+        assert images["next"] == expected_next, "next image does not match"
+        assert images["available"] == expected_available, "available images do not match"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+    @pytest.mark.parametrize(
+        "mock_output, expected_current, expected_next, expected_available",
+        [
+            ("Next: next_image\nAvailable:\nimage1\nimage2\n", "", "next_image", ["image1", "image2"]),
+            ("Current: current_image\nAvailable:\nimage1\nimage2\n", "current_image", "", ["image1", "image2"]),
+            ("Current: current_image\nNext: next_image\n", "current_image", "next_image", []),
+            ("Available:\nimage1\nimage2\n", "", "", ["image1", "image2"]),
+            ("Current: current_image\nNext: next_image\nAvailable:\n", "current_image", "next_image", []),
+        ],
+    )
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_images_various_missing_lines(
+        self, mock_check_output, MockInit, MockBusName, MockSystemBus, mock_output, expected_current, expected_next, expected_available
+    ):
+        """
+        Test that the `list_images` method handles various scenarios where the sonic-installer output is missing lines for current, next, or available images.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_check_output.return_value = mock_output.encode()
+
+        # Act
+        rc, images_json = image_service.list_images()
+        images = json.loads(images_json)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert images["current"] == expected_current, "current image does not match"
+        assert images["next"] == expected_next, "next image does not match"
+        assert images["available"] == expected_available, "available images do not match"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_images_success_empty_available_images(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `list_images` method successfully lists the current, next, and available SONiC images.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_output = (
+            "Current: current_image\n"
+            "Next: next_image\n"
+            "Available:\n"
+        )
+        mock_check_output.return_value = mock_output.encode()
+
+        # Act
+        rc, images_json = image_service.list_images()
+        images = json.loads(images_json)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert images["available"] == [], "available images should be empty"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.check_output")
+    def test_list_images_failed(self, mock_check_output, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `list_image` method fails when the subprocess command returns a non-zero exit code.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_check_output.side_effect = subprocess.CalledProcessError(
+            returncode=1, cmd="sonic-installer list", output=b"Error: command failed"
+        )
+
+        # Act
+        rc, msg = image_service.list_images()
+
+        # Assert
+        assert rc != 0, "wrong return value"
+        mock_check_output.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "list"],
+            stderr=subprocess.STDOUT,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_next_boot_success(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_next_boot` method successfully sets the next boot image.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "sonic_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = 0
+        mock_result.stderr = b""
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_next_boot(image)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert image in msg, "message should contain the name of the new image"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-next-boot", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_next_boot_fail_not_exists(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_next_boot` method fails when the image does not exist.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "nonexistent_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = errno.ENOENT
+        mock_result.stderr = b"Error: Image does not exist"
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_next_boot(image)
+
+        # Assert
+        assert rc != 0, "wrong return value"
+        assert (
+            "not" in msg.lower() and ("exist" in msg.lower() or "found" in msg.lower())
+        ), "message should contain 'not' and 'exist' or 'found'"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-next-boot", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_next_boot_fail_not_exists_generic_rc(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_next_boot` method fails when the image does not exist, and sonic-installer returns a generic error code
+        instead of errno.ENOENT.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "nonexistent_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = 1  # returns generic error code
+        mock_result.stderr = b"Error: Image does not exist"
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_next_boot(image)
+
+        # Assert
+        assert rc == errno.ENOENT, "wrong return value"
+        assert (
+            "not" in msg.lower() and ("exist" in msg.lower() or "found" in msg.lower())
+        ), "message should contain 'not' and 'exist' or 'found'"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-next-boot", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+

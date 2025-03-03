@@ -2,6 +2,7 @@ import sys
 import os
 import shutil
 import pytest
+import json
 
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
@@ -33,6 +34,8 @@ sys.path.insert(0, modules_path)
 determine_reboot_cause_path = os.path.join(scripts_path, 'determine-reboot-cause')
 determine_reboot_cause = load_module_from_source('determine_reboot_cause', determine_reboot_cause_path)
 
+# Get the function to create dpu dir
+check_and_create_dpu_dirs = determine_reboot_cause.check_and_create_dpu_dirs
 
 PROC_CMDLINE_CONTENTS = """\
 BOOT_IMAGE=/image-20191130.52/boot/vmlinuz-4.9.0-11-2-amd64 root=/dev/sda4 rw console=tty0 console=ttyS1,9600n8 quiet net.ifnames=0 biosdevname=0 loop=image-20191130.52/fs.squashfs loopfstype=squashfs apparmor=1 security=apparmor varlog_size=4096 usbcore.autosuspend=-1 module_blacklist=gpio_ich SONIC_BOOT_TYPE=warm"""
@@ -73,6 +76,8 @@ EXPECTED_USER_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_14_
 EXPECTED_KERNEL_PANIC_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2021_3_28_13_48_49', 'cause': 'Kernel Panic', 'user': 'N/A', 'time': 'Sun Mar 28 13:45:12 UTC 2021'}
 
 REBOOT_CAUSE_DIR="host/reboot-cause/"
+PLATFORM_JSON_PATH = "/usr/share/sonic/device/test_platform/platform.json"
+REBOOT_CAUSE_MODULE_DIR = "/host/reboot-cause/module"
 
 class TestDetermineRebootCause(object):
     def test_parse_warmfast_reboot_from_proc_cmdline(self):
@@ -124,6 +129,10 @@ class TestDetermineRebootCause(object):
         with mock.patch("determine_reboot_cause.get_reboot_cause_from_platform", return_value=("Powerloss", "under-voltage")):
             result = determine_reboot_cause.find_hardware_reboot_cause()
             assert result == "Powerloss (under-voltage)"
+
+    def test_find_hardware_reboot_cause_not_installed_or_not_implemented(self):
+        result = determine_reboot_cause.find_hardware_reboot_cause()
+        assert result == REBOOT_CAUSE_NON_HARDWARE + " (N/A)"
 
     def test_get_reboot_cause_dict_watchdog(self):
         reboot_cause_dict = determine_reboot_cause.get_reboot_cause_dict(REBOOT_CAUSE_WATCHDOG, "", GEN_TIME_WATCHDOG)
@@ -205,4 +214,36 @@ class TestDetermineRebootCause(object):
         with mock.patch("os.geteuid", return_value=0):
             determine_reboot_cause.main()
             assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
-            assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True   
+            assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True
+
+    def create_mock_platform_json(self, dpus):
+        """Helper function to create a mock platform.json file."""
+        os.makedirs(os.path.dirname(PLATFORM_JSON_PATH), exist_ok=True)
+        with open(PLATFORM_JSON_PATH, "w") as f:
+            json.dump({"DPUS": dpus}, f)
+
+    @mock.patch('os.makedirs')
+    @mock.patch('builtins.open', new_callable=mock.mock_open)
+    @mock.patch('os.path.exists', side_effect=lambda path: False)
+    @mock.patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
+    @mock.patch('sonic_py_common.device_info.get_dpu_list', return_value=["dpu0", "dpu1"])
+    def test_check_and_create_dpu_dirs(
+        self,
+        mock_get_dpu_list,
+        mock_is_smartswitch,
+        mock_exists,
+        mock_open,
+        mock_makedirs
+    ):
+        # Call the function under test
+        check_and_create_dpu_dirs()
+
+        # Assert that directories were created for each DPU
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0"))
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1"))
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "history"))
+        mock_makedirs.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1", "history"))
+
+        # Assert that reboot-cause.txt was created for each DPU
+        mock_open.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "reboot-cause.txt"), 'w')
+        mock_open.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1", "reboot-cause.txt"), 'w')
