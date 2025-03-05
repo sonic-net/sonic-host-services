@@ -1149,15 +1149,16 @@ class KdumpCfg(object):
         Set the KDUMP table in CFG DB to kdump_defaults if not set by the user
         """
         syslog.syslog(syslog.LOG_INFO, "KdumpCfg init ...")
+        data = {}
         kdump_conf = kdump_table.get("config", {})
         for row in self.kdump_defaults:
             value = self.kdump_defaults.get(row)
             if not kdump_conf.get(row):
                 self.config_db.mod_entry("KDUMP", "config", {row: value})
-
-        # Configure num_dumps
-        num_dumps = kdump_conf.get("num_dumps") or self.kdump_defaults["num_dumps"]
-        run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
+            else:
+                value = kdump_conf[row]
+            data[row] = value
+        self.kdump_update("config", data)
 
     def kdump_update(self, key, data):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
