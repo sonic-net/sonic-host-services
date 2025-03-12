@@ -112,9 +112,17 @@ class Reboot(host_service.HostModule):
            For Halt reboot_method, wait for 60 secs timeout. we expect pmon, syncd containers are killed, 
            if Halt reboot is Successful."""
         if reboot_method in REBOOT_METHOD_HALT_BOOT_VALUES:
-            time.sleep(HALT_TIMEOUT)
-            is_pmon_running = self.is_container_running("pmon")
-            if is_pmon_running:
+            # Periodically check every 5 seconds until PMON container is stopped or timeout occurs
+            timeout = HALT_TIMEOUT
+            while timeout > 0:
+                if not self.is_container_running("pmon"):
+                    logger.warning("%s: Pmon conatiner has stopped after Halt reboot execution", MOD_NAME)
+                    return
+                time.sleep(5)
+                timout -= 5
+
+            # Check if PMON container is still running after timeout
+            if self.is_container_running("pmon"):
                 #Halt reboot has failed, as pmon is still running.
                 logger.error("%s: HALT reboot failed: pmon is still running", MOD_NAME)
                 self.populate_reboot_status_flag()
