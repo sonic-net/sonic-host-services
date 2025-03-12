@@ -5,6 +5,9 @@ import sys
 import os
 import pytest
 import datetime
+import logging
+import time
+from itertools import repeat
 
 if sys.version_info >= (3, 3):
     from unittest import mock
@@ -26,6 +29,8 @@ REBOOT_METHOD_UNKNOWN_ENUM = 0
 REBOOT_METHOD_COLD_BOOT_ENUM = 1
 REBOOT_METHOD_HALT_BOOT_ENUM = 3
 REBOOT_METHOD_WARM_BOOT_ENUM = 4
+
+HALT_TIMEOUT = 60
 
 TEST_TIMESTAMP = 1618942253.831912040
 
@@ -147,9 +152,40 @@ class TestReboot(object):
             mock_run_command.return_value = (1, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
             self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
             msg = ("reboot: Reboot failed execution with "
-                    "stdout: ['stdout: execute halt reboot'], stderr: "
-                    "['stderror: execute halt reboot']")
+                   "stdout: ['stdout: execute halt reboot'], stderr: "
+                   "['stderror: execute halt reboot']")
             assert caplog.records[0].message == msg
+            mock_populate_reboot_status_flag.assert_called_once_with()
+
+    def test_execute_reboot_success_halt(self):
+        with (
+            mock.patch("reboot._run_command") as mock_run_command,
+            mock.patch("time.sleep") as mock_sleep,
+            mock.patch("reboot.Reboot.is_container_running", return_value=False) as mock_is_container_running,
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
+        ):
+            mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
+            self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
+            mock_run_command.assert_called_once_with("sudo reboot -p")
+            assert mock_sleep.call_count <= HALT_TIMEOUT // 5
+            mock_is_container_running.assert_called_with("pmon")
+            mock_populate_reboot_status_flag.assert_not_called()
+
+    def test_execute_reboot_fail_halt_pmon_still_running(self, caplog):
+        def mock_is_container_running(container_name):
+            """Simulate PMON running for the full timeout duration."""
+            return True
+
+        with mock.patch("reboot._run_command") as mock_run_command, \
+             mock.patch("time.sleep") as mock_sleep, \
+             mock.patch("reboot.Reboot.is_container_running", side_effect=mock_is_container_running), \
+             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag, \
+             caplog.at_level(logging.ERROR):
+            mock_run_command.return_value = (0, "stdout: execute halt reboot", "stderror: execute halt reboot")
+            self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
+
+            mock_run_command.assert_called_once_with("sudo reboot -p")
+            assert any("HALT reboot failed: PMON is still running" in record.message for record in caplog.records)
             mock_populate_reboot_status_flag.assert_called_once_with()
 
     def test_execute_reboot_fail_issue_reboot_command_warm(self, caplog):
