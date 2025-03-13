@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import docker
+import psutil
 from host_modules import host_service
 from utils.run_cmd import _run_command
 
@@ -80,6 +81,17 @@ class Reboot(host_service.HostModule):
             logger.error("%s: Error checking container status for %s: [%s]", MOD_NAME, container_name, str(e))
             return False
 
+    def is_halt_command_running(self):
+        """Check if the halt command is running"""
+        try:
+            for process in psutil.process_iter(['pid', 'name']):
+                if "reboot" in process.info['name']:
+                    return True
+            return False
+        except Exception as e:
+            logger.error("%s: Error checking if halt command is running: [%s]", MOD_NAME, str(e))
+            return False
+
     def execute_reboot(self, reboot_method):
         """Executes reboot command based on the reboot_method initialised 
            and reset reboot_status_flag when reboot fails."""
@@ -116,19 +128,19 @@ class Reboot(host_service.HostModule):
             timeout = HALT_TIMEOUT
             start_time = time.monotonic()
             while time.monotonic() - start_time < timeout:
-                if not self.is_container_running("pmon"):
-                    logger.warning("%s: PMON conatiner has stopped after Halt reboot execution", MOD_NAME)
+                if not self.is_halt_command_running() and not self.is_container_running("pmon"):
+                    logger.info("%s: Halting the services is completed on the device", MOD_NAME)
                     return
                 time.sleep(5)
 
             # Check if PMON container is still running after timeout
-            if self.is_container_running("pmon"):
+            if self.is_halt_command_running() or self.is_container_running("pmon"):
                 #Halt reboot has failed, as pmon is still running.
-                logger.error("%s: HALT reboot failed: PMON is still running", MOD_NAME)
+                logger.error("%s: HALT reboot failed: Services are still running", MOD_NAME)
                 self.populate_reboot_status_flag()
                 return
             else:
-                logger.warning("%s: PMON conatiner has stopped after Halt reboot execution", MOD_NAME)
+                logger.info("%s: Halting the services is completed on the device", MOD_NAME)
 
         else:
             time.sleep(REBOOT_TIMEOUT)

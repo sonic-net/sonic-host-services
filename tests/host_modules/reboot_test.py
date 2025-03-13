@@ -111,6 +111,63 @@ class TestReboot(object):
         assert result[0] == 1
         assert result[1] == "Delayed reboot is not supported"
 
+    def test_is_container_running_success(self):
+        with mock.patch("docker.from_env") as mock_docker:
+            mock_client = mock.Mock()
+            mock_docker.return_value = mock_client
+            mock_container = mock.Mock()
+            mock_container.name = "pmon"
+            mock_container.status = "running"
+            mock_client.containers.list.return_value = [mock_container]
+
+            result = self.reboot_module.is_container_running("pmon")
+            assert result is True
+            mock_client.containers.list.assert_called_once_with(filters={"name": "pmon"})
+
+    def test_is_container_running_failure(self):
+        with mock.patch("docker.from_env") as mock_docker:
+            mock_client = mock.Mock()
+            mock_docker.return_value = mock_client
+            mock_client.containers.list.return_value = []
+
+            result = self.reboot_module.is_container_running("pmon")
+            assert result is False
+            mock_client.containers.list.assert_called_once_with(filters={"name": "pmon"})
+
+    def test_is_container_running_exception(self, caplog):
+        with mock.patch("docker.from_env", side_effect=Exception("Docker error")) as mock_docker, \
+             caplog.at_level(logging.ERROR):
+            result = self.reboot_module.is_container_running("pmon")
+            assert result is False
+            assert any("Error checking container status for pmon: [Docker error]" in record.message for record in caplog.records)
+
+    def test_is_halt_command_running_success(self):
+        with mock.patch("psutil.process_iter") as mock_process_iter:
+            mock_process = mock.Mock()
+            mock_process.info = {'pid': 1234, 'name': 'reboot'}
+            mock_process_iter.return_value = [mock_process]
+
+            result = self.reboot_module.is_halt_command_running()
+            assert result is True
+            mock_process_iter.assert_called_once_with(['pid', 'name'])
+
+    def test_is_halt_command_running_failure(self):
+        with mock.patch("psutil.process_iter") as mock_process_iter:
+            mock_process = mock.Mock()
+            mock_process.info = {'pid': 1234, 'name': 'other_process'}
+            mock_process_iter.return_value = [mock_process]
+
+            result = self.reboot_module.is_halt_command_running()
+            assert result is False
+            mock_process_iter.assert_called_once_with(['pid', 'name'])
+
+    def test_is_halt_command_running_exception(self, caplog):
+        with mock.patch("psutil.process_iter", side_effect=Exception("psutil error")) as mock_process_iter, \
+             caplog.at_level(logging.ERROR):
+            result = self.reboot_module.is_halt_command_running()
+            assert result is False
+            assert any("Error checking if halt command is running: [psutil error]" in record.message for record in caplog.records)
+
     def test_execute_reboot_success(self):
         with (
             mock.patch("reboot._run_command") as mock_run_command,
@@ -161,31 +218,32 @@ class TestReboot(object):
         with (
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.sleep") as mock_sleep,
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False) as mock_is_halt_command_running,
             mock.patch("reboot.Reboot.is_container_running", return_value=False) as mock_is_container_running,
             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
         ):
             mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
             self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
             mock_run_command.assert_called_once_with("sudo reboot -p")
-            assert mock_sleep.call_count <= HALT_TIMEOUT // 5
+            mock_is_halt_command_running.assert_called()
             mock_is_container_running.assert_called_with("pmon")
             mock_populate_reboot_status_flag.assert_not_called()
 
-    def test_execute_reboot_fail_halt_pmon_still_running(self, caplog):
-        def mock_is_container_running(container_name):
-            """Simulate PMON running for the full timeout duration."""
-            return True
-
-        with mock.patch("reboot._run_command") as mock_run_command, \
-             mock.patch("time.sleep") as mock_sleep, \
-             mock.patch("reboot.Reboot.is_container_running", side_effect=mock_is_container_running), \
-             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag, \
-             caplog.at_level(logging.ERROR):
-            mock_run_command.return_value = (0, "stdout: execute halt reboot", "stderror: execute halt reboot")
+    def test_execute_reboot_fail_halt_timeout(self, caplog):
+        with (
+            mock.patch("reboot._run_command") as mock_run_command,
+            mock.patch("time.sleep") as mock_sleep,
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=True) as mock_is_halt_command_running,
+            mock.patch("reboot.Reboot.is_container_running", return_value=True) as mock_is_container_running,
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
+            caplog.at_level(logging.ERROR),
+        ):
+            mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
             self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
-
             mock_run_command.assert_called_once_with("sudo reboot -p")
-            assert any("HALT reboot failed: PMON is still running" in record.message for record in caplog.records)
+            mock_sleep.assert_called_with(5)
+            mock_is_halt_command_running.assert_called()
+            assert any("HALT reboot failed: Services are still running" in record.message for record in caplog.records)
             mock_populate_reboot_status_flag.assert_called_once_with()
 
     def test_execute_reboot_fail_issue_reboot_command_warm(self, caplog):
