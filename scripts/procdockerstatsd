@@ -68,16 +68,16 @@ class ProcDockerStats(daemon_base.DaemonBase):
             process_data_list.append(process_data)
         return process_data_list
 
-   def format_mount_cmd_output(self, cmdout):
-       lines = cmdout.splitlines()
-       keys = re.split(" +", lines[0])
-       mount_data = dict()
-       mount_data_list = []
-       for line in lines[1:]:
-           values = line.split()
-           mount_data_list.append(values)
-       formatted_dict = self.create_mount_dict(mount_data_list)
-       return formatted_dict
+    def format_mount_cmd_output(self, cmdout):
+        lines = cmdout.splitlines()
+        keys = re.split(" +", lines[0])
+        mount_data = dict()
+        mount_data_list = []
+        for line in lines[1:]:
+            values = line.split()
+            mount_data_list.append(values)
+        formatted_dict = self.create_mount_dict(mount_data_list)
+        return formatted_dict
 
     def convert_to_bytes(self, value):
         UNITS_B = 'B'
