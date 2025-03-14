@@ -125,6 +125,7 @@ class Reboot(host_service.HostModule):
            if Halt reboot is Successful."""
         if reboot_method in REBOOT_METHOD_HALT_BOOT_VALUES:
             # Periodically check every 5 seconds until PMON container is stopped or timeout occurs
+            logger.info("%s: Waiting until services are halted or timeout occurs", MOD_NAME)
             timeout = HALT_TIMEOUT
             start_time = time.monotonic()
             while time.monotonic() - start_time < timeout:
