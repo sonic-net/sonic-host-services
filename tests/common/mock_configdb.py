@@ -38,6 +38,10 @@ class MockConfigDb(object):
     def get(self, db_id, key, field):
         return MockConfigDb.CONFIG_DB[key][field]
 
+    def get_keys(self, pattern):
+        return [(key.split("|")[0], key.split("|")[1]) \
+                for key in MockConfigDb.CONFIG_DB[pattern]]
+
     def get_entry(self, key, field):
         return MockConfigDb.CONFIG_DB[key][field]
 
