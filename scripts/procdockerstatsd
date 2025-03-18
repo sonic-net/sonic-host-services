@@ -298,8 +298,8 @@ class ProcDockerStats(daemon_base.DaemonBase):
             # Data need to be updated every 2 mins. hence adding delay of 120 seconds
             time.sleep(120)
 
-        # Adding a counter to ensure mount points only updates every 10 mins, instead of 2 mins
-        counter += 1
+            # Adding a counter to ensure mount points only updates every 10 mins, instead of 2 mins
+            counter += 1
 
         self.log_info("Exiting ...")
 
