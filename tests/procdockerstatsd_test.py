@@ -137,3 +137,15 @@ class TestProcDockerStatsDaemon(object):
         pdstatsd.update_fipsstats_command()
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enforced') == "False"
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enabled') == "True"
+
+    def test_create_mount_dict(self):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        mountpoint_dict = ["/host", "ext-4", "10000", "1000", "9000", "", "/dev"]
+        mountpoint_dict_return = pdstatsd.create_mount_dict(mountpoint_dict)
+        key = 'MOUNT_POINTS|{}.'.format(mountpoint_dict[6])
+
+        assert mountpoint_dict_return[key]['Filesystem'] == "ext-4"
+        assert mountpoint_dict_return[key]['Type'] == "10000"
+        assert mountpoint_dict_return[key]['1K-blocks'] == "1000"
+        assert mountpoint_dict_return[key]['Used'] == "9000"
+        assert mountpoint_dict_return[key]['Available'] == "/dev"
