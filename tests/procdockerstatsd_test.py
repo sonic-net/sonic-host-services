@@ -144,7 +144,7 @@ class TestProcDockerStatsDaemon(object):
         mountpoint_dict_return = pdstatsd.create_mount_dict(mountpoint_dict)
         key = 'MOUNT_POINTS|{}.'.format(mountpoint_dict[0][6])
 
-        assert mountpoint_dict_return[key]['Filesystem'] == "/host"
+        assert mountpoint_dict_return[key]['Filesystem'] == "udev"
         assert mountpoint_dict_return[key]['Type'] == "ext-4"
         assert mountpoint_dict_return[key]['1K-blocks'] == "10000"
         assert mountpoint_dict_return[key]['Used'] == "1000"
