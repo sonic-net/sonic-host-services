@@ -142,7 +142,7 @@ class TestProcDockerStatsDaemon(object):
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
         mountpoint_dict = [["udev", "ext-4", "10000", "1000", "9000", "", "/dev"]]
         mountpoint_dict_return = pdstatsd.create_mount_dict(mountpoint_dict)
-        key = 'MOUNT_POINTS|{}.'.format(mountpoint_dict[6])
+        key = 'MOUNT_POINTS|{}.'.format(mountpoint_dict[0][6])
 
         assert mountpoint_dict_return[key]['Filesystem'] == "/host"
         assert mountpoint_dict_return[key]['Type'] == "ext-4"
