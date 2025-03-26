@@ -774,6 +774,14 @@ class ControlPlaneAclManager(logger.Logger):
                                 if rule_props["PACKET_ACTION"] == "ACCEPT":
                                     ipv4_src_ip_set.add(rule_props["SRC_IP"])
 
+                            if "DST_IPV6" in rule_props and rule_props["DST_IPV6"]:
+                                rule_cmd += ["-d", str(rule_props["DST_IPV6"])]
+                            elif "DST_IP" in rule_props and rule_props["DST_IP"]:
+                                rule_cmd += ["-d", str(rule_props["DST_IP"])]
+
+                            if "IN_PORTS" in rule_props and rule_props["IN_PORTS"]:
+                                rule_cmd += ["-i", str(rule_props["IN_PORTS"])]
+
                             # Destination port 0 is reserved/unused port, so, using it to apply the rule to all ports.
                             if dst_port != "0":
                                 rule_cmd += ["--dport", str(dst_port)]
