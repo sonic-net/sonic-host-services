@@ -138,14 +138,37 @@ class TestProcDockerStatsDaemon(object):
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enforced') == "False"
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enabled') == "True"
 
-    def test_create_mount_dict(self):
+    def test_create_mount_dict_pass(self):
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
         mountpoint_dict = [["udev", "ext-4", "10000", "1000", "9000", "", "/dev"]]
         mountpoint_dict_return = pdstatsd.create_mount_dict(mountpoint_dict)
-        key = 'MOUNT_POINTS|{}.'.format(mountpoint_dict[0][6])
+        key = 'MOUNT_POINTS|{}'.format(mountpoint_dict[0][6])
 
         assert mountpoint_dict_return[key]['Filesystem'] == "udev"
         assert mountpoint_dict_return[key]['Type'] == "ext-4"
         assert mountpoint_dict_return[key]['1K-blocks'] == "10000"
         assert mountpoint_dict_return[key]['Used'] == "1000"
         assert mountpoint_dict_return[key]['Available'] == "9000"
+
+    def test_create_mount_dict_empty(self):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        mountpoint_dict = [["udev", "tmpfs", "10000", "1000", "9000", "", "/dev2"]]
+        mountpoint_dict_return = pdstatsd.create_mount_dict(mountpoint_dict)
+
+        assert len(mountpoint_dict_return) == 0
+
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mount_dict", return_value={"MOUNT_POINTS|/dev": {"Filesystem": "udev", "Type": "ext-4", "1K-blocks": "10000", "Used": "1000", "Available": "9000"}}) 
+    def test_update_mountpointstats_command(self, mock_create_mount_dict):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        ret = pdstatsd.update_mountpointstats_command()
+        mock_create_mount_dict.assert_called_once()
+        assert ret == True 
+
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mount_dict", return_value={"MOUNT_POINTS|/dev": {"Filesystem": "udev", "Type": "ext-4", "1K-blocks": "10000", "Used": "1000", "Available": "9000"}}) 
+    def test_format_mount_cmd_output(self, mock_create_mount_dict):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+
+        in_lines = "Filesystem  Type  1K-blocks  Used  Available  Use%  Mounted on\nudev  ext-4  10000  1000  9000  0%  /dev"
+        ret = pdstatsd.format_mount_cmd_output(in_lines)
+        mock_create_mount_dict.assert_called_once()
+        assert ret
