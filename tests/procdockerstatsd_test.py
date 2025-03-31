@@ -164,6 +164,22 @@ class TestProcDockerStatsDaemon(object):
         mock_create_mount_dict.assert_called_once()
         assert ret == True 
 
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mount_dict", return_value={})
+    def test_update_mountpointstats_command_empty(self, mock_create_mount_dict):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        ret = pdstatsd.update_mountpointstats_command()
+        mock_create_mount_dict.assert_called_once()
+        assert not ret
+
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mount_dict", return_value={})
+    @patch.object(procdockerstatsd.ProcDockerStats, "run_command", return_value={})
+    def test_update_mountpointstats_command_fail(self, mock_create_mount_dict, mock_run_command):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        ret = pdstatsd.update_mountpointstats_command()
+
+        mock_create_mount_dict.assert_called_once()
+        assert ret == False
+
     @patch.object(procdockerstatsd.ProcDockerStats, "create_mount_dict", return_value={"MOUNT_POINTS|/dev": {"Filesystem": "udev", "Type": "ext-4", "1K-blocks": "10000", "Used": "1000", "Available": "9000"}}) 
     def test_format_mount_cmd_output(self, mock_create_mount_dict):
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
