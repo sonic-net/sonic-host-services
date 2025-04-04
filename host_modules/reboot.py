@@ -84,8 +84,8 @@ class Reboot(host_service.HostModule):
     def is_halt_command_running(self):
         """Check if the halt command is running"""
         try:
-            for process in psutil.process_iter(['pid', 'name']):
-                if "reboot" in process.info['name']:
+            for process in psutil.process_iter(['cmdline']):
+                if process.info['cmdline'] and "reboot" in process.info['cmdline'] and "-p" in process.info['cmdline']:
                     return True
             return False
         except Exception as e:
