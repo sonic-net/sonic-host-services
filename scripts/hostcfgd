@@ -1132,7 +1132,14 @@ class KdumpCfg(object):
     def init_kdump_default_from_cmdline(self):
         # Update the kdump_defaults with value found /proc/cmdline if
         # key "crashkernel=" is pre-defined in and /proc/cmdline (grup.conf)
-        cmdline = "/proc/cmdline"
+        if os.environ.get("HOSTCFGD_UNIT_TESTING") == "2":
+            modules_path = os.path.join(os.path.dirname(__file__), "..")
+            tests_path = os.path.join(modules_path, "tests")
+            cmdline = os.path.join(tests_path, "proc","cmdline")
+            print(cmdline)
+        else:
+            cmdline = "/proc/cmdline"
+            
         expected_str = ' crashkernel='
         if os.path.exists(cmdline):
             lines= [line.rstrip('\n') for line in open(cmdline)]
@@ -1167,7 +1174,7 @@ class KdumpCfg(object):
 
     def kdump_update(self, key, data):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
-        if self.init_from_cmdline_first_time:
+        if self.init_from_cmdline_first_time and os.environ.get("HOSTCFGD_UNIT_TESTING") != "2":
             self.init_from_cmdline_first_time = False
             syslog.syslog(syslog.LOG_INFO, "Kdump is enabaled by default with grup config. Skip the first update")
             return
