@@ -174,7 +174,7 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
-    def test_kdump_event_proc_cmdline(self):
+    def test_kdump_event_with_proc_cmdline(self):
         os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
@@ -191,9 +191,11 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['sonic-kdump-config', '--enable']),
-                        call(['sonic-kdump-config', '--num_dumps', '3']),
-                        call(['sonic-kdump-config', '--memory', '8G-:1G'])]
+            expected = [
+                call(['sonic-kdump-config', '--enable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '8G-:1G'])
+            ]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
         os.environ["HOSTCFGD_UNIT_TESTING"] = ""
         
