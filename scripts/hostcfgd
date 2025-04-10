@@ -56,14 +56,21 @@ LINUX_DEFAULT_PASS_MAX_DAYS = 99999
 LINUX_DEFAULT_PASS_WARN_AGE = 7
 
 # Ssh min-max values
+SSH_INT_VALUES=[ "authentication_retries", "login_timeout", "inactivity_timeout", "max_sessions" ]
 SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1,
                 "inactivity_timeout": 0, "max_sessions": 0}
 SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600,
                 "ports": 65535, "inactivity_timeout": 35000,
                 "max_sessions": 100}
 SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries",
-                  "login_timeout": "LoginGraceTime", "ports": "Port",
-                  "inactivity_timeout": "ClientAliveInterval"}
+                  "login_timeout": "LoginGraceTime",
+                  "ports": "Port",
+                  "inactivity_timeout": "ClientAliveInterval",
+                  "permit_root_login": "PermitRootLogin",
+                  "password_authentication": "PasswordAuthentication",
+                  "ciphers": "Ciphers",
+                  "kex_algorithms": "KexAlgorithms",
+                  "macs": "MACs"}
 
 ACCOUNT_NAME = 0 # index of account name
 AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>-?\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
@@ -1108,13 +1115,26 @@ class SshServer(object):
                 if not self.handle_ports_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
                     return
-            elif int(value) < SSH_MIN_VALUES.get(key, 65535) or SSH_MAX_VALUES.get(key, -1) < int(value):
+                continue
+
+            if key in SSH_INT_VALUES and (int(value) < SSH_MIN_VALUES.get(key, 65535) or
+                                            SSH_MAX_VALUES.get(key, -1) < int(value)):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format(key, value))
-            elif key in SSH_CONFIG_NAMES:
+
+            if SSH_CONFIG_NAMES.get(key) is not None:
                 # search replace configuration - if not in config file - append
                 if key == "inactivity_timeout":
                     # translate min to sec.
                     value = int(value) * 60
+                elif key in [ "permit_root_login", "password_authentication" ]:
+                    # translate boolean to yes/no
+                    if isinstance(value, str):
+                        value = "no" if value.lower() in [ "false" ] else "yes"
+                    else:
+                        value = "yes" if bool(value) else "no"
+                elif key in [ "ciphers", "kex_algorithms", "macs" ]:
+                    # convert list to comma-delimited list
+                    value = ",".join(value)
                 kv_str = "{} {}".format(SSH_CONFIG_NAMES[key], str(value)) # name +' '+ value format
                 modify_single_file_inplace(SSH_CONFG_TMP,['-E', "/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
                  kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}"])
