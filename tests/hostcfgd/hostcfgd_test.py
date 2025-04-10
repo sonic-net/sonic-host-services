@@ -242,6 +242,34 @@ class TestHostcfgdDaemon(TestCase):
 
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
+    def test_kdump_event_with_proc_cmdline(self):
+        os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        daemon = hostcfgd.HostConfigDaemon()
+        default=daemon.kdumpCfg.kdump_defaults
+        daemon.kdumpCfg.load(default)
+        daemon.register_callbacks()
+        MockConfigDb.event_queue = [('KDUMP', 'config')]
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            expected = [
+                call(['sonic-kdump-config', '--enable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '8G-:1G']),
+                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
+                call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+        os.environ["HOSTCFGD_UNIT_TESTING"] = ""
+        
     def test_devicemeta_event(self):
         """
         Test handling DEVICE_METADATA events.
