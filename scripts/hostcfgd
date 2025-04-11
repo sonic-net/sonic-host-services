@@ -2126,6 +2126,7 @@ class HostConfigDaemon:
         syslog_cfg = init_data.get(swsscommon.CFG_SYSLOG_CONFIG_TABLE_NAME, {})
         syslog_srv = init_data.get(swsscommon.CFG_SYSLOG_SERVER_TABLE_NAME, {})
         dns = init_data.get('DNS_NAMESERVER', {})
+        dns_options = init_data.get('DNS_OPTIONS', {})
         fips_cfg = init_data.get('FIPS', {})
         ntp_global = init_data.get(swsscommon.CFG_NTP_GLOBAL_TABLE_NAME)
         ntp_servers = init_data.get(swsscommon.CFG_NTP_SERVER_TABLE_NAME)
@@ -2143,7 +2144,7 @@ class HostConfigDaemon:
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
         self.rsyslogcfg.load(syslog_cfg, syslog_srv)
-        self.dnscfg.load(dns)
+        self.dnscfg.load(dns, dns_options)
         self.fipscfg.load(fips_cfg)
         self.ntpcfg.load(ntp_global, ntp_servers, ntp_keys)
         self.serialconscfg.load(serial_console)
@@ -2301,6 +2302,10 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'DNS nameserver handler...')
         self.dnscfg.dns_update(key, data)
 
+    def dns_options_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'DNS options handler...')
+        self.dnscfg.dns_update(key, data)
+
     def fips_config_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'FIPS table handler...')
         data = self.config_db.get_table("FIPS")
@@ -2374,6 +2379,7 @@ class HostConfigDaemon:
                                  make_callback(self.rsyslog_server_handler))
 
         self.config_db.subscribe('DNS_NAMESERVER', make_callback(self.dns_nameserver_handler))
+        self.config_db.subscribe('DNS_OPTIONS', make_callback(self.dns_options_handler))
 
         # Handle FIPS changes
         self.config_db.subscribe('FIPS', make_callback(self.fips_config_handler))
