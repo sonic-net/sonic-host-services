@@ -152,6 +152,81 @@ class TestHostcfgdSSHServer(TestCase):
         self.check_config(test_name, test_data, "modify_ports")
 
     @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
+    def test_hostcfgd_sshs_password_authentication(self, test_name, test_data):
+        """
+            Test SSHS hostcfd daemon initialization
+
+            Args:
+                test_name(str): test name
+                test_data(dict): test data which contains initial Config Db tables, and expected results
+
+            Returns:
+                None
+        """
+
+        self.check_config(test_name, test_data, "modify_password_authentication")
+
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
+    def test_hostcfgd_sshs_permit_root_login(self, test_name, test_data):
+        """
+            Test SSHS hostcfd daemon initialization
+
+            Args:
+                test_name(str): test name
+                test_data(dict): test data which contains initial Config Db tables, and expected results
+
+            Returns:
+                None
+        """
+
+        self.check_config(test_name, test_data, "modify_permit_root_login")
+
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
+    def test_hostcfgd_sshs_ciphers(self, test_name, test_data):
+        """
+            Test SSHS hostcfd daemon initialization
+
+            Args:
+                test_name(str): test name
+                test_data(dict): test data which contains initial Config Db tables, and expected results
+
+            Returns:
+                None
+        """
+
+        self.check_config(test_name, test_data, "modify_ciphers")
+
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
+    def test_hostcfgd_sshs_kex_algorithms(self, test_name, test_data):
+        """
+            Test SSHS hostcfd daemon initialization
+
+            Args:
+                test_name(str): test name
+                test_data(dict): test data which contains initial Config Db tables, and expected results
+
+            Returns:
+                None
+        """
+
+        self.check_config(test_name, test_data, "modify_kex_algorithms")
+
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
+    def test_hostcfgd_sshs_macs(self, test_name, test_data):
+        """
+            Test SSHS hostcfd daemon initialization
+
+            Args:
+                test_name(str): test name
+                test_data(dict): test data which contains initial Config Db tables, and expected results
+
+            Returns:
+                None
+        """
+
+        self.check_config(test_name, test_data, "modify_macs")
+
+    @parameterized.expand(HOSTCFGD_TEST_SSH_SERVER_VECTOR)
     def test_hostcfgd_sshs_all(self, test_name, test_data):
         """
             Test SSHS hostcfd daemon initialization
