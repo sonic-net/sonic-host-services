@@ -19,7 +19,6 @@ try:
     import time
     import traceback
     import signal
-    from queue import Empty, Queue
     from sonic_py_common.general import getstatusoutput_noshell_pipe
     from sonic_py_common import daemon_base, device_info, multi_asic
     from swsscommon import swsscommon
@@ -46,7 +45,7 @@ def _ip_prefix_in_key(key):
 
 
 def get_ipv4_networks_from_interface_table(table, intf_name):
-    
+
     addresses = {}
     if table:
         for key, _ in table.items():
@@ -132,12 +131,13 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         self.update_thread = {}
         self.lock = {}
         self.num_changes = {}
+        self.thread_exceptions = {}
 
         # Initialize update-thread-specific data for default namespace
         self.update_thread[DEFAULT_NAMESPACE] = None
         self.lock[DEFAULT_NAMESPACE] = threading.Lock()
         self.num_changes[DEFAULT_NAMESPACE] = 0
-        self.exception_queue = Queue()
+        self.thread_exceptions[DEFAULT_NAMESPACE] = None
 
         if device_info.is_multi_npu():
             swsscommon.SonicDBConfig.load_sonic_global_db_config()
@@ -176,7 +176,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
             self.lock[back_asic_namespace] = threading.Lock()
             self.num_changes[back_asic_namespace] = 0
             self.update_docker_mgmt_ip_acl(back_asic_namespace)
-       
+
         for fabric_asic_namespace in namespaces['fabric_ns']:
             self.update_thread[fabric_asic_namespace] = None
             self.lock[fabric_asic_namespace] = threading.Lock()
@@ -387,9 +387,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                 self.log_warning("Vlan IP not available from DualToR active-active config")
                 return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
-            fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+            fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                     ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
-            
+
             if loopback_address is not None:
                 mux_table = config_db_connector.get_table(self.CONFIG_MUX_CABLE)
                 mux_table_keys = mux_table.keys()
@@ -401,7 +401,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         for ip_network, vlan_address in vlan_networks.items():
                             # Only add the vlan source IP specific soc IP address to IPtables
                             if soc_ipv4_addr in ip_network:
-                                fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                                fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                          ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '--destination', str(soc_ipv4_addr), '--source', str(vlan_address), '-j', 'SNAT', '--to-source', str(loopback_address)])
 
         return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
@@ -410,7 +410,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
     def generate_fwd_traffic_from_namespace_to_host_commands(self, namespace, acl_source_ip_map):
         """
         The below SNAT and DNAT rules are added in asic namespace in multi-ASIC platforms. It helps to forward request coming
-        in through the front panel interfaces created/present in the asic namespace for the servie running in linux host network namespace. 
+        in through the front panel interfaces created/present in the asic namespace for the servie running in linux host network namespace.
         The external IP addresses are NATed to the internal docker IP addresses for the Host service to respond.
         """
 
@@ -762,7 +762,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                             rule_cmd += ["-A", "INPUT"]
                             if ip_protocol != "any":
                                 rule_cmd += ["-p", str(ip_protocol)]
- 
+
                             if "SRC_IPV6" in rule_props and rule_props["SRC_IPV6"]:
                                 rule_cmd += ["-s", str(rule_props["SRC_IPV6"])]
                                 if rule_props["PACKET_ACTION"] == "ACCEPT":
@@ -835,9 +835,9 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
 
     def update_control_plane_nat_acls(self, namespace, service_to_source_ip_map, config_db_connector):
         """
-        Convenience wrapper for multi-asic platforms 
+        Convenience wrapper for multi-asic platforms
         which programs the NAT rules for redirecting the
-        traffic coming on the front panel interface map to namespace 
+        traffic coming on the front panel interface map to namespace
         to the host.
         """
         # Add iptables commands to allow front panel traffic
@@ -895,10 +895,16 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                         self.update_thread[namespace] = None
                         return
         except Exception as e:
-            self.log_error("Exception occured at {} thread due to {}".format(threading.current_thread().name, repr(e)))
+            # Log the exception with traceback
+            self.log_error("Exception occured at {} thread for namespace '{}' due to {}".format(threading.current_thread().name, namespace, repr(e)))
             exc_type, exc_value, exc_traceback = sys.exc_info()
             full_traceback = traceback.format_exception(exc_type, exc_value, exc_traceback)
-            self.exception_queue.put((namespace, repr(e), full_traceback))  # Add the exception to the queue
+            # Store the exception so the main thread can detect it
+            self.thread_exceptions[namespace] = (repr(e), full_traceback)
+
+            # Clean up
+            self.num_changes[namespace] = 0
+            self.update_thread[namespace] = None
         finally:
             new_config_db_connector.close("CONFIG_DB")
 
@@ -981,7 +987,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # Initlaize Global config that loads all database*.json
         if device_info.is_multi_npu():
             swsscommon.SonicDBConfig.initializeGlobalConfig()
-        
+
         # Create the Select object
         sel = swsscommon.Select()
 
@@ -1044,18 +1050,17 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
         # Loop on select to see if any event happen on state db or config db of any namespace
         while True:
             # Periodically check for exceptions from child threads
-            try:
-                namespace, error, exc_info = self.exception_queue.get_nowait()  # Non-blocking
-                self.log_error("Exception in namespace '{}': {}".format(namespace, error))
-                self.log_error("Full traceback from child thread:")
-                for tb_line in exc_info:
-                    for tb_line_split in tb_line.splitlines():
-                        self.log_error(tb_line_split)
-                self.log_error("Detect exception in Child thread {} , generating SIGKILL for main thread".format(self.update_thread[namespace].name))
-                os.kill(os.getpid(), signal.SIGKILL)
-            except Empty:
-                # No exceptions in the queue
-                pass
+            for namespace, exception_info in self.thread_exceptions.items():
+                if exception_info:
+                    error, exc_info = exception_info
+                    self.log_error("Main thread detected exception in child thread for namespace '{}': {}".format(namespace, error))
+                    self.log_error("Full traceback from child thread:")
+                    for tb_line in exc_info:
+                        for tb_line_split in tb_line.splitlines():
+                            self.log_error(tb_line_split)
+                    self.log_error("Detect exception in Child thread, generating SIGKILL for main thread")
+                    os.kill(os.getpid(), signal.SIGKILL)
+
             (state, selectableObj) = sel.select(SELECT_TIMEOUT_MS)
             # Continue if select is timeout or selectable object is not return
             if state != swsscommon.Select.OBJECT:
@@ -1148,7 +1153,7 @@ class ControlPlaneAclManager(daemon_base.DaemonBase):
                     if not self.update_thread[namespace]:
                         self.log_info("Spawning ACL update thread for namepsace '{}' ...".format(namespace))
                         self.update_thread[namespace] = threading.Thread(target=self.check_and_update_control_plane_acls,
-                                                                        args=(namespace, self.num_changes[namespace]))
+                                                                         args=(namespace, self.num_changes[namespace]))
                         self.update_thread[namespace].start()
 
 # ============================= Functions =============================

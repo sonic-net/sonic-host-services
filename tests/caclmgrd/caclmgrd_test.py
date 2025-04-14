@@ -7,8 +7,7 @@ from tests.common.mock_configdb import MockConfigDb
 from sonic_py_common.general import load_module_from_source
 import threading
 import sys
-from queue import Queue
-import queue
+
 
 DBCONFIG_PATH = "/var/run/redis/sonic-db/database_config.json"
 
@@ -61,10 +60,13 @@ class TestCaclmgrd(TestCase):
         manager.update_thread = {"": None}
         manager.num_changes[""] = 1
         manager.check_and_update_control_plane_acls("", 0)
-        self.assertFalse(manager.exception_queue.empty())
-        exc_info = manager.exception_queue.get()
-        self.assertEqual(exc_info[0], "")
-        self.assertIn("Test exception", exc_info[1])
+        # Assert that thread_exceptions exists and contains the exception
+        self.assertTrue(manager.thread_exceptions)
+        self.assertIn("", manager.thread_exceptions)
+        error, exc_info = manager.thread_exceptions.get("")
+        self.assertEqual(error, "Exception('Test exception')")
+        self.assertIn("Traceback (most recent call last):", exc_info[0])
+        self.assertIn("Test exception", exc_info[-1])
 
 
     @patch("caclmgrd.swsscommon")
@@ -88,7 +90,7 @@ class TestCaclmgrd(TestCase):
         mock_kill.return_value = None
         mock_state_db_connector = MagicMock()
         mock_config_db_connector = MagicMock()
-        mock_swsscommon.DBConnector.side_effect = [mock_state_db_connector, mock_config_db_connector, mock_state_db_connector] 
+        mock_swsscommon.DBConnector.side_effect = [mock_state_db_connector, mock_config_db_connector, mock_state_db_connector]
         mock_swsscommon.Select.OBJECT = 1
         mock_swsscommon.Select.return_value.select.return_value = (
             mock_swsscommon.Select.OBJECT,
@@ -262,11 +264,11 @@ class TestCaclmgrd(TestCase):
         manager.update_dhcp_acl_for_mark_change = MagicMock()
         manager.update_dhcp_acl = MagicMock()
         manager.setup_dhcp_chain = MagicMock()
-        manager.exception_queue = Queue()
+        manager.thread_exceptions = {}
         namespace = ""
         error = "Simulated exception"
         exc_info = ["Traceback (most recent call last):", "  File \"mock.py\", line 1, in <module>", "    raise Exception('Simulated exception')"]
-        manager.exception_queue.put((namespace, error, exc_info))
+        manager.thread_exceptions[namespace] = (error, exc_info)
         try:
             manager.run()
         except StopIteration as e:

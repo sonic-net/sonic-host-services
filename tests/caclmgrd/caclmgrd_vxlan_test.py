@@ -10,7 +10,7 @@ from pyfakefs.fake_filesystem_unittest import patchfs
 from .test_vxlan_vectors import CACLMGRD_VXLAN_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
 from unittest.mock import MagicMock, patch
-from queue import Queue
+
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
@@ -59,7 +59,7 @@ class TestCaclmgrdVxlan(TestCase):
                 caclmgrd_daemon.allow_vxlan_port('', data)
                 mocked_subprocess.Popen.reset_mock()
                 caclmgrd_daemon.num_changes[''] = 1
-                caclmgrd_daemon.exception_queue = Queue()
+                caclmgrd_daemon.thread_exceptions = {}
                 caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
 
