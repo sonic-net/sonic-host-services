@@ -11,7 +11,6 @@ from .test_scale_vectors import CACLMGRD_SCALE_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
 from unittest.mock import MagicMock, patch
 
-
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
 class TestCaclmgrdScale(TestCase):

@@ -11,7 +11,6 @@ from .test_vxlan_vectors import CACLMGRD_VXLAN_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
 from unittest.mock import MagicMock, patch
 
-
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
 class TestCaclmgrdVxlan(TestCase):

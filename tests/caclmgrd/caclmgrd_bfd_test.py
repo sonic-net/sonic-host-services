@@ -7,7 +7,6 @@ from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 from pyfakefs.fake_filesystem_unittest import patchfs
 
-
 from .test_bfd_vectors import CACLMGRD_BFD_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
 from unittest.mock import MagicMock, patch
