@@ -24,7 +24,7 @@ class TestSystemdService(object):
             assert "/usr/bin/systemctl" in call_args
             assert ret == test_ret, "Return value is wrong"
             assert msg == "", "Return message is wrong"
-   
+
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
@@ -34,7 +34,7 @@ class TestSystemdService(object):
         ret, msg = systemd_service_stub.restart_service(service)
         assert ret == 1
         assert "Dbus does not support" in msg
-        
+
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
@@ -44,7 +44,7 @@ class TestSystemdService(object):
         ret, msg = systemd_service_stub.restart_service(service)
         assert ret == 1
         assert "restart_service called with no service specified" in msg
-    
+
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
