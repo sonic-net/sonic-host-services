@@ -9,6 +9,8 @@ import syslog
 import signal
 import re
 import jinja2
+import psutil
+import time
 import json
 from shutil import copy2
 from datetime import datetime
@@ -124,7 +126,7 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
         check_output_pipe(cmd0, cmd1, cmd2)
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+            syslog.syslog(syslog.LOG_WARNING, "{} - failed: return code - {}, output:\n{}"
                   .format(err.cmd, err.returncode, err.output))
         if raise_exception:
             raise
@@ -341,7 +343,8 @@ class Iptables(object):
 
 
 class AaaCfg(object):
-    def __init__(self):
+    def __init__(self, CfgDb):
+        self.config_db = CfgDb
         self.authentication_default = {
             'login': 'local',
         }
@@ -416,7 +419,7 @@ class AaaCfg(object):
             self.accounting = data
         if modify_conf:
             self.modify_conf_file()
-        
+
         if key == 'authentication':
             # Enable/Disable LDAP service (nslcd) according LDAP configuration.
             handle_nslcd_service(self.is_ldap_config_complete())
@@ -438,7 +441,7 @@ class AaaCfg(object):
             if new_ipv4_addr != "" and new_ipv6_addr != "":
                 break
             ip_str = it[1].split("/")[0]
-            ip_addr = ipaddress.IPAddress(ip_str)
+            ip_addr = ipaddress.ip_address(ip_str)
             # Pick the first IP address from the table that matches the source interface
             if isinstance(ip_addr, ipaddress.IPv6Address):
                 if new_ipv6_addr != "":
@@ -676,9 +679,9 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf found. Ignoring src_ip".format(addr))
                     # RADIUS: If server.src_intf, then get the corresponding
                     # src_ip based on the server.ip, and set it.
-                    src_ip = self.get_interface_ip(server['src_intf'], addr)
-                    if len(src_ip) > 0:
-                        server['src_ip'] = src_ip
+                    rad_src_ip = self.get_interface_ip(server['src_intf'], addr)
+                    if len(rad_src_ip) > 0:
+                        server['src_ip'] = rad_src_ip
                     elif 'src_ip' in server:
                         syslog.syslog(syslog.LOG_INFO, \
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
@@ -715,7 +718,7 @@ class AaaCfg(object):
         os.chmod(PAM_AUTH_CONF + ".tmp", 0o644)
         os.rename(PAM_AUTH_CONF + ".tmp", PAM_AUTH_CONF)
 
-        if os.path.isfile(PAM_SESSION_CONF): 
+        if os.path.isfile(PAM_SESSION_CONF):
             # Support to add home directory to LDAP AAA users
             if 'ldap' in authentication['login']:
                 if not is_match(MKHOME_DIR_LIB_REG, PAM_SESSION_CONF):
@@ -1018,7 +1021,6 @@ class PasswHardening(object):
             if account_number >= uid_min and account_number <= uid_max:
                 normal_accounts.append(account_spl[ACCOUNT_NAME])
 
-        normal_accounts.append('root') # root is also a candidate to be age modify.
         return normal_accounts
 
     def modify_passw_conf_file(self):
@@ -1135,20 +1137,30 @@ class SshServer(object):
 class KdumpCfg(object):
     def __init__(self, CfgDb):
         self.config_db = CfgDb
-        self.kdump_defaults = { "enabled" : "false",
-                                "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
-                                "num_dumps": "3" }
+        self.kdump_defaults = {
+            "enabled": "false",
+            "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
+            "num_dumps": "3",
+            "remote": "false",            # New feature: remote, default is "false"
+            "ssh_string": "user@localhost",   # New feature: SSH key, default value
+            "ssh_path": "/a/b/c"          # New feature: SSH path, default value
+        }
 
     def load(self, kdump_table):
         """
         Set the KDUMP table in CFG DB to kdump_defaults if not set by the user
         """
         syslog.syslog(syslog.LOG_INFO, "KdumpCfg init ...")
+        data = {}
         kdump_conf = kdump_table.get("config", {})
         for row in self.kdump_defaults:
             value = self.kdump_defaults.get(row)
             if not kdump_conf.get(row):
-                self.config_db.mod_entry("KDUMP", "config", {row : value})
+                self.config_db.mod_entry("KDUMP", "config", {row: value})
+            else:
+                value = kdump_conf[row]
+            data[row] = value
+        self.kdump_update("config", data)
 
     def kdump_update(self, key, data):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
@@ -1178,15 +1190,29 @@ class KdumpCfg(object):
                 num_dumps = data.get("num_dumps")
             run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
 
+            # Remote option
+            remote = self.kdump_defaults["remote"]
+            if data.get("remote") is not None:
+                remote = data.get("remote")
+            run_cmd(["sonic-kdump-config", "--remote", remote])
+
+            ssh_string = self.kdump_defaults["ssh_string"]
+            if data.get("ssh_string") is not None:
+                    run_cmd(["sonic-kdump-config", "--ssh_string", ssh_string])
+            # ssh_path
+            ssh_path= self.kdump_defaults["ssh_path"]
+            if data.get("ssh_path") is not None:
+                    run_cmd(["sonic-kdump-config", "--ssh_path", ssh_path])
+
 class NtpCfg(object):
     """
     NtpCfg Config Daemon
-    1) ntp-config.service handles the configuration updates and then starts ntp.service
-    2) Both of them start after all the feature services start
+    1) chrony.service's ExecStartPre handles the configuration updates
+    2) They start after all the feature services start
     3) Purpose of this daemon is to propagate runtime config changes in
        NTP, NTP_SERVER, NTP_KEY, and LOOPBACK_INTERFACE
     """
-    NTP_CONF_RESTART = ['systemctl', 'restart', 'ntp-config']
+    CHRONY_RESTART = ['systemctl', 'restart', 'chrony']
 
     def __init__(self):
         self.cache = {}
@@ -1196,7 +1222,7 @@ class NtpCfg(object):
         """Load initial NTP configuration
 
         Force load cache on init. NTP config should be taken at boot-time by
-        ntp and ntp-config services. So loading whole config here.
+        chrony services. So loading whole config here.
 
         Args:
             ntp_global_conf:    Global configuration
@@ -1210,7 +1236,7 @@ class NtpCfg(object):
             ntp_global_conf = {}
 
         # Force load cache on init.
-        # NTP config should be taken at boot-time by ntp and ntp-config
+        # NTP config should be taken at boot-time by chrony
         # services.
         self.cache = {
             'global': ntp_global_conf.get('global', {}),
@@ -1229,19 +1255,19 @@ class NtpCfg(object):
         if intf_name not in ifs:
             return
 
-        # Just restart ntp config
+        # Just restart chrony
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
-                                          'ntp-config service')
+                                          'chrony service')
             return
 
     def ntp_global_update(self, key: str, data: dict):
         """Update NTP global configuration
 
         The table holds NTP global configuration. It has some configs that
-        require reloading only but some other require restarting ntp daemon.
+        require reloading only but some other require restarting chrony daemon.
         Handle each of them accordingly.
 
         Args:
@@ -1261,18 +1287,12 @@ class NtpCfg(object):
         new_dhcp = data.get('dhcp')
         new_vrf = data.get('vrf')
 
-        restart_ntpd = False
-        if new_dhcp != old_dhcp or new_vrf != old_vrf:
-            restart_ntpd = True
-
         # Restarting the service
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
-            if restart_ntpd:
-                run_cmd(['systemctl', 'restart', 'ntp'], True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
-            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart ntp '
-                                          'services')
+            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart chrony'
+                                          'service')
             return
 
         # Update the Local Cache
@@ -1281,7 +1301,7 @@ class NtpCfg(object):
     def ntp_srv_key_update(self, ntp_servers: dict, ntp_keys: dict):
         """Update NTP server/key configuration
 
-        The tables holds only NTP servers config and/or NTP authentication keys 
+        The tables holds only NTP servers config and/or NTP authentication keys
         config, so any change to those tables should cause NTP config reload.
         It does not make sense to handle each of the separately. NTP config
         reload takes whole configuration, so once got to this handler - cache
@@ -1310,10 +1330,10 @@ class NtpCfg(object):
 
         # Restarting the service
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart '
-                                          'ntp-config service')
+                                          'chrony service')
             return
 
         # Updating the cache
@@ -1336,12 +1356,12 @@ class PamLimitsCfg(object):
     def update_config_file(self):
         device_metadata = self.config_db.get_table('DEVICE_METADATA')
         ssh_server_policies = {}
-        try: 
+        try:
             ssh_server_policies = self.config_db.get_table('SSH_SERVER')
         except KeyError:
             """Dont throw except in case we don`t have SSH_SERVER config."""
             pass
-	
+
         if "localhost" not in device_metadata and "POLICIES" not in ssh_server_policies:
             return
 
@@ -1505,7 +1525,6 @@ class MgmtIfaceCfg(object):
                                            f'config {cfg} for {iface}')
             try:
                 run_cmd(['sudo', 'systemctl', 'restart', 'interfaces-config'], True, True)
-                run_cmd(['sudo', 'systemctl', 'restart', 'ntp-config'], True, True)
             except subprocess.CalledProcessError:
                 syslog.syslog(syslog.LOG_ERR, f'Failed to restart management '
                               'interface services')
@@ -1528,13 +1547,16 @@ class MgmtIfaceCfg(object):
 
         # Restart related vrfs services
         try:
-            run_cmd(['service', 'ntp', 'stop'], True, True)
+            run_cmd(['systemctl', 'stop', 'chrony'], True, True)
             run_cmd(['systemctl', 'restart', 'interfaces-config'], True, True)
-            run_cmd(['service', 'ntp', 'start'], True, True)
+            run_cmd(['systemctl', 'start', 'chrony'], True, True)
         except subprocess.CalledProcessError:
             syslog.syslog(syslog.LOG_ERR, f'Failed to restart management vrf '
                           'services')
             return
+
+        # Update cache
+        self.mgmt_vrf_enabled = enabled
 
         # Remove mgmt if route
         if enabled == 'true':
@@ -1554,15 +1576,11 @@ class MgmtIfaceCfg(object):
                 cmd2 = ['wc', '-l']
                 run_cmd_pipe(cmd0, cmd1, cmd2, True, True)
             except subprocess.CalledProcessError:
-                syslog.syslog(syslog.LOG_ERR, 'MgmtIfaceCfg: Could not delete '
+                syslog.syslog(syslog.LOG_WARNING, 'MgmtIfaceCfg: Could not delete '
                                               'eth0 route')
                 return
 
             run_cmd(["ip", "-4", "route", "del", "default", "dev", "eth0", "metric", "202"], False)
-
-        # Update cache
-        self.mgmt_vrf_enabled = enabled
-
 
 class RSyslogCfg(object):
     """Remote syslog config daemon
@@ -1717,6 +1735,170 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
+class MemoryStatisticsCfg:
+    """
+    The MemoryStatisticsCfg class manages the configuration updates for the MemoryStatisticsDaemon, a daemon
+    responsible for collecting memory usage statistics. It monitors configuration changes in ConfigDB and, based
+    on those updates, performs actions such as restarting, shutting down, or reloading the daemon.
+    Attributes:
+        VALID_KEYS (list): List of valid configuration keys ("enabled", "sampling_interval", "retention_period").
+        PID_FILE_PATH (str): Path where the daemon’s process ID (PID) is stored.
+        DAEMON_EXEC_PATH (str): Path to the executable file of the memory statistics daemon.
+        DAEMON_PROCESS_NAME (str): Name of the daemon process used for validation.
+    """
+    VALID_KEYS = ["enabled", "sampling_interval", "retention_period"]
+    PID_FILE_PATH = '/var/run/memory_statistics_daemon.pid'
+    DAEMON_EXEC_PATH = '/usr/bin/memory_statistics_service.py'
+    DAEMON_PROCESS_NAME = 'memory_statistics_service.py'
+
+    def __init__(self, config_db):
+        """
+        Initialize MemoryStatisticsCfg with a configuration database.
+        Parameters:
+            config_db (object): Instance of the configuration database (ConfigDB) used to retrieve and
+                                apply configuration changes.
+        """
+        self.cache = {
+            "enabled": "false",
+            "sampling_interval": "5",
+            "retention_period": "15"
+        }
+        self.config_db = config_db
+
+    def load(self, memory_statistics_config: dict):
+        """
+        Load the initial memory statistics configuration from a provided dictionary.
+        Parameters:
+            memory_statistics_config (dict): Dictionary containing the initial configuration values.
+        """
+        syslog.syslog(syslog.LOG_INFO, 'MemoryStatisticsCfg: Loading initial configuration')
+
+        if not memory_statistics_config:
+            memory_statistics_config = {}
+
+        for key, value in memory_statistics_config.items():
+            if key not in self.VALID_KEYS:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid key '{key}' in initial configuration.")
+                continue
+            self.memory_statistics_update(key, value)
+
+    def memory_statistics_update(self, key, data):
+        """
+        Handles updates for each configuration setting, validates the data, and updates the cache if the value changes.
+        Parameters:
+            key (str): Configuration key, e.g., "enabled", "sampling_interval", or "retention_period".
+            data (str): The new value for the configuration key.
+        """
+        if key not in self.VALID_KEYS:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid key '{key}' received.")
+            return
+
+        data = str(data)
+
+        if key in ["retention_period", "sampling_interval"] and (not data.isdigit() or int(data) <= 0):
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid value '{data}' for key '{key}'. Must be a positive integer.")
+            return
+
+        if data != self.cache.get(key):
+            syslog.syslog(syslog.LOG_INFO, f"MemoryStatisticsCfg: Detected change in '{key}' to '{data}'")
+            try:
+                self.apply_setting(key, data)
+                self.cache[key] = data
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f'MemoryStatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
+
+    def apply_setting(self, key, data):
+        """
+        Apply the setting based on the key. If "enabled" is set to true or false, start or stop the daemon.
+        For other keys, reload the daemon configuration.
+        Parameters:
+            key (str): The specific configuration setting being updated.
+            data (str): The value for the setting.
+        """
+        try:
+            if key == "enabled":
+                if data.lower() == "true":
+                    self.restart_memory_statistics()
+                else:
+                    self.shutdown_memory_statistics()
+            else:
+                self.reload_memory_statistics()
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} in apply_setting() for key '{key}': {e}")
+
+    def restart_memory_statistics(self):
+        """Restarts the memory statistics daemon by first shutting it down (if running) and then starting it again."""
+        try:
+            self.shutdown_memory_statistics()
+            time.sleep(1)
+            syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Starting MemoryStatisticsDaemon")
+            subprocess.Popen([self.DAEMON_EXEC_PATH])
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to start MemoryStatisticsDaemon: {e}")
+
+    def reload_memory_statistics(self):
+        """Sends a SIGHUP signal to the daemon to reload its configuration without restarting."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGHUP)
+                syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Sent SIGHUP to reload daemon configuration")
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: {e}")
+
+    def shutdown_memory_statistics(self):
+        """Sends a SIGTERM signal to gracefully shut down the daemon."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
+                self.wait_for_shutdown(pid)
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: {e}")
+
+    def wait_for_shutdown(self, pid, timeout=10):
+        """
+        Waits for the daemon process to terminate gracefully within a given timeout.
+        Parameters:
+            pid (int): Process ID of the daemon to shut down.
+            timeout (int): Maximum wait time in seconds for the process to terminate (default is 10 seconds).
+        """
+        try:
+            process = psutil.Process(pid)
+            process.wait(timeout=timeout)
+            syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: MemoryStatisticsDaemon stopped gracefully")
+        except psutil.TimeoutExpired:
+            syslog.syslog(syslog.LOG_WARNING, f"MemoryStatisticsCfg: Timed out while waiting for daemon (PID {pid}) to shut down.")
+        except psutil.NoSuchProcess:
+            syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: MemoryStatisticsDaemon process not found.")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Exception in wait_for_shutdown(): {e}")
+
+    def get_memory_statistics_pid(self):
+        """
+        Retrieves the PID of the currently running daemon from the PID file, verifying it matches the expected daemon.
+        Returns:
+            int or None: Returns the PID if the process is running and matches the expected daemon; otherwise, returns None.
+        """
+        try:
+            with open(self.PID_FILE_PATH, 'r') as pid_file:
+                pid = int(pid_file.read().strip())
+            if psutil.pid_exists(pid):
+                process = psutil.Process(pid)
+                if process.name() == self.DAEMON_PROCESS_NAME:
+                    return pid
+                else:
+                    syslog.syslog(syslog.LOG_WARNING, f"MemoryStatisticsCfg: PID {pid} does not correspond to {self.DAEMON_PROCESS_NAME}.")
+            else:
+                syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: PID does not exist.")
+        except FileNotFoundError:
+            syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: PID file not found. Daemon might not be running.")
+        except ValueError:
+            syslog.syslog(syslog.LOG_ERR, "MemoryStatisticsCfg: PID file contents invalid.")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} failed to retrieve MemoryStatisticsDaemon PID: {e}")
+        return None
 
 class SerialConsoleCfg:
 
@@ -1749,6 +1931,119 @@ class SerialConsoleCfg:
 
         return
 
+class BannerCfg(object):
+    """
+    Banner Config Daemon
+    Handles changes in BANNER_MESSAGE table.
+    1) Handle change of feature state
+    2) Handle change of login message
+    3) Handle change of MOTD message
+    4) Handle change of logout message
+    """
+
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, banner_messages_config: dict):
+        """Banner messages configuration
+
+        Force load banner configuration. Login messages should be taken at boot-time by
+        SSH daemon.
+
+        Args:
+            banners_message_config: Configured banner messages.
+        """
+
+        syslog.syslog(syslog.LOG_INFO, 'BannerCfg: load initial')
+
+        if not banner_messages_config:
+            banner_messages_config = {}
+
+        # Force load banner messages.
+        # Login messages show be taken at boot-time by SSH daemon.
+        state_data = banner_messages_config.get("state", {})
+        login_data = banner_messages_config.get("login", {})
+        motd_data = banner_messages_config.get("motd", {})
+        logout_data = banner_messages_config.get("logout", {})
+
+        self.banner_message("state", state_data)
+        self.banner_message("login", login_data)
+        self.banner_message("motd", motd_data)
+        self.banner_message("logout", logout_data)
+
+    def banner_message(self, key, data):
+        """
+        Apply banner message handler.
+
+        Args:
+            cache: Cache to compare/save data.
+            db: DB instance.
+            table: DB table that was changed.
+            key: DB table's key that was triggered change.
+            data: Read table data.
+        """
+        # Handling state, login/logout and MOTD messages. Data should be a dict
+        if type(data) != dict:
+            # Nothing to handle
+            return
+
+        update_required = False
+        # Check with cache
+        for k,v in data.items():
+            if v != self.cache.get(k):
+                update_required = True
+                break
+
+        if update_required == False:
+            return
+
+        try:
+            run_cmd(["systemctl", "restart", "banner-config"], True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, 'BannerCfg: Failed to restart '
+                          'banner-config service')
+            return
+
+        # Update cache
+        for k,v in data.items():
+            self.cache[k] = v
+
+class LoggingCfg(object):
+    """Logging Config Daemon
+
+    Handles changes in LOGGING table.
+    1) Handle change of debug/syslog log files config
+    """
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, logging_cfg={}):
+        # Get initial logging file configuration
+        self.cache = logging_cfg
+        syslog.syslog(syslog.LOG_DEBUG, f'Initial logging config: {self.cache}')
+
+    def update_logging_cfg(self, key, data):
+        """Apply logging configuration
+
+        The daemon restarts logrotate-config which will regenerate logrotate
+        config files.
+        Args:
+            key:    DB table's key that was triggered change (basically it is a
+                    config file)
+            data:   File's config data
+        """
+        syslog.syslog(syslog.LOG_DEBUG, 'LoggingCfg: logging files cfg update')
+        if self.cache.get(key) != data:
+            syslog.syslog(syslog.LOG_INFO,
+                          f'Set logging file {key} config: {data}')
+            try:
+                run_cmd(['systemctl', 'restart', 'logrotate-config'], True, True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to update {key} message')
+                return
+
+        # Update cache
+        self.cache[key] = data
 
 class HostConfigDaemon:
     def __init__(self):
@@ -1765,6 +2060,9 @@ class HostConfigDaemon:
         # Initialize KDump Config and set the config to default if nothing is provided
         self.kdumpCfg = KdumpCfg(self.config_db)
 
+        # Initialize MemoryStatisticsCfg
+        self.memorystatisticscfg = MemoryStatisticsCfg(self.config_db)
+
         # Initialize IpTables
         self.iptables = Iptables()
 
@@ -1774,7 +2072,7 @@ class HostConfigDaemon:
         self.is_multi_npu = device_info.is_multi_npu()
 
         # Initialize AAACfg
-        self.aaacfg = AaaCfg()
+        self.aaacfg = AaaCfg(self.config_db)
 
         # Initialize PasswHardening
         self.passwcfg = PasswHardening()
@@ -1804,6 +2102,12 @@ class HostConfigDaemon:
         # Initialize SerialConsoleCfg
         self.serialconscfg = SerialConsoleCfg()
 
+        # Initialize BannerCfg
+        self.bannermsgcfg = BannerCfg()
+
+        # Initialize LoggingCfg
+        self.loggingcfg = LoggingCfg()
+
     def load(self, init_data):
         aaa = init_data['AAA']
         tacacs_global = init_data['TACPLUS']
@@ -1816,6 +2120,7 @@ class HostConfigDaemon:
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
+        memory_statistics = init_data["MEMORY_STATISTICS"]
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
@@ -1827,12 +2132,15 @@ class HostConfigDaemon:
         ntp_servers = init_data.get(swsscommon.CFG_NTP_SERVER_TABLE_NAME)
         ntp_keys = init_data.get(swsscommon.CFG_NTP_KEY_TABLE_NAME)
         serial_console = init_data.get('SERIAL_CONSOLE', {})
+        banner_messages = init_data.get(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME)
+        logging = init_data.get(swsscommon.CFG_LOGGING_TABLE_NAME, {})
 
         self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
         self.sshscfg.load(ssh_server)
+        self.memorystatisticscfg.load(memory_statistics)
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
         self.rsyslogcfg.load(syslog_cfg, syslog_srv)
@@ -1840,6 +2148,9 @@ class HostConfigDaemon:
         self.fipscfg.load(fips_cfg)
         self.ntpcfg.load(ntp_global, ntp_servers, ntp_keys)
         self.serialconscfg.load(serial_console)
+        self.bannermsgcfg.load(banner_messages)
+        self.loggingcfg.load(logging)
+
         self.pamLimitsCfg.update_config_file()
 
         # Update AAA with the hostname
@@ -1960,6 +2271,13 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
 
+    def memory_statistics_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'Memory_Statistics handler...')
+        try:
+            self.memorystatisticscfg.memory_statistics_update(key, data)
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Error while handling memory statistics update: {e}")
+
     def device_metadata_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
@@ -1993,6 +2311,14 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'SERIAL_CONSOLE table handler...')
         self.serialconscfg.update_serial_console_cfg(key, data)
 
+    def banner_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'BANNER_MESSAGE table handler...')
+        self.bannermsgcfg.banner_message(key, data)
+
+    def logging_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'LOGGING table handler...')
+        self.loggingcfg.update_logging_cfg(key, data)
+
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
         # flag
@@ -2022,6 +2348,7 @@ class HostConfigDaemon:
         self.config_db.subscribe('LDAP_SERVER', make_callback(self.ldap_server_handler))
         self.config_db.subscribe('PASSW_HARDENING', make_callback(self.passwh_handler))
         self.config_db.subscribe('SSH_SERVER', make_callback(self.ssh_handler))
+        self.config_db.subscribe('MEMORY_STATISTICS',make_callback(self.memory_statistics_handler))
         # Handle SERIAL_CONSOLE
         self.config_db.subscribe('SERIAL_CONSOLE', make_callback(self.serial_console_config_handler))
         # Handle IPTables configuration
@@ -2060,6 +2387,14 @@ class HostConfigDaemon:
         self.config_db.subscribe(swsscommon.CFG_NTP_KEY_TABLE_NAME,
                                  make_callback(self.ntp_srv_key_handler))
 
+        # Handle BANNER_MESSAGE changes
+        self.config_db.subscribe(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME,
+                                 make_callback(self.banner_handler))
+
+        # Handle LOGGING changes
+        self.config_db.subscribe(swsscommon.CFG_LOGGING_TABLE_NAME,
+                                 make_callback(self.logging_handler))
+
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
         self.wait_till_system_init_done()
@@ -2079,4 +2414,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

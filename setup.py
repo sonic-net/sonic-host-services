@@ -30,7 +30,8 @@ setup(
     maintainer = 'Joe LeVeque',
     maintainer_email = 'jolevequ@microsoft.com',
     packages = [
-        'host_modules'
+        'host_modules',
+	'utils',
     ],
     scripts = [
         'scripts/caclmgrd',
@@ -47,7 +48,7 @@ setup(
         'dbus-python',
         'systemd-python',
         'Jinja2>=2.10',
-        'PyGObject',
+        'PyGObject==3.50.0',
         'pycairo==1.26.1',
         'psutil'
     ] + sonic_dependencies,
