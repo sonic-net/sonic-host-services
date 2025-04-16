@@ -1145,13 +1145,13 @@ class KdumpCfg(object):
             "ssh_path": "/a/b/c"          # New feature: SSH path, default value
         }
 
-        # check if kdump is enabled by default with grup config
+        # check if kdump is enabled by default with grub config
         self.update_config_from_proc_cmdline = False
         self.init_kdump_config_from_cmdline()
 
     def init_kdump_config_from_cmdline(self):
         # Update the kdump_defaults with value found /proc/cmdline if
-        # key "crashkernel=" is pre-defined in and /proc/cmdline (grup.conf)
+        # key "crashkernel=" is pre-defined in and /proc/cmdline (grub.conf)
         if os.environ.get("HOSTCFGD_UNIT_TESTING") == "2":
             modules_path = os.path.join(os.path.dirname(__file__), "..")
             tests_path = os.path.join(modules_path, "tests")
@@ -1199,7 +1199,7 @@ class KdumpCfg(object):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
         if self.update_config_from_proc_cmdline and os.environ.get("HOSTCFGD_UNIT_TESTING") != "2":
             self.update_config_from_proc_cmdline = False
-            syslog.syslog(syslog.LOG_INFO, "Kdump is enabaled by default with /proc/cmdline. Skip the first update")
+            syslog.syslog(syslog.LOG_INFO, "Kdump is enabled by default with /proc/cmdline. Skip the first update")
             return
         if key == "config":
             # Admin mode
