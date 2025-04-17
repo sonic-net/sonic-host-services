@@ -60,31 +60,26 @@ class TestFileService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("paramiko.SSHClient")
-    def test_download_success(self, MockSSHClient, MockInit, MockBusName, MockSystemBus):
-        """
-        Test the download method for a successful file download.
-        """
-        # Mock the SSH client and its methods
+    def test_download_sftp_success(self, MockSSHClient, MockInit, MockBusName, MockSystemBus):
         mock_ssh = mock.Mock()
         MockSSHClient.return_value = mock_ssh
         mock_sftp = mock.Mock()
         mock_ssh.open_sftp.return_value = mock_sftp
 
-        # Create a FileService instance
         file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="example.com",
+            username="user",
+            password="password",
+            remote_path="/remote/path/file.txt",
+            local_path="/local/path/file.txt",
+            protocol="SFTP"
+        )
 
-        # Call the download method
-        hostname = "example.com"
-        username = "user"
-        password = "password"
-        remote_path = "/remote/path/file.txt"
-        local_path = "/local/path/file.txt"
-        ret = file_service_stub.download(hostname, username, password, remote_path, local_path)
-
-        # Assertions
         assert ret == 0
-        mock_ssh.connect.assert_called_once_with(hostname, username=username, password=password)
-        mock_sftp.get.assert_called_once_with(remote_path, local_path)
+        assert msg == ""
+        mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
+        mock_sftp.get.assert_called_once_with("/remote/path/file.txt", "/local/path/file.txt")
         mock_sftp.close.assert_called_once()
         mock_ssh.close.assert_called_once()
 
@@ -92,29 +87,138 @@ class TestFileService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("paramiko.SSHClient")
-    def test_download_failure(self, MockSSHClient, MockInit, MockBusName, MockSystemBus):
-        """
-        Test the download method for a failure during file download.
-        """
-        # Mock the SSH client and its methods
+    def test_download_sftp_failure(self, MockSSHClient, MockInit, MockBusName, MockSystemBus):
         mock_ssh = mock.Mock()
         MockSSHClient.return_value = mock_ssh
         mock_ssh.open_sftp.side_effect = Exception("SFTP error")
 
-        # Create a FileService instance
         file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="example.com",
+            username="user",
+            password="password",
+            remote_path="/remote/path/file.txt",
+            local_path="/local/path/file.txt",
+            protocol="SFTP"
+        )
 
-        # Call the download method
-        hostname = "example.com"
-        username = "user"
-        password = "password"
-        remote_path = "/remote/path/file.txt"
-        local_path = "/local/path/file.txt"
-        ret, msg = file_service_stub.download(hostname, username, password, remote_path, local_path)
-
-        # Assertions
         assert ret == 1
-        assert "error" in msg
-        assert "SFTP error" in msg["error"]
-        mock_ssh.connect.assert_called_once_with(hostname, username=username, password=password)
+        assert "SFTP error" in msg
+        mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
         mock_ssh.close.assert_called_once()
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("requests.get")
+    def test_download_http_success(self, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+        mock_response = mock.Mock()
+        mock_response.iter_content.return_value = [b"chunk1", b"chunk2"]
+        mock_response.raise_for_status.return_value = None
+        MockRequestsGet.return_value = mock_response
+
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        with mock.patch("builtins.open", mock.mock_open()) as mock_file:
+            ret, msg = file_service_stub.download(
+                hostname="example.com",
+                username="user",
+                password="password",
+                remote_path="http://example.com/file.txt",
+                local_path="/local/path/file.txt",
+                protocol="HTTP"
+            )
+
+            assert ret == 0
+            assert msg == ""
+            MockRequestsGet.assert_called_once_with(
+                "http://example.com/file.txt", auth=("user", "password"), stream=True
+            )
+            mock_file().write.assert_any_call(b"chunk1")
+            mock_file().write.assert_any_call(b"chunk2")
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("requests.get")
+    def test_download_http_failure(self, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+        MockRequestsGet.side_effect = Exception("HTTP error")
+
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="example.com",
+            username="user",
+            password="password",
+            remote_path="http://example.com/file.txt",
+            local_path="/local/path/file.txt",
+            protocol="HTTP"
+        )
+
+        assert ret == 1
+        assert "HTTP error" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("paramiko.SSHClient")
+    def test_download_scp_success(self, MockSSHClient, MockInit, MockBusName, MockSystemBus):
+        mock_ssh = mock.Mock()
+        MockSSHClient.return_value = mock_ssh
+        mock_scp = mock.Mock()
+        with mock.patch("scp.SCPClient", return_value=mock_scp) as MockSCPClient:
+            file_service_stub = file_service.FileService(file_service.MOD_NAME)
+            ret, msg = file_service_stub.download(
+                hostname="example.com",
+                username="user",
+                password="password",
+                remote_path="/remote/path/file.txt",
+                local_path="/local/path/file.txt",
+                protocol="SCP"
+            )
+
+            assert ret == 0
+            assert msg == ""
+            mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
+            MockSCPClient.assert_called_once_with(mock_ssh.get_transport())
+            mock_scp.get.assert_called_once_with("/remote/path/file.txt", "/local/path/file.txt")
+            mock_scp.close.assert_called_once()
+            mock_ssh.close.assert_called_once()
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("paramiko.SSHClient")
+    def test_download_scp_failure(self, MockSSHClient, MockInit, MockBusName, MockSystemBus):
+        mock_ssh = mock.Mock()
+        MockSSHClient.return_value = mock_ssh
+        with mock.patch("scp.SCPClient", side_effect=Exception("SCP error")):
+            file_service_stub = file_service.FileService(file_service.MOD_NAME)
+            ret, msg = file_service_stub.download(
+                hostname="example.com",
+                username="user",
+                password="password",
+                remote_path="/remote/path/file.txt",
+                local_path="/local/path/file.txt",
+                protocol="SCP"
+            )
+
+            assert ret == 1
+            assert "SCP error" in msg
+            mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
+            mock_ssh.close.assert_called_once()
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_download_unsupported_protocol(self, MockInit, MockBusName, MockSystemBus):
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="example.com",
+            username="user",
+            password="password",
+            remote_path="/remote/path/file.txt",
+            local_path="/local/path/file.txt",
+            protocol="FTP"  # Unsupported protocol
+        )
+
+        assert ret == 1
+        assert "Unsupported protocol" in msg

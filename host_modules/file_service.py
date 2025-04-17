@@ -1,8 +1,9 @@
 """File stat handler"""
 
 from host_modules import host_service
-import subprocess
 import paramiko
+import requests
+import scp
 
 MOD_NAME = 'file'
 EXIT_FAILURE = 1
@@ -45,36 +46,64 @@ class FileService(host_service.HostModule):
         except Exception as e:
             return EXIT_FAILURE, {'error': str(e)}
 
-    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='sssss', out_signature='i')
-    def download(self, hostname, username, password, remote_path, local_path):
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='ssssss', out_signature='is')
+    def download(self, hostname, username, password, remote_path, local_path, protocol):
         """
-        Download a file from a remote server using SSH.
+        Download a file from a remote server using various protocols.
 
         Args:
             hostname (str): The hostname or IP address of the remote server.
-            username (str): The username for SSH authentication.
-            password (str): The password for SSH authentication.
-            remote_path (str): The path to the file on the remote server.
+            username (str): The username for authentication.
+            password (str): The password for authentication.
+            remote_path (str): The path to the file on the remote server or URL.
             local_path (str): The path to save the file locally.
+            protocol (str): The protocol to use ("SFTP", "HTTP", "HTTPS", "SCP").
 
         Returns:
-            int: 0 on success, 1 on failure.
+            tuple: (int, str) - 0 and an empty string on success, 1 and an error message on failure.
         """
-        ssh = paramiko.SSHClient()
         try:
-            # Create an SSH client
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            protocol = protocol.upper()  # Normalize protocol string to uppercase
 
-            # Connect to the remote server
-            ssh.connect(hostname, username=username, password=password)
+            if protocol == "SFTP":
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                try:
+                    ssh.connect(hostname, username=username, password=password)
+                    sftp = ssh.open_sftp()
+                    sftp.get(remote_path, local_path)
+                    sftp.close()
+                    ssh.close()
+                    return 0, ""
+                except Exception as e:
+                    ssh.close()
+                    return 1, str(e)
 
-            # Use SFTP to download the file
-            sftp = ssh.open_sftp()
-            sftp.get(remote_path, local_path)
-            sftp.close()
+            elif protocol in ["HTTP", "HTTPS"]:
+                response = requests.get(remote_path, auth=(username, password), stream=True)
+                response.raise_for_status()
+                with open(local_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
 
-            return 0  # Success
+            elif protocol == "SCP":
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                try:
+                    ssh.connect(hostname, username=username, password=password)
+                    scp_client = scp.SCPClient(ssh.get_transport())
+                    scp_client.get(remote_path, local_path)
+                    scp_client.close()
+                    ssh.close()
+                    return 0, ""
+                except Exception as e:
+                    ssh.close()
+                    return 1, str(e)
+
+            else:
+                return EXIT_FAILURE, f"Unsupported protocol: {protocol}"
+
+            return 0, ""  # Success
+
         except Exception as e:
-            return EXIT_FAILURE, {'error': str(e)}
-        finally:
-            ssh.close()
+            return EXIT_FAILURE, str(e)
