@@ -339,7 +339,7 @@ class FeatureHandler(object):
 
         device_type = self._device_config.get('DEVICE_METADATA', {}).get('localhost', {}).get('type')
         is_dependent_service = feature_config.name in ['syncd', 'gbsyncd']
-        if device_type == 'SpineRouter' and is_dependent_service:
+        if device_type in ['SpineRouter', 'UpperSpineRouter', 'FabricSpineRouter'] and is_dependent_service:
             syslog.syslog(syslog.LOG_INFO, "Skipped setting Restart field in systemd for {}".format(feature_config.name))
             restart_field_str = "no"
         else:
