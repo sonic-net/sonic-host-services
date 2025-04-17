@@ -493,3 +493,53 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'enable', 'telemetry.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'telemetry.service'], capture_output=True, check=True, text=True)]
             mocked_subprocess.run.assert_has_calls(expected, any_order=True)
+
+    def test_systemctl_command_failure(self, mock_syslog, get_runtime):
+        """Test that when systemctl commands fail:
+        1. The feature state is not cached
+        2. The feature state is set to FAILED
+        3. The update_feature_state returns False
+        """
+        mock_db = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        feature_handler.is_delayed_enabled = True
+
+        # Create a feature that should be enabled
+        feature_name = 'test_feature'
+        feature_cfg = {
+            'state': 'enabled',
+            'auto_restart': 'enabled',
+            'delayed': 'False',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False'
+        }
+
+        # Initialize the feature in cached_config using the same pattern as in featured
+        feature = featured.Feature(feature_name, feature_cfg)
+        feature_handler._cached_config.setdefault(feature_name, featured.Feature(feature_name, {}))
+
+        # Mock subprocess.run and Popen to simulate command failure
+        with mock.patch('featured.subprocess') as mocked_subprocess:
+            # Mock Popen for get_systemd_unit_state
+            popen_mock = mock.Mock()
+            popen_mock.communicate.return_value = ('enabled', '')
+            popen_mock.returncode = 1
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            # Mock run_cmd to raise an exception
+            with mock.patch('featured.run_cmd') as mocked_run_cmd:
+                mocked_run_cmd.side_effect = Exception("Command failed")
+
+                # Try to update feature state
+                result = feature_handler.update_feature_state(feature)
+
+                # Verify the result is False
+                assert result is False
+
+                # Verify the feature state was set to FAILED
+                mock_feature_state_table.set.assert_called_with('test_feature', [('state', 'failed')])
+
+                # Verify the feature state was not enabled in the cache
+                assert feature_handler._cached_config[feature.name].state != 'enabled'

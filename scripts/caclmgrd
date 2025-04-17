@@ -106,7 +106,7 @@ class ControlPlaneAclManager(logger.Logger):
         },
         "EXTERNAL_CLIENT": {
             "ip_protocols": ["tcp"],
-            "multi_asic_ns_to_host_fwd":True
+            "multi_asic_ns_to_host_fwd":False
         },
         "ANY": {
             "ip_protocols": ["any"],
@@ -147,6 +147,7 @@ class ControlPlaneAclManager(logger.Logger):
         self.namespace_mgmt_ipv6 = self.get_namespace_mgmt_ipv6(self.iptables_cmd_ns_prefix[DEFAULT_NAMESPACE], DEFAULT_NAMESPACE)
         self.namespace_docker_mgmt_ip = {}
         self.namespace_docker_mgmt_ipv6 = {}
+        self.exclude_mgmt_port_rule = [ '!', '-i', 'eth0' ]
 
         # Get all features that are present {feature_name : True/False}
         self.feature_present = {}
@@ -178,6 +179,11 @@ class ControlPlaneAclManager(logger.Logger):
             self.lock[fabric_asic_namespace] = threading.Lock()
             self.num_changes[fabric_asic_namespace] = 0
             self.update_docker_mgmt_ip_acl(fabric_asic_namespace)
+
+    def exclude_mgmt_port(self, rule):
+        # Exclude mgmt port from this rule
+        rule.extend(self.exclude_mgmt_port_rule)
+        return rule
 
     def update_docker_mgmt_ip_acl(self, namespace):
             self.iptables_cmd_ns_prefix[namespace] = ["ip", "netns", "exec", str(namespace)]
@@ -641,8 +647,8 @@ class ControlPlaneAclManager(logger.Logger):
 
         # Add iptables/ip6tables commands to allow all incoming BGP traffic
         # TODO: Determine BGP ACLs based on configured device sessions, and remove this blanket acceptance
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.exclude_mgmt_port(['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT']))
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.exclude_mgmt_port(['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT']))
 
         # Add ip6tables commands to disable connection tracking for icmpv6 traffic
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-t', 'raw', '-A', 'PREROUTING', '-p', 'ipv6-icmp', '-j', 'NOTRACK'])
@@ -767,6 +773,14 @@ class ControlPlaneAclManager(logger.Logger):
                                 rule_cmd += ["-s", str(rule_props["SRC_IP"])]
                                 if rule_props["PACKET_ACTION"] == "ACCEPT":
                                     ipv4_src_ip_set.add(rule_props["SRC_IP"])
+
+                            if "DST_IPV6" in rule_props and rule_props["DST_IPV6"]:
+                                rule_cmd += ["-d", str(rule_props["DST_IPV6"])]
+                            elif "DST_IP" in rule_props and rule_props["DST_IP"]:
+                                rule_cmd += ["-d", str(rule_props["DST_IP"])]
+
+                            if "IN_PORTS" in rule_props and rule_props["IN_PORTS"]:
+                                rule_cmd += ["-i", str(rule_props["IN_PORTS"])]
 
                             # Destination port 0 is reserved/unused port, so, using it to apply the rule to all ports.
                             if dst_port != "0":
@@ -896,8 +910,8 @@ class ControlPlaneAclManager(logger.Logger):
     def get_bfd_iptable_commands(self, namespace):
         iptables_cmds = []
         # Add iptables/ip6tables commands to allow all BFD singlehop and multihop sessions
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.exclude_mgmt_port(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT']))
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.exclude_mgmt_port(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-m', 'multiport', '--dports', '3784,4784', '-j', 'ACCEPT']))
         return iptables_cmds
 
     def allow_bfd_protocol(self, namespace):
@@ -921,10 +935,10 @@ class ControlPlaneAclManager(logger.Logger):
         ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
         if isinstance(ip_addr, ipaddress.IPv6Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+                    self.exclude_mgmt_port(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
         elif isinstance(ip_addr, ipaddress.IPv4Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+                    self.exclude_mgmt_port(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
 
         return iptables_cmds
 
@@ -947,10 +961,10 @@ class ControlPlaneAclManager(logger.Logger):
         ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
         if isinstance(ip_addr, ipaddress.IPv6Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+                    self.exclude_mgmt_port(['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
         elif isinstance(ip_addr, ipaddress.IPv4Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT'])
+                    self.exclude_mgmt_port(['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
 
         self.run_commands(iptables_cmds)
         self.VxlanAllowed = False

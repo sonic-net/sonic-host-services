@@ -12,7 +12,7 @@ import dbus.service
 import dbus.mainloop.glib
 
 from gi.repository import GObject
-from host_modules import config_engine, gcu, host_service, showtech, systemd_service, file_service, image_service, docker_service
+from host_modules import config_engine, gcu, host_service, showtech, systemd_service, file_service, image_service, docker_service, reboot
 
 
 def register_dbus():
@@ -21,6 +21,7 @@ def register_dbus():
             'config': config_engine.Config('config'),
             'gcu': gcu.GCU('gcu'),
             'host_service': host_service.HostService('host_service'),
+	    'reboot': reboot.Reboot('reboot'),
             'showtech': showtech.Showtech('showtech'),
             'systemd': systemd_service.SystemdService('systemd'),
             'image_service': image_service.ImageService('image_service'),
