@@ -2,6 +2,7 @@
 
 from host_modules import host_service
 import subprocess
+import paramiko
 
 MOD_NAME = 'file'
 EXIT_FAILURE = 1
@@ -16,7 +17,7 @@ class FileService(host_service.HostModule):
     def get_file_stat(self, path):
         if not path:
             return EXIT_FAILURE, {'error': 'Dbus get_file_stat called with no path specified'}
-        
+
         try:
             file_stat = os.stat(path)
 
@@ -43,3 +44,37 @@ class FileService(host_service.HostModule):
 
         except Exception as e:
             return EXIT_FAILURE, {'error': str(e)}
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='sssss', out_signature='i')
+    def download(self, hostname, username, password, remote_path, local_path):
+        """
+        Download a file from a remote server using SSH.
+
+        Args:
+            hostname (str): The hostname or IP address of the remote server.
+            username (str): The username for SSH authentication.
+            password (str): The password for SSH authentication.
+            remote_path (str): The path to the file on the remote server.
+            local_path (str): The path to save the file locally.
+
+        Returns:
+            int: 0 on success, 1 on failure.
+        """
+        ssh = paramiko.SSHClient()
+        try:
+            # Create an SSH client
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            # Connect to the remote server
+            ssh.connect(hostname, username=username, password=password)
+
+            # Use SFTP to download the file
+            sftp = ssh.open_sftp()
+            sftp.get(remote_path, local_path)
+            sftp.close()
+
+            return 0  # Success
+        except Exception as e:
+            return EXIT_FAILURE, {'error': str(e)}
+        finally:
+            ssh.close()
