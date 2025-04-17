@@ -529,6 +529,8 @@ class AaaCfg(object):
                 del self.radius_servers[key]
         else:
             self.radius_servers[key] = data
+            if self.radius_servers[key].get('skip_msg_auth', None) is not None:
+                data['skip_msg_auth'] = is_true(self.radius_servers[key]['skip_msg_auth'])
 
         if modify_conf:
             self.modify_conf_file()
