@@ -1142,7 +1142,7 @@ class KdumpCfg(object):
             "num_dumps": "3",
             "remote": "false",            # New feature: remote, default is "false"
             "ssh_string": "root@127.0.0.1",   # New feature: SSH key, default value
-            "ssh_path": "<path>"          # New feature: SSH path, default value
+            "ssh_path": "/root/.ssh/id_rsa"          # New feature: SSH path, default value
         }
 
     def load(self, kdump_table):
