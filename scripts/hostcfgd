@@ -86,7 +86,7 @@ RADIUS_SERVER_RETRANSMIT_DEFAULT = "3"
 RADIUS_SERVER_TIMEOUT_DEFAULT = "5"
 RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
-RADIUS_SERVER_FORCE_MSG_AUTH = "false"
+RADIUS_SERVER_SKIP_MSG_AUTH = False
 
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
@@ -368,7 +368,8 @@ class AaaCfg(object):
             'auth_type': RADIUS_SERVER_AUTH_TYPE_DEFAULT,
             'retransmit': RADIUS_SERVER_RETRANSMIT_DEFAULT,
             'timeout': RADIUS_SERVER_TIMEOUT_DEFAULT,
-            'passkey': RADIUS_SERVER_PASSKEY_DEFAULT
+            'passkey': RADIUS_SERVER_PASSKEY_DEFAULT,
+            'skip_msg_auth': RADIUS_SERVER_SKIP_MSG_AUTH
         }
         self.radius_global = {}
         self.radius_servers = {}
