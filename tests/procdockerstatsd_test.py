@@ -188,3 +188,60 @@ class TestProcDockerStatsDaemon(object):
         ret = pdstatsd.format_mount_cmd_output(in_lines)
         mock_create_mount_dict.assert_called_once()
         assert ret
+
+    def test_create_mem_dict(self):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        mem_dict = {"MemTotal": "10000", "MemFree": "9000", "SwapTotal": "0", "SwapFree": "0", "Buffers": "123", "Cached": "456", "Shmem": "0"}
+        mem_dict_return = pdstatsd.create_mem_dict(mem_dict)
+
+        key = "MEMORY_STATS|Physical"
+        assert int(mem_dict_return[key]['Used']) == 1000
+        assert mem_dict_return[key]['1K-blocks'] == "10000"
+        key = "MEMORY_STATS|Swap"
+        assert int(mem_dict_return[key]['Used']) == 0
+        assert mem_dict_return[key]['1K-blocks'] == "0"
+
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mem_dict", return_value={
+        "MEMORY_STATS|Physical": {"1K-blocks": "10000", "Used": 1000}, 
+        "MEMORY_STATS|Virtual": {"1K-blocks": "10000", "Used": 1000}, 
+        "MEMORY_STATS|Buffer": {"1K-blocks": "10000", "Used": 123}, 
+        "MEMORY_STATS|Cached": {"1K-blocks": "456", "Used": 456}, 
+        "MEMORY_STATS|Shared": {"1K-blocks": "0", "Used": 0}, 
+        "MEMORY_STATS|Swap": {"1K-blocks": "0", "Used": 0}})
+    def test_format_mem_output(self, mock_create_mem_dict):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+
+        in_lines = "MemTotal: 10000 kB\n MemFree: 9000 kB\n SwapTotal: 0 kB\n SwapFree: 0\n Buffers: 123\n Cached: 456\n Shmem: 0"
+        ret = pdstatsd.format_mem_output(in_lines)
+        mock_create_mem_dict.assert_called_once()
+        assert ret
+
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mem_dict", return_value={
+        "MEMORY_STATS|Physical": {"1K-blocks": "10000", "Used": 1000}, 
+        "MEMORY_STATS|Virtual": {"1K-blocks": "10000", "Used": 1000}, 
+        "MEMORY_STATS|Buffer": {"1K-blocks": "10000", "Used": 123}, 
+        "MEMORY_STATS|Cached": {"1K-blocks": "456", "Used": 456}, 
+        "MEMORY_STATS|Shared": {"1K-blocks": "0", "Used": 0}, 
+        "MEMORY_STATS|Swap": {"1K-blocks": "0", "Used": 0}})
+    def test_update_memory_command(self, mock_create_mem_dict):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        ret = pdstatsd.update_memory_command()
+        mock_create_mem_dict.assert_called_once()
+        assert ret == True 
+
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mem_dict", return_value={})
+    def test_update_memory_command_empty(self, mock_create_mem_dict):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        ret = pdstatsd.update_memory_command()
+        mock_create_mem_dict.assert_called_once()
+        assert not ret
+
+    @patch.object(procdockerstatsd.ProcDockerStats, "create_mem_dict", return_value={})
+    @patch.object(procdockerstatsd.ProcDockerStats, "run_command", return_value={})
+    def test_update_memory_command_fail(self, mock_create_mem_dict, mock_run_command):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        ret = pdstatsd.update_memory_command()
+
+        mock_create_mem_dict.assert_called_once()
+        assert ret == False
+
