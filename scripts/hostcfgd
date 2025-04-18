@@ -1141,8 +1141,8 @@ class KdumpCfg(object):
             "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
             "num_dumps": "3",
             "remote": "false",            # New feature: remote, default is "false"
-            "ssh_string": "user@localhost",   # New feature: SSH key, default value
-            "ssh_path": "/a/b/c"          # New feature: SSH path, default value
+            "ssh_string": "root@127.0.0.1",   # New feature: SSH key, default value
+            "ssh_path": "/root/.ssh/id_rsa"          # New feature: SSH path, default value
         }
 
     def load(self, kdump_table):
