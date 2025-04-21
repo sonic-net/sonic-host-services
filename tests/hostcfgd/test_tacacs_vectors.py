@@ -28,18 +28,21 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
+                        "remote": "disabled",
+                        "ssh_string": "root@127.0.0.1",
+                        "ssh_path": "/root/.ssh/id_rsa"
+                    }
                 },
                 "AAA": {
                     "authentication": {
                         "login": "local"
                     },
                     "authorization": {
-                        "login": "local" 
+                        "login": "local"
                     },
                     "accounting": {
-                        "login": "local" 
+                        "login": "local"
                     }
                 },
                 "TACPLUS": {
@@ -90,18 +93,21 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
+                        "remote": "disabled",
+                        "ssh_string": "root@127.0.0.1",
+                        "ssh_path": "/root/.ssh/id_rsa"
+                    }
                 },
                 "AAA": {
                     "authentication": {
                         "login": "local"
                     },
                     "authorization": {
-                        "login": "tacacs+" 
+                        "login": "tacacs+"
                     },
                     "accounting": {
-                        "login": "tacacs+" 
+                        "login": "tacacs+"
                     }
                 },
                 "TACPLUS": {
@@ -152,18 +158,21 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
+                        "remote": "disabled",
+                        "ssh_string": "root@127.0.0.1",
+                        "ssh_path": "/root/.ssh/id_rsa"
+                    }
                 },
                 "AAA": {
                     "authentication": {
                         "login": "local"
                     },
                     "authorization": {
-                        "login": "tacacs+ local" 
+                        "login": "tacacs+ local"
                     },
                     "accounting": {
-                        "login": "tacacs+ local" 
+                        "login": "tacacs+ local"
                     }
                 },
                 "TACPLUS": {
@@ -214,18 +223,21 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
-                        }
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
+                        "remote": "disabled",
+                        "ssh_string": "root@127.0.0.1",
+                        "ssh_path": "/root/.ssh/id_rsa"
+                    }
                 },
                 "AAA": {
                     "authentication": {
                         "login": "local"
                     },
                     "authorization": {
-                        "login": "local" 
+                        "login": "local"
                     },
                     "accounting": {
-                        "login": "disable" 
+                        "login": "disable"
                     }
                 },
                 "TACPLUS": {
