@@ -225,6 +225,7 @@ class TestHostcfgdDaemon(TestCase):
         MockConfigDb.CONFIG_DB['KDUMP'] = {
             'config': {
                 "enabled": "true",
+                "remote" : "true"
             }
         }
         daemon = hostcfgd.HostConfigDaemon()
