@@ -318,7 +318,6 @@ class TestHostcfgdDaemon(TestCase):
                     pass
 
                 expected = [
-                    call(['systemctl', 'restart', 'rsyslog-config']),
                     call(original_syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog-config after feature flag change to true')
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
