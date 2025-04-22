@@ -1491,6 +1491,27 @@ class DeviceMetaCfg(object):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog after '
                       'changing timezone')
 
+    def rsyslog_config(self, data):
+        """
+        Apply syslog_with_osversion feature flag.
+        Run the following command in Linux: sudo systemctl restart rsyslog-config
+        Args:
+            data: Read table's key's data.
+        """
+        syslog_with_osversion = data.get('syslog_with_osversion')
+        syslog.syslog(syslog.LOG_DEBUG,
+                      f'DeviceMetaCfg: syslog with os version: {syslog_with_osversion}')
+
+        if syslog_with_osversion is None:
+            syslog.syslog(syslog.LOG_DEBUG,
+                          f'DeviceMetaCfg: syslog with os version feature disabled')
+            return
+
+        run_cmd(['systemctl', 'restart', 'rsyslog-config'], True, False)
+        syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog-config after '
+                                        'feature flag change to {}'.format(syslog_with_osversion))
+
+
 class MgmtIfaceCfg(object):
     """
     MgmtIfaceCfg Config Daemon
@@ -2281,6 +2302,7 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
         self.devmetacfg.timezone_update(data)
+        self.devmetacfg.rsyslog_config(data)
 
     def rsyslog_handler(self):
         rsyslog_config = self.config_db.get_table(
