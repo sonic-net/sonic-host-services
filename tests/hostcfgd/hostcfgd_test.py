@@ -247,6 +247,7 @@ class TestHostcfgdDaemon(TestCase):
         Test handling DEVICE_METADATA events.
         1) Hostname reload
         1) Timezone reload
+        1) syslog_with_osversion flag change
         """
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
@@ -303,6 +304,22 @@ class TestHostcfgdDaemon(TestCase):
 
                 expected = [
                     call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
+                ]
+                mocked_syslog.syslog.assert_has_calls(expected)
+
+        HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["syslog_with_osversion"] = 'true'
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+                try:
+                    daemon.start()
+                except TimeoutError:
+                    pass
+
+                expected = [
+                    call(['systemctl', 'restart', 'rsyslog-config']),
+                    call(original_syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog-config after feature flag change to true')
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
 
