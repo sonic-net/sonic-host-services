@@ -307,6 +307,7 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
 
+        daemon.devmetacfg.syslog_with_osversion = "false"
         HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["syslog_with_osversion"] = 'true'
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         with mock.patch('hostcfgd.syslog') as mocked_syslog:
