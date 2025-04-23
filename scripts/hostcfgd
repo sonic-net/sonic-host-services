@@ -1423,6 +1423,7 @@ class DeviceMetaCfg(object):
     def __init__(self):
         self.hostname = ''
         self.timezone = None
+        self.syslog_with_osversion = None
 
     def load(self, dev_meta={}):
         # Get hostname initial
@@ -1431,6 +1432,7 @@ class DeviceMetaCfg(object):
 
         # Load appropriate config
         self.timezone = dev_meta.get('localhost', {}).get('timezone')
+        self.syslog_with_osversion = dev_meta.get('localhost', {}).get('syslog_with_osversion')
 
     def hostname_update(self, data):
         """
@@ -1498,18 +1500,23 @@ class DeviceMetaCfg(object):
         Args:
             data: Read table's key's data.
         """
-        syslog_with_osversion = data.get('syslog_with_osversion')
+        new_syslog_with_osversion = data.get('syslog_with_osversion')
         syslog.syslog(syslog.LOG_DEBUG,
-                      f'DeviceMetaCfg: syslog with os version: {syslog_with_osversion}')
+                      f'DeviceMetaCfg: syslog with os version: {new_syslog_with_osversion}')
 
-        if syslog_with_osversion is None:
+        if new_syslog_with_osversion is None:
             syslog.syslog(syslog.LOG_DEBUG,
                           f'DeviceMetaCfg: syslog with os version feature disabled')
             return
 
+        if new_syslog_with_osversion == self.syslog_with_osversion:
+            syslog.syslog(syslog.LOG_DEBUG,
+                          f'DeviceMetaCfg: syslog with os version feature flag does not change')
+            return
+
         run_cmd(['systemctl', 'restart', 'rsyslog-config'], True, False)
         syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog-config after '
-                                        'feature flag change to {}'.format(syslog_with_osversion))
+                                        'feature flag change to {}'.format(new_syslog_with_osversion))
 
 
 class MgmtIfaceCfg(object):
