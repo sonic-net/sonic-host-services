@@ -222,3 +222,27 @@ class TestFileService(object):
 
         assert ret == 1
         assert "Unsupported protocol" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.remove")
+    def test_remove_success(self, mock_remove, MockInit, MockBusName, MockSystemBus):
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        path = "/some/file.txt"
+        ret, msg = file_service_stub.remove(path)
+        assert ret == 0
+        assert msg == ""
+        mock_remove.assert_called_once_with(path)
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.remove")
+    def test_remove_failure(self, mock_remove, MockInit, MockBusName, MockSystemBus):
+        mock_remove.side_effect = FileNotFoundError("No such file or directory")
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        path = "/nonexistent/file.txt"
+        ret, msg = file_service_stub.remove(path)
+        assert ret == 1
+        assert "No such file or directory" in msg

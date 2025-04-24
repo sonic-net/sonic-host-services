@@ -107,3 +107,21 @@ class FileService(host_service.HostModule):
 
         except Exception as e:
             return EXIT_FAILURE, str(e)
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
+    def remove(self, path):
+        """
+        Remove a file at the specified path.
+
+        Args:
+            path (str): The path to the file to remove.
+
+        Returns:
+            tuple: (int, str) - 0 and an empty string on success, 1 and an error message on failure.
+        """
+        try:
+            os.remove(path)
+            return 0, ""
+        except Exception as e:
+            return EXIT_FAILURE, str(e)
+
