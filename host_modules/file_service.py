@@ -138,10 +138,14 @@ class FileService(host_service.HostModule):
             if not os.path.exists(path):
                 return EXIT_FAILURE, f"File not found: {path}"
 
-            # Check if file is world-writable (deletable by world)
-            file_stat = os.stat(path)
-            if not (file_stat.st_mode & stat.S_IWOTH):
-                return EXIT_FAILURE, f"File is not world writable (deletable by world): {path}"
+            # Check if parent directory is world-writable (deletable by world)
+            dir_path = os.path.dirname(path) or "."
+            try:
+                dir_stat = os.stat(dir_path)
+            except Exception as e:
+                return EXIT_FAILURE, f"Directory not found: {dir_path} ({e})"
+            if not (dir_stat.st_mode & stat.S_IWOTH):
+                return EXIT_FAILURE, f"Directory is not world writable: {dir_path}"
 
             os.remove(path)
             return 0, ""
