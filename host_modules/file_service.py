@@ -4,6 +4,7 @@ from host_modules import host_service
 import paramiko
 import requests
 import scp
+import stat
 
 MOD_NAME = 'file'
 EXIT_FAILURE = 1
@@ -63,6 +64,19 @@ class FileService(host_service.HostModule):
             tuple: (int, str) - 0 and an empty string on success, 1 and an error message on failure.
         """
         try:
+            # 1. Do not override any file
+            if os.path.exists(local_path):
+                return EXIT_FAILURE, f"File already exists: {local_path}"
+
+            # 2. The directory we are writing to must be world writable
+            dir_path = os.path.dirname(local_path) or "."
+            try:
+                dir_stat = os.stat(dir_path)
+            except Exception as e:
+                return EXIT_FAILURE, f"Directory not found: {dir_path} ({e})"
+            if not (dir_stat.st_mode & stat.S_IWOTH):
+                return EXIT_FAILURE, f"Directory is not world writable: {dir_path}"
+
             protocol = protocol.upper()  # Normalize protocol string to uppercase
 
             if protocol == "SFTP":
@@ -120,6 +134,15 @@ class FileService(host_service.HostModule):
             tuple: (int, str) - 0 and an empty string on success, 1 and an error message on failure.
         """
         try:
+            # Check if file exists
+            if not os.path.exists(path):
+                return EXIT_FAILURE, f"File not found: {path}"
+
+            # Check if file is world-writable (deletable by world)
+            file_stat = os.stat(path)
+            if not (file_stat.st_mode & stat.S_IWOTH):
+                return EXIT_FAILURE, f"File is not world writable (deletable by world): {path}"
+
             os.remove(path)
             return 0, ""
         except Exception as e:

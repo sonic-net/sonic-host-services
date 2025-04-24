@@ -246,3 +246,103 @@ class TestFileService(object):
         ret, msg = file_service_stub.remove(path)
         assert ret == 1
         assert "No such file or directory" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_download_file_exists(self, mock_exists, mock_stat, MockInit, MockBusName, MockSystemBus):
+        mock_exists.return_value = True
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="host", username="user", password="pw",
+            remote_path="/remote", local_path="/local/file.txt", protocol="SFTP"
+        )
+        assert ret == 1
+        assert "File already exists" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_download_dir_not_world_writable(self, mock_exists, mock_stat, MockInit, MockBusName, MockSystemBus):
+        mock_exists.return_value = False
+        mock_dir_stat = mock.Mock()
+        mock_dir_stat.st_mode = 0o40755  # Not world writable
+        mock_stat.return_value = mock_dir_stat
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="host", username="user", password="pw",
+            remote_path="/remote", local_path="/local/file.txt", protocol="SFTP"
+        )
+        assert ret == 1
+        assert "Directory is not world writable" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_download_dir_not_found(self, mock_exists, mock_stat, MockInit, MockBusName, MockSystemBus):
+        mock_exists.return_value = False
+        mock_stat.side_effect = FileNotFoundError("No such directory")
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="host", username="user", password="pw",
+            remote_path="/remote", local_path="/nonexistent/file.txt", protocol="SFTP"
+        )
+        assert ret == 1
+        assert "Directory not found" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.remove")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_remove_success(self, mock_exists, mock_stat, mock_remove, MockInit, MockBusName, MockSystemBus):
+        mock_exists.return_value = True
+        mock_file_stat = mock.Mock()
+        mock_file_stat.st_mode = 0o100666  # World writable
+        mock_stat.return_value = mock_file_stat
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        path = "/some/file.txt"
+        ret, msg = file_service_stub.remove(path)
+        assert ret == 0
+        assert msg == ""
+        mock_remove.assert_called_once_with(path)
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.remove")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_remove_file_not_found(self, mock_exists, mock_stat, mock_remove, MockInit, MockBusName, MockSystemBus):
+        mock_exists.return_value = False
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        path = "/nonexistent/file.txt"
+        ret, msg = file_service_stub.remove(path)
+        assert ret == 1
+        assert "File not found" in msg
+        mock_remove.assert_not_called()
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("os.remove")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_remove_file_not_world_writable(self, mock_exists, mock_stat, mock_remove, MockInit, MockBusName, MockSystemBus):
+        mock_exists.return_value = True
+        mock_file_stat = mock.Mock()
+        mock_file_stat.st_mode = 0o100644  # Not world writable
+        mock_stat.return_value = mock_file_stat
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        path = "/some/file.txt"
+        ret, msg = file_service_stub.remove(path)
+        assert ret == 1
+        assert "File is not world writable" in msg
+        mock_remove.assert_not_called()
