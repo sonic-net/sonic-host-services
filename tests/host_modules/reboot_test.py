@@ -144,22 +144,22 @@ class TestReboot(object):
     def test_is_halt_command_running_success(self):
         with mock.patch("psutil.process_iter") as mock_process_iter:
             mock_process = mock.Mock()
-            mock_process.info = {'pid': 1234, 'name': 'reboot'}
+            mock_process.info = {'cmdline': ['reboot', '-p']}
             mock_process_iter.return_value = [mock_process]
 
             result = self.reboot_module.is_halt_command_running()
             assert result is True
-            mock_process_iter.assert_called_once_with(['pid', 'name'])
+            mock_process_iter.assert_called_once_with(['cmdline'])
 
     def test_is_halt_command_running_failure(self):
         with mock.patch("psutil.process_iter") as mock_process_iter:
             mock_process = mock.Mock()
-            mock_process.info = {'pid': 1234, 'name': 'other_process'}
+            mock_process.info = {'cmdline': ['other_process']}
             mock_process_iter.return_value = [mock_process]
 
             result = self.reboot_module.is_halt_command_running()
             assert result is False
-            mock_process_iter.assert_called_once_with(['pid', 'name'])
+            mock_process_iter.assert_called_once_with(['cmdline'])
 
     def test_is_halt_command_running_exception(self, caplog):
         with mock.patch("psutil.process_iter", side_effect=Exception("psutil error")) as mock_process_iter, \
