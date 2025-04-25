@@ -30,8 +30,8 @@ HOSTCFGD_TEST_LDAP_VECTOR = [
                         "num_dumps": "3",
                         "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
                         "remote": "disabled",
-                        "ssh_string": "root@127.0.0.1",
-                        "ssh_path": "/root/.ssh/id_rsa"
+                        "ssh_string": "admin@127.0.0.1",
+                        "ssh_path": "/home/admin/.ssh"
                         }
                 },
                 "AAA": {
