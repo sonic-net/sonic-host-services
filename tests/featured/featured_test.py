@@ -54,7 +54,7 @@ class TestFeatureHandler(TestCase):
 
         return True if not ddiff else False
 
-    def checks_systemd_config_file(self, feature_table, feature_systemd_name_map=None):
+    def checks_systemd_config_file(self, device_type, feature_table, feature_systemd_name_map=None):
         """Checks whether the systemd configuration file of each feature was created or not
         and whether the `Restart=` field in the file is set correctly or not.
 
@@ -71,6 +71,7 @@ class TestFeatureHandler(TestCase):
                                                 'auto_restart.conf')
 
         for feature_name in feature_table:
+            is_dependent_feature = True if feature_name in ['syncd', 'gbsyncd'] else False
             auto_restart_status = feature_table[feature_name].get('auto_restart', 'disabled')
             if "enabled" in auto_restart_status:
                 auto_restart_status = "enabled"
@@ -86,7 +87,10 @@ class TestFeatureHandler(TestCase):
 
                 with open(feature_systemd_config_file_path) as systemd_config_file:
                     status = systemd_config_file.read().strip()
-                assert status == '[Service]\nRestart={}'.format(truth_table[auto_restart_status])
+                    if device_type == 'SpineRouter' and is_dependent_feature:
+                        assert status == '[Service]\nRestart=no'
+                    else:
+                        assert status == '[Service]\nRestart={}'.format(truth_table[auto_restart_status])
 
     def get_state_db_set_calls(self, feature_table):
         """Returns a Mock call objects which recorded the `set` calls to `FEATURE` table in `STATE_DB`.
@@ -143,6 +147,7 @@ class TestFeatureHandler(TestCase):
                             device_config = {}
                             device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
                             device_config.update(config_data['device_runtime_metadata'])
+                            device_type = MockConfigDb.CONFIG_DB['DEVICE_METADATA']['localhost']['type']
 
                             feature_handler = featured.FeatureHandler(MockConfigDb(), feature_state_table_mock,
                                                                       device_config, False)
@@ -169,13 +174,13 @@ class TestFeatureHandler(TestCase):
 
                             feature_table_state_db_calls = self.get_state_db_set_calls(feature_table)
 
-                            self.checks_systemd_config_file(config_data['config_db']['FEATURE'], feature_systemd_name_map)
-                            mocked_subprocess.check_call.assert_has_calls(config_data['enable_feature_subprocess_calls'],
+                            self.checks_systemd_config_file(device_type, config_data['config_db']['FEATURE'], feature_systemd_name_map)
+                            mocked_subprocess.run.assert_has_calls(config_data['enable_feature_subprocess_calls'],
                                                                           any_order=True)
-                            mocked_subprocess.check_call.assert_has_calls(config_data['daemon_reload_subprocess_call'],
+                            mocked_subprocess.run.assert_has_calls(config_data['daemon_reload_subprocess_call'],
                                                                           any_order=True)
                             feature_state_table_mock.set.assert_has_calls(feature_table_state_db_calls)
-                            self.checks_systemd_config_file(config_data['config_db']['FEATURE'], feature_systemd_name_map)
+                            self.checks_systemd_config_file(device_type, config_data['config_db']['FEATURE'], feature_systemd_name_map)
 
     @parameterized.expand(FEATURED_TEST_VECTOR)
     @patchfs
@@ -207,6 +212,7 @@ class TestFeatureHandler(TestCase):
                         device_config = {}
                         device_config['DEVICE_METADATA'] = MockConfigDb.CONFIG_DB['DEVICE_METADATA']
                         device_config.update(config_data['device_runtime_metadata'])
+                        device_type = MockConfigDb.CONFIG_DB['DEVICE_METADATA']['localhost']['type']
                         feature_handler = featured.FeatureHandler(MockConfigDb(), feature_state_table_mock,
                                                                   device_config, False)
                         feature_handler.is_delayed_enabled = True
@@ -220,10 +226,10 @@ class TestFeatureHandler(TestCase):
                             feature_names, _ = feature_handler.get_multiasic_feature_instances(feature)
                             feature_systemd_name_map[feature_name] = feature_names
 
-                        self.checks_systemd_config_file(config_data['config_db']['FEATURE'], feature_systemd_name_map)
-                        mocked_subprocess.check_call.assert_has_calls(config_data['enable_feature_subprocess_calls'],
+                        self.checks_systemd_config_file(device_type, config_data['config_db']['FEATURE'], feature_systemd_name_map)
+                        mocked_subprocess.run.assert_has_calls(config_data['enable_feature_subprocess_calls'],
                                                                       any_order=True)
-                        mocked_subprocess.check_call.assert_has_calls(config_data['daemon_reload_subprocess_call'],
+                        mocked_subprocess.run.assert_has_calls(config_data['daemon_reload_subprocess_call'],
                                                                       any_order=True)
 
     def test_feature_config_parsing(self):
@@ -256,7 +262,8 @@ class TestFeatureHandler(TestCase):
     
     @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
     @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
-    @mock.patch('featured.FeatureHandler.sync_feature_asic_scope', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_scope', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
     def test_feature_resync(self):
         mock_db = mock.MagicMock()
         mock_db.get_entry = mock.MagicMock()
@@ -314,6 +321,24 @@ class TestFeatureHandler(TestCase):
         }
         feature_handler.sync_state_field(feature_table)
         mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'enabled'})
+    
+    def test_port_init_done_twice(self):
+        """There could be multiple "PortInitDone" event in case of swss
+        restart(either due to crash or due to manual operation). swss
+        restarting would cause all services that depend on it to be stopped.
+        Those stopped services which have delayed=True will not be auto
+        restarted by systemd, featured is responsible for enabling those services
+        when swss is ready. This test case covers it.
+        """
+        feature_handler = featured.FeatureHandler(None, None, {}, False)
+        assert not feature_handler.is_delayed_enabled
+        feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+        assert feature_handler.is_delayed_enabled
+        
+        feature_handler.enable_delayed_services = mock.MagicMock()
+        feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+        feature_handler.enable_delayed_services.assert_called_once()
+
 
 @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
 @mock.patch('sonic_py_common.device_info.get_device_runtime_metadata')
@@ -350,15 +375,15 @@ class TestFeatureDaemon(TestCase):
                 daemon.start(time.time())
             except TimeoutError as e:
                 pass
-            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
-                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
-                        call(['sudo', 'systemctl', 'start', 'mux.service'])]
-            mocked_subprocess.check_call.assert_has_calls(expected)
+            expected = [call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
             # Change the state to disabled
             MockSelect.reset_event_queue()
@@ -368,10 +393,10 @@ class TestFeatureDaemon(TestCase):
                 daemon.start(time.time())
             except TimeoutError:
                 pass
-            expected = [call(['sudo', 'systemctl', 'stop', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'disable', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'mask', 'dhcp_relay.service'])]
-            mocked_subprocess.check_call.assert_has_calls(expected)
+            expected = [call(['sudo', 'systemctl', 'stop', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'disable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'mask', 'dhcp_relay.service'], capture_output=True, check=True, text=True)]
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
     def test_delayed_service(self, mock_syslog, get_runtime):
         MockSelect.set_event_queue([('FEATURE', 'dhcp_relay'),
@@ -392,20 +417,20 @@ class TestFeatureDaemon(TestCase):
                 daemon.start(time.time())
             except TimeoutError:
                 pass
-            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
-                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
-                        call(['sudo', 'systemctl', 'start', 'mux.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'enable', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
+            expected = [call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'telemetry.service'], capture_output=True, check=True, text=True)]
 
-            mocked_subprocess.check_call.assert_has_calls(expected)
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
     def test_advanced_reboot(self, mock_syslog, get_runtime):
         MockRestartWaiter.advancedReboot = True
@@ -417,25 +442,26 @@ class TestFeatureDaemon(TestCase):
             daemon = featured.FeatureDaemon()
             daemon.render_all_feature_states()
             daemon.register_callbacks()
-            try:
+            try:            
                 daemon.start(time.time())
             except TimeoutError:
-                pass
-            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
-                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
-                        call(['sudo', 'systemctl', 'start', 'mux.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'enable', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
+                pass        
+            expected = [
+                call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'telemetry.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'telemetry.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'telemetry.service'], capture_output=True, check=True, text=True)]               
+        
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
-            mocked_subprocess.check_call.assert_has_calls(expected)
-    
     def test_portinit_timeout(self, mock_syslog, get_runtime):
         print(MockConfigDb.CONFIG_DB)
         MockSelect.NUM_TIMEOUT_TRIES = 1
@@ -454,17 +480,66 @@ class TestFeatureDaemon(TestCase):
                 daemon.start(0.0)
             except TimeoutError:
                 pass
-            expected = [call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'mux.service']),
-                        call(['sudo', 'systemctl', 'enable', 'mux.service']),
-                        call(['sudo', 'systemctl', 'start', 'mux.service']),
-                        call(['sudo', 'systemctl', 'daemon-reload']),
-                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'enable', 'telemetry.service']),
-                        call(['sudo', 'systemctl', 'start', 'telemetry.service'])]
-            mocked_subprocess.check_call.assert_has_calls(expected)
-       
+            expected = [call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'unmask', 'telemetry.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'enable', 'telemetry.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'start', 'telemetry.service'], capture_output=True, check=True, text=True)]
+            mocked_subprocess.run.assert_has_calls(expected, any_order=True)
+
+    def test_systemctl_command_failure(self, mock_syslog, get_runtime):
+        """Test that when systemctl commands fail:
+        1. The feature state is not cached
+        2. The feature state is set to FAILED
+        3. The update_feature_state returns False
+        """
+        mock_db = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        feature_handler.is_delayed_enabled = True
+
+        # Create a feature that should be enabled
+        feature_name = 'test_feature'
+        feature_cfg = {
+            'state': 'enabled',
+            'auto_restart': 'enabled',
+            'delayed': 'False',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False'
+        }
+
+        # Initialize the feature in cached_config using the same pattern as in featured
+        feature = featured.Feature(feature_name, feature_cfg)
+        feature_handler._cached_config.setdefault(feature_name, featured.Feature(feature_name, {}))
+
+        # Mock subprocess.run and Popen to simulate command failure
+        with mock.patch('featured.subprocess') as mocked_subprocess:
+            # Mock Popen for get_systemd_unit_state
+            popen_mock = mock.Mock()
+            popen_mock.communicate.return_value = ('enabled', '')
+            popen_mock.returncode = 1
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            # Mock run_cmd to raise an exception
+            with mock.patch('featured.run_cmd') as mocked_run_cmd:
+                mocked_run_cmd.side_effect = Exception("Command failed")
+
+                # Try to update feature state
+                result = feature_handler.update_feature_state(feature)
+
+                # Verify the result is False
+                assert result is False
+
+                # Verify the feature state was set to FAILED
+                mock_feature_state_table.set.assert_called_with('test_feature', [('state', 'failed')])
+
+                # Verify the feature state was not enabled in the cache
+                assert feature_handler._cached_config[feature.name].state != 'enabled'

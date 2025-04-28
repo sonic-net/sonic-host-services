@@ -1,6 +1,6 @@
 import os
 import sys
-import swsscommon
+from swsscommon import swsscommon
 
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
@@ -18,7 +18,7 @@ class TestCaclmgrdBfd(TestCase):
         Test caclmgrd bfd
     """
     def setUp(self):
-        swsscommon.swsscommon.ConfigDBConnector = MockConfigDb
+        swsscommon.ConfigDBConnector = MockConfigDb
         test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         modules_path = os.path.dirname(test_path)
         scripts_path = os.path.join(modules_path, "scripts")
@@ -47,5 +47,28 @@ class TestCaclmgrdBfd(TestCase):
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
                 caclmgrd_daemon.allow_bfd_protocol('')
-                mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
+                mocked_subprocess.Popen.assert_has_calls(test_data["expected_bfd_subprocess_calls"], any_order=True)
+                caclmgrd_daemon.bfdAllowed = True
+                mocked_subprocess.Popen.reset_mock()
+                caclmgrd_daemon.num_changes[''] = 1
+                caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
+
+                #Ensure BFD rules are installed before ip2me rules to avoid traffic loss during update of control plane acl rules
+                bfd_ipv4_idx = 0
+                bfd_ipv6_idx = 0
+                ip2me_ipv4_idx = 0
+                ip2me_ipv6_idx = 0
+                idx = 0
+                for call in mocked_subprocess.Popen.call_args_list:
+                    if test_data["expected_subprocess_calls"][0] == call:
+                        bfd_ipv4_idx = idx
+                    elif test_data["expected_subprocess_calls"][1] == call:
+                        bfd_ipv6_idx = idx
+                    elif test_data["expected_subprocess_calls"][2] == call:
+                        ip2me_ipv4_idx = idx
+                    elif test_data["expected_subprocess_calls"][3] == call:
+                        ip2me_ipv6_idx = idx
+                    idx = idx+1
+                assert (bfd_ipv4_idx != 0 and bfd_ipv6_idx != 0 and ip2me_ipv4_idx !=0 and ip2me_ipv6_idx != 0)
+                assert (bfd_ipv4_idx < ip2me_ipv4_idx and bfd_ipv6_idx < ip2me_ipv6_idx)
 

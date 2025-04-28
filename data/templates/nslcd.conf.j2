@@ -1,0 +1,41 @@
+# /etc/nslcd.conf
+# nslcd configuration file. See nslcd.conf(5)
+# for details.
+
+# The user and group nslcd should run as.
+uid nslcd
+gid nslcd
+
+# The location at which the LDAP server(s) should be reachable.
+{{ ldap_cfg.cfg_servers(servers) }}
+
+# The search base that will be used for all queries.
+base {{ ldap_cfg.cfg_base(servers) }}
+
+
+# The LDAP protocol version to use.
+ldap_version {{ ldap_cfg.cfg_version(servers) }}
+
+# The DN to bind with for normal lookups.
+binddn {{ ldap_cfg.cfg_bind(servers) }}
+bindpw {{ ldap_cfg.cfg_bindpw(servers) }}
+
+# The DN used for password modifications by root.
+#rootpwmoddn cn=admin,dc=example,dc=com
+
+# SSL options
+#ssl off
+#tls_reqcert never
+tls_cacertfile /etc/ssl/certs/ca-certificates.crt
+
+# The search scope.
+scope {{ ldap_cfg.cfg_scope(servers) }}
+
+timelimit {{ ldap_cfg.cfg_timeout(servers) }}
+
+bind_timelimit {{ ldap_cfg.cfg_bind_timeout(servers) }}
+
+nss_initgroups_ignoreusers ALLLOCAL
+
+nss_min_uid 1000
+

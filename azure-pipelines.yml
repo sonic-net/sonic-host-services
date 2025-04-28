@@ -7,13 +7,6 @@ trigger:
 - master
 - 202???
 
-resources:
-  repositories:
-  - repository: sonic-buildimage
-    type: github
-    name: sonic-net/sonic-buildimage
-    endpoint: build
-
 variables:
   - name: BUILD_BRANCH
     ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
@@ -30,28 +23,17 @@ stages:
     variables:
       DIFF_COVER_CHECK_THRESHOLD: 80
       DIFF_COVER_ENABLE: 'true'
-      DIFF_COVER_WORKING_DIRECTORY: $(System.DefaultWorkingDirectory)/sonic-host-services
     pool:
       vmImage: ubuntu-20.04
 
     container:
-      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bullseye:$(BUILD_BRANCH)
+      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bookworm:$(BUILD_BRANCH)
 
     steps:
     - checkout: self
       clean: true
       submodules: recursive
       displayName: 'Checkout code'
-  
-    - checkout: sonic-buildimage
-      clean: true
-      displayName: 'Checkout code'
-  
-    - task: CopyFiles@2
-      inputs:
-        SourceFolder: '$(System.DefaultWorkingDirectory)/sonic-buildimage/src/sonic-host-services-data/'
-        contents: '**'
-        targetFolder: $(System.DefaultWorkingDirectory)/sonic-host-services-data/
 
     - task: DownloadPipelineArtifact@2
       inputs:
@@ -76,7 +58,7 @@ stages:
         sudo dpkg -i libyang_1.0.73_*.deb
         sudo dpkg -i libswsscommon_1.0.0_amd64.deb
         sudo dpkg -i python3-swsscommon_1.0.0_amd64.deb
-      workingDirectory: $(Pipeline.Workspace)/target/debs/bullseye/
+      workingDirectory: $(Pipeline.Workspace)/target/debs/bookworm/
       displayName: 'Install Debian dependencies'
 
     - script: |
@@ -89,27 +71,27 @@ stages:
         sudo pip3 install sonic_config_engine-1.0-py3-none-any.whl
         sudo pip3 install sonic_platform_common-1.0-py3-none-any.whl
         sudo pip3 install sonic_utilities-1.2-py3-none-any.whl
-      workingDirectory: $(Pipeline.Workspace)/target/python-wheels/bullseye/
+      workingDirectory: $(Pipeline.Workspace)/target/python-wheels/bookworm/
       displayName: 'Install Python dependencies'
 
     - script: |
         set -ex
         # Install .NET CORE
         curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-        sudo apt-add-repository https://packages.microsoft.com/debian/11/prod
+        sudo apt-add-repository https://packages.microsoft.com/debian/12/prod
         sudo apt-get update
-        sudo apt-get install -y dotnet-sdk-5.0
+        sudo apt-get install -y dotnet-sdk-8.0
       displayName: "Install .NET CORE"
 
     - script: |
-        pushd sonic-host-services
-
-        python3 setup.py test
+        pip3 install ".[testing]"
+        pip3 uninstall --yes sonic-host-services
+        pytest
       displayName: 'Test Python 3'
 
     - task: PublishTestResults@2
       inputs:
-        testResultsFiles: '$(System.DefaultWorkingDirectory)/sonic-host-services/test-results.xml'
+        testResultsFiles: '$(System.DefaultWorkingDirectory)/test-results.xml'
         testRunTitle: Python 3
         failTaskOnFailedTests: true
       condition: succeededOrFailed()
@@ -118,17 +100,15 @@ stages:
     - task: PublishCodeCoverageResults@1
       inputs:
         codeCoverageTool: Cobertura
-        summaryFileLocation: '$(System.DefaultWorkingDirectory)/sonic-host-services/coverage.xml'
-        reportDirectory: '$(System.DefaultWorkingDirectory)/sonic-host-services/htmlcov/'
+        summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
+        reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov/'
       displayName: 'Publish Python 3 test coverage'
 
     - script: |
-        set -e
-        pushd sonic-host-services
-        python3 setup.py bdist_wheel
+        python3 -m build -n
       displayName: 'Build Python 3 wheel'
 
-    - publish: '$(System.DefaultWorkingDirectory)/sonic-host-services/dist/'
+    - publish: '$(System.DefaultWorkingDirectory)/dist/'
       artifact: wheels
       displayName: "Publish Python wheels"
 

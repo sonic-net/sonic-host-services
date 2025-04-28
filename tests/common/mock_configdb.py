@@ -38,6 +38,10 @@ class MockConfigDb(object):
     def get(self, db_id, key, field):
         return MockConfigDb.CONFIG_DB[key][field]
 
+    def get_keys(self, pattern):
+        return [(key.split("|")[0], key.split("|")[1]) \
+                for key in MockConfigDb.CONFIG_DB[pattern]]
+
     def get_entry(self, key, field):
         return MockConfigDb.CONFIG_DB[key][field]
 
@@ -51,12 +55,16 @@ class MockConfigDb(object):
 
     def get_table(self, table_name):
         data = {}
-        for k, v in MockConfigDb.CONFIG_DB[table_name].items():
-            data[self.deserialize_key(k)] = v
+        if table_name in MockConfigDb.CONFIG_DB:
+            for k, v in MockConfigDb.CONFIG_DB[table_name].items():
+                data[self.deserialize_key(k)] = v
         return data
 
     def subscribe(self, table_name, callback):
         self.handlers[table_name] = callback
+
+    def publish(self, table_name, key, op, data):
+        self.handlers[table_name](key, op, data)
 
     def listen(self, init_data_handler=None):
         for e in MockConfigDb.event_queue:

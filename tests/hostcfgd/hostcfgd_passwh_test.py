@@ -16,8 +16,7 @@ from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
 scripts_path = os.path.join(modules_path, "scripts")
-src_path = os.path.dirname(modules_path)
-templates_path = os.path.join(src_path, "sonic-host-services-data/templates")
+templates_path = os.path.join(modules_path, "data/templates")
 output_path = os.path.join(test_path, "hostcfgd/output")
 sample_output_path = os.path.join(test_path, "hostcfgd/sample_output")
 sys.path.insert(0, modules_path)
@@ -123,7 +122,7 @@ class TestHostcfgdPASSWH(TestCase):
         if not match:
             for name in files_to_compare:
                 diff_output += self.run_diff( sop_path + "/" + name,\
-                    op_path + "/" + name).decode('utf-8')
+                    op_path + "/" + name)
 
         self.assertTrue(len(diff_output) == 0, diff_output)
 

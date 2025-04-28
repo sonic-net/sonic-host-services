@@ -47,6 +47,14 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "kube",
                         "state": "enabled"
                     },
+                    "pmon": {
+                        "state": "enabled",
+                        "delayed": "{% if 'type' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['type'] == 'SpineRouter' %}False{% else %}True{% endif %}",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    }
                 },
             },
             "expected_config_db": {
@@ -78,21 +86,29 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "kube",
                         "state": "enabled"
                     },
+                    "pmon": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "True",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    }
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "unmask", "dhcp_relay.service"]),
-                call(["sudo", "systemctl", "enable", "dhcp_relay.service"]),
-                call(["sudo", "systemctl", "start", "dhcp_relay.service"]),
-                call(["sudo", "systemctl", "unmask", "mux.service"]),
-                call(["sudo", "systemctl", "enable", "mux.service"]),
-                call(["sudo", "systemctl", "start", "mux.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "enable", "telemetry.service"]),
-                call(["sudo", "systemctl", "start", "telemetry.service"]),
+                call(["sudo", "systemctl", "unmask", "dhcp_relay.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "dhcp_relay.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "dhcp_relay.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -195,18 +211,18 @@ FEATURED_TEST_VECTOR = [
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "stop", "mux.service"]),
-                call(["sudo", "systemctl", "disable", "mux.service"]),
-                call(["sudo", "systemctl", "mask", "mux.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "enable", "telemetry.service"]),
-                call(["sudo", "systemctl", "start", "telemetry.service"]),
-                call(["sudo", "systemctl", "unmask", "sflow.service"]),
-                call(["sudo", "systemctl", "enable", "sflow.service"]),
-                call(["sudo", "systemctl", "start", "sflow.service"]),
+                call(["sudo", "systemctl", "stop", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "sflow.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "sflow.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "sflow.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -291,15 +307,15 @@ FEATURED_TEST_VECTOR = [
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "stop", "mux.service"]),
-                call(["sudo", "systemctl", "disable", "mux.service"]),
-                call(["sudo", "systemctl", "mask", "mux.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "enable", "telemetry.service"]),
-                call(["sudo", "systemctl", "start", "telemetry.service"]),
+                call(["sudo", "systemctl", "stop", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -384,18 +400,18 @@ FEATURED_TEST_VECTOR = [
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "unmask", "dhcp_relay.service"]),
-                call(["sudo", "systemctl", "enable", "dhcp_relay.service"]),
-                call(["sudo", "systemctl", "start", "dhcp_relay.service"]),
-                call(["sudo", "systemctl", "stop", "mux.service"]),
-                call(["sudo", "systemctl", "disable", "mux.service"]),
-                call(["sudo", "systemctl", "mask", "mux.service"]),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"]),
-                call(["sudo", "systemctl", "enable", "telemetry.service"]),
-                call(["sudo", "systemctl", "start", "telemetry.service"]),
+                call(["sudo", "systemctl", "unmask", "dhcp_relay.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "dhcp_relay.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "dhcp_relay.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "stop", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "mux.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -482,7 +498,7 @@ FEATURED_TEST_VECTOR = [
             },
             "enable_feature_subprocess_calls": [],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('enabled', 'error')
@@ -532,8 +548,14 @@ FEATURED_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -562,15 +584,27 @@ FEATURED_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "stop", "bgp.service"]),
-                call(["sudo", "systemctl", "disable", "bgp.service"]),
-                call(["sudo", "systemctl", "mask", "bgp.service"]),
+                call(["sudo", "systemctl", "stop", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "syncd.service"], capture_output=True, check=True, text=True),
+
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -620,8 +654,14 @@ FEATURED_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -650,15 +690,27 @@ FEATURED_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "stop", "bgp.service"]),
-                call(["sudo", "systemctl", "disable", "bgp.service"]),
-                call(["sudo", "systemctl", "mask", "bgp.service"]),
+                call(["sudo", "systemctl", "stop", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "syncd.service"], capture_output=True, check=True, text=True),
+
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -708,8 +760,14 @@ FEATURED_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -738,19 +796,30 @@ FEATURED_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "start", "bgp.service"]),
-                call(["sudo", "systemctl", "enable", "bgp.service"]),
-                call(["sudo", "systemctl", "unmask", "bgp.service"]),
-                call(["sudo", "systemctl", "start", "teamd.service"]),
-                call(["sudo", "systemctl", "enable", "teamd.service"]),
-                call(["sudo", "systemctl", "unmask", "teamd.service"]),
- 
+                call(["sudo", "systemctl", "start", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "teamd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "teamd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "teamd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "syncd.service"], capture_output=True, check=True, text=True),
+
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -800,8 +869,14 @@ FEATURED_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -830,19 +905,30 @@ FEATURED_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "start", "bgp.service"]),
-                call(["sudo", "systemctl", "enable", "bgp.service"]),
-                call(["sudo", "systemctl", "unmask", "bgp.service"]),
-                call(["sudo", "systemctl", "start", "teamd.service"]),
-                call(["sudo", "systemctl", "enable", "teamd.service"]),
-                call(["sudo", "systemctl", "unmask", "teamd.service"]),
- 
+                call(["sudo", "systemctl", "start", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "bgp.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "teamd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "teamd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "teamd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "syncd.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "syncd.service"], capture_output=True, check=True, text=True),
+
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -893,8 +979,14 @@ FEATURED_TEST_VECTOR = [
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
                     },
-
-
+                    "syncd": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
                 },
             },
             "expected_config_db": {
@@ -923,31 +1015,44 @@ FEATURED_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "state": "enabled"
                     },
+                    "syncd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(["sudo", "systemctl", "stop", "bgp@0.service"]),
-                call(["sudo", "systemctl", "disable", "bgp@0.service"]),
-                call(["sudo", "systemctl", "mask", "bgp@0.service"]),
-                call(["sudo", "systemctl", "stop", "bgp@1.service"]),
-                call(["sudo", "systemctl", "disable", "bgp@1.service"]),
-                call(["sudo", "systemctl", "mask", "bgp@1.service"]),
-                call(["sudo", "systemctl", "start", "teamd@0.service"]),
-                call(["sudo", "systemctl", "enable", "teamd@0.service"]),
-                call(["sudo", "systemctl", "unmask", "teamd@0.service"]),
-                call(["sudo", "systemctl", "start", "teamd@1.service"]),
-                call(["sudo", "systemctl", "enable", "teamd@1.service"]),
-                call(["sudo", "systemctl", "unmask", "teamd@1.service"]),
-                call(["sudo", "systemctl", "stop", "lldp@0.service"]),
-                call(["sudo", "systemctl", "disable", "lldp@0.service"]),
-                call(["sudo", "systemctl", "mask", "lldp@0.service"]),
-                call(["sudo", "systemctl", "stop", "lldp@1.service"]),
-                call(["sudo", "systemctl", "disable", "lldp@1.service"]),
-                call(["sudo", "systemctl", "mask", "lldp@1.service"]),
- 
+                call(["sudo", "systemctl", "stop", "bgp@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "bgp@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "bgp@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "stop", "bgp@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "bgp@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "bgp@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "teamd@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "teamd@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "teamd@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "teamd@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "teamd@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "teamd@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "stop", "lldp@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "lldp@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "lldp@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "stop", "lldp@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "disable", "lldp@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "mask", "lldp@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "syncd@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "syncd@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "syncd@0.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "start", "syncd@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "enable", "syncd@1.service"], capture_output=True, check=True, text=True),
+                call(["sudo", "systemctl", "unmask", "syncd@1.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')
@@ -994,7 +1099,7 @@ FEATURED_TEST_VECTOR = [
                     "lldp": {
                         "state": "enabled",
                         "delayed": "False",
-                        "has_global_scope": "True",
+                        "has_global_scope": "{% if ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['linecard']) %}False{% else %}True{% endif %}",
                         "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
                         "auto_restart": "enabled",
                         "high_mem_alert": "disabled"
@@ -1002,6 +1107,14 @@ FEATURED_TEST_VECTOR = [
                     "macsec": {
                         "state": "{% if 'type' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['type'] == 'SpineRouter' and DEVICE_RUNTIME_METADATA['MACSEC_SUPPORTED'] %}enabled{% else %}disabled{% endif %}",
                         "delayed": "False",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
+                    "pmon": {
+                        "state": "enabled",
+                        "delayed": "{% if 'type' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['type'] == 'SpineRouter' %}False{% else %}True{% endif %}",
                         "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "auto_restart": "enabled",
@@ -1029,7 +1142,7 @@ FEATURED_TEST_VECTOR = [
                     },
                     "lldp": {
                         "auto_restart": "enabled",
-                        "has_global_scope": "True",
+                        "has_global_scope": "False",
                         "has_per_asic_scope": "True",
                         "delayed": "False",
                         "high_mem_alert": "disabled",
@@ -1042,40 +1155,48 @@ FEATURED_TEST_VECTOR = [
                         "delayed": "False",
                         "high_mem_alert": "disabled",
                         "state": "enabled"
+                    },
+                    "pmon": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
                     }
                 },
             },
             "enable_feature_subprocess_calls": [
-                call(['sudo', 'systemctl', 'unmask', 'bgp@0.service']),
-                call(['sudo', 'systemctl', 'enable', 'bgp@0.service']),
-                call(['sudo', 'systemctl', 'start', 'bgp@0.service']),
-                call(['sudo', 'systemctl', 'unmask', 'bgp@1.service']),
-                call(['sudo', 'systemctl', 'enable', 'bgp@1.service']),
-                call(['sudo', 'systemctl', 'start', 'bgp@1.service']),
-                call(['sudo', 'systemctl', 'unmask', 'teamd@0.service']),
-                call(['sudo', 'systemctl', 'enable', 'teamd@0.service']),
-                call(['sudo', 'systemctl', 'start', 'teamd@0.service']),
-                call(['sudo', 'systemctl', 'unmask', 'teamd@1.service']),
-                call(['sudo', 'systemctl', 'enable', 'teamd@1.service']),
-                call(['sudo', 'systemctl', 'start', 'teamd@1.service']),
-                call(['sudo', 'systemctl', 'unmask', 'lldp.service']),
-                call(['sudo', 'systemctl', 'enable', 'lldp.service']),
-                call(['sudo', 'systemctl', 'start', 'lldp.service']),
-                call(['sudo', 'systemctl', 'unmask', 'lldp@0.service']),
-                call(['sudo', 'systemctl', 'enable', 'lldp@0.service']),
-                call(['sudo', 'systemctl', 'start', 'lldp@0.service']),
-                call(['sudo', 'systemctl', 'unmask', 'lldp@1.service']),
-                call(['sudo', 'systemctl', 'enable', 'lldp@1.service']),
-                call(['sudo', 'systemctl', 'start', 'lldp@1.service']),
-                call(['sudo', 'systemctl', 'unmask', 'macsec@0.service']),
-                call(['sudo', 'systemctl', 'enable', 'macsec@0.service']),
-                call(['sudo', 'systemctl', 'start', 'macsec@0.service']),
-                call(['sudo', 'systemctl', 'unmask', 'macsec@1.service']),
-                call(['sudo', 'systemctl', 'enable', 'macsec@1.service']),
-                call(['sudo', 'systemctl', 'start', 'macsec@1.service'])
+                call(['sudo', 'systemctl', 'unmask', 'bgp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'bgp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'bgp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'bgp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'bgp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'bgp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'teamd@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'teamd@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'teamd@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'teamd@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'teamd@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'teamd@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'mask', 'lldp.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'disable', 'lldp.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'stop', 'lldp.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'lldp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'lldp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'lldp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'lldp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'lldp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'lldp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'macsec@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'macsec@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'macsec@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'macsec@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'macsec@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'macsec@1.service'], capture_output=True, check=True, text=True)
             ],
             "daemon_reload_subprocess_call": [
-                call(["sudo", "systemctl", "daemon-reload"]),
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error')

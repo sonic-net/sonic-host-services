@@ -82,6 +82,80 @@ class TestGCU(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
+    def test_replace_db(self, MockInit, MockBusName, MockSystemBus):
+        with mock.patch("subprocess.run") as mock_run:
+            res_mock = mock.Mock()
+            test_ret = 0
+            test_msg = b"Error: this is the test message\nHello world\n"
+            attrs = {"returncode": test_ret, "stderr": test_msg}
+            res_mock.configure_mock(**attrs)
+            mock_run.return_value = res_mock
+            patch_text = "{}"
+            gcu_stub = gcu.GCU(gcu.MOD_NAME)
+            ret, msg = gcu_stub.replace_db(patch_text)
+            call_args = mock_run.call_args[0][0]
+            assert "replace" in call_args
+            assert "CONFIGDB" in call_args
+            assert '/dev/stdin' in call_args
+            assert ret == test_ret, "Return value is wrong"
+            assert msg == "", "Return message is wrong"
+        with mock.patch("subprocess.run") as mock_run:
+            res_mock = mock.Mock()
+            test_ret = 1
+            test_msg = b"Error: this is the test message\nHello world\n"
+            attrs = {"returncode": test_ret, "stderr": test_msg}
+            res_mock.configure_mock(**attrs)
+            mock_run.return_value = res_mock
+            patch_text = "{}"
+            gcu_stub = gcu.GCU(gcu.MOD_NAME)
+            ret, msg = gcu_stub.replace_db(patch_text)
+            call_args = mock_run.call_args[0][0]
+            assert "replace" in call_args
+            assert "CONFIGDB" in call_args
+            assert '/dev/stdin' in call_args
+            assert ret == test_ret, "Return value is wrong"
+            assert msg == "Error: this is the test message", "Return message is wrong"
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_replace_yang(self, MockInit, MockBusName, MockSystemBus):
+        with mock.patch("subprocess.run") as mock_run:
+            res_mock = mock.Mock()
+            test_ret = 0
+            test_msg = b"Error: this is the test message\nHello world\n"
+            attrs = {"returncode": test_ret, "stderr": test_msg}
+            res_mock.configure_mock(**attrs)
+            mock_run.return_value = res_mock
+            patch_text = "{}"
+            gcu_stub = gcu.GCU(gcu.MOD_NAME)
+            ret, msg = gcu_stub.replace_yang(patch_text)
+            call_args = mock_run.call_args[0][0]
+            assert "replace" in call_args
+            assert "SONICYANG" in call_args
+            assert '/dev/stdin' in call_args
+            assert ret == test_ret, "Return value is wrong"
+            assert msg == "", "Return message is wrong"
+        with mock.patch("subprocess.run") as mock_run:
+            res_mock = mock.Mock()
+            test_ret = 1
+            test_msg = b"Error: this is the test message\nHello world\n"
+            attrs = {"returncode": test_ret, "stderr": test_msg}
+            res_mock.configure_mock(**attrs)
+            mock_run.return_value = res_mock
+            patch_text = "{}"
+            gcu_stub = gcu.GCU(gcu.MOD_NAME)
+            ret, msg = gcu_stub.replace_yang(patch_text)
+            call_args = mock_run.call_args[0][0]
+            assert "replace" in call_args
+            assert "SONICYANG" in call_args
+            assert '/dev/stdin' in call_args
+            assert ret == test_ret, "Return value is wrong"
+            assert msg == "Error: this is the test message", "Return message is wrong"
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
     def test_create_checkpoint(self, MockInit, MockBusName, MockSystemBus):
         with mock.patch("subprocess.run") as mock_run:
             res_mock = mock.Mock()

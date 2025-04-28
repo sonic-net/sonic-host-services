@@ -30,7 +30,8 @@ setup(
     maintainer = 'Joe LeVeque',
     maintainer_email = 'jolevequ@microsoft.com',
     packages = [
-        'host_modules'
+        'host_modules',
+	'utils',
     ],
     scripts = [
         'scripts/caclmgrd',
@@ -40,13 +41,16 @@ setup(
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
-        'scripts/sonic-host-server'
+        'scripts/sonic-host-server',
+        'scripts/ldap.py'
     ],
     install_requires = [
         'dbus-python',
         'systemd-python',
         'Jinja2>=2.10',
-        'PyGObject',
+        'PyGObject==3.50.0',
+        'pycairo==1.26.1',
+        'psutil'
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',
@@ -57,8 +61,18 @@ setup(
         'pytest',
         'pyfakefs',
         'sonic-py-common',
-        'deepdiff==6.2.2'
+        'deepdiff==6.2.2',
+        'psutil'
     ],
+    extras_require = {
+        "testing": [
+            'parameterized',
+            'pytest',
+            'pyfakefs',
+            'sonic-py-common',
+            'deepdiff==6.2.2'
+        ]
+    },
     classifiers = [
         'Development Status :: 3 - Alpha',
         'Environment :: Console',

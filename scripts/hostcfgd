@@ -9,6 +9,8 @@ import syslog
 import signal
 import re
 import jinja2
+import psutil
+import time
 import json
 from shutil import copy2
 from datetime import datetime
@@ -18,6 +20,12 @@ from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 from sonic_installer import bootloader
 from sonic_py_common.security_cipher import master_key_mgr 
+
+hostcfg_file_path = os.path.abspath(__file__)
+hostcfg_dir_path = os.path.dirname(hostcfg_file_path)
+sys.path.append(hostcfg_dir_path)
+import ldap
+
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -32,6 +40,16 @@ NSS_RADIUS_CONF = "/etc/radius_nss.conf"
 NSS_RADIUS_CONF_TEMPLATE = "/usr/share/sonic/templates/radius_nss.conf.j2"
 PAM_RADIUS_AUTH_CONF_TEMPLATE = "/usr/share/sonic/templates/pam_radius_auth.conf.j2"
 NSS_CONF = "/etc/nsswitch.conf"
+LDAP_CONF_TEMPLATE = "/usr/share/sonic/templates/ldap.conf.j2"
+LDAP_CONF = "/etc/ldap/ldap.conf"
+NSLCD_CONF_TEMPLATE = "/usr/share/sonic/templates/nslcd.conf.j2"
+NSLCD_CONF = "/etc/nslcd.conf"
+PAM_SESSION_CONF = "/etc/pam.d/common-session"
+PAM_SESSION_NONINT_CONF = "/etc/pam.d/common-session-noninteractive"
+PAM_SESSION_LAST_LINE = '# end of pam-auth-update config'
+MKHOME_DIR_RULE = 'session required        pam_mkhomedir.so skel=/etc/skel/ umask=0022 silent'
+MKHOME_DIR_LIB = 'pam_mkhomedir.so'
+MKHOME_DIR_LIB_REG = r'.*pam_mkhomedir'
 ETC_PAMD_SSHD = "/etc/pam.d/sshd"
 ETC_PAMD_LOGIN = "/etc/pam.d/login"
 ETC_LOGIN_DEF = "/etc/login.defs"
@@ -41,13 +59,18 @@ LINUX_DEFAULT_PASS_MAX_DAYS = 99999
 LINUX_DEFAULT_PASS_WARN_AGE = 7
 
 # Ssh min-max values
-SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1}
-SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600, "ports": 65535}
-SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries" , "login_timeout": "LoginGraceTime"}
+SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1,
+                "inactivity_timeout": 0, "max_sessions": 0}
+SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600,
+                "ports": 65535, "inactivity_timeout": 35000,
+                "max_sessions": 100}
+SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries",
+                  "login_timeout": "LoginGraceTime", "ports": "Port",
+                  "inactivity_timeout": "ClientAliveInterval"}
 
 ACCOUNT_NAME = 0 # index of account name
-AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
-            'WARN_DAYS': {'REGEX_DAYS': r'^PASS_WARN_AGE[ \t]*(?P<warn_days>\d*)', 'DAYS': 'warn_days', 'CHAGE_FLAG': '-W '}
+AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>-?\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
+            'WARN_DAYS': {'REGEX_DAYS': r'^PASS_WARN_AGE[ \t]*(?P<warn_days>-?\d*)', 'DAYS': 'warn_days', 'CHAGE_FLAG': '-W '}
             }
 PAM_LIMITS_CONF_TEMPLATE = "/usr/share/sonic/templates/pam_limits.j2"
 LIMITS_CONF_TEMPLATE = "/usr/share/sonic/templates/limits.conf.j2"
@@ -104,7 +127,7 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
         check_output_pipe(cmd0, cmd1, cmd2)
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+            syslog.syslog(syslog.LOG_WARNING, "{} - failed: return code - {}, output:\n{}"
                   .format(err.cmd, err.returncode, err.output))
         if raise_exception:
             raise
@@ -147,6 +170,79 @@ def obfuscate(data):
         return data
 
 
+def run_cmd_output_custom_log(cmd, custom_log_func=None):
+    syslog.syslog(syslog.LOG_INFO, "run_cmd_output_custom_log - Executing cmd: {}".format(cmd))
+    cmd_output = b''
+    try:
+        if not isinstance(cmd, list):
+            raise TypeError(f'{cmd} is not list')
+        cmd_output = subprocess.check_output(cmd)
+        syslog.syslog(syslog.LOG_INFO, f"cmd_output: {cmd_output.decode()}")
+    except subprocess.CalledProcessError as err:
+        err_log_msg = f"cmd: {err.cmd}, return code: {err.returncode}, output: {err.output}"
+        if not custom_log_func:
+            syslog.syslog(syslog.LOG_ERR, err_log_msg)
+        else:
+            custom_log_func(err, err_log_msg)
+        cmd_output = err.output
+
+    return cmd_output
+
+
+def generate_file_from_template(template_j2, file_conf_output, permission, kwargs):
+    try:
+        syslog.syslog(syslog.LOG_INFO, f'generate_file_from_template template_j2={template_j2}'
+                      f'file_conf_output={file_conf_output} kwargs={kwargs}')
+        template_j2_abspath = os.path.abspath(template_j2)
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
+        env.filters['sub'] = sub
+        template_j2_ob = env.get_template(template_j2_abspath)
+        file_conf = template_j2_ob.render(**kwargs)
+
+        with open(file_conf_output + ".tmp", 'w') as f:
+            f.write(file_conf)
+        os.chmod(file_conf_output + ".tmp", permission)
+        os.rename(file_conf_output + ".tmp", file_conf_output)
+    except Exception as e:
+        log_msg = f'Failed generate_file_from_template error={e}'
+        syslog.syslog(syslog.LOG_ERR, log_msg)
+
+def custom_service_en_log_func(err, err_log_msg):
+    """
+    function checks if there are some log messages from cmd
+     that decided to modify the log level to INFO instead ERROR.
+    """
+    # Omit error response when checking if a service is enabled.
+    syslog.syslog(syslog.LOG_DEBUG, f"err: {err}, err_log_msg: {err_log_msg}")
+    if 'is-enabled' in err.cmd and 'masked' in err.output.decode():
+        syslog.syslog(syslog.LOG_INFO, err_log_msg)
+    else:
+        syslog.syslog(syslog.LOG_ERR, err_log_msg)
+
+def restart_service(service_name):
+    cmd_service_return = run_cmd_output_custom_log(['systemctl', 'is-enabled', service_name], custom_service_en_log_func)
+    if 'masked' in cmd_service_return.decode():
+        syslog.syslog(syslog.LOG_DEBUG, f"{service_name}: unmask & starting")
+        run_cmd_output_custom_log(['systemctl', 'unmask', service_name])
+        run_cmd_output_custom_log(['systemctl', 'start', service_name])
+    else:
+        syslog.syslog(syslog.LOG_DEBUG, f"{service_name}: restarting")
+        run_cmd_output_custom_log(['systemctl', 'restart', service_name])
+
+
+def handle_nslcd_service(is_ldap_config_complete):
+    if is_ldap_config_complete:
+        # nslcd service should be restart after any ldap configuration.
+        restart_service("nslcd")
+    else:
+        # stopping nslcd service when Ldap feature disabled
+        cmd_nslcd_return = run_cmd_output_custom_log(['systemctl', 'is-enabled', 'nslcd'], custom_service_en_log_func)
+        if 'enabled' in cmd_nslcd_return.decode():
+            syslog.syslog(syslog.LOG_DEBUG, "nslcd: deactivating (Ldap disabled)")
+            run_cmd_output_custom_log(['systemctl', 'stop', 'nslcd'])
+            run_cmd_output_custom_log(['systemctl', 'mask', 'nslcd'])
+
+
 def get_pid(procname):
     for dirname in os.listdir('/proc'):
         if dirname == 'curproc':
@@ -159,6 +255,18 @@ def get_pid(procname):
         if procname in content:
             return dirname
     return ""
+
+
+def is_match(pattern, file_path):
+    syslog.syslog(syslog.LOG_DEBUG, "looking for pattern {} line in file {}".format(pattern, file_path))
+    res_match = False
+    with open(file_path, 'r') as f:
+        for (i, line) in enumerate(f):
+            if re.match(pattern, line):
+                syslog.syslog(syslog.LOG_INFO, "matched pattern {} in line {}".format(pattern, str(i)))
+                res_match = True
+                break
+    return res_match
 
 
 class Iptables(object):
@@ -236,7 +344,8 @@ class Iptables(object):
 
 
 class AaaCfg(object):
-    def __init__(self):
+    def __init__(self, CfgDb):
+        self.config_db = CfgDb
         self.authentication_default = {
             'login': 'local',
         }
@@ -265,6 +374,10 @@ class AaaCfg(object):
         self.radius_global = {}
         self.radius_servers = {}
 
+        self.ldap_global_default = {}
+        self.ldap_global = {}
+        self.ldap_servers = {}
+
         self.authentication = {}
         self.authorization = {}
         self.accounting = {}
@@ -274,7 +387,7 @@ class AaaCfg(object):
         self.hostname = ""
 
     # Load conf from ConfigDb
-    def load(self, aaa_conf, tac_global_conf, tacplus_conf, rad_global_conf, radius_conf):
+    def load(self, aaa_conf, tac_global_conf, tacplus_conf, rad_global_conf, radius_conf, ldap_global_conf, ldap_conf):
         for row in aaa_conf:
             self.aaa_update(row, aaa_conf[row], modify_conf=False)
         for row in tac_global_conf:
@@ -286,6 +399,11 @@ class AaaCfg(object):
             self.radius_global_update(row, rad_global_conf[row], modify_conf=False)
         for row in radius_conf:
             self.radius_server_update(row, radius_conf[row], modify_conf=False)
+
+        for row in ldap_global_conf:
+            self.ldap_global_update(row, ldap_global_conf[row], modify_conf=False)
+        for row in ldap_conf:
+            self.ldap_server_update(row, ldap_conf[row], modify_conf=False)
 
         self.modify_conf_file()
 
@@ -303,6 +421,17 @@ class AaaCfg(object):
         if modify_conf:
             self.modify_conf_file()
 
+        if key == 'authentication':
+            # Enable/Disable LDAP service (nslcd) according LDAP configuration.
+            handle_nslcd_service(self.is_ldap_config_complete())
+
+    def is_ldap_config_complete(self):
+        if self.ldap_global == {}:
+            return False
+        return self.ldap_global.get('bind_dn', "") and self.ldap_global.get('base_dn', "") and \
+            self.ldap_global.get('bind_password', "") and 'ldap' in self.authentication.get('login', "") and \
+                self.ldap_servers
+
     def pick_src_intf_ipaddrs(self, keys, src_intf):
         new_ipv4_addr = ""
         new_ipv6_addr = ""
@@ -313,7 +442,7 @@ class AaaCfg(object):
             if new_ipv4_addr != "" and new_ipv6_addr != "":
                 break
             ip_str = it[1].split("/")[0]
-            ip_addr = ipaddress.IPAddress(ip_str)
+            ip_addr = ipaddress.ip_address(ip_str)
             # Pick the first IP address from the table that matches the source interface
             if isinstance(ip_addr, ipaddress.IPv6Address):
                 if new_ipv6_addr != "":
@@ -404,6 +533,25 @@ class AaaCfg(object):
         if modify_conf:
             self.modify_conf_file()
 
+    def ldap_global_update(self, key, data, modify_conf=True):
+        if key == 'global':
+            self.ldap_global = data
+
+            if modify_conf:
+                self.modify_conf_file()
+            handle_nslcd_service(self.is_ldap_config_complete())
+
+    def ldap_server_update(self, key, data, modify_conf=True):
+        if data == {}:
+            if key in self.ldap_servers:
+                del self.ldap_servers[key]
+        else:
+            self.ldap_servers[key] = data
+
+        if modify_conf:
+            self.modify_conf_file()
+        handle_nslcd_service(self.is_ldap_config_complete())
+
     def hostname_update(self, hostname, modify_conf=True):
         if self.hostname == hostname:
             return
@@ -468,15 +616,14 @@ class AaaCfg(object):
 
         syslog.syslog(syslog.LOG_INFO, "file size check pass: {} size is ({}) bytes".format(filename, size))
 
-
     def modify_single_file(self, filename, operations=None):
         if operations:
             e_list = ['-e'] * len(operations)
             e_operations = [item for sublist in zip(e_list, operations) for item in sublist]
             with open(filename+'.new', 'w') as f:
                 subprocess.call(["sed"] + e_operations + [filename], stdout=f)
-            subprocess.call(["mv", '-f', filename, filename+'.old'])
-            subprocess.call(['mv', '-f', filename+'.new', filename])
+            subprocess.call(["cp", '-f', filename, filename+'.old'])
+            subprocess.call(['cp', '-f', filename+'.new', filename])
 
         self.check_file_not_empty(filename)
 
@@ -489,6 +636,9 @@ class AaaCfg(object):
         accounting.update(self.accounting)
         tacplus_global = self.tacplus_global_default.copy()
         tacplus_global.update(self.tacplus_global)
+        ldap_global = self.ldap_global_default.copy()
+        ldap_global.update(self.ldap_global)
+
         if 'src_ip' in tacplus_global:
             src_ip = tacplus_global['src_ip']
         else:
@@ -541,9 +691,9 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf found. Ignoring src_ip".format(addr))
                     # RADIUS: If server.src_intf, then get the corresponding
                     # src_ip based on the server.ip, and set it.
-                    src_ip = self.get_interface_ip(server['src_intf'], addr)
-                    if len(src_ip) > 0:
-                        server['src_ip'] = src_ip
+                    rad_src_ip = self.get_interface_ip(server['src_intf'], addr)
+                    if len(rad_src_ip) > 0:
+                        server['src_ip'] = rad_src_ip
                     elif 'src_ip' in server:
                         syslog.syslog(syslog.LOG_INFO, \
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
@@ -552,10 +702,23 @@ class AaaCfg(object):
                 radsrvs_conf.append(server)
             radsrvs_conf = sorted(radsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
+        # LDAP server configuration
+        ldapsrvs_conf = []
+        if self.ldap_servers:
+            for addr in self.ldap_servers:
+                server = ldap_global.copy()
+                server['ip'] = addr
+                server.update(self.ldap_servers[addr])
+                ldapsrvs_conf.append(server)
+            ldapsrvs_conf = sorted(ldapsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
+
         template_file = os.path.abspath(PAM_AUTH_CONF_TEMPLATE)
         env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
         env.filters['sub'] = sub
         template = env.get_template(template_file)
+
+        if 'ldap' in authentication['login']:
+            pam_conf = template.render(debug=self.debug, trace=self.trace, auth=authentication, servers=ldapsrvs_conf)
         if 'radius' in authentication['login']:
             pam_conf = template.render(debug=self.debug, trace=self.trace, auth=authentication, servers=radsrvs_conf)
         else:
@@ -567,6 +730,17 @@ class AaaCfg(object):
         os.chmod(PAM_AUTH_CONF + ".tmp", 0o644)
         os.rename(PAM_AUTH_CONF + ".tmp", PAM_AUTH_CONF)
 
+        if os.path.isfile(PAM_SESSION_CONF):
+            # Support to add home directory to LDAP AAA users
+            if 'ldap' in authentication['login']:
+                if not is_match(MKHOME_DIR_LIB_REG, PAM_SESSION_CONF):
+                    modify_single_file_inplace(PAM_SESSION_CONF, [f"/^{PAM_SESSION_LAST_LINE}/i {MKHOME_DIR_RULE}"])
+                    modify_single_file_inplace(PAM_SESSION_NONINT_CONF, [f"/^{PAM_SESSION_LAST_LINE}/i {MKHOME_DIR_RULE}"])
+            else: # login without ldap
+                syslog.syslog(syslog.LOG_DEBUG, f"auth login: not ldap type - rm {MKHOME_DIR_RULE} from  {PAM_SESSION_CONF} file.")
+                modify_single_file_inplace(PAM_SESSION_CONF, [ f"/{MKHOME_DIR_LIB}/d" ])
+                modify_single_file_inplace(PAM_SESSION_NONINT_CONF, [ f"/{MKHOME_DIR_LIB}/d" ])
+
         # Modify common-auth include file in /etc/pam.d/login, sshd.
         # /etc/pam.d/sudo is not handled, because it would change the existing
         # behavior. It can be modified once a config knob is added for sudo.
@@ -577,19 +751,36 @@ class AaaCfg(object):
             self.modify_single_file(ETC_PAMD_SSHD,  [ "/^@include/s/common-auth-sonic$/common-auth/" ])
             self.modify_single_file(ETC_PAMD_LOGIN, [ "/^@include/s/common-auth-sonic$/common-auth/" ])
 
-        # Add tacplus/radius in nsswitch.conf if TACACS+/RADIUS enable
-        if 'tacacs+' in authentication['login']:
+        # Add tacplus/radius/ldap in nsswitch.conf if TACACS+/RADIUS enable
+        if 'tacacs+' in authentication['login'] and servers_conf:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ ldap//" ])
                 self.modify_single_file(NSS_CONF, [ "/tacplus/b", "/^passwd/s/compat/tacplus &/", "/^passwd/s/files/tacplus &/" ])
+                self.modify_single_file(NSS_CONF, [ "/^group/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^shadow/s/ ldap//" ])
+
         elif 'radius' in authentication['login']:
             if os.path.isfile(NSS_CONF):
-                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //'" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ ldap//" ])
                 self.modify_single_file(NSS_CONF, [ "/radius/b", "/^passwd/s/compat/& radius/", "/^passwd/s/files/& radius/" ])
+                self.modify_single_file(NSS_CONF, [ "/^group/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^shadow/s/ ldap//" ])
+        elif 'ldap' in authentication['login']:
+            if os.path.isfile(NSS_CONF):
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
+                self.modify_single_file(NSS_CONF, [ "/ldap/b", "/^passwd/s/compat/& ldap/", "/^passwd/s/files/& ldap/" ])
+                self.modify_single_file(NSS_CONF, [ "/ldap/b", "/^group/s/compat/& ldap/", "/^group/s/files/& ldap/" ])
+                self.modify_single_file(NSS_CONF, [ "/ldap/b", "/^shadow/s/compat/& ldap/", "/^shadow/s/files/& ldap/" ])
         else:
             if os.path.isfile(NSS_CONF):
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/tacplus //g" ])
                 self.modify_single_file(NSS_CONF, [ "/^passwd/s/ radius//" ])
+                self.modify_single_file(NSS_CONF, [ "/^passwd/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^group/s/ ldap//" ])
+                self.modify_single_file(NSS_CONF, [ "/^shadow/s/ ldap//" ])
 
         # Add tacplus authorization configration in nsswitch.conf
         tacacs_authorization_conf = None
@@ -658,6 +849,19 @@ class AaaCfg(object):
             syslog.syslog(syslog.LOG_ERR,
                     "{} - failed: return code - {}, output:\n{}"
                     .format(err.cmd, err.returncode, err.output))
+
+
+        # Set NSLCD conf (LDAP)
+        generate_file_from_template(NSLCD_CONF_TEMPLATE, NSLCD_CONF, 0o640, {'servers': ldapsrvs_conf, 'ldap_cfg': ldap.LdapCfg})
+
+        # Set LDAP conf
+        if not os.path.exists(LDAP_CONF):
+            try:
+                os.makedirs(os.path.dirname(LDAP_CONF))
+            except Exception as err:
+                syslog.syslog(syslog.LOG_ERR, "Error occurred when using cmd makedirs: {}".format(err))
+        generate_file_from_template(LDAP_CONF_TEMPLATE, LDAP_CONF, 0o644, {'servers': ldapsrvs_conf, 'ldap_cfg': ldap.LdapCfg})
+
 
 def modify_single_file_inplace(filename, operations=None):
     if operations:
@@ -733,15 +937,11 @@ class PasswHardening(object):
         if passw_policies:
             if 'state' in passw_policies:
                 if passw_policies['state'] == 'enabled':
-                    if 'expiration' in passw_policies:
-                        if int(self.passw_policies['expiration']) != 0: # value '0' meaning age policy is disabled
-                            #  the logic is to modify the expiration time according the last updated modificatiion
-                            #
-                            curr_expiration = int(passw_policies['expiration'])
-
-                    if 'expiration_warning' in passw_policies:
-                        if int(self.passw_policies['expiration_warning']) != 0: # value '0' meaning age policy is disabled
-                            curr_expiration_warning = int(passw_policies['expiration_warning'])
+                    # Special values of expiration/expiration warning
+                    # 0: meaning password will be expired/warning immediately.
+                    # -1: meaning password expired/warning never.
+                    curr_expiration = int(passw_policies.get('expiration', -1))
+                    curr_expiration_warning = int(passw_policies.get('expiration_warning', -1))
 
         if self.is_passwd_aging_expire_update(curr_expiration, 'MAX_DAYS'):
             # Set aging policy for existing users
@@ -833,7 +1033,6 @@ class PasswHardening(object):
             if account_number >= uid_min and account_number <= uid_max:
                 normal_accounts.append(account_spl[ACCOUNT_NAME])
 
-        normal_accounts.append('root') # root is also a candidate to be age modify.
         return normal_accounts
 
     def modify_passw_conf_file(self):
@@ -922,9 +1121,15 @@ class SshServer(object):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format(key, value))
             elif key in SSH_CONFIG_NAMES:
                 # search replace configuration - if not in config file - append
+                if key == "inactivity_timeout":
+                    # translate min to sec.
+                    value = int(value) * 60
                 kv_str = "{} {}".format(SSH_CONFIG_NAMES[key], str(value)) # name +' '+ value format
                 modify_single_file_inplace(SSH_CONFG_TMP,['-E', "/^#?" + SSH_CONFIG_NAMES[key]+"/{h;s/.*/"+
                  kv_str + "/};${x;/^$/{s//" + kv_str + "/;H};x}"])
+            elif key in ['max_sessions']:
+                # Ignore, these parameters handled in other modules
+                continue
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
 
@@ -944,20 +1149,30 @@ class SshServer(object):
 class KdumpCfg(object):
     def __init__(self, CfgDb):
         self.config_db = CfgDb
-        self.kdump_defaults = { "enabled" : "false",
-                                "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
-                                "num_dumps": "3" }
+        self.kdump_defaults = {
+            "enabled": "false",
+            "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
+            "num_dumps": "3",
+            "remote": "false",            # New feature: remote, default is "false"
+            "ssh_string": "user@localhost",   # New feature: SSH key, default value
+            "ssh_path": "/a/b/c"          # New feature: SSH path, default value
+        }
 
     def load(self, kdump_table):
         """
         Set the KDUMP table in CFG DB to kdump_defaults if not set by the user
         """
         syslog.syslog(syslog.LOG_INFO, "KdumpCfg init ...")
+        data = {}
         kdump_conf = kdump_table.get("config", {})
         for row in self.kdump_defaults:
             value = self.kdump_defaults.get(row)
             if not kdump_conf.get(row):
-                self.config_db.mod_entry("KDUMP", "config", {row : value})
+                self.config_db.mod_entry("KDUMP", "config", {row: value})
+            else:
+                value = kdump_conf[row]
+            data[row] = value
+        self.kdump_update("config", data)
 
     def kdump_update(self, key, data):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
@@ -987,90 +1202,155 @@ class KdumpCfg(object):
                 num_dumps = data.get("num_dumps")
             run_cmd(["sonic-kdump-config", "--num_dumps", num_dumps])
 
+            # Remote option
+            remote = self.kdump_defaults["remote"]
+            if data.get("remote") is not None:
+                remote = data.get("remote")
+            run_cmd(["sonic-kdump-config", "--remote", remote])
+
+            ssh_string = self.kdump_defaults["ssh_string"]
+            if data.get("ssh_string") is not None:
+                    run_cmd(["sonic-kdump-config", "--ssh_string", ssh_string])
+            # ssh_path
+            ssh_path= self.kdump_defaults["ssh_path"]
+            if data.get("ssh_path") is not None:
+                    run_cmd(["sonic-kdump-config", "--ssh_path", ssh_path])
+
 class NtpCfg(object):
     """
     NtpCfg Config Daemon
-    1) ntp-config.service handles the configuration updates and then starts ntp.service
-    2) Both of them start after all the feature services start
+    1) chrony.service's ExecStartPre handles the configuration updates
+    2) They start after all the feature services start
     3) Purpose of this daemon is to propagate runtime config changes in
-       NTP, NTP_SERVER and LOOPBACK_INTERFACE
+       NTP, NTP_SERVER, NTP_KEY, and LOOPBACK_INTERFACE
     """
+    CHRONY_RESTART = ['systemctl', 'restart', 'chrony']
+
     def __init__(self):
-        self.ntp_global = {}
-        self.ntp_servers = set()
+        self.cache = {}
 
-    def load(self, ntp_global_conf, ntp_server_conf):
-        syslog.syslog(syslog.LOG_INFO, "NtpCfg load ...")
+    def load(self, ntp_global_conf: dict, ntp_server_conf: dict,
+                   ntp_key_conf: dict):
+        """Load initial NTP configuration
 
-        for row in ntp_global_conf:
-            self.ntp_global_update(row, ntp_global_conf[row], is_load=True)
+        Force load cache on init. NTP config should be taken at boot-time by
+        chrony services. So loading whole config here.
 
-        # Force reload on init
-        self.ntp_server_update(0, None, is_load=True)
+        Args:
+            ntp_global_conf:    Global configuration
+            ntp_server_conf:    Servers configuration
+            ntp_key_conf:       Keys configuration
+        """
+
+        syslog.syslog(syslog.LOG_INFO, "NtpCfg: load initial")
+
+        if ntp_global_conf is None:
+            ntp_global_conf = {}
+
+        # Force load cache on init.
+        # NTP config should be taken at boot-time by chrony
+        # services.
+        self.cache = {
+            'global': ntp_global_conf.get('global', {}),
+            'servers': ntp_server_conf,
+            'keys': ntp_key_conf
+        }
 
     def handle_ntp_source_intf_chg(self, intf_name):
-        # if no ntp server configured, do nothing
-        if not self.ntp_servers:
+        # If no ntp server configured, do nothing. Source interface will be
+        # taken once any server will be configured.
+        if not self.cache.get('servers'):
             return
 
         # check only the intf configured as source interface
-        if intf_name not in self.ntp_global.get('src_intf', '').split(';'):
+        ifs = self.cache.get('global', {}).get('src_intf', '').split(';')
+        if intf_name not in ifs:
             return
-        else:
-            # just restart ntp config
-            cmd = ['systemctl', 'restart', 'ntp-config']
-            run_cmd(cmd)
 
-    def ntp_global_update(self, key, data, is_load=False):
-        syslog.syslog(syslog.LOG_INFO, 'NTP GLOBAL Update')
-        orig_src = self.ntp_global.get('src_intf', '')
-        orig_src_set = set(orig_src.split(";"))
-        orig_vrf = self.ntp_global.get('vrf', '')
+        # Just restart chrony
+        try:
+            run_cmd(self.CHRONY_RESTART, True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
+                                          'chrony service')
+            return
 
-        new_src = data.get('src_intf', '')
-        new_src_set = set(new_src.split(";"))
-        new_vrf = data.get('vrf', '')
+    def ntp_global_update(self, key: str, data: dict):
+        """Update NTP global configuration
+
+        The table holds NTP global configuration. It has some configs that
+        require reloading only but some other require restarting chrony daemon.
+        Handle each of them accordingly.
+
+        Args:
+            key:        Triggered table's key. Should be always "global"
+            data:       Global configuration data
+        """
+
+        syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Global configuration update')
+        if key != 'global' or self.cache.get('global', {}) == data:
+            syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Nothing to update')
+            return
+
+        syslog.syslog(syslog.LOG_INFO, f'NtpCfg: Set global config: {data}')
+
+        old_dhcp = self.cache.get(key, {}).get('dhcp')
+        old_vrf = self.cache.get(key, {}).get('vrf')
+        new_dhcp = data.get('dhcp')
+        new_vrf = data.get('vrf')
+
+        # Restarting the service
+        try:
+            run_cmd(self.CHRONY_RESTART, True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart chrony'
+                                          'service')
+            return
 
         # Update the Local Cache
-        self.ntp_global = data
+        self.cache[key] = data
 
-        # If initial load don't restart daemon
-        if is_load: return
+    def ntp_srv_key_update(self, ntp_servers: dict, ntp_keys: dict):
+        """Update NTP server/key configuration
 
-        # check if ntp server configured, if not, do nothing
-        if not self.ntp_servers:
-            syslog.syslog(syslog.LOG_INFO, "No ntp server when global config change, do nothing")
+        The tables holds only NTP servers config and/or NTP authentication keys
+        config, so any change to those tables should cause NTP config reload.
+        It does not make sense to handle each of the separately. NTP config
+        reload takes whole configuration, so once got to this handler - cache
+        whole config.
+
+        Args:
+            ntp_servers:    Servers config table
+            ntp_keys:       Keys config table
+        """
+
+        syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Server/key configuration '
+                                         'update')
+
+        if (self.cache.get('servers', {}) == ntp_servers and
+            self.cache.get('keys', {}) == ntp_keys):
+            syslog.syslog(syslog.LOG_NOTICE, 'NtpCfg: Nothing to update')
             return
 
-        if orig_src_set != new_src_set:
-            syslog.syslog(syslog.LOG_INFO, "ntp global update for source intf old {} new {}, restarting ntp-config"
-                          .format(orig_src_set, new_src_set))
-            cmd = ['systemctl', 'restart', 'ntp-config']
-            run_cmd(cmd)
-        elif new_vrf != orig_vrf:
-            syslog.syslog(syslog.LOG_INFO, "ntp global update for vrf old {} new {}, restarting ntp service"
-                            .format(orig_vrf, new_vrf))
-            cmd = ['service', 'ntp', 'restart']
-            run_cmd(cmd)
+        # Pop keys values to print
+        ntp_keys_print = copy.deepcopy(ntp_keys)
+        for key in ntp_keys_print:
+            ntp_keys_print[key].pop('value', None)
 
-    def ntp_server_update(self, key, op, is_load=False):
-        syslog.syslog(syslog.LOG_INFO, 'ntp server update key {}'.format(key))
+        syslog.syslog(syslog.LOG_INFO, f'NtpCfg: Set servers: {ntp_servers}')
+        syslog.syslog(syslog.LOG_INFO, f'NtpCfg: Set keys: {ntp_keys_print}')
 
-        restart_config = False
-        if not is_load:
-            if op == "SET" and key not in self.ntp_servers:
-                restart_config = True
-                self.ntp_servers.add(key)
-            elif op == "DEL" and key in self.ntp_servers:
-                restart_config = True
-                self.ntp_servers.remove(key)
-        else:
-            restart_config = True
+        # Restarting the service
+        try:
+            run_cmd(self.CHRONY_RESTART, True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart '
+                                          'chrony service')
+            return
 
-        if restart_config:
-            cmd = ['systemctl', 'restart', 'ntp-config']
-            syslog.syslog(syslog.LOG_INFO, 'ntp server update, restarting ntp-config, ntp servers configured {}'.format(self.ntp_servers))
-            run_cmd(cmd)
+        # Updating the cache
+        self.cache['servers'] = ntp_servers
+        self.cache['keys'] = ntp_keys
 
 class PamLimitsCfg(object):
     """
@@ -1082,15 +1362,30 @@ class PamLimitsCfg(object):
         self.config_db = config_db
         self.hwsku = ""
         self.type = ""
+        self.max_sessions = None
 
     # Load config from ConfigDb and render config file/
     def update_config_file(self):
         device_metadata = self.config_db.get_table('DEVICE_METADATA')
-        if "localhost" not in device_metadata:
+        ssh_server_policies = {}
+        try:
+            ssh_server_policies = self.config_db.get_table('SSH_SERVER')
+        except KeyError:
+            """Dont throw except in case we don`t have SSH_SERVER config."""
+            pass
+
+        if "localhost" not in device_metadata and "POLICIES" not in ssh_server_policies:
             return
 
         self.read_localhost_config(device_metadata["localhost"])
+        self.read_max_sessions_config(ssh_server_policies.get("POLICIES", None))
         self.render_conf_file()
+
+    # Read max_sessions config
+    def read_max_sessions_config(self, ssh_server_policies):
+        if ssh_server_policies is not None:
+            max_sess_cfg = ssh_server_policies.get('max_sessions', 0)
+            self.max_sessions = max_sess_cfg if max_sess_cfg != 0 else None
 
     # Read localhost config
     def read_localhost_config(self, localhost):
@@ -1108,7 +1403,6 @@ class PamLimitsCfg(object):
     def render_conf_file(self):
         env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
         env.filters['sub'] = sub
-
         try:
             template_file = os.path.abspath(PAM_LIMITS_CONF_TEMPLATE)
             template = env.get_template(template_file)
@@ -1122,7 +1416,8 @@ class PamLimitsCfg(object):
             template = env.get_template(template_file)
             limits_conf = template.render(
                                         hwsku=self.hwsku,
-                                        type=self.type)
+                                        type=self.type,
+                                        max_sessions=self.max_sessions)
             with open(LIMITS_CONF, 'w') as f:
                 f.write(limits_conf)
         except Exception as e:
@@ -1242,7 +1537,6 @@ class MgmtIfaceCfg(object):
                                            f'config {cfg} for {iface}')
             try:
                 run_cmd(['sudo', 'systemctl', 'restart', 'interfaces-config'], True, True)
-                run_cmd(['sudo', 'systemctl', 'restart', 'ntp-config'], True, True)
             except subprocess.CalledProcessError:
                 syslog.syslog(syslog.LOG_ERR, f'Failed to restart management '
                               'interface services')
@@ -1265,13 +1559,16 @@ class MgmtIfaceCfg(object):
 
         # Restart related vrfs services
         try:
-            run_cmd(['service', 'ntp', 'stop'], True, True)
+            run_cmd(['systemctl', 'stop', 'chrony'], True, True)
             run_cmd(['systemctl', 'restart', 'interfaces-config'], True, True)
-            run_cmd(['service', 'ntp', 'start'], True, True)
+            run_cmd(['systemctl', 'start', 'chrony'], True, True)
         except subprocess.CalledProcessError:
             syslog.syslog(syslog.LOG_ERR, f'Failed to restart management vrf '
                           'services')
             return
+
+        # Update cache
+        self.mgmt_vrf_enabled = enabled
 
         # Remove mgmt if route
         if enabled == 'true':
@@ -1291,15 +1588,11 @@ class MgmtIfaceCfg(object):
                 cmd2 = ['wc', '-l']
                 run_cmd_pipe(cmd0, cmd1, cmd2, True, True)
             except subprocess.CalledProcessError:
-                syslog.syslog(syslog.LOG_ERR, 'MgmtIfaceCfg: Could not delete '
+                syslog.syslog(syslog.LOG_WARNING, 'MgmtIfaceCfg: Could not delete '
                                               'eth0 route')
                 return
 
             run_cmd(["ip", "-4", "route", "del", "default", "dev", "eth0", "metric", "202"], False)
-
-        # Update cache
-        self.mgmt_vrf_enabled = enabled
-
 
 class RSyslogCfg(object):
     """Remote syslog config daemon
@@ -1454,6 +1747,316 @@ class FipsCfg(object):
         syslog.syslog(syslog.LOG_INFO, f'FipsCfg: update the FIPS enforce option {self.enforce}.')
         loader.set_fips(image, self.enforce)
 
+class MemoryStatisticsCfg:
+    """
+    The MemoryStatisticsCfg class manages the configuration updates for the MemoryStatisticsDaemon, a daemon
+    responsible for collecting memory usage statistics. It monitors configuration changes in ConfigDB and, based
+    on those updates, performs actions such as restarting, shutting down, or reloading the daemon.
+    Attributes:
+        VALID_KEYS (list): List of valid configuration keys ("enabled", "sampling_interval", "retention_period").
+        PID_FILE_PATH (str): Path where the daemon’s process ID (PID) is stored.
+        DAEMON_EXEC_PATH (str): Path to the executable file of the memory statistics daemon.
+        DAEMON_PROCESS_NAME (str): Name of the daemon process used for validation.
+    """
+    VALID_KEYS = ["enabled", "sampling_interval", "retention_period"]
+    PID_FILE_PATH = '/var/run/memory_statistics_daemon.pid'
+    DAEMON_EXEC_PATH = '/usr/bin/memory_statistics_service.py'
+    DAEMON_PROCESS_NAME = 'memory_statistics_service.py'
+
+    def __init__(self, config_db):
+        """
+        Initialize MemoryStatisticsCfg with a configuration database.
+        Parameters:
+            config_db (object): Instance of the configuration database (ConfigDB) used to retrieve and
+                                apply configuration changes.
+        """
+        self.cache = {
+            "enabled": "false",
+            "sampling_interval": "5",
+            "retention_period": "15"
+        }
+        self.config_db = config_db
+
+    def load(self, memory_statistics_config: dict):
+        """
+        Load the initial memory statistics configuration from a provided dictionary.
+        Parameters:
+            memory_statistics_config (dict): Dictionary containing the initial configuration values.
+        """
+        syslog.syslog(syslog.LOG_INFO, 'MemoryStatisticsCfg: Loading initial configuration')
+
+        if not memory_statistics_config:
+            memory_statistics_config = {}
+
+        for key, value in memory_statistics_config.items():
+            if key not in self.VALID_KEYS:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid key '{key}' in initial configuration.")
+                continue
+            self.memory_statistics_update(key, value)
+
+    def memory_statistics_update(self, key, data):
+        """
+        Handles updates for each configuration setting, validates the data, and updates the cache if the value changes.
+        Parameters:
+            key (str): Configuration key, e.g., "enabled", "sampling_interval", or "retention_period".
+            data (str): The new value for the configuration key.
+        """
+        if key not in self.VALID_KEYS:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid key '{key}' received.")
+            return
+
+        data = str(data)
+
+        if key in ["retention_period", "sampling_interval"] and (not data.isdigit() or int(data) <= 0):
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Invalid value '{data}' for key '{key}'. Must be a positive integer.")
+            return
+
+        if data != self.cache.get(key):
+            syslog.syslog(syslog.LOG_INFO, f"MemoryStatisticsCfg: Detected change in '{key}' to '{data}'")
+            try:
+                self.apply_setting(key, data)
+                self.cache[key] = data
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f'MemoryStatisticsCfg: Failed to manage MemoryStatisticsDaemon: {e}')
+
+    def apply_setting(self, key, data):
+        """
+        Apply the setting based on the key. If "enabled" is set to true or false, start or stop the daemon.
+        For other keys, reload the daemon configuration.
+        Parameters:
+            key (str): The specific configuration setting being updated.
+            data (str): The value for the setting.
+        """
+        try:
+            if key == "enabled":
+                if data.lower() == "true":
+                    self.restart_memory_statistics()
+                else:
+                    self.shutdown_memory_statistics()
+            else:
+                self.reload_memory_statistics()
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} in apply_setting() for key '{key}': {e}")
+
+    def restart_memory_statistics(self):
+        """Restarts the memory statistics daemon by first shutting it down (if running) and then starting it again."""
+        try:
+            self.shutdown_memory_statistics()
+            time.sleep(1)
+            syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Starting MemoryStatisticsDaemon")
+            subprocess.Popen([self.DAEMON_EXEC_PATH])
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to start MemoryStatisticsDaemon: {e}")
+
+    def reload_memory_statistics(self):
+        """Sends a SIGHUP signal to the daemon to reload its configuration without restarting."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGHUP)
+                syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Sent SIGHUP to reload daemon configuration")
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: {e}")
+
+    def shutdown_memory_statistics(self):
+        """Sends a SIGTERM signal to gracefully shut down the daemon."""
+        pid = self.get_memory_statistics_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: Sent SIGTERM to stop MemoryStatisticsDaemon")
+                self.wait_for_shutdown(pid)
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: {e}")
+
+    def wait_for_shutdown(self, pid, timeout=10):
+        """
+        Waits for the daemon process to terminate gracefully within a given timeout.
+        Parameters:
+            pid (int): Process ID of the daemon to shut down.
+            timeout (int): Maximum wait time in seconds for the process to terminate (default is 10 seconds).
+        """
+        try:
+            process = psutil.Process(pid)
+            process.wait(timeout=timeout)
+            syslog.syslog(syslog.LOG_INFO, "MemoryStatisticsCfg: MemoryStatisticsDaemon stopped gracefully")
+        except psutil.TimeoutExpired:
+            syslog.syslog(syslog.LOG_WARNING, f"MemoryStatisticsCfg: Timed out while waiting for daemon (PID {pid}) to shut down.")
+        except psutil.NoSuchProcess:
+            syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: MemoryStatisticsDaemon process not found.")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Exception in wait_for_shutdown(): {e}")
+
+    def get_memory_statistics_pid(self):
+        """
+        Retrieves the PID of the currently running daemon from the PID file, verifying it matches the expected daemon.
+        Returns:
+            int or None: Returns the PID if the process is running and matches the expected daemon; otherwise, returns None.
+        """
+        try:
+            with open(self.PID_FILE_PATH, 'r') as pid_file:
+                pid = int(pid_file.read().strip())
+            if psutil.pid_exists(pid):
+                process = psutil.Process(pid)
+                if process.name() == self.DAEMON_PROCESS_NAME:
+                    return pid
+                else:
+                    syslog.syslog(syslog.LOG_WARNING, f"MemoryStatisticsCfg: PID {pid} does not correspond to {self.DAEMON_PROCESS_NAME}.")
+            else:
+                syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: PID does not exist.")
+        except FileNotFoundError:
+            syslog.syslog(syslog.LOG_WARNING, "MemoryStatisticsCfg: PID file not found. Daemon might not be running.")
+        except ValueError:
+            syslog.syslog(syslog.LOG_ERR, "MemoryStatisticsCfg: PID file contents invalid.")
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: {type(e).__name__} failed to retrieve MemoryStatisticsDaemon PID: {e}")
+        return None
+
+class SerialConsoleCfg:
+
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, cli_sessions_conf):
+        self.cache = cli_sessions_conf or {}
+        syslog.syslog(syslog.LOG_INFO,
+                      f'SerialConsoleCfg: Initial config: {self.cache}')
+
+    def update_serial_console_cfg(self, key, data):
+        '''
+            Apply config flow:
+                inactivity_timeout | set here AND in ssh_config flow | serial-config.service restarted.
+                max_sessions | set by PamLimitsCfg | serial-config.service DOESNT restarted.
+                sysrq_capabilities | set here | serial-config.service restarted.
+        '''
+
+        if self.cache.get(key, {}) != data:
+            ''' Config changed, need to restart the serial-config.service '''
+            syslog.syslog(syslog.LOG_INFO, f'Set serial-config parameter {key} value: {data}')
+            try:
+                run_cmd(['sudo', 'service', 'serial-config', 'restart'],
+                        True, True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to update {key} serial-config.service config')
+                return
+            self.cache.update({key: data})
+
+        return
+
+class BannerCfg(object):
+    """
+    Banner Config Daemon
+    Handles changes in BANNER_MESSAGE table.
+    1) Handle change of feature state
+    2) Handle change of login message
+    3) Handle change of MOTD message
+    4) Handle change of logout message
+    """
+
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, banner_messages_config: dict):
+        """Banner messages configuration
+
+        Force load banner configuration. Login messages should be taken at boot-time by
+        SSH daemon.
+
+        Args:
+            banners_message_config: Configured banner messages.
+        """
+
+        syslog.syslog(syslog.LOG_INFO, 'BannerCfg: load initial')
+
+        if not banner_messages_config:
+            banner_messages_config = {}
+
+        # Force load banner messages.
+        # Login messages show be taken at boot-time by SSH daemon.
+        state_data = banner_messages_config.get("state", {})
+        login_data = banner_messages_config.get("login", {})
+        motd_data = banner_messages_config.get("motd", {})
+        logout_data = banner_messages_config.get("logout", {})
+
+        self.banner_message("state", state_data)
+        self.banner_message("login", login_data)
+        self.banner_message("motd", motd_data)
+        self.banner_message("logout", logout_data)
+
+    def banner_message(self, key, data):
+        """
+        Apply banner message handler.
+
+        Args:
+            cache: Cache to compare/save data.
+            db: DB instance.
+            table: DB table that was changed.
+            key: DB table's key that was triggered change.
+            data: Read table data.
+        """
+        # Handling state, login/logout and MOTD messages. Data should be a dict
+        if type(data) != dict:
+            # Nothing to handle
+            return
+
+        update_required = False
+        # Check with cache
+        for k,v in data.items():
+            if v != self.cache.get(k):
+                update_required = True
+                break
+
+        if update_required == False:
+            return
+
+        try:
+            run_cmd(["systemctl", "restart", "banner-config"], True, True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR, 'BannerCfg: Failed to restart '
+                          'banner-config service')
+            return
+
+        # Update cache
+        for k,v in data.items():
+            self.cache[k] = v
+
+class LoggingCfg(object):
+    """Logging Config Daemon
+
+    Handles changes in LOGGING table.
+    1) Handle change of debug/syslog log files config
+    """
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, logging_cfg={}):
+        # Get initial logging file configuration
+        self.cache = logging_cfg
+        syslog.syslog(syslog.LOG_DEBUG, f'Initial logging config: {self.cache}')
+
+    def update_logging_cfg(self, key, data):
+        """Apply logging configuration
+
+        The daemon restarts logrotate-config which will regenerate logrotate
+        config files.
+        Args:
+            key:    DB table's key that was triggered change (basically it is a
+                    config file)
+            data:   File's config data
+        """
+        syslog.syslog(syslog.LOG_DEBUG, 'LoggingCfg: logging files cfg update')
+        if self.cache.get(key) != data:
+            syslog.syslog(syslog.LOG_INFO,
+                          f'Set logging file {key} config: {data}')
+            try:
+                run_cmd(['systemctl', 'restart', 'logrotate-config'], True, True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, f'Failed to update {key} message')
+                return
+
+        # Update cache
+        self.cache[key] = data
+
 class HostConfigDaemon:
     def __init__(self):
         self.state_db_conn = DBConnector(STATE_DB, 0)
@@ -1469,6 +2072,9 @@ class HostConfigDaemon:
         # Initialize KDump Config and set the config to default if nothing is provided
         self.kdumpCfg = KdumpCfg(self.config_db)
 
+        # Initialize MemoryStatisticsCfg
+        self.memorystatisticscfg = MemoryStatisticsCfg(self.config_db)
+
         # Initialize IpTables
         self.iptables = Iptables()
 
@@ -1478,7 +2084,7 @@ class HostConfigDaemon:
         self.is_multi_npu = device_info.is_multi_npu()
 
         # Initialize AAACfg
-        self.aaacfg = AaaCfg()
+        self.aaacfg = AaaCfg(self.config_db)
 
         # Initialize PasswHardening
         self.passwcfg = PasswHardening()
@@ -1505,18 +2111,28 @@ class HostConfigDaemon:
         # Initialize FipsCfg
         self.fipscfg = FipsCfg(self.state_db_conn)
 
+        # Initialize SerialConsoleCfg
+        self.serialconscfg = SerialConsoleCfg()
+
+        # Initialize BannerCfg
+        self.bannermsgcfg = BannerCfg()
+
+        # Initialize LoggingCfg
+        self.loggingcfg = LoggingCfg()
+
     def load(self, init_data):
         aaa = init_data['AAA']
         tacacs_global = init_data['TACPLUS']
         tacacs_server = init_data['TACPLUS_SERVER']
         radius_global = init_data['RADIUS']
         radius_server = init_data['RADIUS_SERVER']
+        ldap_global = init_data['LDAP']
+        ldap_server = init_data['LDAP_SERVER']
         lpbk_table = init_data['LOOPBACK_INTERFACE']
-        ntp_server = init_data['NTP_SERVER']
-        ntp_global = init_data['NTP']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
         ssh_server = init_data['SSH_SERVER']
+        memory_statistics = init_data["MEMORY_STATISTICS"]
         dev_meta = init_data.get(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME, {})
         mgmt_ifc = init_data.get(swsscommon.CFG_MGMT_INTERFACE_TABLE_NAME, {})
         mgmt_vrf = init_data.get(swsscommon.CFG_MGMT_VRF_CONFIG_TABLE_NAME, {})
@@ -1524,19 +2140,30 @@ class HostConfigDaemon:
         syslog_srv = init_data.get(swsscommon.CFG_SYSLOG_SERVER_TABLE_NAME, {})
         dns = init_data.get('DNS_NAMESERVER', {})
         fips_cfg = init_data.get('FIPS', {})
+        ntp_global = init_data.get(swsscommon.CFG_NTP_GLOBAL_TABLE_NAME)
+        ntp_servers = init_data.get(swsscommon.CFG_NTP_SERVER_TABLE_NAME)
+        ntp_keys = init_data.get(swsscommon.CFG_NTP_KEY_TABLE_NAME)
+        serial_console = init_data.get('SERIAL_CONSOLE', {})
+        banner_messages = init_data.get(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME)
+        logging = init_data.get(swsscommon.CFG_LOGGING_TABLE_NAME, {})
 
-        self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server)
+        self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
-        self.ntpcfg.load(ntp_global, ntp_server)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
         self.sshscfg.load(ssh_server)
+        self.memorystatisticscfg.load(memory_statistics)
         self.devmetacfg.load(dev_meta)
         self.mgmtifacecfg.load(mgmt_ifc, mgmt_vrf)
-
         self.rsyslogcfg.load(syslog_cfg, syslog_srv)
         self.dnscfg.load(dns)
         self.fipscfg.load(fips_cfg)
+        self.ntpcfg.load(ntp_global, ntp_servers, ntp_keys)
+        self.serialconscfg.load(serial_console)
+        self.bannermsgcfg.load(banner_messages)
+        self.loggingcfg.load(logging)
+
+        self.pamLimitsCfg.update_config_file()
 
         # Update AAA with the hostname
         self.aaacfg.hostname_update(self.devmetacfg.hostname)
@@ -1558,6 +2185,8 @@ class HostConfigDaemon:
 
     def ssh_handler(self, key, op, data):
         self.sshscfg.policies_update(key, data)
+        self.pamLimitsCfg.update_config_file()
+
         syslog.syslog(syslog.LOG_INFO, 'SSH Update: key: {}, op: {}, data: {}'.format(key, op, data))
 
     def tacacs_server_handler(self, key, op, data):
@@ -1587,6 +2216,20 @@ class HostConfigDaemon:
         if 'passkey' in log_data:
             log_data['passkey'] = obfuscate(log_data['passkey'])
         syslog.syslog(syslog.LOG_INFO, 'RADIUS Global update: key: {}, op: {}, data: {}'.format(key, op, log_data))
+
+    def ldap_global_handler(self, key, op, data):
+        self.aaacfg.ldap_global_update(key, data)
+        log_data = copy.deepcopy(data)
+        if 'passkey' in log_data:
+            log_data['passkey'] = obfuscate(log_data['passkey'])
+        syslog.syslog(syslog.LOG_INFO, 'LDAP Global update: key: {}, op: {}, data: {}'.format(key, op, log_data))
+
+    def ldap_server_handler(self, key, op, data):
+        self.aaacfg.ldap_server_update(key, data)
+        log_data = copy.deepcopy(data)
+        if 'passkey' in log_data:
+            log_data['passkey'] = obfuscate(log_data['passkey'])
+        syslog.syslog(syslog.LOG_INFO, 'LDAP_SERVER update: key: {}, op: {}, data: {}'.format(key, op, log_data))
 
     def mgmt_intf_handler(self, key, op, data):
         key = ConfigDBConnector.deserialize_key(key)
@@ -1626,15 +2269,26 @@ class HostConfigDaemon:
         key = ConfigDBConnector.deserialize_key(key)
         self.aaacfg.handle_radius_source_intf_ip_chg(key)
 
-    def ntp_server_handler(self, key, op, data):
-        self.ntpcfg.ntp_server_update(key, op)
-
     def ntp_global_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_NOTICE, 'Handling NTP global config')
         self.ntpcfg.ntp_global_update(key, data)
+
+    def ntp_srv_key_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_NOTICE, 'Handling NTP server/key config')
+        self.ntpcfg.ntp_srv_key_update(
+            self.config_db.get_table(swsscommon.CFG_NTP_SERVER_TABLE_NAME),
+            self.config_db.get_table(swsscommon.CFG_NTP_KEY_TABLE_NAME))
 
     def kdump_handler (self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'Kdump handler...')
         self.kdumpCfg.kdump_update(key, data)
+
+    def memory_statistics_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'Memory_Statistics handler...')
+        try:
+            self.memorystatisticscfg.memory_statistics_update(key, data)
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Error while handling memory statistics update: {e}")
 
     def device_metadata_handler(self, key, op, data):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
@@ -1665,6 +2319,18 @@ class HostConfigDaemon:
         data = self.config_db.get_table("FIPS")
         self.fipscfg.fips_handler(data)
 
+    def serial_console_config_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'SERIAL_CONSOLE table handler...')
+        self.serialconscfg.update_serial_console_cfg(key, data)
+
+    def banner_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'BANNER_MESSAGE table handler...')
+        self.bannermsgcfg.banner_message(key, data)
+
+    def logging_handler(self, key, op, data):
+        syslog.syslog(syslog.LOG_INFO, 'LOGGING table handler...')
+        self.loggingcfg.update_logging_cfg(key, data)
+
     def wait_till_system_init_done(self):
         # No need to print the output in the log file so using the "--quiet"
         # flag
@@ -1677,6 +2343,7 @@ class HostConfigDaemon:
             def callback(table, key, data):
                 if data is None:
                     op = "DEL"
+                    data = {}
                 else:
                     op = "SET"
                 return func(key, op, data)
@@ -1689,13 +2356,15 @@ class HostConfigDaemon:
         self.config_db.subscribe('TACPLUS_SERVER', make_callback(self.tacacs_server_handler))
         self.config_db.subscribe('RADIUS', make_callback(self.radius_global_handler))
         self.config_db.subscribe('RADIUS_SERVER', make_callback(self.radius_server_handler))
+        self.config_db.subscribe('LDAP', make_callback(self.ldap_global_handler))
+        self.config_db.subscribe('LDAP_SERVER', make_callback(self.ldap_server_handler))
         self.config_db.subscribe('PASSW_HARDENING', make_callback(self.passwh_handler))
         self.config_db.subscribe('SSH_SERVER', make_callback(self.ssh_handler))
+        self.config_db.subscribe('MEMORY_STATISTICS',make_callback(self.memory_statistics_handler))
+        # Handle SERIAL_CONSOLE
+        self.config_db.subscribe('SERIAL_CONSOLE', make_callback(self.serial_console_config_handler))
         # Handle IPTables configuration
         self.config_db.subscribe('LOOPBACK_INTERFACE', make_callback(self.lpbk_handler))
-        # Handle NTP & NTP_SERVER updates
-        self.config_db.subscribe('NTP', make_callback(self.ntp_global_handler))
-        self.config_db.subscribe('NTP_SERVER', make_callback(self.ntp_server_handler))
         # Handle updates to src intf changes in radius
         self.config_db.subscribe('MGMT_INTERFACE', make_callback(self.mgmt_intf_handler))
         self.config_db.subscribe('VLAN_INTERFACE', make_callback(self.vlan_intf_handler))
@@ -1722,6 +2391,22 @@ class HostConfigDaemon:
         # Handle FIPS changes
         self.config_db.subscribe('FIPS', make_callback(self.fips_config_handler))
 
+        # Handle NTP, NTP_SERVER, and NTP_KEY updates
+        self.config_db.subscribe(swsscommon.CFG_NTP_GLOBAL_TABLE_NAME,
+                                 make_callback(self.ntp_global_handler))
+        self.config_db.subscribe(swsscommon.CFG_NTP_SERVER_TABLE_NAME,
+                                 make_callback(self.ntp_srv_key_handler))
+        self.config_db.subscribe(swsscommon.CFG_NTP_KEY_TABLE_NAME,
+                                 make_callback(self.ntp_srv_key_handler))
+
+        # Handle BANNER_MESSAGE changes
+        self.config_db.subscribe(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME,
+                                 make_callback(self.banner_handler))
+
+        # Handle LOGGING changes
+        self.config_db.subscribe(swsscommon.CFG_LOGGING_TABLE_NAME,
+                                 make_callback(self.logging_handler))
+
         syslog.syslog(syslog.LOG_INFO,
                       "Waiting for systemctl to finish initialization")
         self.wait_till_system_init_done()
@@ -1741,4 +2426,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

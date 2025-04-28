@@ -16,8 +16,7 @@ from sonic_py_common.general import getstatusoutput_noshell
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
 scripts_path = os.path.join(modules_path, "scripts")
-src_path = os.path.dirname(modules_path)
-templates_path = os.path.join(src_path, "sonic-host-services-data/templates")
+templates_path = os.path.join(modules_path, "data/templates")
 output_path = os.path.join(test_path, "hostcfgd/output")
 sample_output_path = os.path.join(test_path, "hostcfgd/sample_output")
 sys.path.insert(0, modules_path)
@@ -40,7 +39,7 @@ class TestHostcfgdRADIUS(TestCase):
         Test hostcfd daemon - RADIUS
     """
     def run_diff(self, file1, file2):
-        _, output = getstatusoutput_noshell(['diff', '-uR', file1, file2])
+        _, output = getstatusoutput_noshell(['diff', '-ur', file1, file2])
         return output
 
 
@@ -92,7 +91,7 @@ class TestHostcfgdRADIUS(TestCase):
         except:
             radius_server = []
 
-        host_config_daemon.aaacfg.load(aaa,[],[],radius_global,radius_server)
+        host_config_daemon.aaacfg.load(aaa,[],[],radius_global,radius_server, {}, {})
         dcmp = filecmp.dircmp(sop_path, op_path)
         diff_output = ""
         for name in dcmp.diff_files:

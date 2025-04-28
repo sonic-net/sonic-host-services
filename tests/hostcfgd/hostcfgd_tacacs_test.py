@@ -15,8 +15,7 @@ from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
 scripts_path = os.path.join(modules_path, "scripts")
-src_path = os.path.dirname(modules_path)
-templates_path = os.path.join(src_path, "sonic-host-services-data/templates")
+templates_path = os.path.join(modules_path, "data/templates")
 output_path = os.path.join(test_path, "hostcfgd/output")
 sample_output_path = os.path.join(test_path, "hostcfgd/sample_output")
 sys.path.insert(0, modules_path)
@@ -52,12 +51,15 @@ class TestHostcfgdTACACS(TestCase):
         hostcfgd.NSS_RADIUS_CONF_TEMPLATE = t_path + "/radius_nss.conf.j2"
         hostcfgd.PAM_RADIUS_AUTH_CONF_TEMPLATE = t_path + "/pam_radius_auth.conf.j2"
         hostcfgd.PAM_AUTH_CONF = op_path + "/common-auth-sonic"
+        hostcfgd.PAM_COMMON_SESS = op_path + "/common-session"
         hostcfgd.NSS_TACPLUS_CONF = op_path + "/tacplus_nss.conf"
         hostcfgd.NSS_RADIUS_CONF = op_path + "/radius_nss.conf"
         hostcfgd.NSS_CONF = op_path + "/nsswitch.conf"
         hostcfgd.ETC_PAMD_SSHD = op_path + "/sshd"
         hostcfgd.ETC_PAMD_LOGIN = op_path + "/login"
         hostcfgd.RADIUS_PAM_AUTH_CONF_DIR = op_path + "/"
+        hostcfgd.LDAP_CONF_TEMPLATE = t_path + "/ldap.conf.j2"
+        hostcfgd.LDAP_CONF = op_path + "/ldap.conf"
 
         shutil.rmtree( op_path, ignore_errors=True)
         os.mkdir( op_path)
@@ -84,7 +86,7 @@ class TestHostcfgdTACACS(TestCase):
         except:
             tacacs_server = []
 
-        host_config_daemon.aaacfg.load(aaa,tacacs_global,tacacs_server,[],[])
+        host_config_daemon.aaacfg.load(aaa,tacacs_global,tacacs_server,[],[], {}, {})
 
     """
         Check different config
@@ -193,3 +195,44 @@ class TestHostcfgdTACACS(TestCase):
             ]
             mocked_syslog.assert_has_calls(expected)
 
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_delete_config_table(self, test_name, test_data):
+        """
+            Test hostcfd delete config table check
+
+            Args:
+                test_name(str): test name
+                test_data(dict): test data which contains initial Config Db tables, and expected results
+
+            Returns:
+                None
+        """
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+        host_config_daemon.register_callbacks()
+
+        # render with delete config table
+        original_syslog = hostcfgd.syslog
+        with mock.patch('hostcfgd.syslog.syslog') as mocked_syslog:
+            mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+            mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
+
+            # simulate subscribe callback
+            try:
+                host_config_daemon.__dict__['config_db'].publish('AAA', 'authorization', 'DEL', None)
+            except TypeError as e:
+                assert False
+
+            # check sys log
+            expected = [
+                mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (2139) bytes".format(hostcfgd.ETC_PAMD_SSHD)),
+                mock.call(mocked_syslog.LOG_INFO, "file size check pass: {} size is (4951) bytes".format(hostcfgd.ETC_PAMD_LOGIN)),
+                mock.call(mocked_syslog.LOG_INFO, "Found audisp-tacplus PID: "),
+                mock.call(mocked_syslog.LOG_INFO, "cmd - ['service', 'aaastatsd', 'stop']"),
+                mock.call(mocked_syslog.LOG_ERR, "['service', 'aaastatsd', 'stop'] - failed: return code - 1, output:\nNone"),
+                mock.call(mocked_syslog.LOG_INFO, "AAA Update: key: DEL, op: DEL, data: {}")
+            ]
+            for expected_call in expected:
+                assert expected_call in mocked_syslog.mock_calls, f"Expected call {expected_call} not found"
