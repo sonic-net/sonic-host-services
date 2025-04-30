@@ -84,6 +84,13 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "timeout": "4",
                         "passkey": "pass4",
                         "src_intf": "eth0",
+                    },
+                    "10.10.10.5": {
+                        "auth_type": "pap",
+                        "retransmit": "1",
+                        "timeout": "1",
+                        "passkey": "pass1",
+                        "skip_msg_auth": "true",
                     }
                 },
             },
@@ -146,6 +153,13 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "timeout": "4",
                         "passkey": "pass4",
                         "src_intf": "eth0",
+                    },
+                    "10.10.10.5": {
+                        "auth_type": "pap",
+                        "retransmit": "1",
+                        "timeout": "1",
+                        "passkey": "pass1",
+                        "skip_msg_auth": "true",
                     }
                 },
             },
