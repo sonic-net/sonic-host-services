@@ -1,7 +1,6 @@
 """File stat handler"""
 
 from host_modules import host_service
-import subprocess
 
 MOD_NAME = 'file'
 EXIT_FAILURE = 1
@@ -43,3 +42,15 @@ class FileService(host_service.HostModule):
 
         except Exception as e:
             return EXIT_FAILURE, {'error': str(e)}
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='is')
+    def remove(self, path):
+        if not path:
+            return EXIT_FAILURE, 'Dbus remove called with no path specified'
+
+        try:
+            os.remove(path)
+            return 0, ''
+
+        except OSError as e:
+            return e.errno, str(e)
