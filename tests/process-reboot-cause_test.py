@@ -130,3 +130,43 @@ class TestProcessRebootCause(TestCase):
         with patch.object(sys, "argv", ["process-reboot-cause"]):
             process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu1')
 
+    # test_process_reboot_cause_with_old_files
+    @patch("process_reboot_cause.MAX_HISTORY_FILES", new=2)
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "name": "2024_12_13_01_12_36", "comment": "Switch rebooted DPU", "device": "DPU1", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
+    @patch("os.listdir", return_value=["file1.json", "file2.json", "file3.json", "file4.json", "prev_reboot_time.txt"])
+    @patch("os.path.isfile", side_effect=lambda path: not path.endswith("prev_reboot_time.txt"))
+    @patch("os.path.exists", return_value=True)
+    @patch("os.path.getmtime", side_effect=lambda path: {
+        "file1.json": 1700000000,
+        "file2.json": 1700001000,
+        "file3.json": 1700002000,
+        "file4.json": 1700003000
+    }[os.path.basename(path)])
+    @patch("os.remove")
+    @patch("process_reboot_cause.swsscommon.SonicV2Connector")
+    @patch("process_reboot_cause.device_info.is_smartswitch", return_value=True)
+    @patch("sys.stdout", new_callable=StringIO)
+    @patch("os.geteuid", return_value=0)
+    @patch("process_reboot_cause.device_info.get_dpu_list", return_value=["dpu1"])
+    @patch("process_reboot_cause.sorted")  # Patch sorting to capture list
+    def test_process_reboot_cause_with_old_files(self, mock_sorted, mock_get_dpu_list, mock_geteuid,
+                                                mock_stdout, mock_is_smartswitch, mock_connector, mock_remove,
+                                                mock_getmtime, mock_exists, mock_isfile, mock_listdir, mock_open):
+        # Mock DB
+        mock_db = MagicMock()
+        mock_connector.return_value = mock_db
+
+        # Capture sorted file list
+        def sorted_side_effect(iterable, *args, **kwargs):
+            sorted_list = sorted(iterable, *args, **kwargs)  # Use real sorting
+            print(f"DEBUG: TIME_SORTED_FULL_REBOOT_FILE_LIST = {sorted_list}")
+            return sorted_list
+
+        mock_sorted.side_effect = sorted_side_effect
+
+        # Simulate running the script
+        with patch.object(sys, "argv", ["process-reboot-cause"]):
+            process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu1')
+        
+        # Ensure the correct number of old history files are removed
+        mock_remove.assert_any_call("/host/reboot-cause/module/dpu1/history/file1.json")

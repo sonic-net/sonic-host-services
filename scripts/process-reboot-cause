@@ -49,11 +49,14 @@ def read_reboot_cause_files_and_save_to_db(device='npu'):
     else:
         db = swsscommon.SonicV2Connector(host="redis_chassis.server", port=CHASSIS_SERVER_PORT)
         table = db.CHASSIS_STATE_DB
-        history_dir = os.path.join('/host/reboot-cause/module', device , 'history')
+        history_dir = os.path.join('/host/reboot-cause/module', device, 'history')
     db.connect(table)
 
     # Sort the previous reboot cause files by creation time
-    REBOOT_FILE_LIST = [os.path.join(history_dir, i) for i in os.listdir(history_dir)]
+    REBOOT_FILE_LIST = [
+        os.path.join(history_dir, i) for i in os.listdir(history_dir)
+        if i.endswith('.json')  # Only process JSON files
+    ]
     TIME_SORTED_FULL_REBOOT_FILE_LIST = sorted(REBOOT_FILE_LIST, key=os.path.getmtime, reverse=True)
 
     data = []
@@ -67,24 +70,23 @@ def read_reboot_cause_files_and_save_to_db(device='npu'):
                     if device == 'npu':
                         _hash = '{}|{}'.format(REBOOT_CAUSE_TABLE_NAME, data['gen_time'])
                     else:
-                        # Ensure keys exist
                         if 'name' not in data:
                             sonic_logger.log_warning(f"Missing 'name' in reboot-cause file")
-                            continue  # Skip this file
+                            continue
                         _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{device.upper()}|{data['name']}"
                     db.set(table, _hash, 'cause', data.get('cause', ''))
                     db.set(table, _hash, 'time', data.get('time', ''))
                     db.set(table, _hash, 'user', data.get('user', ''))
                     db.set(table, _hash, 'comment', data.get('comment', ''))
                 except json.decoder.JSONDecodeError as je:
-                    sonic_logger.log_error("Unable to process reload cause file {}: {}".format(x, je))
-                    pass
+                    sonic_logger.log_error(f"Unable to process reload cause file {x}: {je}")
+                    continue  # Skip corrupted or non-JSON files
 
+    # Remove old history files
     if len(TIME_SORTED_FULL_REBOOT_FILE_LIST) > MAX_HISTORY_FILES:
-        for i in range(len(TIME_SORTED_FULL_REBOOT_FILE_LIST)):
-            if i >= MAX_HISTORY_FILES:
-                x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
-                os.remove(x)
+        for i in range(MAX_HISTORY_FILES, len(TIME_SORTED_FULL_REBOOT_FILE_LIST)):
+            x = TIME_SORTED_FULL_REBOOT_FILE_LIST[i]
+            os.remove(x)
 
 def main():
     # Configure logger to log all messages INFO level and higher
