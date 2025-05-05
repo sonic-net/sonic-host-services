@@ -19,10 +19,13 @@ from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
 from sonic_installer import bootloader
+from sonic_py_common.security_cipher import master_key_mgr 
+
 hostcfg_file_path = os.path.abspath(__file__)
 hostcfg_dir_path = os.path.dirname(hostcfg_file_path)
 sys.path.append(hostcfg_dir_path)
 import ldap
+
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -96,7 +99,6 @@ DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
 # MISC Constants
 CFG_DB = "CONFIG_DB"
 STATE_DB = "STATE_DB"
-
 
 def signal_handler(sig, frame):
     if sig == signal.SIGHUP:
@@ -652,6 +654,17 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
+                if 'key_encrypt' in server:
+                    secure_cipher = master_key_mgr()
+                    if server['key_encrypt'] == 'True':
+                        output, errs = secure_cipher.decrypt_passkey("TACPLUS", server['passkey'])
+                        if not errs:
+                           server['passkey'] = output
+                        else:
+                            syslog.syslog(syslog.LOG_ERR, "{}: decrypt_passkey failed.".format(addr))
+                    else:
+                        # Delete the cipher_pass file if exist
+                        secure_cipher.del_cipher_pass()
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
