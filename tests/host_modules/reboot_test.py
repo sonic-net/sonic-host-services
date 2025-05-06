@@ -232,12 +232,14 @@ class TestReboot(object):
     def test_execute_reboot_fail_halt_timeout(self, caplog):
         with (
             mock.patch("reboot._run_command") as mock_run_command,
+            mock.patch("time.monotonic") as mock_monotonic,
             mock.patch("time.sleep") as mock_sleep,
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=True) as mock_is_halt_command_running,
             mock.patch("reboot.Reboot.is_container_running", return_value=True) as mock_is_container_running,
             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
             caplog.at_level(logging.ERROR),
         ):
+            mock_monotonic.side_effect = [0, 0, HALT_TIMEOUT]
             mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
             self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
             mock_run_command.assert_called_once_with("sudo reboot -p")
