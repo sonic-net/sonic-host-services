@@ -1126,6 +1126,40 @@ class KdumpCfg(object):
                                 "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
                                 "num_dumps": "3" }
 
+        # check if kdump is enabled by default with grub config
+        self.update_config_from_proc_cmdline = False
+        self.init_kdump_config_from_cmdline()
+
+    def init_kdump_config_from_cmdline(self):
+        # Update the kdump_defaults with value found /proc/cmdline if
+        # key "crashkernel=" is pre-defined in and /proc/cmdline (grub.conf)
+        if os.environ.get("HOSTCFGD_UNIT_TESTING") == "2":
+            modules_path = os.path.join(os.path.dirname(__file__), "..")
+            tests_path = os.path.join(modules_path, "tests")
+            cmdline = os.path.join(tests_path, "proc","cmdline")
+        else:
+            cmdline = "/proc/cmdline"
+
+        expected_str = ' crashkernel='
+        if os.path.exists(cmdline):
+            lines= [line.rstrip('\n') for line in open(cmdline)]
+            p = lines[0].find(expected_str)
+            if p == -1:
+                return
+            kdump_config = self.config_db.get_entry("KDUMP", "config") 
+            syslog.syslog(syslog.LOG_INFO, "kdump enabled is found in /proc/cmdline")
+            self.kdump_defaults["enabled"] = "true"
+            next_space = lines[0].find(" ", p+1)
+            if next_space == -1:
+                memory = lines[0][p+len(expected_str):]
+            else:
+                memory = lines[0][p+len(expected_str):next_space]
+            self.kdump_defaults["memory"] = memory
+            if not kdump_config or kdump_config.get("enabled") != self.kdump_defaults["enabled"] or kdump_config.get("memory") != self.kdump_defaults["memory"]:
+                self.update_config_from_proc_cmdline = True
+                syslog.syslog(syslog.LOG_INFO, "Update KDUMP config entry with data from /proc/cmdline")
+                self.config_db.mod_entry("KDUMP", "config", self.kdump_defaults)
+
     def load(self, kdump_table):
         """
         Set the KDUMP table in CFG DB to kdump_defaults if not set by the user
@@ -1139,6 +1173,10 @@ class KdumpCfg(object):
 
     def kdump_update(self, key, data):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
+        if self.update_config_from_proc_cmdline and os.environ.get("HOSTCFGD_UNIT_TESTING") != "2":
+            self.update_config_from_proc_cmdline = False
+            syslog.syslog(syslog.LOG_INFO, "Kdump is enabled by default with /proc/cmdline. Skip the first update")
+            return
         if key == "config":
             # Admin mode
             kdump_enabled = self.kdump_defaults["enabled"]
