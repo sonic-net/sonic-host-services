@@ -3,6 +3,8 @@
 from host_modules import host_service
 import subprocess
 
+print("FILE Backend Starts")
+
 MOD_NAME = 'file'
 EXIT_FAILURE = 1
 
@@ -33,6 +35,7 @@ class FileService(host_service.HostModule):
             current_umask = os.umask(0)
             os.umask(current_umask)  # Reset umask to previous value
 
+            print(f"Successfully Get File Statistics from Backend")
             return 0, {
                 'path': path,
                 'last_modified': str(last_modified),  # Converting to string to maintain consistency
@@ -43,3 +46,21 @@ class FileService(host_service.HostModule):
 
         except Exception as e:
             return EXIT_FAILURE, {'error': str(e)}
+
+@host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='ia{ss}')
+def file_remove(self, path):
+    print(f"[file_remove] Received request to remove file: {path}")
+    if not path:
+        print("[file_remove] Error: No path provided")
+        return EXIT_FAILURE, {'error': 'Dbus file_remove called with no path specified'}
+
+    try:
+        os.remove(path)
+        print(f"Successfully removed file: {path}")
+        return 0, {'status': 'success'}
+    except FileNotFoundError:
+        return EXIT_FAILURE, {'error': f'File not found: {path}'}
+    except PermissionError:
+        return EXIT_FAILURE, {'error': f'Permission denied: {path}'}
+    except Exception as e:
+        return EXIT_FAILURE, {'error': str(e)}
