@@ -43,3 +43,16 @@ class FileService(host_service.HostModule):
 
         except Exception as e:
             return EXIT_FAILURE, {'error': str(e)}
+
+    @host_service.method(host_service.bus_name(MOD_NAME), in_signature='s', out_signature='ia{ss}')
+    def remove_file(self, path):
+        if not path:
+            return EXIT_FAILURE, {'error': 'Dbus remove_file called with no path specified'}
+
+        try:
+            os.remove(path)
+            return 0, {"message": f"File {path} removed successfully"}
+        except FileNotFoundError:
+            return 1, {"error": f"File not found: {path}"}
+        except Exception as e:
+            return 1, {"error": str(e)}
