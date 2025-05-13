@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+#
+# gnoi-reboot-daemon
+#
+# This daemon facilitates gNOI-based reboot operations for DPU subcomponents within the SONiC platform.
+# It listens for JSON-formatted reboot requests on a named pipe and executes the corresponding gNOI
+# Reboot RPCs via the gnmi container.
+
+try:
+    import os
+    import json
+    import subprocess
+    from sonic_py_common import syslogger
+
+except ImportError as err:
+    raise ImportError("%s - required module not found" % str(err))
+
+SYSLOG_IDENTIFIER = "gnoi-reboot-daemon"
+
+FIFO_PATH = "/var/run/gnoi_reboot.pipe"
+
+# Global logger class instance
+logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
+
+def main():
+    # Configure logger to log all messages INFO level and higher
+    logger.set_min_log_priority(sonic_logger.DEFAULT_LOG_LEVEL)
+
+    logger.log_info("Starting up...")
+
+    # Ensure the FIFO exists
+    if not os.path.exists(FIFO_PATH):
+        os.mkfifo(FIFO_PATH)
+
+    # Open the FIFO in read-write mode to prevent blocking
+    fifo_fd = os.open(FIFO_PATH, os.O_RDWR)
+    with os.fdopen(fifo_fd, 'r') as fifo:
+        while True:
+            line = fifo.readline()
+            if not line:
+                continue
+
+            try:
+                msg = json.loads(line)
+                dpu_ip = msg["dpu_ip"]
+                port = msg.get("port", 50052)
+                method = msg.get("method", 1)
+                message = msg.get("message", "User initiated reboot")
+
+                cmd = [
+                    "docker", "exec", "gnmi", "gnoi_client",
+                    f"-target={dpu_ip}:{port}",
+                    "-logtostderr", "-notls",
+                    "-module", "System",
+                    "-rpc", "Reboot",
+                    "-jsonin", f'{{"method":{method}, "message":"{message}"}}'
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.stdout:
+                    logger.log_info(f"Command stdout: {result.stdout.strip()}")
+                if result.stderr:
+                    logger.log_warning(f"Command stderr: {result.stderr.strip()}")
+            except Exception as e:
+                logger.log_error(f"Error processing message: {e}")
+
+if __name__ == "__main__":
+    main()
