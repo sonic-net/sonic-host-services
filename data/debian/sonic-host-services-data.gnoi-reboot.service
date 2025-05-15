@@ -1,0 +1,12 @@
+[Unit]
+Description=SmartSwitch DPU gNOI Reboot Daemon
+After=rc-local.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 /usr/local/bin/gnoi-reboot-daemon
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
