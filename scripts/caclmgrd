@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 #
 # caclmgrd
 #
@@ -85,6 +85,7 @@ class ControlPlaneAclManager(logger.Logger):
 
     BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
     VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL"
+    DPU_TABLE = "DPU"
 
     # To specify a port range instead of a single port, use iptables format:
     # separate start and end ports with a colon, e.g., "1000:2000"
@@ -121,7 +122,9 @@ class ControlPlaneAclManager(logger.Logger):
     bfdAllowed = False
     VxlanAllowed = False
     VxlanSrcIP = ""
-
+    # a map from dpu name to port
+    dashHaPortMap = {}
+    
     def __init__(self, log_identifier):
         super(ControlPlaneAclManager, self).__init__(log_identifier)
 
@@ -595,6 +598,10 @@ class ControlPlaneAclManager(logger.Logger):
             fvs = swsscommon.FieldValuePairs([("src_ip", self.VxlanSrcIP)])
             iptables_cmds += self.get_vxlan_port_iptable_commands(namespace, fvs)
 
+        for dpu, port in self.dashHaPortMap.items():
+            iptables_cmds += self.make_dash_ha_rules(namespace, port)
+            self.log_info(f"Enabled dash-ha port {port} for {dpu}")
+            
         # Add iptables commands to allow internal docker traffic
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
 
@@ -958,6 +965,58 @@ class ControlPlaneAclManager(logger.Logger):
         self.VxlanSrcIP = ""
         return True
 
+    def remove_dash_ha_rules(self, namespace, port):
+        iptables_cmds = []
+        # Remove iptables/ip6tables commands that allow DASH-HA packets
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                ['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                ['ip6tables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        self.run_commands(iptables_cmds)
+    
+    def add_dash_ha_rules(self, namespace, port):
+        iptables_cmds = self.make_dash_ha_rules(namespace, port)
+        self.run_commands(iptables_cmds)
+
+    def make_dash_ha_rules(self, namespace, port):
+        iptables_cmds = []
+        # make iptables/ip6tables commands that allow DASH-HA packets
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                ['iptables', '-I', 'INPUT', '2', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                ['ip6tables', '-I', 'INPUT', '2', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        return iptables_cmds
+    
+    def update_dash_ha_rules(self, namespace, key, op, data):
+        port = self.dashHaPortMap.get(key)
+        if op == "DEL" and not port:
+            return
+                
+        if op == "DEL" and port:
+            # Remove iptables/ip6tables commands that allow DASH-HA packets
+            self.remove_dash_ha_rules(namespace, port)
+            self.dashHaPortMap.pop(key)
+            return
+        
+        if op == "SET":
+            new_port = None
+            for fv in data:
+                if (fv[0] == "swbus_port"):
+                    new_port = fv[1]
+                    break
+            if not new_port:
+                self.log_info("Received DPU configuration without swbus_port. Ignore it.")
+                return
+            if new_port == port:
+                return
+            if port:
+                # Remove iptables/ip6tables commands that allow DASH-HA packets
+                self.remove_dash_ha_rules(namespace, port)
+            # Add iptables/ip6tables commands to allow DASH-HA packets
+            self.add_dash_ha_rules(namespace, new_port)
+            self.dashHaPortMap[key] = new_port
+            return
+
     def run(self):
         # Set select timeout to 1 second
         SELECT_TIMEOUT_MS = 1000
@@ -1008,6 +1067,9 @@ class ControlPlaneAclManager(logger.Logger):
 
         subscribe_vxlan_table = swsscommon.SubscriberStateTable(config_db_connector, self.VXLAN_TUNNEL_TABLE)
         sel.addSelectable(subscribe_vxlan_table)
+
+        subscribe_dpu_table = swsscommon.SubscriberStateTable(config_db_connector, self.DPU_TABLE)
+        sel.addSelectable(subscribe_dpu_table)
         # Map of Namespace <--> susbcriber table's object
         config_db_subscriber_table_map = {}
 
@@ -1092,6 +1154,13 @@ class ControlPlaneAclManager(logger.Logger):
                     elif op == 'DEL' and self.VxlanAllowed:
                         self.block_vxlan_port(namespace)
 
+                while True:
+                    key, op, fvs = subscribe_dpu_table.pop()
+                    if not key:
+                        break
+                    if "dash-ha" in self.feature_present:
+                        self.update_dash_ha_rules(namespace, key, op, fvs)
+                
             ctrl_plane_acl_notification = set()
 
             # Pop data of both Subscriber Table object of namespace that got config db acl table event
