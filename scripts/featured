@@ -101,6 +101,15 @@ class Feature(object):
 
         template = jinja2.Template(configuration)
         target_value = template.render(device_config)
+
+        # YANG mandates boolean values are "true" and "false" but this code otherwise expects
+        # python "True" and "False" so map accordingly.  This then gets passed to ast.literal_eval()
+        # to convert it into an actual boolean, so it needs to be in the python case.
+        if target_value == "true":
+            target_value = "True"
+        if target_value == "false":
+            target_value = "False"
+
         if target_value not in expected_values:
             raise ValueError('Invalid value rendered for feature {}: {}'.format(self.name, target_value))
         return target_value
