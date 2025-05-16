@@ -1,13 +1,11 @@
 """Tests for reboot."""
 
 import imp
+import json
 import sys
 import os
 import pytest
-import datetime
 import logging
-import time
-from itertools import repeat
 
 if sys.version_info >= (3, 3):
     from unittest import mock
@@ -267,6 +265,25 @@ class TestReboot(object):
         ):
             self.reboot_module.populate_reboot_status_flag()
             result = self.reboot_module.issue_reboot([VALID_REBOOT_REQUEST_COLD])
+            assert result[0] == 0
+            assert result[1] == "Successfully issued reboot"
+            mock_thread.assert_called_once_with(
+                target=self.reboot_module.execute_reboot,
+                args=(REBOOT_METHOD_COLD_BOOT_ENUM,),
+            )
+            mock_thread.return_value.start.assert_called_once_with()
+
+    def test_issue_reboot_success_cold_no_message(self):
+        with (
+            mock.patch("threading.Thread") as mock_thread,
+            mock.patch("reboot.Reboot.validate_reboot_request", return_value=(0, "")),
+        ):
+            request = json.loads(VALID_REBOOT_REQUEST_COLD)
+            del request["message"]
+            request_str = json.dumps(request)
+
+            self.reboot_module.populate_reboot_status_flag()
+            result = self.reboot_module.issue_reboot([request_str])
             assert result[0] == 0
             assert result[1] == "Successfully issued reboot"
             mock_thread.assert_called_once_with(
