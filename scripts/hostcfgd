@@ -1126,7 +1126,7 @@ class SshServer(object):
                 if key == "inactivity_timeout":
                     # translate min to sec.
                     value = int(value) * 60
-                elif key in [ "permit_root_login", "password_authentication" ]:
+                elif key == "password_authentication":
                     # translate boolean to yes/no
                     if isinstance(value, str):
                         value = "no" if value.lower() in [ "false" ] else "yes"

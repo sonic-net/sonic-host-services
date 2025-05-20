@@ -214,7 +214,7 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "ports": "22",
                         "inactivity_timeout": "15",
                         "max_sessions": "0",
-                        "permit_root_login": "false"
+                        "permit_root_login": "no"
                     }
                 },
                 "DEVICE_METADATA": {
