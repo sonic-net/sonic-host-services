@@ -3,6 +3,7 @@ import threading
 import subprocess
 import os
 import select
+import errno
 
 from host_modules import host_service
 
@@ -15,14 +16,14 @@ class DebugExecutor(host_service.HostModule):
     Allows the debug container to execute arbitrary commands on the device, after having been validated against the whitelist.
     """
 
-    def _run_and_stream(self, command):
+    def _run_and_stream(self, argv):
         """
         Internal method to asynchronously run a command and stream stdout/stderr to the requesting client.
         """
         master_fd, slave_fd = pty.openpty()
 
         p = subprocess.Popen(
-            command,
+            argv,
             stdin = slave_fd,
             stdout = slave_fd,
             stderr = subprocess.PIPE,
@@ -41,30 +42,31 @@ class DebugExecutor(host_service.HostModule):
             while True:
                 ready, _, _ = select.select(fds, [], [])
                 if master_fd in ready:
-                    data = os.read(master_fd, 4096)
-                    if not data:
-                        fds.remove(master_fd)
-                    else:
-                        # decode and emit
+                    # Master FD is a PTY, will throw exception when closed
+                    try:
+                        data = os.read(master_fd, 4096)
                         self.Stdout(data.decode(errors='ignore'))
+                    except OSError as e:
+                        if e.errno == errno.EIO:
+                            fds.remove(master_fd)
+                            os.close(master_fd)
+                        else:
+                            raise
 
                 if stderr_fd in ready:
+                    # Stderr FD is a normal fd, will be empty when closed
                     data = os.read(stderr_fd, 4096)
                     if not data:
                         fds.remove(stderr_fd)
+                        p.stderr.close()
                     else:
                         self.Stderr(data.decode(errors='ignore'))
 
-                # If both fds closed, break
                 if not fds:
                     break
 
         finally:
-            # Ensure the process has exited
             rc = p.wait()
-            os.close(master_fd)
-            p.stderr.close()
-
             self.ExitCode(rc)
 
 
@@ -89,10 +91,11 @@ class DebugExecutor(host_service.HostModule):
         """
         pass
 
-    @host_service.method(INTERFACE, in_signature='s')
-    def RunCommand(self, command):
+    @host_service.method(INTERFACE, in_signature='as')
+    def RunCommand(self, argv):
         """
         DBus endpoint - receives a command, and streams the response data back to the client.
         Immediately returns, allowing thread to be solely responsible for sending responses.
         """
-        threading.Thread(target=self._run_and_stream, args=(command,), daemon=True).start()
+        threading.Thread(target=self._run_and_stream, args=(argv,), daemon=True).start()
+
