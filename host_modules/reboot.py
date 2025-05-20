@@ -8,6 +8,7 @@ import docker
 import psutil
 from host_modules import host_service
 from utils.run_cmd import _run_command
+from enum import Enum
 
 MOD_NAME = 'reboot'
 # Reboot method in reboot request
@@ -24,6 +25,12 @@ HALT_TIMEOUT = 60
 EXECUTE_COLD_REBOOT_COMMAND = "sudo reboot"
 EXECUTE_HALT_REBOOT_COMMAND = "sudo reboot -p"
 EXECUTE_WARM_REBOOT_COMMAND = "sudo warm-reboot"
+
+class RebootStatus(Enum):
+    STATUS_UNKNOWN = 0
+    STATUS_SUCCESS = 1
+    STATUS_RETRIABLE_FAILURE = 2
+    STATUS_FAILURE = 3
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +53,7 @@ class Reboot(host_service.HostModule):
         self.populate_reboot_status_flag()
         super(Reboot, self).__init__(mod_name)
 
-    def populate_reboot_status_flag(self, active = False, when = 0, reason = "", method = ""):
+    def populate_reboot_status_flag(self, active = False, when = 0, reason = "", method = "", status = RebootStatus.STATUS_UNKNOWN):
         """Populates the reboot_status_flag with given input params"""
         self.lock.acquire()
         self.reboot_status_flag["active"] = active
@@ -54,6 +61,7 @@ class Reboot(host_service.HostModule):
         self.reboot_status_flag["reason"] = reason
         self.reboot_status_flag["count"] = self.reboot_count
         self.reboot_status_flag["method"] = method
+        self.reboot_status_flag["status"] = status
         self.lock.release()
         return
 
@@ -117,7 +125,7 @@ class Reboot(host_service.HostModule):
 
         rc, stdout, stderr = _run_command(command)
         if rc:
-            self.populate_reboot_status_flag(False, int (time.time()), "Failed to execute reboot command", reboot_method)
+            self.populate_reboot_status_flag(False, int (time.time()), "Failed to execute reboot command", reboot_method, RebootStatus.STATUS_FAILURE)
             logger.error("%s: Reboot failed execution with stdout: %s, "
                          "stderr: %s", MOD_NAME, stdout, stderr)
             return
@@ -138,23 +146,23 @@ class Reboot(host_service.HostModule):
             while time.monotonic() - start_time < timeout:
                 if not self.is_halt_command_running() and not self.is_container_running("pmon"):
                     logger.info("%s: Halting the services is completed on the device", MOD_NAME)
-                    self.populate_reboot_status_flag(False, 0, "Halt reboot completed", reboot_method)
+                    self.populate_reboot_status_flag(False, 0, "Halt reboot completed", reboot_method, RebootStatus.STATUS_SUCCESS)
                     return
                 time.sleep(5)
 
             # Check if PMON container is still running after timeout
             if self.is_halt_command_running() or self.is_container_running("pmon"):
                 #Halt reboot has failed, as pmon is still running.
-                self.populate_reboot_status_flag(False, int(time.time()), "Halt reboot did not complete", reboot_method)
+                self.populate_reboot_status_flag(False, int(time.time()), "Halt reboot did not complete", reboot_method, RebootStatus.STATUS_FAILURE)
                 logger.error("%s: HALT reboot failed: Services are still running", MOD_NAME)
             else:
-                self.populate_reboot_status_flag(False, 0, "Halt reboot completed", reboot_method)
+                self.populate_reboot_status_flag(False, 0, "Halt reboot completed", reboot_method, RebootStatus.STATUS_SUCCESS)
                 logger.info("%s: Halting the services is completed on the device", MOD_NAME)
             return
         else:
             time.sleep(REBOOT_TIMEOUT)
             # Conclude that the reboot has failed if we reach this point
-            self.populate_reboot_status_flag(False, int(time.time()), "Reboot command failed to execute", reboot_method)
+            self.populate_reboot_status_flag(False, int(time.time()), "Reboot command failed to execute", reboot_method, RebootStatus.STATUS_FAILURE)
             return
 
     @host_service.method(host_service.bus_name(MOD_NAME), in_signature='as', out_signature='is')
@@ -193,7 +201,7 @@ class Reboot(host_service.HostModule):
             return err, errstr
 
         # Sets reboot_status_flag to be in active state
-        self.populate_reboot_status_flag(True, int(time.time()), reboot_request["message"], reboot_request["method"])
+        self.populate_reboot_status_flag(True, int(time.time()), reboot_request["message"], reboot_request["method"], RebootStatus.STATUS_UNKNOWN)
 
         # Issue reboot in a new thread and reset the reboot_status_flag if the reboot fails
         try:
