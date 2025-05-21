@@ -10,6 +10,8 @@ try:
     import os
     import json
     import subprocess
+    import time
+    from swsssdk import SonicV2Connector
     from sonic_py_common import syslogger
 
 except ImportError as err:
@@ -22,46 +24,141 @@ FIFO_PATH = "/var/run/gnoi_reboot.pipe"
 # Global logger class instance
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
+def execute_gnoi_command(command_args):
+    try:
+        result = subprocess.run(command_args, capture_output=True, text=True, timeout=60)
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", "Command timed out."
+
+def get_dpu_ip(dpu_name):
+    config_db = ConfigDBConnector()
+    config_db.connect()
+    key = f"bridge-midplane|{dpu_name}"
+    entry = config_db.get_entry("DHCP_SERVER_IPV4_PORT", key)
+    dpu_ip = entry.get("ips@")
+    if not dpu_ip:
+        raise ValueError(f"DPU IP not found for {dpu_name}")
+    return dpu_ip
+
+def get_gnmi_port(dpu_name):
+    config_db = ConfigDBConnector()
+    config_db.connect()
+    entry = config_db.get_entry("DPU_PORT", dpu_name)
+    gnmi_port = entry.get("gnmi_port", "8080")  # Default to 8080 if not specified
+    return gnmi_port
+
+def get_reboot_timeout():
+    db = SonicV2Connector()
+    db.connect(db.CONFIG_DB)
+
+    # Retrieve the platform value from CONFIG_DB
+    platform = db.get_entry('DEVICE_METADATA', 'localhost').get('platform')
+    if not platform:
+        raise ValueError("Platform information not found in CONFIG_DB.")
+
+    # Construct the path to platform.json
+    platform_json_path = f"/usr/share/sonic/device/{platform}/platform.json"
+
+    # Read the timeout value from platform.json
+    try:
+        with open(platform_json_path, "r") as f:
+            data = json.load(f)
+            timeout = data.get("dpu_halt_services_timeout")
+            if timeout is None:
+                return 60  # Default timeout
+            return int(timeout)
+    except Exception:
+        return 60  # Default timeout
+
 def main():
-    # Configure logger to log all messages INFO level and higher
-    logger.set_min_log_priority(sonic_logger.DEFAULT_LOG_LEVEL)
+    db = SonicV2Connector()
+    db.connect(db.STATE_DB)
+    pubsub = db.pubsub()
+    pubsub.psubscribe("__keyspace@6__:GNOI_REBOOT_REQUEST*")
 
-    logger.log_info("Starting up...")
+    logger.log_info("gnoi-reboot-daemon started and listening for reboot requests.")
 
-    # Ensure the FIFO exists
-    if not os.path.exists(FIFO_PATH):
-        os.mkfifo(FIFO_PATH)
+    while True:
+        message = pubsub.get_message()
+        if message and message['type'] == 'pmessage':
+            key = message['channel'].split(":")[-1]
+            dpu_name = key.split("|")[1]
+            request = db.get_all(db.STATE_DB, key)
+            if request and request.get("start") == "true":
+                method = request.get("method", "3")
+                message_text = request.get("message", "User initiated reboot")
 
-    # Open the FIFO in read-write mode to prevent blocking
-    fifo_fd = os.open(FIFO_PATH, os.O_RDWR)
-    with os.fdopen(fifo_fd, 'r') as fifo:
-        while True:
-            line = fifo.readline()
-            if not line:
-                continue
+                try:
+                    dpu_ip = get_dpu_ip(dpu_name)
+                    port = get_gnmi_port(dpu_name)
+                except ValueError as e:
+                    logger.log_error(str(e))
+                    continue
 
-            try:
-                msg = json.loads(line)
-                dpu_ip = msg["dpu_ip"]
-                port = msg.get("port", 50052)
-                method = msg.get("method", 1)
-                message = msg.get("message", "User initiated reboot")
+                logger.log_info(f"Processing reboot request for {dpu_name} at {dpu_ip}:{port}")
 
-                cmd = [
+                # Step 1: Send Reboot Command
+                reboot_cmd = [
                     "docker", "exec", "gnmi", "gnoi_client",
                     f"-target={dpu_ip}:{port}",
                     "-logtostderr", "-notls",
                     "-module", "System",
                     "-rpc", "Reboot",
-                    "-jsonin", f'{{"method":{method}, "message":"{message}"}}'
+                    "-jsonin", json.dumps({"method": int(method), "message": message_text})
                 ]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.stdout:
-                    logger.log_info(f"Command stdout: {result.stdout.strip()}")
-                if result.stderr:
-                    logger.log_warning(f"Command stderr: {result.stderr.strip()}")
-            except Exception as e:
-                logger.log_error(f"Error processing message: {e}")
+                returncode, stdout, stderr = execute_gnoi_command(reboot_cmd)
+                if returncode != 0:
+                    logger.log_error(f"Reboot command failed: {stderr}")
+                    result_entry = {
+                        "start": "true",
+                        "status": "failure",
+                        "message": stderr,
+                        "timestamp": str(int(time.time()))
+                    }
+                    db.set_entry("GNOI_REBOOT_RESULT", dpu_name, result_entry)
+                    db.set_entry("GNOI_REBOOT_REQUEST", dpu_name, {"start": "false"})
+                    continue
+
+                # Step 2: Poll for Reboot Status
+                timeout = get_reboot_timeout()
+                interval = 5
+                elapsed = 0
+                reboot_successful = False
+                while elapsed < timeout:
+                    status_cmd = [
+                        "docker", "exec", "gnmi", "gnoi_client",
+                        f"-target={dpu_ip}:{port}",
+                        "-logtostderr", "-notls",
+                        "-module", "System",
+                        "-rpc", "RebootStatus"
+                    ]
+                    returncode, stdout, stderr = execute_gnoi_command(status_cmd)
+                    if returncode == 0 and "reboot complete" in stdout.lower():
+                        reboot_successful = True
+                        break
+                    time.sleep(interval)
+                    elapsed += interval
+
+                # Step 3: Update Result Table
+                if reboot_successful:
+                    result_entry = {
+                        "start": "true",
+                        "status": "success",
+                        "message": "Reboot completed successfully.",
+                        "timestamp": str(int(time.time()))
+                    }
+                else:
+                    result_entry = {
+                        "start": "true",
+                        "status": "timeout",
+                        "message": "Reboot status polling timed out.",
+                        "timestamp": str(int(time.time()))
+                    }
+                db.set_entry("GNOI_REBOOT_RESULT", dpu_name, result_entry)
+                db.set_entry("GNOI_REBOOT_REQUEST", dpu_name, {"start": "false"})
+
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
