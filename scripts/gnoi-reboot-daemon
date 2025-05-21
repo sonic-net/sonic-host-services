@@ -3,8 +3,9 @@
 # gnoi-reboot-daemon
 #
 # This daemon facilitates gNOI-based reboot operations for DPU subcomponents within the SONiC platform.
-# It listens for JSON-formatted reboot requests on a named pipe and executes the corresponding gNOI
-# Reboot RPCs via the gnmi container.
+# It monitors RedisDB for reboot requests and executes the corresponding gNOI Reboot RPCs.
+#
+# It is designed to operate on SmartSwitch platforms and not on DPU modules.
 
 try:
     import os

@@ -1,5 +1,5 @@
 [Unit]
-Description=SmartSwitch DPU gNOI Reboot Daemon
+Description=gNOI based DPU Graceful Shutdown Daemon
 After=rc-local.service
 
 [Service]
