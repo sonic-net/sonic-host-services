@@ -201,7 +201,7 @@ class Reboot(host_service.HostModule):
             return err, errstr
 
         # Sets reboot_status_flag to be in active state
-        self.populate_reboot_status_flag(True, int(time.time()), reboot_request["message"], reboot_request["method"], RebootStatus.STATUS_UNKNOWN)
+        self.populate_reboot_status_flag(True, int(time.time()), reboot_request.get("message", ""), reboot_request["method"], RebootStatus.STATUS_UNKNOWN)
 
         # Issue reboot in a new thread and reset the reboot_status_flag if the reboot fails
         try:
