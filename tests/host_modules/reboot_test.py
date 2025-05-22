@@ -4,6 +4,7 @@ import imp
 import json
 import sys
 import os
+import time
 import pytest
 import logging
 from enum import Enum
@@ -365,22 +366,26 @@ class TestReboot(object):
 
     def test_get_reboot_status_active(self):
         MSG="testing reboot response"
-        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG)
+        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG, REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
         assert response_data["active"] == True
         assert response_data["when"] == TIME
         assert response_data["reason"] == MSG
+        assert response_data["method"] == REBOOT_METHOD_COLD_BOOT_ENUM
+        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.name
 
     def test_get_reboot_status_inactive(self):
-        self.reboot_module.populate_reboot_status_flag(False, 0, "")
+        self.reboot_module.populate_reboot_status_flag(False, 0, "", REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
         assert response_data["active"] == False
         assert response_data["when"] == 0
         assert response_data["reason"] == ""
+        assert response_data["method"] == REBOOT_METHOD_COLD_BOOT_ENUM
+        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.name
 
 #        assert result[1] == TEST_INACTIVE_RESPONSE_DATA
 
