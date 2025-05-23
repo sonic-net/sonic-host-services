@@ -84,8 +84,8 @@ class Reboot(host_service.HostModule):
     def is_halt_command_running(self):
         """Check if the halt command is running"""
         try:
-            for process in psutil.process_iter(['pid', 'name']):
-                if "reboot" in process.info['name']:
+            for process in psutil.process_iter(['cmdline']):
+                if process.info['cmdline'] and "reboot" in process.info['cmdline'] and "-p" in process.info['cmdline']:
                     return True
             return False
         except Exception as e:
@@ -185,7 +185,7 @@ class Reboot(host_service.HostModule):
             return err, errstr
 
         # Sets reboot_status_flag to be in active state
-        self.populate_reboot_status_flag(True, int(time.time()), reboot_request["message"])
+        self.populate_reboot_status_flag(True, int(time.time()), reboot_request.get("message", ""))
 
         # Issue reboot in a new thread and reset the reboot_status_flag if the reboot fails
         try:

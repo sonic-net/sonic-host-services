@@ -55,14 +55,13 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config']),
-                call(['systemctl', 'restart', 'ntp'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({}, MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
     def test_ntp_global_update_ntp_servers(self):
@@ -76,14 +75,13 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config']),
-                call(['systemctl', 'restart', 'ntp'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({'0.debian.pool.ntp.org': {}}, {})
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
     def test_ntp_is_caching_config(self):
@@ -118,7 +116,7 @@ class TesNtpCfgd(TestCase):
 
             ntpcfgd.handle_ntp_source_intf_chg('eth0')
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
 
@@ -193,7 +191,7 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['systemctl', 'restart', 'ntp-config']),
+            expected = [call(['systemctl', 'restart', 'chrony']),
             call(['iptables', '-t', 'mangle', '--append', 'PREROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-d', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460']),
             call(['iptables', '-t', 'mangle', '--append', 'POSTROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-s', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
@@ -244,11 +242,40 @@ class TestHostcfgdDaemon(TestCase):
 
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
+    def test_kdump_event_with_proc_cmdline(self):
+        os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        daemon = hostcfgd.HostConfigDaemon()
+        default=daemon.kdumpCfg.kdump_defaults
+        daemon.kdumpCfg.load(default)
+        daemon.register_callbacks()
+        MockConfigDb.event_queue = [('KDUMP', 'config')]
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            expected = [
+                call(['sonic-kdump-config', '--enable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '8G-:1G']),
+                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
+                call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+        os.environ["HOSTCFGD_UNIT_TESTING"] = ""
+        
     def test_devicemeta_event(self):
         """
         Test handling DEVICE_METADATA events.
         1) Hostname reload
         1) Timezone reload
+        1) syslog_with_osversion flag change
         """
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
@@ -308,6 +335,22 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
 
+        daemon.devmetacfg.syslog_with_osversion = "false"
+        HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["syslog_with_osversion"] = 'true'
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+                try:
+                    daemon.start()
+                except TimeoutError:
+                    pass
+
+                expected = [
+                    call(original_syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog-config after feature flag change to true')
+                ]
+                mocked_syslog.syslog.assert_has_calls(expected)
+
     def test_mgmtiface_event(self):
         """
         Test handling mgmt events.
@@ -340,10 +383,9 @@ class TestHostcfgdDaemon(TestCase):
 
                 expected = [
                     call(['sudo', 'systemctl', 'restart', 'interfaces-config']),
-                    call(['sudo', 'systemctl', 'restart', 'ntp-config']),
-                    call(['service', 'ntp', 'stop']),
+                    call(['systemctl', 'stop', 'chrony']),
                     call(['systemctl', 'restart', 'interfaces-config']),
-                    call(['service', 'ntp', 'start']),
+                    call(['systemctl', 'start', 'chrony']),
                     call(['ip', '-4', 'route', 'del', 'default', 'dev', 'eth0', 'metric', '202'])
                 ]
                 mocked_subprocess.check_call.assert_has_calls(expected)

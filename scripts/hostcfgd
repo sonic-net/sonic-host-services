@@ -86,6 +86,7 @@ RADIUS_SERVER_RETRANSMIT_DEFAULT = "3"
 RADIUS_SERVER_TIMEOUT_DEFAULT = "5"
 RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
+RADIUS_SERVER_SKIP_MSG_AUTH = False
 
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
@@ -342,7 +343,8 @@ class Iptables(object):
 
 
 class AaaCfg(object):
-    def __init__(self):
+    def __init__(self, CfgDb):
+        self.config_db = CfgDb
         self.authentication_default = {
             'login': 'local',
         }
@@ -366,7 +368,8 @@ class AaaCfg(object):
             'auth_type': RADIUS_SERVER_AUTH_TYPE_DEFAULT,
             'retransmit': RADIUS_SERVER_RETRANSMIT_DEFAULT,
             'timeout': RADIUS_SERVER_TIMEOUT_DEFAULT,
-            'passkey': RADIUS_SERVER_PASSKEY_DEFAULT
+            'passkey': RADIUS_SERVER_PASSKEY_DEFAULT,
+            'skip_msg_auth': RADIUS_SERVER_SKIP_MSG_AUTH
         }
         self.radius_global = {}
         self.radius_servers = {}
@@ -439,7 +442,7 @@ class AaaCfg(object):
             if new_ipv4_addr != "" and new_ipv6_addr != "":
                 break
             ip_str = it[1].split("/")[0]
-            ip_addr = ipaddress.IPAddress(ip_str)
+            ip_addr = ipaddress.ip_address(ip_str)
             # Pick the first IP address from the table that matches the source interface
             if isinstance(ip_addr, ipaddress.IPv6Address):
                 if new_ipv6_addr != "":
@@ -526,6 +529,8 @@ class AaaCfg(object):
                 del self.radius_servers[key]
         else:
             self.radius_servers[key] = data
+            if self.radius_servers[key].get('skip_msg_auth', None) is not None:
+                data['skip_msg_auth'] = is_true(self.radius_servers[key]['skip_msg_auth'])
 
         if modify_conf:
             self.modify_conf_file()
@@ -677,9 +682,9 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf found. Ignoring src_ip".format(addr))
                     # RADIUS: If server.src_intf, then get the corresponding
                     # src_ip based on the server.ip, and set it.
-                    src_ip = self.get_interface_ip(server['src_intf'], addr)
-                    if len(src_ip) > 0:
-                        server['src_ip'] = src_ip
+                    rad_src_ip = self.get_interface_ip(server['src_intf'], addr)
+                    if len(rad_src_ip) > 0:
+                        server['src_ip'] = rad_src_ip
                     elif 'src_ip' in server:
                         syslog.syslog(syslog.LOG_INFO, \
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
@@ -1144,6 +1149,40 @@ class KdumpCfg(object):
             "ssh_path": "/a/b/c"          # New feature: SSH path, default value
         }
 
+        # check if kdump is enabled by default with grub config
+        self.update_config_from_proc_cmdline = False
+        self.init_kdump_config_from_cmdline()
+
+    def init_kdump_config_from_cmdline(self):
+        # Update the kdump_defaults with value found /proc/cmdline if
+        # key "crashkernel=" is pre-defined in and /proc/cmdline (grub.conf)
+        if os.environ.get("HOSTCFGD_UNIT_TESTING") == "2":
+            modules_path = os.path.join(os.path.dirname(__file__), "..")
+            tests_path = os.path.join(modules_path, "tests")
+            cmdline = os.path.join(tests_path, "proc","cmdline")
+        else:
+            cmdline = "/proc/cmdline"
+
+        expected_str = ' crashkernel='
+        if os.path.exists(cmdline):
+            lines= [line.rstrip('\n') for line in open(cmdline)]
+            p = lines[0].find(expected_str)
+            if p == -1:
+                return
+            kdump_config = self.config_db.get_entry("KDUMP", "config") 
+            syslog.syslog(syslog.LOG_INFO, "kdump enabled is found in /proc/cmdline")
+            self.kdump_defaults["enabled"] = "true"
+            next_space = lines[0].find(" ", p+1)
+            if next_space == -1:
+                memory = lines[0][p+len(expected_str):]
+            else:
+                memory = lines[0][p+len(expected_str):next_space]
+            self.kdump_defaults["memory"] = memory
+            if not kdump_config or kdump_config.get("enabled") != self.kdump_defaults["enabled"] or kdump_config.get("memory") != self.kdump_defaults["memory"]:
+                self.update_config_from_proc_cmdline = True
+                syslog.syslog(syslog.LOG_INFO, "Update KDUMP config entry with data from /proc/cmdline")
+                self.config_db.mod_entry("KDUMP", "config", self.kdump_defaults)
+
     def load(self, kdump_table):
         """
         Set the KDUMP table in CFG DB to kdump_defaults if not set by the user
@@ -1162,6 +1201,10 @@ class KdumpCfg(object):
 
     def kdump_update(self, key, data):
         syslog.syslog(syslog.LOG_INFO, "Kdump global configuration update")
+        if self.update_config_from_proc_cmdline and os.environ.get("HOSTCFGD_UNIT_TESTING") != "2":
+            self.update_config_from_proc_cmdline = False
+            syslog.syslog(syslog.LOG_INFO, "Kdump is enabled by default with /proc/cmdline. Skip the first update")
+            return
         if key == "config":
             # Admin mode
             kdump_enabled = self.kdump_defaults["enabled"]
@@ -1205,12 +1248,12 @@ class KdumpCfg(object):
 class NtpCfg(object):
     """
     NtpCfg Config Daemon
-    1) ntp-config.service handles the configuration updates and then starts ntp.service
-    2) Both of them start after all the feature services start
+    1) chrony.service's ExecStartPre handles the configuration updates
+    2) They start after all the feature services start
     3) Purpose of this daemon is to propagate runtime config changes in
        NTP, NTP_SERVER, NTP_KEY, and LOOPBACK_INTERFACE
     """
-    NTP_CONF_RESTART = ['systemctl', 'restart', 'ntp-config']
+    CHRONY_RESTART = ['systemctl', 'restart', 'chrony']
 
     def __init__(self):
         self.cache = {}
@@ -1220,7 +1263,7 @@ class NtpCfg(object):
         """Load initial NTP configuration
 
         Force load cache on init. NTP config should be taken at boot-time by
-        ntp and ntp-config services. So loading whole config here.
+        chrony services. So loading whole config here.
 
         Args:
             ntp_global_conf:    Global configuration
@@ -1234,7 +1277,7 @@ class NtpCfg(object):
             ntp_global_conf = {}
 
         # Force load cache on init.
-        # NTP config should be taken at boot-time by ntp and ntp-config
+        # NTP config should be taken at boot-time by chrony
         # services.
         self.cache = {
             'global': ntp_global_conf.get('global', {}),
@@ -1253,19 +1296,19 @@ class NtpCfg(object):
         if intf_name not in ifs:
             return
 
-        # Just restart ntp config
+        # Just restart chrony
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
-                                          'ntp-config service')
+                                          'chrony service')
             return
 
     def ntp_global_update(self, key: str, data: dict):
         """Update NTP global configuration
 
         The table holds NTP global configuration. It has some configs that
-        require reloading only but some other require restarting ntp daemon.
+        require reloading only but some other require restarting chrony daemon.
         Handle each of them accordingly.
 
         Args:
@@ -1285,18 +1328,12 @@ class NtpCfg(object):
         new_dhcp = data.get('dhcp')
         new_vrf = data.get('vrf')
 
-        restart_ntpd = False
-        if new_dhcp != old_dhcp or new_vrf != old_vrf:
-            restart_ntpd = True
-
         # Restarting the service
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
-            if restart_ntpd:
-                run_cmd(['systemctl', 'restart', 'ntp'], True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
-            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart ntp '
-                                          'services')
+            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart chrony'
+                                          'service')
             return
 
         # Update the Local Cache
@@ -1334,10 +1371,10 @@ class NtpCfg(object):
 
         # Restarting the service
         try:
-            run_cmd(self.NTP_CONF_RESTART, True, True)
+            run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart '
-                                          'ntp-config service')
+                                          'chrony service')
             return
 
         # Updating the cache
@@ -1428,6 +1465,7 @@ class DeviceMetaCfg(object):
     def __init__(self):
         self.hostname = ''
         self.timezone = None
+        self.syslog_with_osversion = None
 
     def load(self, dev_meta={}):
         # Get hostname initial
@@ -1436,6 +1474,7 @@ class DeviceMetaCfg(object):
 
         # Load appropriate config
         self.timezone = dev_meta.get('localhost', {}).get('timezone')
+        self.syslog_with_osversion = dev_meta.get('localhost', {}).get('syslog_with_osversion')
 
     def hostname_update(self, data):
         """
@@ -1496,6 +1535,32 @@ class DeviceMetaCfg(object):
         syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog after '
                       'changing timezone')
 
+    def rsyslog_config(self, data):
+        """
+        Apply syslog_with_osversion feature flag.
+        Run the following command in Linux: sudo systemctl restart rsyslog-config
+        Args:
+            data: Read table's key's data.
+        """
+        new_syslog_with_osversion = data.get('syslog_with_osversion')
+        syslog.syslog(syslog.LOG_DEBUG,
+                      f'DeviceMetaCfg: syslog with os version: {new_syslog_with_osversion}')
+
+        if new_syslog_with_osversion is None:
+            syslog.syslog(syslog.LOG_DEBUG,
+                          f'DeviceMetaCfg: syslog with os version feature disabled')
+            return
+
+        if new_syslog_with_osversion == self.syslog_with_osversion:
+            syslog.syslog(syslog.LOG_DEBUG,
+                          f'DeviceMetaCfg: syslog with os version feature flag does not change')
+            return
+
+        run_cmd(['systemctl', 'restart', 'rsyslog-config'], True, False)
+        syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog-config after '
+                                        'feature flag change to {}'.format(new_syslog_with_osversion))
+
+
 class MgmtIfaceCfg(object):
     """
     MgmtIfaceCfg Config Daemon
@@ -1529,7 +1594,6 @@ class MgmtIfaceCfg(object):
                                            f'config {cfg} for {iface}')
             try:
                 run_cmd(['sudo', 'systemctl', 'restart', 'interfaces-config'], True, True)
-                run_cmd(['sudo', 'systemctl', 'restart', 'ntp-config'], True, True)
             except subprocess.CalledProcessError:
                 syslog.syslog(syslog.LOG_ERR, f'Failed to restart management '
                               'interface services')
@@ -1552,9 +1616,9 @@ class MgmtIfaceCfg(object):
 
         # Restart related vrfs services
         try:
-            run_cmd(['service', 'ntp', 'stop'], True, True)
+            run_cmd(['systemctl', 'stop', 'chrony'], True, True)
             run_cmd(['systemctl', 'restart', 'interfaces-config'], True, True)
-            run_cmd(['service', 'ntp', 'start'], True, True)
+            run_cmd(['systemctl', 'start', 'chrony'], True, True)
         except subprocess.CalledProcessError:
             syslog.syslog(syslog.LOG_ERR, f'Failed to restart management vrf '
                           'services')
@@ -2077,7 +2141,7 @@ class HostConfigDaemon:
         self.is_multi_npu = device_info.is_multi_npu()
 
         # Initialize AAACfg
-        self.aaacfg = AaaCfg()
+        self.aaacfg = AaaCfg(self.config_db)
 
         # Initialize PasswHardening
         self.passwcfg = PasswHardening()
@@ -2287,6 +2351,7 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
         self.devmetacfg.timezone_update(data)
+        self.devmetacfg.rsyslog_config(data)
 
     def rsyslog_handler(self):
         rsyslog_config = self.config_db.get_table(
