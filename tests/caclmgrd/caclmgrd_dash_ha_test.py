@@ -47,11 +47,15 @@ class TestCaclmgrdDashHa(TestCase):
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
                 assert(caclmgrd_daemon.feature_present["dash-ha"] == True)
-
+                # a set operation without swbus_port. It is no-op.
+                caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", ["somekey", "somevalue"])
+                
                 caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", test_data["input_add"])
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
+                
                 caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", test_data["input_upd"])
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_upd_subprocess_calls"], any_order=True)
+                
                 caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "DEL", {})
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_del_subprocess_calls"], any_order=True)
                 
