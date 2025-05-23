@@ -78,6 +78,83 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
         }
     ],
     [
+        "Test single IPv4 dst port + dst ip for EXTERNAL_CLIENT_ACL",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": [
+                            "EXTERNAL_CLIENT"
+                        ]
+                    }
+                },
+                "ACL_RULE": {
+                    "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1"
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_1": {
+                        "L4_DST_PORT": "8081",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "DST_IP": "20.0.0.66/32"
+                    },
+                },
+                "DEVICE_METADATA": {
+                    "localhost": {
+                    }
+                },
+                "FEATURE": {},
+            },
+            "return": [
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-d', '20.0.0.66/32', '--dport', '8081', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+            ],
+        }
+    ],
+    [
+        "Test single IPv4 dst port + incoming interface for EXTERNAL_CLIENT_ACL",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": [
+                            "EXTERNAL_CLIENT"
+                        ]
+                    }
+                },
+                "ACL_RULE": {
+                    "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1"
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_1": {
+                        "L4_DST_PORT": "8081",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "DST_IP": "0.0.0.0/0",
+                        "IN_PORTS": "mgmt"
+                    },
+                },
+                "DEVICE_METADATA": {
+                    "localhost": {
+                    }
+                },
+                "FEATURE": {},
+            },
+            "return": [
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-d', '0.0.0.0/0', '-i', 'mgmt', '--dport', '8081', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+            ],
+        }
+    ],
+    [
         "Test IPv4 dst port range + src ip forEXTERNAL_CLIENT_ACL",
         {
             "config_db": {
@@ -153,6 +230,44 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
             },
             "return": [
                 ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8081', '-j', 'ACCEPT'],
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+            ],
+        }
+    ],
+    [
+        "Test IPv6 single dst port range + dst ip forEXTERNAL_CLIENT_ACL",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": [
+                            "EXTERNAL_CLIENT"
+                        ]
+                    }
+                },
+                "ACL_RULE": {
+                    "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1"
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_1": {
+                        "L4_DST_PORT": "8081",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "DST_IP": "2001::6/128"
+                    },
+                },
+                "DEVICE_METADATA": {
+                    "localhost": {
+                    }
+                },
+                "FEATURE": {},
+            },
+            "return": [
+                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-d', '2001::6/128', '--dport', '8081', '-j', 'ACCEPT'],
                 ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
             ],
         }

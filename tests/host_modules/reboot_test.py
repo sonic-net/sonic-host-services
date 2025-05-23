@@ -1,13 +1,11 @@
 """Tests for reboot."""
 
 import imp
+import json
 import sys
 import os
 import pytest
-import datetime
 import logging
-import time
-from itertools import repeat
 
 if sys.version_info >= (3, 3):
     from unittest import mock
@@ -144,22 +142,22 @@ class TestReboot(object):
     def test_is_halt_command_running_success(self):
         with mock.patch("psutil.process_iter") as mock_process_iter:
             mock_process = mock.Mock()
-            mock_process.info = {'pid': 1234, 'name': 'reboot'}
+            mock_process.info = {'cmdline': ['reboot', '-p']}
             mock_process_iter.return_value = [mock_process]
 
             result = self.reboot_module.is_halt_command_running()
             assert result is True
-            mock_process_iter.assert_called_once_with(['pid', 'name'])
+            mock_process_iter.assert_called_once_with(['cmdline'])
 
     def test_is_halt_command_running_failure(self):
         with mock.patch("psutil.process_iter") as mock_process_iter:
             mock_process = mock.Mock()
-            mock_process.info = {'pid': 1234, 'name': 'other_process'}
+            mock_process.info = {'cmdline': ['other_process']}
             mock_process_iter.return_value = [mock_process]
 
             result = self.reboot_module.is_halt_command_running()
             assert result is False
-            mock_process_iter.assert_called_once_with(['pid', 'name'])
+            mock_process_iter.assert_called_once_with(['cmdline'])
 
     def test_is_halt_command_running_exception(self, caplog):
         with mock.patch("psutil.process_iter", side_effect=Exception("psutil error")) as mock_process_iter, \
@@ -267,6 +265,25 @@ class TestReboot(object):
         ):
             self.reboot_module.populate_reboot_status_flag()
             result = self.reboot_module.issue_reboot([VALID_REBOOT_REQUEST_COLD])
+            assert result[0] == 0
+            assert result[1] == "Successfully issued reboot"
+            mock_thread.assert_called_once_with(
+                target=self.reboot_module.execute_reboot,
+                args=(REBOOT_METHOD_COLD_BOOT_ENUM,),
+            )
+            mock_thread.return_value.start.assert_called_once_with()
+
+    def test_issue_reboot_success_cold_no_message(self):
+        with (
+            mock.patch("threading.Thread") as mock_thread,
+            mock.patch("reboot.Reboot.validate_reboot_request", return_value=(0, "")),
+        ):
+            request = json.loads(VALID_REBOOT_REQUEST_COLD)
+            del request["message"]
+            request_str = json.dumps(request)
+
+            self.reboot_module.populate_reboot_status_flag()
+            result = self.reboot_module.issue_reboot([request_str])
             assert result[0] == 0
             assert result[1] == "Successfully issued reboot"
             mock_thread.assert_called_once_with(

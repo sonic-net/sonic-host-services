@@ -10,10 +10,13 @@
 # here are the per-package modules (the "Primary" block)
 
 # root user can only be authenticated locally. Jump to local.
-auth	[success=2 default=ignore]	pam_succeed_if.so user = root
+auth	[success=5 default=ignore]	pam_succeed_if.so user = root
 # For the RADIUS servers, on success jump to the cache the MPL(Privilege)
-auth	[success=3 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.1_1645.conf privilege_level protocol=pap retry=1 nas_ip_address=10.10.10.10 debug try_first_pass
-auth	[success=2 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.2_1645.conf privilege_level protocol=chap retry=2 nas_ip_address=10.10.10.10 debug try_first_pass
+auth	[success=6 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.1_1645.conf privilege_level protocol=pap retry=1 nas_ip_address=10.10.10.10 debug try_first_pass require_message_authenticator 
+auth	[success=5 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.2_1645.conf privilege_level protocol=chap retry=2 nas_ip_address=10.10.10.10 debug try_first_pass require_message_authenticator 
+auth	[success=4 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.3_1645.conf privilege_level protocol=chap retry=3 nas_ip_address=10.10.10.10 debug try_first_pass require_message_authenticator 
+auth	[success=3 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.4_1645.conf privilege_level protocol=pap retry=4 nas_ip_address=10.10.10.10 debug try_first_pass require_message_authenticator 
+auth	[success=2 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.5_1645.conf privilege_level protocol=pap retry=1 nas_ip_address=10.10.10.10 debug try_first_pass  
 # Local
 auth	[success=done new_authtok_reqd=done default=ignore auth_err=die maxtries=die]	pam_unix.so nullok try_first_pass
 auth	requisite	pam_deny.so
