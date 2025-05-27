@@ -361,6 +361,28 @@ class ControlPlaneAclManager(logger.Logger):
 
         return allow_internal_docker_ip_cmds
 
+    def generate_block_bgp_loopback1(self, namespace, config_db_connector):
+
+        drop_dulator_bgp_loopback1_cmds = []
+        if self.DualToR:
+            loopback_table = config_db_connector.get_table(self.LOOPBACK_TABLE)
+            loopback_name1 = 'Loopback1'
+            loopback_networks1 = get_ipv4_networks_from_interface_table(loopback_table, loopback_name1)
+            if len(loopback_networks1) == 0:
+                self.log_warning("Loopback 1 IP not available from DualToR config")
+                return drop_dulator_bgp_loopback1_cmds
+
+            loopback_address_vals1 = list(loopback_networks1.values())
+            if not isinstance(loopback_address_vals1[0], ipaddress.IPv4Address):
+                self.log_warning("Loopback 1 IP Network not available from DualToR config")
+                return drop_dulator_bgp_loopback1_cmds
+
+            # Add iptables rules to drop all packets destined for loopback1 IP addresses
+            loopback_address1 = loopback_address_vals1[0]
+            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    ['iptables', '-A', 'INPUT', '-d', str(loopback_address1), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+
+        return drop_dulator_bgp_loopback1_cmds
 
     def generate_fwd_traffic_from_host_to_soc(self, namespace, config_db_connector):
 
@@ -861,6 +883,7 @@ class ControlPlaneAclManager(logger.Logger):
 
         if self.DualToR:
             dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace, config_db_connector)
+            dualtor_iptables_cmds += self.generate_block_bgp_loopback1(namespace, config_db_connector)
             for cmd in dualtor_iptables_cmds:
                 self.log_info("  " + ' '.join(cmd))
             self.run_commands(dualtor_iptables_cmds)
