@@ -366,21 +366,27 @@ class ControlPlaneAclManager(logger.Logger):
         drop_dulator_bgp_loopback1_cmds = []
         if self.DualToR:
             loopback_table = config_db_connector.get_table(self.LOOPBACK_TABLE)
-            loopback_name1 = 'Loopback1'
-            loopback_networks1 = get_ipv4_networks_from_interface_table(loopback_table, loopback_name1)
-            if len(loopback_networks1) == 0:
-                self.log_warning("Loopback 1 IP not available from DualToR config")
-                return drop_dulator_bgp_loopback1_cmds
+            loopback1_name = 'Loopback1'
 
-            loopback_address_vals1 = list(loopback_networks1.values())
-            if not isinstance(loopback_address_vals1[0], ipaddress.IPv4Address):
-                self.log_warning("Loopback 1 IP Network not available from DualToR config")
-                return drop_dulator_bgp_loopback1_cmds
+            if loopback_table:
+                for key, _ in loopback_table.items():
+                    if not _ip_prefix_in_key(key):
+                        continue
 
-            # Add iptables rules to drop all packets destined for loopback1 IP addresses
-            loopback_address1 = loopback_address_vals1[0]
-            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    ['iptables', '-A', 'INPUT', '-d', str(loopback_address1), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                    iface_name, iface_cidr = key
+                    if iface_name.startswith(loopback1_name):
+                        ip_ntwrk = ipaddress.ip_network(iface_cidr, strict=False)
+                        ip_str = iface_cidr.split("/")[0]
+                        ip_addr = ipaddress.ip_address(ip_str)
+                        # Add iptables rules to drop all packets destined for loopback1 IP addresses
+                        if isinstance(ip_ntwrk, ipaddress.IPv4Network):
+                            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                                                   ['iptables', '-A', 'INPUT', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                        elif isinstance(ip_ntwrk, ipaddress.IPv6Network):
+                            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                                                   ['ip6tables', '-A', 'INPUT', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                        else:
+                            self.log_warning("Unrecognized Loopback 1 IP {}".format(ip_ntwrk))
 
         return drop_dulator_bgp_loopback1_cmds
 
