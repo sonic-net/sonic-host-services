@@ -7,7 +7,6 @@ import os
 import time
 import pytest
 import logging
-from enum import Enum
 
 if sys.version_info >= (3, 3):
     from unittest import mock
@@ -20,6 +19,8 @@ test_path = os.path.dirname(os.path.abspath(__file__))
 sonic_host_service_path = os.path.dirname(test_path)
 host_modules_path = os.path.join(sonic_host_service_path, "../host_modules")
 sys.path.insert(0, sonic_host_service_path)
+
+from host_modules.reboot import RebootStatus
 
 TIME = 1617811205
 TEST_ACTIVE_RESPONSE_DATA = "{\"active\": true, \"when\": 1617811205, \"reason\": \"testing reboot response\"}"
@@ -38,12 +39,6 @@ VALID_REBOOT_REQUEST_COLD = "{\"method\": 1, \"message\": \"test reboot request 
 VALID_REBOOT_REQUEST_HALT = "{\"method\": 3, \"message\": \"test reboot request reason\"}"
 VALID_REBOOT_REQUEST_WARM = "{\"method\": \"WARM\", \"message\": \"test reboot request reason\"}"
 INVALID_REBOOT_REQUEST = "\"method\": 1, \"message\": \"test reboot request reason\""
-
-class RebootStatus(Enum):
-    STATUS_UNKNOWN = 0
-    STATUS_SUCCESS = 1
-    STATUS_RETRIABLE_FAILURE = 2
-    STATUS_FAILURE = 3
 
 imp.load_source("host_service", host_modules_path + "/host_service.py")
 imp.load_source("reboot", host_modules_path + "/reboot.py")
