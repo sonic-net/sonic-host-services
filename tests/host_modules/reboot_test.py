@@ -3,6 +3,7 @@
 import imp
 import sys
 import os
+import time
 import pytest
 import datetime
 import logging
@@ -20,6 +21,8 @@ test_path = os.path.dirname(os.path.abspath(__file__))
 sonic_host_service_path = os.path.dirname(test_path)
 host_modules_path = os.path.join(sonic_host_service_path, "../host_modules")
 sys.path.insert(0, sonic_host_service_path)
+
+from host_modules.reboot import RebootStatus
 
 TIME = 1617811205
 TEST_ACTIVE_RESPONSE_DATA = "{\"active\": true, \"when\": 1617811205, \"reason\": \"testing reboot response\"}"
@@ -56,6 +59,9 @@ class TestReboot(object):
             assert self.reboot_module.reboot_status_flag["active"] == False
             assert self.reboot_module.reboot_status_flag["when"] == 0
             assert self.reboot_module.reboot_status_flag["reason"] == ""
+            assert self.reboot_module.reboot_status_flag["count"] == 0
+            assert self.reboot_module.reboot_status_flag["method"] == ""
+            assert self.reboot_module.reboot_status_flag["status"] == RebootStatus.STATUS_UNKNOWN
 
     def test_validate_reboot_request_success_cold_boot_enum_method(self):
         reboot_request = {"method": REBOOT_METHOD_COLD_BOOT_ENUM, "reason": "test reboot request reason"}
@@ -117,12 +123,12 @@ class TestReboot(object):
             mock_docker.return_value = mock_client
             mock_container = mock.Mock()
             mock_container.name = "pmon"
-            mock_container.status = "running"
+            mock_container.attrs = {'State': {'Running': True}}
             mock_client.containers.list.return_value = [mock_container]
 
             result = self.reboot_module.is_container_running("pmon")
             assert result is True
-            mock_client.containers.list.assert_called_once_with(filters={"name": "pmon"})
+            mock_client.containers.list.assert_called_once_with(filters={"name": "^pmon$"})
 
     def test_is_container_running_failure(self):
         with mock.patch("docker.from_env") as mock_docker:
@@ -132,7 +138,7 @@ class TestReboot(object):
 
             result = self.reboot_module.is_container_running("pmon")
             assert result is False
-            mock_client.containers.list.assert_called_once_with(filters={"name": "pmon"})
+            mock_client.containers.list.assert_called_once_with(filters={"name": "^pmon$"})
 
     def test_is_container_running_exception(self, caplog):
         with mock.patch("docker.from_env", side_effect=Exception("Docker error")) as mock_docker, \
@@ -178,7 +184,7 @@ class TestReboot(object):
             self.reboot_module.execute_reboot("WARM")
             mock_run_command.assert_called_once_with("sudo warm-reboot")
             mock_sleep.assert_called_once_with(260)
-            mock_populate_reboot_status_flag.assert_called_once_with()
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int(time.time()), "Reboot command failed to execute", 'WARM', RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_unknown_reboot(self, caplog):
         with caplog.at_level(logging.ERROR):
@@ -198,7 +204,7 @@ class TestReboot(object):
                     "stdout: ['stdout: execute cold reboot'], stderr: "
                     "['stderror: execute cold reboot']")
             assert caplog.records[0].message == msg
-            mock_populate_reboot_status_flag.assert_called_once_with()
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 1, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_issue_reboot_command_halt(self, caplog):
         with (
@@ -212,7 +218,7 @@ class TestReboot(object):
                    "stdout: ['stdout: execute halt reboot'], stderr: "
                    "['stderror: execute halt reboot']")
             assert caplog.records[0].message == msg
-            mock_populate_reboot_status_flag.assert_called_once_with()
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 3, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_success_halt(self):
         with (
@@ -227,7 +233,7 @@ class TestReboot(object):
             mock_run_command.assert_called_once_with("sudo reboot -p")
             mock_is_halt_command_running.assert_called()
             mock_is_container_running.assert_called_with("pmon")
-            mock_populate_reboot_status_flag.assert_not_called()
+            mock_populate_reboot_status_flag.assert_called_once_with(False, 0, 'Halt reboot completed', 3, RebootStatus.STATUS_SUCCESS)
 
     def test_execute_reboot_fail_halt_timeout(self, caplog):
         with (
@@ -244,7 +250,7 @@ class TestReboot(object):
             mock_sleep.assert_called_with(5)
             mock_is_halt_command_running.assert_called()
             assert any("HALT reboot failed: Services are still running" in record.message for record in caplog.records)
-            mock_populate_reboot_status_flag.assert_called_once_with()
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int(time.time()), 'Halt reboot did not complete', 3, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_issue_reboot_command_warm(self, caplog):
         with (
@@ -258,7 +264,7 @@ class TestReboot(object):
                     "stdout: ['stdout: execute WARM reboot'], stderr: "
                     "['stderror: execute WARM reboot']")
             assert caplog.records[0].message == msg
-            mock_populate_reboot_status_flag.assert_called_once_with()
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 'WARM', RebootStatus.STATUS_FAILURE)
 
     def test_issue_reboot_success_cold_boot(self):
         with (
@@ -338,22 +344,26 @@ class TestReboot(object):
 
     def test_get_reboot_status_active(self):
         MSG="testing reboot response"
-        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG)
+        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG, REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
         assert response_data["active"] == True
         assert response_data["when"] == TIME
         assert response_data["reason"] == MSG
+        assert response_data["method"] == REBOOT_METHOD_COLD_BOOT_ENUM
+        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.name
 
     def test_get_reboot_status_inactive(self):
-        self.reboot_module.populate_reboot_status_flag(False, 0, "")
+        self.reboot_module.populate_reboot_status_flag(False, 0, "", REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
         assert response_data["active"] == False
         assert response_data["when"] == 0
         assert response_data["reason"] == ""
+        assert response_data["method"] == REBOOT_METHOD_COLD_BOOT_ENUM
+        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.name
 
 #        assert result[1] == TEST_INACTIVE_RESPONSE_DATA
 
