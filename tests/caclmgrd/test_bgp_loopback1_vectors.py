@@ -36,10 +36,10 @@ BGP_LOOPBACK1_TEST_VECTOR = [
                 },
             },
             "expected_subprocess_calls": [
-                call(['iptables', '-A', 'INPUT', '-d', "10.1.0.10", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1),
-                call(['iptables', '-A', 'INPUT', '-d', "10.1.0.12", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1),
-                call(['ip6tables', '-A', 'INPUT', '-d', "fc00:1:0:10::", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1),
-                call(['ip6tables', '-A', 'INPUT', '-d', "fc00:1:0:34::", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1)
+                call(['iptables', '-I', 'INPUT', '1', '-d', "10.1.0.10", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1),
+                call(['iptables', '-I', 'INPUT', '1', '-d', "10.1.0.12", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1),
+                call(['ip6tables', '-I', 'INPUT', '1', '-d', "fc00:1:0:10::", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1),
+                call(['ip6tables', '-I', 'INPUT', '1', '-d', "fc00:1:0:34::", '-p', 'tcp', '--dport', '179', '-j', 'DROP'], universal_newlines=True, stdout=-1)
             ],
             "popen_attributes": {
                 'communicate.return_value': ('output', 'error'),

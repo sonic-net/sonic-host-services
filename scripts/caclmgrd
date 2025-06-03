@@ -381,10 +381,10 @@ class ControlPlaneAclManager(logger.Logger):
                         # Add iptables rules to drop all packets destined for loopback1 IP addresses
                         if isinstance(ip_ntwrk, ipaddress.IPv4Network):
                             drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                                   ['iptables', '-A', 'INPUT', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                                                                   ['iptables', '-I', 'INPUT', '1', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
                         elif isinstance(ip_ntwrk, ipaddress.IPv6Network):
                             drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                                   ['ip6tables', '-A', 'INPUT', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                                                                   ['ip6tables', '-I', 'INPUT', '1', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
                         else:
                             self.log_warning("Unrecognized Loopback 1 IP {}".format(ip_ntwrk))
 
