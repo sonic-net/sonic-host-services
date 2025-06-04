@@ -375,18 +375,17 @@ class ControlPlaneAclManager(logger.Logger):
 
                     iface_name, iface_cidr = key
                     if iface_name.startswith(loopback1_name):
-                        ip_ntwrk = ipaddress.ip_network(iface_cidr, strict=False)
-                        ip_str = iface_cidr.split("/")[0]
-                        ip_addr = ipaddress.ip_address(ip_str)
+                        loopback1_intf = ipaddress.ip_interface(iface_cidr)
+                        loopback1_addr = loopback1_intf.ip
                         # Add iptables rules to drop all packets destined for loopback1 IP addresses
-                        if isinstance(ip_ntwrk, ipaddress.IPv4Network):
+                        if isinstance(loopback1_addr, ipaddress.IPv4Address):
                             drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                                   ['iptables', '-I', 'INPUT', '1', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
-                        elif isinstance(ip_ntwrk, ipaddress.IPv6Network):
+                                                                   ['iptables', '-I', 'INPUT', '1', '-d', str(loopback1_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                        elif isinstance(loopback1_addr, ipaddress.IPv6Address):
                             drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                                                                   ['ip6tables', '-I', 'INPUT', '1', '-d', str(ip_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                                                                   ['ip6tables', '-I', 'INPUT', '1', '-d', str(loopback1_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
                         else:
-                            self.log_warning("Unrecognized Loopback 1 IP {}".format(ip_ntwrk))
+                            self.log_warning("Unrecognized Loopback 1 IP {}".format(loopback1_addr))
 
         return drop_dulator_bgp_loopback1_cmds
 

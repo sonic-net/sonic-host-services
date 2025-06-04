@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
-class TestCaclmgrdSoc(TestCase):
+class TestCaclmgrdLoopback1Drop(TestCase):
     """
         Test caclmgrd soc
     """
