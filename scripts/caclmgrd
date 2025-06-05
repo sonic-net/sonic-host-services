@@ -377,7 +377,7 @@ class ControlPlaneAclManager(logger.Logger):
                     if iface_name.startswith(loopback1_name):
                         loopback1_intf = ipaddress.ip_interface(iface_cidr)
                         loopback1_addr = loopback1_intf.ip
-                        # Add iptables rules to drop all packets destined for loopback1 IP addresses
+                        # Add iptables rules to drop all bgp packets destined for loopback1 IP addresses
                         if isinstance(loopback1_addr, ipaddress.IPv4Address):
                             drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                                                    ['iptables', '-I', 'INPUT', '1', '-d', str(loopback1_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
