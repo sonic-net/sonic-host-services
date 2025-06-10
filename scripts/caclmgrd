@@ -433,10 +433,12 @@ class ControlPlaneAclManager(logger.Logger):
         fwd_traffic_from_namespace_to_host_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-t', 'nat', '-F'])
 
         for acl_service in self.ACL_SERVICES:
-            if self.ACL_SERVICES[acl_service]["multi_asic_ns_to_host_fwd"] and acl_service in acl_source_ip_map:
+            if self.ACL_SERVICES[acl_service]["multi_asic_ns_to_host_fwd"]:
                 # Get the Source IP Set if exists else use default source ip prefix
-                nat_source_ipv4_set = acl_source_ip_map[acl_service]["ipv4"] if acl_source_ip_map and acl_source_ip_map[acl_service]["ipv4"] else { "0.0.0.0/0" }
-                nat_source_ipv6_set = acl_source_ip_map[acl_service]["ipv6"] if acl_source_ip_map and acl_source_ip_map[acl_service]["ipv6"] else { "::/0" }
+                nat_source_ipv4_set = acl_source_ip_map[acl_service]["ipv4"] if acl_source_ip_map and\
+                    acl_source_ip_map.get(acl_service, {}).get("ipv4", set()) else { "0.0.0.0/0" }
+                nat_source_ipv6_set = acl_source_ip_map[acl_service]["ipv6"] if acl_source_ip_map and\
+                    acl_source_ip_map.get(acl_service, {}).get("ipv6", set()) else { "::/0" }
 
                 for ip_protocol in self.ACL_SERVICES[acl_service]["ip_protocols"]:
                     if "dst_ports" in self.ACL_SERVICES[acl_service]:
