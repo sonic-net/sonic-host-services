@@ -126,7 +126,7 @@ class ControlPlaneAclManager(logger.Logger):
     VxlanSrcIP = ""
     # a map from dpu name to port
     dashHaPortMap = {}
-    
+
     def __init__(self, log_identifier):
         super(ControlPlaneAclManager, self).__init__(log_identifier)
 
@@ -435,8 +435,10 @@ class ControlPlaneAclManager(logger.Logger):
         for acl_service in self.ACL_SERVICES:
             if self.ACL_SERVICES[acl_service]["multi_asic_ns_to_host_fwd"]:
                 # Get the Source IP Set if exists else use default source ip prefix
-                nat_source_ipv4_set = acl_source_ip_map[acl_service]["ipv4"] if acl_source_ip_map and acl_source_ip_map[acl_service]["ipv4"] else { "0.0.0.0/0" }
-                nat_source_ipv6_set = acl_source_ip_map[acl_service]["ipv6"] if acl_source_ip_map and acl_source_ip_map[acl_service]["ipv6"] else { "::/0" }
+                nat_source_ipv4_set = acl_source_ip_map[acl_service]["ipv4"] if acl_source_ip_map and\
+                    acl_source_ip_map.get(acl_service, {}).get("ipv4", set()) else { "0.0.0.0/0" }
+                nat_source_ipv6_set = acl_source_ip_map[acl_service]["ipv6"] if acl_source_ip_map and\
+                    acl_source_ip_map.get(acl_service, {}).get("ipv6", set()) else { "::/0" }
 
                 for ip_protocol in self.ACL_SERVICES[acl_service]["ip_protocols"]:
                     if "dst_ports" in self.ACL_SERVICES[acl_service]:
@@ -611,7 +613,7 @@ class ControlPlaneAclManager(logger.Logger):
         for dpu, port in self.dashHaPortMap.items():
             iptables_cmds += self.make_dash_ha_rules(namespace, port)
             self.log_info(f"Enabled dash-ha port {port} for {dpu}")
-            
+
         # Add iptables commands to allow internal docker traffic
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
 
@@ -997,12 +999,12 @@ class ControlPlaneAclManager(logger.Logger):
     def remove_dash_ha_rules(self, namespace, port):
         iptables_cmds = []
         # Remove iptables/ip6tables commands that allow DASH-HA packets
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                 ['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                 ['ip6tables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
         self.run_commands(iptables_cmds)
-    
+
     def add_dash_ha_rules(self, namespace, port):
         iptables_cmds = self.make_dash_ha_rules(namespace, port)
         self.run_commands(iptables_cmds)
@@ -1010,23 +1012,23 @@ class ControlPlaneAclManager(logger.Logger):
     def make_dash_ha_rules(self, namespace, port):
         iptables_cmds = []
         # make iptables/ip6tables commands that allow DASH-HA packets
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                 ['iptables', '-I', 'INPUT', '2', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
-        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                 ['ip6tables', '-I', 'INPUT', '2', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
         return iptables_cmds
-    
+
     def update_dash_ha_rules(self, namespace, key, op, data):
         port = self.dashHaPortMap.get(key)
         if op == "DEL" and not port:
             return
-                
+
         if op == "DEL" and port:
             # Remove iptables/ip6tables commands that allow DASH-HA packets
             self.remove_dash_ha_rules(namespace, port)
             self.dashHaPortMap.pop(key)
             return
-        
+
         if op == "SET":
             new_port = None
             for fv in data:
@@ -1201,7 +1203,7 @@ class ControlPlaneAclManager(logger.Logger):
                         break
                     if "dash-ha" in self.feature_present:
                         self.update_dash_ha_rules(namespace, key, op, fvs)
-                
+
             ctrl_plane_acl_notification = set()
 
             # Pop data of both Subscriber Table object of namespace that got config db acl table event
