@@ -91,6 +91,7 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "timeout": "1",
                         "passkey": "pass1",
                         "skip_msg_auth": "true",
+                        "dont_send_msg_auth": "true",
                     }
                 },
             },
@@ -160,6 +161,7 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "timeout": "1",
                         "passkey": "pass1",
                         "skip_msg_auth": "true",
+                        "dont_send_msg_auth": "true",
                     }
                 },
             },
