@@ -368,6 +368,33 @@ class ControlPlaneAclManager(logger.Logger):
 
         return allow_internal_docker_ip_cmds
 
+    def generate_block_bgp_loopback1(self, namespace, config_db_connector):
+
+        drop_dulator_bgp_loopback1_cmds = []
+        if self.DualToR:
+            loopback_table = config_db_connector.get_table(self.LOOPBACK_TABLE)
+            loopback1_name = 'Loopback1'
+
+            if loopback_table:
+                for key, _ in loopback_table.items():
+                    if not _ip_prefix_in_key(key):
+                        continue
+
+                    iface_name, iface_cidr = key
+                    if iface_name.startswith(loopback1_name):
+                        loopback1_intf = ipaddress.ip_interface(iface_cidr)
+                        loopback1_addr = loopback1_intf.ip
+                        # Add iptables rules to drop all bgp packets destined for loopback1 IP addresses
+                        if isinstance(loopback1_addr, ipaddress.IPv4Address):
+                            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                                                   ['iptables', '-I', 'INPUT', '1', '-d', str(loopback1_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                        elif isinstance(loopback1_addr, ipaddress.IPv6Address):
+                            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                                                   ['ip6tables', '-I', 'INPUT', '1', '-d', str(loopback1_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                        else:
+                            self.log_warning("Unrecognized Loopback 1 IP {}".format(loopback1_addr))
+
+        return drop_dulator_bgp_loopback1_cmds
 
     def generate_fwd_traffic_from_host_to_soc(self, namespace, config_db_connector):
 
@@ -874,6 +901,7 @@ class ControlPlaneAclManager(logger.Logger):
 
         if self.DualToR:
             dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace, config_db_connector)
+            dualtor_iptables_cmds += self.generate_block_bgp_loopback1(namespace, config_db_connector)
             for cmd in dualtor_iptables_cmds:
                 self.log_info("  " + ' '.join(cmd))
             self.run_commands(dualtor_iptables_cmds)
