@@ -1120,6 +1120,7 @@ class SshServer(object):
             if key in SSH_INT_VALUES and (int(value) < SSH_MIN_VALUES.get(key, 65535) or
                                             SSH_MAX_VALUES.get(key, -1) < int(value)):
                 syslog.syslog(syslog.LOG_ERR, "Ssh {} {} out of range".format(key, value))
+                continue
 
             if SSH_CONFIG_NAMES.get(key) is not None:
                 # search replace configuration - if not in config file - append
