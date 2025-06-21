@@ -266,13 +266,11 @@ class FeatureHandler(object):
             return True
 
         if enable:
-            if not self.enable_feature(feature):
-                return False
+            self.enable_feature(feature)
             syslog.syslog(syslog.LOG_INFO, "Feature {} is enabled and started".format(feature.name))
 
         if disable:
-            if not self.disable_feature(feature):
-                return False
+            self.disable_feature(feature)
             syslog.syslog(syslog.LOG_INFO, "Feature {} is stopped and disabled".format(feature.name))
 
         return True
@@ -407,7 +405,7 @@ class FeatureHandler(object):
         for feature_name in feature_names:
             # Check if it is already enabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state == "enabled":
+            if unit_file_state == "enabled" or not unit_file_state:
                 continue
             cmds = []
             for suffix in feature_suffixes:
@@ -427,17 +425,16 @@ class FeatureHandler(object):
                     syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be enabled and started"
                                   .format(feature.name, feature_suffixes[-1]))
                     self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return False
+                    return
 
         self.set_feature_state(feature, self.FEATURE_STATE_ENABLED)
-        return True
 
     def disable_feature(self, feature):
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
             # Check if it is already disabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state in ("disabled", "masked"):
+            if unit_file_state in ("disabled", "masked") or not unit_file_state:
                 continue
             cmds = []
             for suffix in reversed(feature_suffixes):
@@ -452,10 +449,9 @@ class FeatureHandler(object):
                     syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be stopped and disabled"
                                   .format(feature.name, feature_suffixes[-1]))
                     self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return False
+                    return
 
         self.set_feature_state(feature, self.FEATURE_STATE_DISABLED)
-        return True
 
     def resync_feature_state(self, feature):
         current_entry = self._config_db.get_entry('FEATURE', feature.name)
