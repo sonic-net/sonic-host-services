@@ -23,6 +23,7 @@ hostcfg_file_path = os.path.abspath(__file__)
 hostcfg_dir_path = os.path.dirname(hostcfg_file_path)
 sys.path.append(hostcfg_dir_path)
 import ldap
+from sonic_py_common.security_cipher import master_key_mgr 
 
 # FILE
 PAM_AUTH_CONF = "/etc/pam.d/common-auth-sonic"
@@ -96,7 +97,6 @@ DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
 # MISC Constants
 CFG_DB = "CONFIG_DB"
 STATE_DB = "STATE_DB"
-
 
 def signal_handler(sig, frame):
     if sig == signal.SIGHUP:
@@ -647,14 +647,20 @@ class AaaCfg(object):
             src_ip = None
 
         servers_conf = []
+        secure_cipher = master_key_mgr()
         if self.tacplus_servers:
             for addr in self.tacplus_servers:
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
+                if server['key_encrypt'] == 'True':
+                    output = secure_cipher.decrypt_passkey("TACPLUS", server['passkey'])
+                    if output:
+                       server['passkey'] = output
+                    else:
+                        syslog.syslog(syslog.LOG_ERR, "Decrypt_passkey failed for TACPLUS Server: {}.".format(addr))
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
-
         radius_global = self.radius_global_default.copy()
         radius_global.update(self.radius_global)
 
