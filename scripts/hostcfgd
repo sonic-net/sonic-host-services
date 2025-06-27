@@ -653,7 +653,7 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
-                if server['key_encrypt'] == 'True':
+                if 'key_encrypt' in server and server['key_encrypt'] == 'True':
                     output = secure_cipher.decrypt_passkey("TACPLUS", server['passkey'])
                     if output:
                        server['passkey'] = output
