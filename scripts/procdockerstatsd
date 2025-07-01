@@ -143,9 +143,15 @@ class ProcDockerStats(daemon_base.DaemonBase):
         processes_all = []
         for process_obj in psutil.process_iter(['pid', 'ppid', 'memory_percent', 'cpu_percent', 'create_time', 'cmdline']):
             processes_all.append(process_obj)
-        sorted_processes = sorted(processes_all, key=lambda x: x.cpu_percent(), reverse=True)
+        valid_processes = []
+        for p in processes_all:
+            try:
+                cpu = p.cpu_percent()
+                valid_processes.append((cpu, p))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        sorted_processes = [p for _, p in sorted(valid_processes, key=lambda x: x[0], reverse=True)]
         top_processes = sorted_processes[:1024]
-
         for process_obj in top_processes:
             try:
                 pid = process_obj.pid
