@@ -7,15 +7,15 @@ from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 from pyfakefs.fake_filesystem_unittest import patchfs
 
-from .test_vxlan_vectors import CACLMGRD_VXLAN_TEST_VECTOR
+from .test_dash_ha_vectors import CACLMGRD_DASH_HA_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
 from unittest.mock import MagicMock, patch
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
-class TestCaclmgrdVxlan(TestCase):
+class TestCaclmgrdDashHa(TestCase):
     """
-        Test caclmgrd vxlan
+        Test caclmgrd bfd
     """
     def setUp(self):
         swsscommon.ConfigDBConnector = MockConfigDb
@@ -26,9 +26,9 @@ class TestCaclmgrdVxlan(TestCase):
         caclmgrd_path = os.path.join(scripts_path, 'caclmgrd')
         self.caclmgrd = load_module_from_source('caclmgrd', caclmgrd_path)
 
-    @parameterized.expand(CACLMGRD_VXLAN_TEST_VECTOR)
+    @parameterized.expand(CACLMGRD_DASH_HA_TEST_VECTOR)
     @patchfs
-    def test_caclmgrd_vxlan(self, test_name, test_data, fs):
+    def test_caclmgrd_dash_ha(self, test_name, test_data, fs):
         if not os.path.exists(DBCONFIG_PATH):
             fs.create_file(DBCONFIG_PATH) # fake database_config.json
 
@@ -46,19 +46,22 @@ class TestCaclmgrdVxlan(TestCase):
                 mocked_subprocess.call.return_value = call_rc
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
-                ret = caclmgrd_daemon.allow_vxlan_port('', [])
-                assert ret == False
-                caclmgrd_daemon.block_vxlan_port('')
-                assert ret == False
-                data = test_data["input"]
-                caclmgrd_daemon.allow_vxlan_port('', data)
+                assert(caclmgrd_daemon.feature_present["dash-ha"] == True)
+                # a set operation without swbus_port. It is no-op.
+                caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", ["somekey", "somevalue"])
+                
+                caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", test_data["input_add"])
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
-                caclmgrd_daemon.block_vxlan_port('')
+                
+                caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", test_data["input_upd"])
+                mocked_subprocess.Popen.assert_has_calls(test_data["expected_upd_subprocess_calls"], any_order=True)
+                
+                caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "DEL", {})
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_del_subprocess_calls"], any_order=True)
-                caclmgrd_daemon.allow_vxlan_port('', data)
+                
+                caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", test_data["input_add"])
                 mocked_subprocess.Popen.reset_mock()
                 caclmgrd_daemon.num_changes[''] = 1
-                caclmgrd_daemon.thread_exceptions = {}
                 caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
 

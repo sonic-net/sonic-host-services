@@ -17,6 +17,8 @@ try:
     import sys
     import threading
     import time
+    import traceback
+    import signal
     from sonic_py_common.general import getstatusoutput_noshell_pipe
     from sonic_py_common import logger, device_info, multi_asic
     from swsscommon import swsscommon
@@ -43,7 +45,7 @@ def _ip_prefix_in_key(key):
 
 
 def get_ipv4_networks_from_interface_table(table, intf_name):
-    
+
     addresses = {}
     if table:
         for key, _ in table.items():
@@ -85,6 +87,7 @@ class ControlPlaneAclManager(logger.Logger):
 
     BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
     VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL"
+    DPU_TABLE = "DPU"
 
     # To specify a port range instead of a single port, use iptables format:
     # separate start and end ports with a colon, e.g., "1000:2000"
@@ -121,6 +124,8 @@ class ControlPlaneAclManager(logger.Logger):
     bfdAllowed = False
     VxlanAllowed = False
     VxlanSrcIP = ""
+    # a map from dpu name to port
+    dashHaPortMap = {}
 
     def __init__(self, log_identifier):
         super(ControlPlaneAclManager, self).__init__(log_identifier)
@@ -129,11 +134,13 @@ class ControlPlaneAclManager(logger.Logger):
         self.update_thread = {}
         self.lock = {}
         self.num_changes = {}
+        self.thread_exceptions = {}
 
         # Initialize update-thread-specific data for default namespace
         self.update_thread[DEFAULT_NAMESPACE] = None
         self.lock[DEFAULT_NAMESPACE] = threading.Lock()
         self.num_changes[DEFAULT_NAMESPACE] = 0
+        self.thread_exceptions[DEFAULT_NAMESPACE] = None
 
         if device_info.is_multi_npu():
             swsscommon.SonicDBConfig.load_sonic_global_db_config()
@@ -173,7 +180,7 @@ class ControlPlaneAclManager(logger.Logger):
             self.lock[back_asic_namespace] = threading.Lock()
             self.num_changes[back_asic_namespace] = 0
             self.update_docker_mgmt_ip_acl(back_asic_namespace)
-       
+
         for fabric_asic_namespace in namespaces['fabric_ns']:
             self.update_thread[fabric_asic_namespace] = None
             self.lock[fabric_asic_namespace] = threading.Lock()
@@ -361,6 +368,33 @@ class ControlPlaneAclManager(logger.Logger):
 
         return allow_internal_docker_ip_cmds
 
+    def generate_block_bgp_loopback1(self, namespace, config_db_connector):
+
+        drop_dulator_bgp_loopback1_cmds = []
+        if self.DualToR:
+            loopback_table = config_db_connector.get_table(self.LOOPBACK_TABLE)
+            loopback1_name = 'Loopback1'
+
+            if loopback_table:
+                for key, _ in loopback_table.items():
+                    if not _ip_prefix_in_key(key):
+                        continue
+
+                    iface_name, iface_cidr = key
+                    if iface_name.startswith(loopback1_name):
+                        loopback1_intf = ipaddress.ip_interface(iface_cidr)
+                        loopback1_addr = loopback1_intf.ip
+                        # Add iptables rules to drop all bgp packets destined for loopback1 IP addresses
+                        if isinstance(loopback1_addr, ipaddress.IPv4Address):
+                            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                                                   ['iptables', '-I', 'INPUT', '1', '-d', str(loopback1_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                        elif isinstance(loopback1_addr, ipaddress.IPv6Address):
+                            drop_dulator_bgp_loopback1_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                                                   ['ip6tables', '-I', 'INPUT', '1', '-d', str(loopback1_addr), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+                        else:
+                            self.log_warning("Unrecognized Loopback 1 IP {}".format(loopback1_addr))
+
+        return drop_dulator_bgp_loopback1_cmds
 
     def generate_fwd_traffic_from_host_to_soc(self, namespace, config_db_connector):
 
@@ -389,9 +423,9 @@ class ControlPlaneAclManager(logger.Logger):
                 self.log_warning("Vlan IP not available from DualToR active-active config")
                 return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
 
-            fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+            fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                     ['iptables', '-t', 'nat', '--flush', 'POSTROUTING'])
-            
+
             if loopback_address is not None:
                 mux_table = config_db_connector.get_table(self.CONFIG_MUX_CABLE)
                 mux_table_keys = mux_table.keys()
@@ -403,7 +437,7 @@ class ControlPlaneAclManager(logger.Logger):
                         for ip_network, vlan_address in vlan_networks.items():
                             # Only add the vlan source IP specific soc IP address to IPtables
                             if soc_ipv4_addr in ip_network:
-                                fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] + 
+                                fwd_dualtor_grpc_traffic_from_host_to_soc_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                          ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '--destination', str(soc_ipv4_addr), '--source', str(vlan_address), '-j', 'SNAT', '--to-source', str(loopback_address)])
 
         return fwd_dualtor_grpc_traffic_from_host_to_soc_cmds
@@ -412,7 +446,7 @@ class ControlPlaneAclManager(logger.Logger):
     def generate_fwd_traffic_from_namespace_to_host_commands(self, namespace, acl_source_ip_map):
         """
         The below SNAT and DNAT rules are added in asic namespace in multi-ASIC platforms. It helps to forward request coming
-        in through the front panel interfaces created/present in the asic namespace for the servie running in linux host network namespace. 
+        in through the front panel interfaces created/present in the asic namespace for the servie running in linux host network namespace.
         The external IP addresses are NATed to the internal docker IP addresses for the Host service to respond.
         """
 
@@ -428,8 +462,10 @@ class ControlPlaneAclManager(logger.Logger):
         for acl_service in self.ACL_SERVICES:
             if self.ACL_SERVICES[acl_service]["multi_asic_ns_to_host_fwd"]:
                 # Get the Source IP Set if exists else use default source ip prefix
-                nat_source_ipv4_set = acl_source_ip_map[acl_service]["ipv4"] if acl_source_ip_map and acl_source_ip_map[acl_service]["ipv4"] else { "0.0.0.0/0" }
-                nat_source_ipv6_set = acl_source_ip_map[acl_service]["ipv6"] if acl_source_ip_map and acl_source_ip_map[acl_service]["ipv6"] else { "::/0" }
+                nat_source_ipv4_set = acl_source_ip_map[acl_service]["ipv4"] if acl_source_ip_map and\
+                    acl_source_ip_map.get(acl_service, {}).get("ipv4", set()) else { "0.0.0.0/0" }
+                nat_source_ipv6_set = acl_source_ip_map[acl_service]["ipv6"] if acl_source_ip_map and\
+                    acl_source_ip_map.get(acl_service, {}).get("ipv6", set()) else { "::/0" }
 
                 for ip_protocol in self.ACL_SERVICES[acl_service]["ip_protocols"]:
                     if "dst_ports" in self.ACL_SERVICES[acl_service]:
@@ -601,6 +637,10 @@ class ControlPlaneAclManager(logger.Logger):
             fvs = swsscommon.FieldValuePairs([("src_ip", self.VxlanSrcIP)])
             iptables_cmds += self.get_vxlan_port_iptable_commands(namespace, fvs)
 
+        for dpu, port in self.dashHaPortMap.items():
+            iptables_cmds += self.make_dash_ha_rules(namespace, port)
+            self.log_info(f"Enabled dash-ha port {port} for {dpu}")
+
         # Add iptables commands to allow internal docker traffic
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
 
@@ -764,7 +804,7 @@ class ControlPlaneAclManager(logger.Logger):
                             rule_cmd += ["-A", "INPUT"]
                             if ip_protocol != "any":
                                 rule_cmd += ["-p", str(ip_protocol)]
- 
+
                             if "SRC_IPV6" in rule_props and rule_props["SRC_IPV6"]:
                                 rule_cmd += ["-s", str(rule_props["SRC_IPV6"])]
                                 if rule_props["PACKET_ACTION"] == "ACCEPT":
@@ -845,9 +885,9 @@ class ControlPlaneAclManager(logger.Logger):
 
     def update_control_plane_nat_acls(self, namespace, service_to_source_ip_map, config_db_connector):
         """
-        Convenience wrapper for multi-asic platforms 
+        Convenience wrapper for multi-asic platforms
         which programs the NAT rules for redirecting the
-        traffic coming on the front panel interface map to namespace 
+        traffic coming on the front panel interface map to namespace
         to the host.
         """
         # Add iptables commands to allow front panel traffic
@@ -861,6 +901,7 @@ class ControlPlaneAclManager(logger.Logger):
 
         if self.DualToR:
             dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace, config_db_connector)
+            dualtor_iptables_cmds += self.generate_block_bgp_loopback1(namespace, config_db_connector)
             for cmd in dualtor_iptables_cmds:
                 self.log_info("  " + ' '.join(cmd))
             self.run_commands(dualtor_iptables_cmds)
@@ -904,6 +945,17 @@ class ControlPlaneAclManager(logger.Logger):
                         self.num_changes[namespace] = 0
                         self.update_thread[namespace] = None
                         return
+        except Exception as e:
+            # Log the exception with traceback
+            self.log_error("Exception occured at {} thread for namespace '{}' due to {}".format(threading.current_thread().name, namespace, repr(e)))
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            full_traceback = traceback.format_exception(exc_type, exc_value, exc_traceback)
+            # Store the exception so the main thread can detect it
+            self.thread_exceptions[namespace] = (repr(e), full_traceback)
+
+            # Clean up
+            self.num_changes[namespace] = 0
+            self.update_thread[namespace] = None
         finally:
             new_config_db_connector.close("CONFIG_DB")
 
@@ -972,6 +1024,58 @@ class ControlPlaneAclManager(logger.Logger):
         self.VxlanSrcIP = ""
         return True
 
+    def remove_dash_ha_rules(self, namespace, port):
+        iptables_cmds = []
+        # Remove iptables/ip6tables commands that allow DASH-HA packets
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                ['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                ['ip6tables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        self.run_commands(iptables_cmds)
+
+    def add_dash_ha_rules(self, namespace, port):
+        iptables_cmds = self.make_dash_ha_rules(namespace, port)
+        self.run_commands(iptables_cmds)
+
+    def make_dash_ha_rules(self, namespace, port):
+        iptables_cmds = []
+        # make iptables/ip6tables commands that allow DASH-HA packets
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                ['iptables', '-I', 'INPUT', '2', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                ['ip6tables', '-I', 'INPUT', '2', '-p', 'tcp', '--dport', str(port), '-j', 'ACCEPT'])
+        return iptables_cmds
+
+    def update_dash_ha_rules(self, namespace, key, op, data):
+        port = self.dashHaPortMap.get(key)
+        if op == "DEL" and not port:
+            return
+
+        if op == "DEL" and port:
+            # Remove iptables/ip6tables commands that allow DASH-HA packets
+            self.remove_dash_ha_rules(namespace, port)
+            self.dashHaPortMap.pop(key)
+            return
+
+        if op == "SET":
+            new_port = None
+            for fv in data:
+                if (fv[0] == "swbus_port"):
+                    new_port = fv[1]
+                    break
+            if not new_port:
+                self.log_info("Received DPU configuration without swbus_port. Ignore it.")
+                return
+            if new_port == port:
+                return
+            if port:
+                # Remove iptables/ip6tables commands that allow DASH-HA packets
+                self.remove_dash_ha_rules(namespace, port)
+            # Add iptables/ip6tables commands to allow DASH-HA packets
+            self.add_dash_ha_rules(namespace, new_port)
+            self.dashHaPortMap[key] = new_port
+            return
+
     def run(self):
         # Set select timeout to 1 second
         SELECT_TIMEOUT_MS = 1000
@@ -986,7 +1090,7 @@ class ControlPlaneAclManager(logger.Logger):
         # Initlaize Global config that loads all database*.json
         if device_info.is_multi_npu():
             swsscommon.SonicDBConfig.initializeGlobalConfig()
-        
+
         # Create the Select object
         sel = swsscommon.Select()
 
@@ -1022,6 +1126,9 @@ class ControlPlaneAclManager(logger.Logger):
 
         subscribe_vxlan_table = swsscommon.SubscriberStateTable(config_db_connector, self.VXLAN_TUNNEL_TABLE)
         sel.addSelectable(subscribe_vxlan_table)
+
+        subscribe_dpu_table = swsscommon.SubscriberStateTable(config_db_connector, self.DPU_TABLE)
+        sel.addSelectable(subscribe_dpu_table)
         # Map of Namespace <--> susbcriber table's object
         config_db_subscriber_table_map = {}
 
@@ -1048,6 +1155,18 @@ class ControlPlaneAclManager(logger.Logger):
 
         # Loop on select to see if any event happen on state db or config db of any namespace
         while True:
+            # Periodically check for exceptions from child threads
+            for namespace, exception_info in self.thread_exceptions.items():
+                if exception_info:
+                    error, exc_info = exception_info
+                    self.log_error("Main thread detected exception in child thread for namespace '{}': {}".format(namespace, error))
+                    self.log_error("Full traceback from child thread:")
+                    for tb_line in exc_info:
+                        for tb_line_split in tb_line.splitlines():
+                            self.log_error(tb_line_split)
+                    self.log_error("Detect exception in Child thread, generating SIGKILL for main thread")
+                    os.kill(os.getpid(), signal.SIGKILL)
+
             (state, selectableObj) = sel.select(SELECT_TIMEOUT_MS)
             # Continue if select is timeout or selectable object is not return
             if state != swsscommon.Select.OBJECT:
@@ -1105,6 +1224,13 @@ class ControlPlaneAclManager(logger.Logger):
                         self.allow_vxlan_port(namespace, fvs)
                     elif op == 'DEL' and self.VxlanAllowed:
                         self.block_vxlan_port(namespace)
+
+                while True:
+                    key, op, fvs = subscribe_dpu_table.pop()
+                    if not key:
+                        break
+                    if "dash-ha" in self.feature_present:
+                        self.update_dash_ha_rules(namespace, key, op, fvs)
 
             ctrl_plane_acl_notification = set()
 
