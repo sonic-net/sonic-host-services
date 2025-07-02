@@ -122,6 +122,7 @@ class TestDebugExecutor(object):
         mock_os_close.assert_any_call(slave_fd)
         mock_proc.stderr.close.assert_called_once()
 
+    @mock.patch("os.close")
     @mock.patch("subprocess.Popen")
     @mock.patch("pty.openpty")
     @mock.patch("dbus.SystemBus")
@@ -133,7 +134,8 @@ class TestDebugExecutor(object):
         mock_bus_name,
         mock_system_bus,
         mock_openpty,
-        mock_popen
+        mock_popen,
+        mock_os_close,
     ):
         """
         Test that _run_and_stream exits early if the subprocess fails to create a stderr pipe.
