@@ -132,6 +132,11 @@ class TestProcDockerStatsDaemon(object):
             mock_process_iter.assert_called_once()
         assert(len(pdstatsd.all_process_obj)== 3)
 
+        expected_fields = {'UID', 'PPID', '%CPU', '%MEM', 'STIME', 'TT', 'TIME', 'CMD'}
+        for field in expected_fields:
+            value = pdstatsd.state_db.get('STATE_DB', 'PROCESS_STATS|1234', field)
+            assert value is not None, f"Missing expected field: {field}"
+
     @patch('procdockerstatsd.getstatusoutput_noshell_pipe', return_value=([0, 0], ''))
     def test_update_fipsstats_command(self, mock_cmd):
         pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
