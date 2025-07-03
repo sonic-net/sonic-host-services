@@ -16,7 +16,7 @@ class TestDebugExecutor(TestCase):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_run_command_starts_thread(self, mock_init, mock_bus_name, mock_system_bus):
+    def test_run_command_submits_to_thread_pool(self, mock_init, mock_bus_name, mock_system_bus):
         """
         Verify that RunCommand correctly starts a new thread
         to handle the command execution.
@@ -28,7 +28,7 @@ class TestDebugExecutor(TestCase):
         executor.RunCommand(argv)
 
         # Check that a thread was created with the correct target and arguments
-        executor.executor.start.assert_called_once_with(
+        executor.executor.submit.assert_called_once_with(
             executor._run_and_stream,
             argv
         )
