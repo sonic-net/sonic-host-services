@@ -36,6 +36,7 @@ class MockProcess:
     def uids(self):
         return self._uids
 
+    @property
     def pid(self):
         return self._pid
 
@@ -130,6 +131,11 @@ class TestProcDockerStatsDaemon(object):
             pdstatsd.update_processstats_command()
             mock_process_iter.assert_called_once()
         assert(len(pdstatsd.all_process_obj)== 3)
+
+        expected_fields = {'UID', 'PPID', '%CPU', '%MEM', 'STIME', 'TT', 'TIME', 'CMD'}
+        for field in expected_fields:
+            value = pdstatsd.state_db.get('STATE_DB', 'PROCESS_STATS|1234', field)
+            assert value is not None, f"Missing expected field: {field}"
 
     @patch('procdockerstatsd.getstatusoutput_noshell_pipe', return_value=([0, 0], ''))
     def test_update_fipsstats_command(self, mock_cmd):
