@@ -3,13 +3,12 @@ import os
 import pty
 import select
 import subprocess
-import threading
-from unittest import mock
+from unittest import TestCase, mock
 
 from host_modules.debug_service import DebugExecutor, MOD_NAME
 
 
-class TestDebugExecutor(object):
+class TestDebugExecutor(TestCase):
     """
     Unit tests for the DebugExecutor module.
     """
@@ -23,19 +22,16 @@ class TestDebugExecutor(object):
         to handle the command execution.
         """
         executor = DebugExecutor(MOD_NAME)
+        executor.executor = mock.Mock()
         argv = ["ls", "-l"]
 
-        with mock.patch.object(threading, "Thread") as mock_thread:
-            executor.RunCommand(argv)
+        executor.RunCommand(argv)
 
-            # Check that a thread was created with the correct target and arguments
-            mock_thread.assert_called_once_with(
-                target=executor._run_and_stream,
-                args=(argv,),
-                daemon=True
-            )
-            # Check that the thread was started
-            mock_thread.return_value.start.assert_called_once()
+        # Check that a thread was created with the correct target and arguments
+        executor.executor.start.assert_called_once_with(
+            executor._run_and_stream,
+            argv
+        )
 
     @mock.patch("select.select")
     @mock.patch("os.read")
@@ -95,12 +91,14 @@ class TestDebugExecutor(object):
         # Attach mocks to the signal methods to spy on them
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
-        executor.ExitCode = mock.Mock()
 
         argv = ["/bin/test_command", "--arg"]
-        executor._run_and_stream(argv)
+        rc = executor._run_and_stream(argv)
 
         # --- Assertions ---
+        # Verify exit code is correctly returned
+        assert rc == 0, f"Return code {rc} incorrect"
+
         # Verify that the process was started correctly
         mock_popen.assert_called_once_with(
             argv,
@@ -116,7 +114,6 @@ class TestDebugExecutor(object):
         executor.Stdout.assert_called_once_with(stdout_data.decode())
         executor.Stderr.assert_called_once_with(stderr_data.decode())
         mock_proc.wait.assert_called_once()
-        executor.ExitCode.assert_called_once_with(0)
 
         # Verify that file descriptors were closed
         mock_os_close.assert_any_call(slave_fd)
@@ -154,14 +151,14 @@ class TestDebugExecutor(object):
         # Spy on the signal methods
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
-        executor.ExitCode = mock.Mock()
 
         with mock.patch.object(select, 'select') as mock_select:
-             executor._run_and_stream(["some_command"])
-             # select should not be called if the function returns early
-             mock_select.assert_not_called()
+            with self.assertRaises(Exception) as context:
+                executor._run_and_stream(["some_command"])
+
+            # select should not be called if the function returns early
+            mock_select.assert_not_called()
 
         # The function should return without emitting any signals
         executor.Stdout.assert_not_called()
         executor.Stderr.assert_not_called()
-        executor.ExitCode.assert_not_called()

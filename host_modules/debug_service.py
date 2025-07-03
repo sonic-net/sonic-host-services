@@ -1,20 +1,27 @@
 import pty
-import threading
 import subprocess
 import os
 import select
 import errno
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
 from host_modules import host_service
 
+EXCEPTION_RAISED = 1
 MOD_NAME = 'DebugExecutor'
 INTERFACE = host_service.bus_name(MOD_NAME)
+
 
 class DebugExecutor(host_service.HostModule):
     """
     Debug container command handler.
     Allows the debug container to execute arbitrary commands on the device, after having been validated against the whitelist.
     """
+
+    def __init__(self, mod_name):
+        super().__init__(mod_name)
+        self.executor = ThreadPoolExecutor(max_workers=1)
 
     def _run_and_stream(self, argv):
         """
@@ -33,7 +40,7 @@ class DebugExecutor(host_service.HostModule):
         )
         os.close(slave_fd)
         if p.stderr == None:
-            return
+            raise Exception("Could not open pipe for stderr")
 
         stderr_fd = p.stderr.fileno()
         fds = [master_fd, stderr_fd]
@@ -67,8 +74,7 @@ class DebugExecutor(host_service.HostModule):
 
         finally:
             rc = p.wait()
-            self.ExitCode(rc)
-
+            return rc
 
     @host_service.signal(INTERFACE, signature='s')
     def Stdout(self, data):
@@ -84,18 +90,20 @@ class DebugExecutor(host_service.HostModule):
         """
         pass
 
-    @host_service.signal(INTERFACE, signature='i')
-    def ExitCode(self, data):
-        """
-        Signal to emit the exit code of the command, after completion.
-        """
-        pass
-
-    @host_service.method(INTERFACE, in_signature='as')
+    @host_service.method(INTERFACE, in_signature='as', out_signature='is')
     def RunCommand(self, argv):
         """
         DBus endpoint - receives a command, and streams the response data back to the client.
-        Immediately returns, allowing thread to be solely responsible for sending responses.
-        """
-        threading.Thread(target=self._run_and_stream, args=(argv,), daemon=True).start()
+        Starts the command in a separate thread, with a generous timeout once the command has begun execution.
 
+        The thread pool has a limit of 1, to ensure that only one user at a time may execute commands on the device.
+
+        Returns a tuple, consisting of (int_return_code, string_details)
+        """
+        future = self.executor.submit(self._run_and_stream, argv)
+        try:
+            rc = future.result(timeout=10*60)
+
+            return (rc, f"Command exited with {rc}")
+        except Exception as e:
+            return (EXCEPTION_RAISED, f"Exception raised: {e}")
