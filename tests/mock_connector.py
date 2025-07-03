@@ -35,7 +35,7 @@ class MockConnector(object):
         return MockConnector.data[key]
 
     def delete(self, db_id, key):
-        return MockConnector.data.delete(key)
+        return MockConnector.data.pop(key, None)
 
     def delete_all_by_pattern(self, db_id, pattern):
         keys = self.keys(db_id, pattern)
