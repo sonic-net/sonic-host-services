@@ -5,7 +5,7 @@ import select
 import errno
 import logging
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 
 from host_modules import host_service
 
