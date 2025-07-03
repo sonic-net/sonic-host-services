@@ -3,6 +3,7 @@ import subprocess
 import os
 import select
 import errno
+import logging
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
@@ -11,6 +12,7 @@ from host_modules import host_service
 EXCEPTION_RAISED = 1
 MOD_NAME = 'DebugExecutor'
 INTERFACE = host_service.bus_name(MOD_NAME)
+logger = logging.getLogger(__name__)
 
 
 class DebugExecutor(host_service.HostModule):
@@ -100,10 +102,14 @@ class DebugExecutor(host_service.HostModule):
 
         Returns a tuple, consisting of (int_return_code, string_details)
         """
+        logger.info(f"Running command: '{argv}'")
         future = self.executor.submit(self._run_and_stream, argv)
         try:
             rc = future.result(timeout=10*60)
+            logger.info(f"Command '{argv}' exited with code: {rc}")
 
             return (rc, f"Command exited with {rc}")
         except Exception as e:
+            logger.error(f"Running command '{argv}' caused exception: {e}")
+
             return (EXCEPTION_RAISED, f"Exception raised: {e}")

@@ -1,6 +1,4 @@
 import errno
-import os
-import pty
 import select
 import subprocess
 from unittest import TestCase, mock
