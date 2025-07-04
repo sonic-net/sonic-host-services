@@ -2177,7 +2177,8 @@ class HostConfigDaemon:
         # Initialize LoggingCfg
         self.loggingcfg = LoggingCfg()
 
-    def load(self, init_data):
+    def load_independent_config(self, init_data):
+        # Load config that does not rely on any services
         aaa = init_data['AAA']
         tacacs_global = init_data['TACPLUS']
         tacacs_server = init_data['TACPLUS_SERVER']
@@ -2185,6 +2186,18 @@ class HostConfigDaemon:
         radius_server = init_data['RADIUS_SERVER']
         ldap_global = init_data['LDAP']
         ldap_server = init_data['LDAP_SERVER']
+        self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
+
+    def load(self, init_data):
+        self.load_independent_config(init_data)
+        
+        syslog.syslog(syslog.LOG_INFO,
+                      "Waiting for systemctl to finish initialization")
+        self.wait_till_system_init_done()
+        syslog.syslog(syslog.LOG_INFO,
+                      "systemctl has finished initialization -- proceeding ...")
+
+        # Load configuration that depends on initialized services
         lpbk_table = init_data['LOOPBACK_INTERFACE']
         kdump = init_data['KDUMP']
         passwh = init_data['PASSW_HARDENING']
@@ -2204,7 +2217,6 @@ class HostConfigDaemon:
         banner_messages = init_data.get(swsscommon.CFG_BANNER_MESSAGE_TABLE_NAME)
         logging = init_data.get(swsscommon.CFG_LOGGING_TABLE_NAME, {})
 
-        self.aaacfg.load(aaa, tacacs_global, tacacs_server, radius_global, radius_server, ldap_global, ldap_server)
         self.iptables.load(lpbk_table)
         self.kdumpCfg.load(kdump)
         self.passwcfg.load(passwh)
@@ -2464,12 +2476,6 @@ class HostConfigDaemon:
         # Handle LOGGING changes
         self.config_db.subscribe(swsscommon.CFG_LOGGING_TABLE_NAME,
                                  make_callback(self.logging_handler))
-
-        syslog.syslog(syslog.LOG_INFO,
-                      "Waiting for systemctl to finish initialization")
-        self.wait_till_system_init_done()
-        syslog.syslog(syslog.LOG_INFO,
-                      "systemctl has finished initialization -- proceeding ...")
 
     def start(self):
         self.config_db.listen(init_data_handler=self.load)
