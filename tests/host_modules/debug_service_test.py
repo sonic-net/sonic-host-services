@@ -28,7 +28,7 @@ class TestDebugExecutor(TestCase):
         to handle the command execution.
         """
         executor = DebugExecutor(MOD_NAME)
-        executor.executor = mock.Mock()
+        executor.executor.submit = mock.Mock()
         argv = ["ls", "-l"]
 
         executor.RunCommand(argv)
@@ -69,6 +69,7 @@ class TestDebugExecutor(TestCase):
         master_fd, slave_fd = 10, 11
         stderr_fd = 12
         mock_openpty.return_value = (master_fd, slave_fd)
+        mock_event.is_set.return_value = False
 
         # Mock the subprocess object
         mock_proc = mock.Mock()
@@ -157,6 +158,7 @@ class TestDebugExecutor(TestCase):
         # --- Mock setup ---
         master_fd, slave_fd = 10, 11
         mock_openpty.return_value = (master_fd, slave_fd)
+        mock_event.is_set.return_value = False
 
         # Mock a process where stderr is None
         mock_proc = mock.Mock()
