@@ -89,9 +89,10 @@ class TestDebugExecutor(TestCase):
         # Attach mocks to the signal methods to spy on them
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
+        mock_cancellation_event = mock.Mock()
 
         argv = ["/bin/test_command", "--arg"]
-        rc = executor._run_and_stream(argv)
+        rc = executor._run_and_stream(argv, mock_cancellation_event)
 
         # --- Assertions ---
         # Verify exit code is correctly returned
@@ -149,10 +150,11 @@ class TestDebugExecutor(TestCase):
         # Spy on the signal methods
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
+        mock_cancellation_event = mock.Mock()
 
         with mock.patch.object(select, 'select') as mock_select:
             with self.assertRaises(Exception) as context:
-                executor._run_and_stream(["some_command"])
+                executor._run_and_stream(["some_command"], mock_cancellation_event)
 
             # select should not be called if the function returns early
             mock_select.assert_not_called()
