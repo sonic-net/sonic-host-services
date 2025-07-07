@@ -59,8 +59,6 @@ class DebugExecutor(host_service.HostModule):
 
                 # Terminate this process if calling thread exits
                 if cancellation_event.is_set():
-                    if p.poll() is not None:
-                        p.terminate()
                     break
 
                 if master_fd in ready:

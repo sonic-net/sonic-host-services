@@ -131,6 +131,90 @@ class TestDebugExecutor(TestCase):
         mock_proc.stderr.close.assert_called_once()
 
     @mock.patch("threading.Event")
+    @mock.patch("select.select")
+    @mock.patch("os.close")
+    @mock.patch("subprocess.Popen")
+    @mock.patch("pty.openpty")
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_run_and_stream_cancelled(
+        self,
+        mock_init,
+        mock_bus_name,
+        mock_system_bus,
+        mock_openpty,
+        mock_popen,
+        mock_os_close,
+        mock_select,
+        mock_event,
+    ):
+        """
+        Test that an early cancellation is properly propagated
+        to the subprocess, and that cleanup is executed.
+        """
+        # --- Mock setup ---
+        master_fd, slave_fd = 10, 11
+        stderr_fd = 12
+        mock_openpty.return_value = (master_fd, slave_fd)
+        mock_event.is_set.return_value = True
+
+        # Mock the subprocess object
+        mock_proc = mock.Mock()
+        mock_proc.stderr = mock.Mock()
+        mock_proc.stderr.fileno.return_value = stderr_fd
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        mock_select.return_value = [([], [], [])]
+
+        # First raise an exception, then return 0
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired("N/A", 0),
+            0
+        ]
+
+        # --- Execution ---
+        executor = DebugExecutor(MOD_NAME)
+        # Attach mocks to the signal methods to spy on them
+        executor.Stdout = mock.Mock()
+        executor.Stderr = mock.Mock()
+
+        argv = ["/bin/test_command", "--arg"]
+        rc = executor._run_and_stream(argv, mock_event)
+
+        # --- Assertions ---
+        # Verify exit code is correctly returned
+        assert rc == 0, f"Return code {rc} incorrect"
+
+        # Verify that the process was started correctly
+        expected_env = os.environ.copy()
+        expected_env['TERM'] = 'xterm'
+
+        mock_popen.assert_called_once_with(
+            argv,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            bufsize=0,
+            universal_newlines=False,
+            env=expected_env
+        )
+
+        # Verify stdout and stderr signals were not emitted
+        executor.Stdout.assert_not_called()
+        executor.Stderr.assert_not_called()
+        mock_proc.poll.assert_called()
+
+        # Verify that file descriptors were closed
+        mock_os_close.assert_any_call(slave_fd)
+        mock_proc.stderr.close.assert_called_once()
+
+        # Verify that the process was cleaned up
+        mock_proc.terminate.assert_called()
+        mock_proc.kill.assert_called()
+
+    @mock.patch("threading.Event")
     @mock.patch("os.close")
     @mock.patch("subprocess.Popen")
     @mock.patch("pty.openpty")
