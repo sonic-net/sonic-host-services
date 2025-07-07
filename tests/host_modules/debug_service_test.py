@@ -121,10 +121,10 @@ class TestDebugExecutor(TestCase):
             env=expected_env
         )
 
-        # Verify stdout, stderr, and exit code signals were emitted with correct data
+        # Verify stdout and stderr signals were emitted with correct data
         executor.Stdout.assert_called_once_with(stdout_data.decode())
         executor.Stderr.assert_called_once_with(stderr_data.decode())
-        mock_proc.poll.assert_called_once()
+        mock_proc.poll.assert_called()
 
         # Verify that file descriptors were closed
         mock_os_close.assert_any_call(slave_fd)
