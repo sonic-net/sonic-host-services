@@ -6,6 +6,7 @@ import errno
 import logging
 
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 from host_modules import host_service
 
@@ -25,7 +26,7 @@ class DebugExecutor(host_service.HostModule):
         super().__init__(mod_name)
         self.executor = ThreadPoolExecutor(max_workers=1)
 
-    def _run_and_stream(self, argv):
+    def _run_and_stream(self, argv, cancellation_event):
         """
         Internal method to asynchronously run a command and stream stdout/stderr to the requesting client.
         """
@@ -55,6 +56,13 @@ class DebugExecutor(host_service.HostModule):
         try:
             while True:
                 ready, _, _ = select.select(fds, [], [])
+
+                # Terminate this process if calling thread exits
+                if cancellation_event.is_set():
+                    if p.poll() is not None:
+                        p.terminate()
+                    break
+
                 if master_fd in ready:
                     # Master FD is a PTY, will throw exception when closed
                     try:
@@ -80,7 +88,21 @@ class DebugExecutor(host_service.HostModule):
                     break
 
         finally:
-            rc = p.wait()
+            # Check if the process is still running before trying to stop it
+            if p.poll() is None:
+                logger.info(f"Terminating subprocess (PID: {p.pid}) for command '{argv}'...")
+                p.terminate()
+                try:
+                    rc = p.wait(timeout=5)
+                    logger.info(f"Subprocess for '{argv}' terminated gracefully with code: {rc}")
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"Process for '{argv}' did not terminate gracefully. Forcing kill...")
+                    p.kill()
+                    rc = p.wait()
+                    logger.info(f"Subprocess for '{argv}' was forcefully killed, exited with code: {rc}")
+            else:
+                rc = p.poll()
+
             return rc
 
     @host_service.signal(INTERFACE, signature='s')
@@ -101,20 +123,25 @@ class DebugExecutor(host_service.HostModule):
     def RunCommand(self, argv):
         """
         DBus endpoint - receives a command, and streams the response data back to the client.
-        Starts the command in a separate thread, with a generous timeout once the command has begun execution.
+        Starts the command in a separate thread, with a timeout once the command has begun execution.
 
         The thread pool has a limit of 1, to ensure that only one user at a time may execute commands on the device.
+        Additionally, the timeout ensures that commands are stopped once the default DBUS timeout has been reached.
 
         Returns a tuple, consisting of (int_return_code, string_details)
         """
         logger.info(f"Running command: '{argv}'")
-        future = self.executor.submit(self._run_and_stream, argv)
+        cancellation_event = Event()
+        future = self.executor.submit(self._run_and_stream, argv, cancellation_event)
         try:
-            rc = future.result(timeout=10*60)
+            rc = future.result(timeout=20)
             logger.info(f"Command '{argv}' exited with code: {rc}")
 
             return (rc, f"Command exited with {rc}")
         except Exception as e:
-            logger.error(f"Running command '{argv}' caused exception: {e}")
+            exception_type = type(e).__name__
+            logger.error(f"Running command '{argv}' caused {exception_type}: {e}")
 
-            return (EXCEPTION_RAISED, f"Exception raised: {e}")
+            cancellation_event.set()
+
+            return (EXCEPTION_RAISED, f"{exception_type} raised: {e if str(e) else 'No details in exception'}")
