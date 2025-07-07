@@ -11,10 +11,17 @@ class TestDebugExecutor(TestCase):
     Unit tests for the DebugExecutor module.
     """
 
+    @mock.patch("threading.Event")
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_run_command_submits_to_thread_pool(self, mock_init, mock_bus_name, mock_system_bus):
+    def test_run_command_submits_to_thread_pool(
+        self,
+        mock_init,
+        mock_bus_name,
+        mock_system_bus,
+        mock_event,
+    ):
         """
         Verify that RunCommand correctly starts a new thread
         to handle the command execution.
@@ -28,9 +35,11 @@ class TestDebugExecutor(TestCase):
         # Check that a thread was created with the correct target and arguments
         executor.executor.submit.assert_called_once_with(
             executor._run_and_stream,
-            argv
+            argv,
+            mock_event
         )
 
+    @mock.patch("threading.Event")
     @mock.patch("select.select")
     @mock.patch("os.read")
     @mock.patch("os.close")
@@ -49,6 +58,7 @@ class TestDebugExecutor(TestCase):
         mock_os_close,
         mock_os_read,
         mock_select,
+        mock_event,
     ):
         """
         Test the full, successful execution of a command,
@@ -89,7 +99,6 @@ class TestDebugExecutor(TestCase):
         # Attach mocks to the signal methods to spy on them
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
-        mock_cancellation_event = mock.Mock()
 
         argv = ["/bin/test_command", "--arg"]
         rc = executor._run_and_stream(argv, mock_cancellation_event)
@@ -118,6 +127,7 @@ class TestDebugExecutor(TestCase):
         mock_os_close.assert_any_call(slave_fd)
         mock_proc.stderr.close.assert_called_once()
 
+    @mock.patch("threading.Event")
     @mock.patch("os.close")
     @mock.patch("subprocess.Popen")
     @mock.patch("pty.openpty")
@@ -132,6 +142,7 @@ class TestDebugExecutor(TestCase):
         mock_openpty,
         mock_popen,
         mock_os_close,
+        mock_event,
     ):
         """
         Test that _run_and_stream exits early if the subprocess fails to create a stderr pipe.
@@ -150,11 +161,10 @@ class TestDebugExecutor(TestCase):
         # Spy on the signal methods
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
-        mock_cancellation_event = mock.Mock()
 
         with mock.patch.object(select, 'select') as mock_select:
             with self.assertRaises(Exception) as context:
-                executor._run_and_stream(["some_command"], mock_cancellation_event)
+                executor._run_and_stream(["some_command"], mock_event)
 
             # select should not be called if the function returns early
             mock_select.assert_not_called()
