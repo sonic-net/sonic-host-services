@@ -127,8 +127,9 @@ class TestDebugExecutor(TestCase):
         mock_proc.poll.assert_called()
 
         # Verify that file descriptors were closed
+        mock_os_close.assert_any_call(master_fd)
         mock_os_close.assert_any_call(slave_fd)
-        mock_proc.stderr.close.assert_called_once()
+        mock_os_close.assert_any_call(stderr_fd)
 
     @mock.patch("threading.Event")
     @mock.patch("select.select")
@@ -207,8 +208,9 @@ class TestDebugExecutor(TestCase):
         mock_proc.poll.assert_called()
 
         # Verify that file descriptors were closed
+        mock_os_close.assert_any_call(master_fd)
         mock_os_close.assert_any_call(slave_fd)
-        mock_proc.stderr.close.assert_called_once()
+        mock_os_close.assert_any_call(stderr_fd)
 
         # Verify that the process was cleaned up
         mock_proc.terminate.assert_called()
@@ -260,3 +262,7 @@ class TestDebugExecutor(TestCase):
         # The function should return without emitting any signals
         executor.Stdout.assert_not_called()
         executor.Stderr.assert_not_called()
+
+        # Verify that opened file descriptors were closed
+        mock_os_close.assert_any_call(master_fd)
+        mock_os_close.assert_any_call(slave_fd)

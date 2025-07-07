@@ -69,7 +69,6 @@ class DebugExecutor(host_service.HostModule):
                     except OSError as e:
                         if e.errno == errno.EIO:
                             fds.remove(master_fd)
-                            os.close(master_fd)
                         else:
                             raise
 
@@ -78,7 +77,6 @@ class DebugExecutor(host_service.HostModule):
                     data = os.read(stderr_fd, 4096)
                     if not data:
                         fds.remove(stderr_fd)
-                        p.stderr.close()
                     else:
                         self.Stderr(data.decode(errors='ignore'))
 
@@ -86,6 +84,9 @@ class DebugExecutor(host_service.HostModule):
                     break
 
         finally:
+            os.close(master_fd)
+            os.close(stderr_fd)
+
             # Check if the process is still running before trying to stop it
             if p.poll() is None:
                 logger.info(f"Terminating subprocess (PID: {p.pid}) for command '{argv}'...")
