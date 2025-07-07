@@ -31,6 +31,10 @@ class DebugExecutor(host_service.HostModule):
         """
         master_fd, slave_fd = pty.openpty()
 
+        # Populate an environment for interactive commands (i.e. 'top')
+        env = os.environ.copy()
+        env['TERM'] = 'xterm'
+
         p = subprocess.Popen(
             argv,
             stdin = slave_fd,
@@ -38,7 +42,8 @@ class DebugExecutor(host_service.HostModule):
             stderr = subprocess.PIPE,
             close_fds = True,
             bufsize = 0,
-            universal_newlines = False
+            universal_newlines = False,
+            env = env,
         )
         os.close(slave_fd)
         if p.stderr == None:
