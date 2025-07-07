@@ -74,6 +74,7 @@ class TestDebugExecutor(TestCase):
         mock_proc.stderr = mock.Mock()
         mock_proc.stderr.fileno.return_value = stderr_fd
         mock_proc.wait.return_value = 0  # Successful exit code
+        mock_proc.poll.return_value = 0 
         mock_popen.return_value = mock_proc
 
         # Mock the I/O multiplexing and reads
@@ -101,7 +102,7 @@ class TestDebugExecutor(TestCase):
         executor.Stderr = mock.Mock()
 
         argv = ["/bin/test_command", "--arg"]
-        rc = executor._run_and_stream(argv, mock_cancellation_event)
+        rc = executor._run_and_stream(argv, mock_event)
 
         # --- Assertions ---
         # Verify exit code is correctly returned
@@ -122,6 +123,7 @@ class TestDebugExecutor(TestCase):
         executor.Stdout.assert_called_once_with(stdout_data.decode())
         executor.Stderr.assert_called_once_with(stderr_data.decode())
         mock_proc.wait.assert_called_once()
+        mock_proc.poll.assert_called_once()
 
         # Verify that file descriptors were closed
         mock_os_close.assert_any_call(slave_fd)
