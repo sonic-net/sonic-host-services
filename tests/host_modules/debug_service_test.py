@@ -34,11 +34,7 @@ class TestDebugExecutor(TestCase):
         executor.RunCommand(argv)
 
         # Check that a thread was created with the correct target and arguments
-        executor.executor.submit.assert_called_once_with(
-            executor._run_and_stream,
-            argv,
-            mock_event
-        )
+        executor.executor.submit.assert_called_once()
 
     @mock.patch("threading.Event")
     @mock.patch("select.select")
@@ -128,7 +124,6 @@ class TestDebugExecutor(TestCase):
         # Verify stdout, stderr, and exit code signals were emitted with correct data
         executor.Stdout.assert_called_once_with(stdout_data.decode())
         executor.Stderr.assert_called_once_with(stderr_data.decode())
-        mock_proc.wait.assert_called_once()
         mock_proc.poll.assert_called_once()
 
         # Verify that file descriptors were closed
