@@ -5,7 +5,7 @@ After=rc-local.service
 [Service]
 Type=simple
 ExecStartPre=/usr/local/bin/check_platform.sh
-ExecStart=/usr/bin/env python3 /usr/local/bin/gnoi-reboot-daemon
+ExecStart=/usr/bin/gnoi-shutdown-daemon
 Restart=always
 RestartSec=5
 

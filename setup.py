@@ -42,10 +42,14 @@ setup(
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
         'scripts/check_platform.sh',
-        'scripts/gnoi-reboot-daemon',
         'scripts/sonic-host-server',
         'scripts/ldap.py'
     ],
+    entry_points={
+        'console_scripts': [
+            'gnoi-shutdown-daemon = gnoi_shutdown_daemon:main'
+        ]
+    },
     install_requires = [
         'dbus-python',
         'systemd-python',
