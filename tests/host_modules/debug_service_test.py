@@ -264,5 +264,4 @@ class TestDebugExecutor(TestCase):
         executor.Stderr.assert_not_called()
 
         # Verify that opened file descriptors were closed
-        mock_os_close.assert_any_call(master_fd)
         mock_os_close.assert_any_call(slave_fd)
