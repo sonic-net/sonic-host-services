@@ -1,4 +1,5 @@
 import errno
+import os
 import select
 import subprocess
 from unittest import TestCase, mock
@@ -109,6 +110,9 @@ class TestDebugExecutor(TestCase):
         assert rc == 0, f"Return code {rc} incorrect"
 
         # Verify that the process was started correctly
+        expected_env = os.environ.copy()
+        expected_env['TERM'] = 'xterm'
+
         mock_popen.assert_called_once_with(
             argv,
             stdin=slave_fd,
@@ -117,6 +121,7 @@ class TestDebugExecutor(TestCase):
             close_fds=True,
             bufsize=0,
             universal_newlines=False,
+            env=expected_env
         )
 
         # Verify stdout, stderr, and exit code signals were emitted with correct data
