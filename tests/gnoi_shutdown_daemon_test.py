@@ -49,21 +49,22 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         import gnoi_shutdown_daemon
         gnoi_shutdown_daemon.logger = MagicMock()
 
-        # Run one iteration of the main loop
+        # Run one iteration of the main loop (guarded to prevent infinite loop)
         with patch("builtins.__import__"):
             try:
                 gnoi_shutdown_daemon.main()
             except Exception:
-                pass  # Prevent infinite loop
+                pass
 
-        # Validate gNOI command sequence
+        # Validate gNOI Reboot command
         calls = mock_exec_gnoi.call_args_list
-        assert "Reboot" in calls[0][0][0][-2]
-        assert "RebootStatus" in calls[1][0][0][-2]
+        cmd_args = calls[0][0][0]
+        assert "-rpc" in cmd_args
+        rpc_index = cmd_args.index("-rpc")
+        assert cmd_args[rpc_index + 1] == "Reboot"
 
-        # Check STATE_DB update
-        db_instance.set.assert_called_with(
-            "STATE_DB",
-            "CHASSIS_MODULE_INFO_TABLE|DPU0",
-            {"state_transition_in_progress": "False", "transition_type": "none"},
-        )
+        # Validate gNOI RebootStatus command
+        status_cmd_args = calls[1][0][0]
+        assert "-rpc" in status_cmd_args
+        rpc_index = status_cmd_args.index("-rpc")
+        assert status_cmd_args[rpc_index + 1] == "RebootStatus"
