@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import json
+import subprocess
 
 # Simulated message and DB content
 mock_message = {
