@@ -68,3 +68,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         assert "-rpc" in status_cmd_args
         rpc_index = status_cmd_args.index("-rpc")
         assert status_cmd_args[rpc_index + 1] == "RebootStatus"
+
+    @patch("gnoi_shutdown_daemon.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["dummy"], timeout=60))
+    def test_execute_gnoi_command_timeout(self, mock_run):
+        import gnoi_shutdown_daemon
+        rc, stdout, stderr = gnoi_shutdown_daemon.execute_gnoi_command(["dummy"])
+        self.assertEqual(rc, -1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "Command timed out.")
