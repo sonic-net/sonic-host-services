@@ -1,6 +1,7 @@
 """Tests for reboot."""
 
-import imp
+import importlib.util
+import importlib.machinery
 import json
 import sys
 import os
@@ -40,8 +41,18 @@ VALID_REBOOT_REQUEST_HALT = "{\"method\": 3, \"message\": \"test reboot request 
 VALID_REBOOT_REQUEST_WARM = "{\"method\": \"WARM\", \"message\": \"test reboot request reason\"}"
 INVALID_REBOOT_REQUEST = "\"method\": 1, \"message\": \"test reboot request reason\""
 
-imp.load_source("host_service", host_modules_path + "/host_service.py")
-imp.load_source("reboot", host_modules_path + "/reboot.py")
+def load_source(modname, filename):
+    loader = importlib.machinery.SourceFileLoader(modname, filename)
+    spec = importlib.util.spec_from_file_location(modname, filename, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    # The module is always executed and not cached in sys.modules.
+    # Uncomment the following line to cache the module.
+    sys.modules[module.__name__] = module
+    loader.exec_module(module)
+    return module
+
+load_source("host_service", host_modules_path + "/host_service.py")
+load_source("reboot", host_modules_path + "/reboot.py")
 from reboot import *
 
 
