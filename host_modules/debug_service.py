@@ -5,12 +5,13 @@ import select
 import errno
 import logging
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from threading import Event
 
 from host_modules import host_service
 
-EXCEPTION_RAISED = 1
+# Timeout should be slightly less than default DBUS timeout (25 sec)
+TIMEOUT = 20
 MOD_NAME = 'DebugExecutor'
 INTERFACE = host_service.bus_name(MOD_NAME)
 logger = logging.getLogger(__name__)
@@ -133,14 +134,24 @@ class DebugExecutor(host_service.HostModule):
         cancellation_event = Event()
         future = self.executor.submit(self._run_and_stream, argv, cancellation_event)
         try:
-            rc = future.result(timeout=20)
+            rc = future.result(timeout=TIMEOUT)
             logger.info(f"Command '{argv}' exited with code: {rc}")
 
             return (rc, f"Command exited with {rc}")
-        except Exception as e:
-            exception_type = type(e).__name__
-            logger.error(f"Running command '{argv}' caused {exception_type}: {e}")
+        except TimeoutError as e:
+            err_msg = f"TimeoutError: Command '{argv}' took longer than {TIMEOUT} sec to complete"
+            logger.error(err_msg)
 
             cancellation_event.set()
 
-            return (EXCEPTION_RAISED, f"{exception_type} raised: {e if str(e) else 'No details in exception'}")
+            return(errno.ETIMEDOUT, err_msg)
+        except Exception as e:
+            exception_type = type(e).__name__
+            err_details = str(e) if str(e) else 'No details within error message'
+
+            err_msg = f"{exception_type}: Command '{argv}' caused exception to be thrown: {err_details}"
+            logger.error(err_msg)
+
+            cancellation_event.set()
+
+            return (errno.EIO, err_msg)

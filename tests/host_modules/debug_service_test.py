@@ -133,6 +133,49 @@ class TestDebugExecutor(TestCase):
 
     @mock.patch("threading.Event")
     @mock.patch("select.select")
+    @mock.patch("os.read")
+    @mock.patch("os.close")
+    @mock.patch("subprocess.Popen")
+    @mock.patch("pty.openpty")
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_run_and_stream_command_fail(
+        self,
+        mock_init,
+        mock_bus_name,
+        mock_system_bus,
+        mock_openpty,
+        mock_popen,
+        mock_os_close,
+        mock_os_read,
+        mock_select,
+        mock_event,
+    ):
+        """
+        Test the full, successful execution of a command,
+        capturing stdout, stderr, and the exit code.
+        """
+        stderr_data = b"ls: cannot access '/nonexistent/dir': No such file or directory"
+
+        # --- Execution ---
+        executor = DebugExecutor(MOD_NAME)
+        # Attach mocks to the signal methods to spy on them
+        executor.Stdout = mock.Mock()
+        executor.Stderr = mock.Mock()
+
+        argv = ["ls", "/nonexistent/dir"]
+        rc = executor.RunCommand(argv)
+
+        # --- Assertions ---
+        # Verify exit code is correctly returned
+        assert rc == 1, f"Return code '{rc}' incorrect, expected: {1}"
+
+        # Verify stderr signals were emitted with correct data
+        executor.Stderr.assert_called_once_with(stderr_data.decode())
+
+    @mock.patch("threading.Event")
+    @mock.patch("select.select")
     @mock.patch("os.close")
     @mock.patch("subprocess.Popen")
     @mock.patch("pty.openpty")
@@ -265,3 +308,59 @@ class TestDebugExecutor(TestCase):
 
         # Verify that opened file descriptors were closed
         mock_os_close.assert_any_call(slave_fd)
+
+    @mock.patch("os.close")
+    @mock.patch("subprocess.Popen")
+    @mock.patch("pty.openpty")
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_run_command_exception(
+        self,
+        mock_init,
+        mock_bus_name,
+        mock_system_bus,
+        mock_openpty,
+        mock_popen,
+        mock_os_close,
+    ):
+        """
+        Test the full, successful execution of a command,
+        capturing stdout, stderr, and the exit code.
+        """
+        # --- Mock setup ---
+        master_fd, slave_fd = 10, 11
+        stderr_fd = 12
+        mock_openpty.return_value = Exception()
+
+        # --- Execution ---
+        executor = DebugExecutor(MOD_NAME)
+        # Attach mocks to the signal methods to spy on them
+        executor.Stdout = mock.Mock()
+        executor.Stderr = mock.Mock()
+
+        argv = ["/bin/test_command", "--arg"]
+        rc, _ = executor.RunCommand(argv)
+
+        # --- Assertions ---
+        # Verify exit code is correctly returned
+        assert rc == errno.EIO, f"Return code '{rc}' does not match expected code '{errno.EIO}'"
+
+        # Verify that the process was started correctly
+        expected_env = os.environ.copy()
+        expected_env['TERM'] = 'xterm'
+
+        mock_popen.assert_called_once_with(
+            argv,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            bufsize=0,
+            universal_newlines=False,
+            env=expected_env
+        )
+
+        # Verify stdout and stderr signals were emitted with correct data
+        executor.Stdout.assert_not_called()
+        executor.Stderr.assert_not_called()
