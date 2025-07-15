@@ -144,7 +144,7 @@ class DebugExecutor(host_service.HostModule):
 
             cancellation_event.set()
 
-            return(errno.ETIMEDOUT, err_msg)
+            return (errno.ETIMEDOUT, err_msg)
         except Exception as e:
             exception_type = type(e).__name__
             err_details = str(e) if str(e) else 'No details within error message'
