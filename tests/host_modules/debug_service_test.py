@@ -99,7 +99,7 @@ class TestDebugExecutor(TestCase):
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
 
-        argv = ["/bin/test_command", "--arg"]
+        argv = ["ls", "-la"]
         rc = executor._run_and_stream(argv, mock_event)
 
         # --- Assertions ---
@@ -140,7 +140,7 @@ class TestDebugExecutor(TestCase):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    def test_run_and_stream_command_fail(
+    def test_run_and_stream_failure(
         self,
         mock_init,
         mock_bus_name,
@@ -155,8 +155,37 @@ class TestDebugExecutor(TestCase):
         """
         Test the full, successful execution of a command,
         capturing stdout, stderr, and the exit code.
+
+        In this instance, the command fails.
         """
+        # --- Mock setup ---
+        master_fd, slave_fd = 10, 11
+        stderr_fd = 12
+        mock_openpty.return_value = (master_fd, slave_fd)
+        mock_event.is_set.return_value = False
+
+        # Mock the subprocess object
+        mock_proc = mock.Mock()
+        mock_proc.stderr = mock.Mock()
+        mock_proc.stderr.fileno.return_value = stderr_fd
+        mock_proc.wait.return_value = 1  # Failure exit code
+        mock_proc.poll.return_value = 1 
+        mock_popen.return_value = mock_proc
+
+        # Mock the I/O multiplexing and reads
         stderr_data = b"ls: cannot access '/nonexistent/dir': No such file or directory"
+
+        # Define the sequence of events for select and os.read
+        mock_select.side_effect = [
+            ([stderr_fd], [], []),  # 1. stderr is ready
+            ([master_fd], [], []),  # 2. master pty is closed
+            ([stderr_fd], [], []),  # 3. stderr pipe is closed
+        ]
+        mock_os_read.side_effect = [
+            stderr_data,  # Corresponds to select call #1
+            OSError(errno.EIO, "I/O error"),  # Corresponds to select call #2
+            b"",  # Corresponds to select call #3 (EOF on stderr)
+        ]
 
         # --- Execution ---
         executor = DebugExecutor(MOD_NAME)
@@ -164,15 +193,36 @@ class TestDebugExecutor(TestCase):
         executor.Stdout = mock.Mock()
         executor.Stderr = mock.Mock()
 
-        argv = ["ls", "/nonexistent/dir"]
-        rc = executor.RunCommand(argv)
+        argv = ["ls", "-la", "/nonexistant/dir"]
+        rc = executor._run_and_stream(argv, mock_event)
 
         # --- Assertions ---
         # Verify exit code is correctly returned
-        assert rc == 1, f"Return code '{rc}' incorrect, expected: {1}"
+        assert rc == 1, f"Return code {rc} incorrect"
 
-        # Verify stderr signals were emitted with correct data
+        # Verify that the process was started correctly
+        expected_env = os.environ.copy()
+        expected_env['TERM'] = 'xterm'
+
+        mock_popen.assert_called_once_with(
+            argv,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            bufsize=0,
+            universal_newlines=False,
+            env=expected_env
+        )
+
+        # Verify stdout and stderr signals were emitted with correct data
         executor.Stderr.assert_called_once_with(stderr_data.decode())
+        mock_proc.poll.assert_called()
+
+        # Verify that file descriptors were closed
+        mock_os_close.assert_any_call(master_fd)
+        mock_os_close.assert_any_call(slave_fd)
+        mock_os_close.assert_any_call(stderr_fd)
 
     @mock.patch("threading.Event")
     @mock.patch("select.select")
