@@ -8,6 +8,7 @@
 
 try:
     import json
+    import logging
     import os
     import pwd
     import sys
@@ -88,7 +89,7 @@ def read_reboot_cause_files_and_save_to_db(device='npu'):
 
 def main():
     # Configure logger to log all messages INFO level and higher
-    sonic_logger.set_min_log_priority(sonic_logger.DEFAULT_LOG_LEVEL)
+    sonic_logger.set_min_log_priority(logging.INFO)
 
     sonic_logger.log_info("Starting up...")
 
