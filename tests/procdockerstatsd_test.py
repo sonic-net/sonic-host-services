@@ -143,3 +143,23 @@ class TestProcDockerStatsDaemon(object):
         pdstatsd.update_fipsstats_command()
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enforced') == "False"
         assert pdstatsd.state_db.get('STATE_DB', 'FIPS_STATS|state', 'enabled') == "True"
+
+    def test_update_processstats_handles_nosuchprocess(self):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        current_time = datetime.now()
+        valid_create_time = int((current_time - timedelta(hours=1)).timestamp())
+        good_proc = MockProcess(uids=[1000], pid=1234, ppid=0, memory_percent=10.5, cpu_percent=99.0,
+                                create_time=valid_create_time, cmdline=['python'], user_time=1.0, system_time=1.0)
+
+        class NoSuchProcessMock(MockProcess):
+            def cpu_percent(self):
+                raise psutil.NoSuchProcess(pid=self._pid)
+
+        bad_proc = NoSuchProcessMock(uids=[1000], pid=9999, ppid=0, memory_percent=0, cpu_percent=0,
+                                    create_time=valid_create_time, cmdline=['fake'], user_time=0, system_time=0)
+
+        with patch("procdockerstatsd.psutil.process_iter", return_value=[good_proc, bad_proc]):
+            pdstatsd.update_processstats_command()
+
+        assert 1234 in pdstatsd.all_process_obj
+        assert 9999 not in pdstatsd.all_process_obj
