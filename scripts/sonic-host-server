@@ -22,7 +22,8 @@ from host_modules import (
     image_service,
     docker_service,
     reboot,
-    debug_service
+    debug_service,
+    gnoi_reset
 )
 
 
@@ -38,8 +39,9 @@ def register_dbus():
         'image_service': image_service.ImageService('image_service'),
         'docker_service': docker_service.DockerService('docker_service'),
         'file_stat': file_service.FileService('file'),
-        'debug_service': debug_service.DebugExecutor('DebugExecutor')
-    }
+        'debug_service': debug_service.DebugExecutor('DebugExecutor'),
+        'gnoi_reset': gnoi_reset.GnoiReset('gnoi_reset')
+        }
     for mod_name, handler_class in mod_dict.items():
         handlers[mod_name] = handler_class
 
