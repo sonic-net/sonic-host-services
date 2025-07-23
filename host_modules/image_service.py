@@ -220,3 +220,32 @@ class ImageService(host_service.HostModule):
             "next": next_image or "",
             "available": available_images or [],
         }
+
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="as", out_signature="is"
+    )
+    def gnoi_install_os(self, options):
+        """
+        Handles the gNOI OS Install RPC.
+
+        Args:
+            options (str): JSON-formatted InstallRequest from os.proto
+
+        Returns:
+            int: 0 on success
+            str: JSON-encoded InstallResponse with TransferReady or TransferProgress or Validated msg
+        """
+        logger.info("installos: gNOI OS Install RPC called.")
+
+        # Join list of strings into one JSON string
+        request_str = " ".join(options)
+        logger.info("InstallRequest JSON string: %s", request_str)
+
+        try:
+            request_json = json.loads(request_str)
+            logger.info("Parsed InstallRequest: %s", json.dumps(request_json, indent=2))
+        except json.JSONDecodeError as e:
+            logger.error("Failed to parse InstallRequest JSON: %s", e)
+            return 1, f"Invalid InstallRequest JSON: {e}"
+
+        return 1, "ERROR_UNIMPLEMENTED: OS Install not supported"
