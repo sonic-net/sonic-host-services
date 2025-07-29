@@ -254,7 +254,7 @@ def main():
     previous_reboot_cause, additional_reboot_info = determine_reboot_cause()
 
     # Current time
-    reboot_cause_gen_time = str(datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S'))
+    reboot_cause_gen_time = str(datetime.datetime.utcnow().strftime('%Y_%m_%d_%H_%M_%S'))
 
     # Save the previous cause info into its history file as json format
     reboot_cause_dict = get_reboot_cause_dict(previous_reboot_cause, additional_reboot_info, reboot_cause_gen_time)
