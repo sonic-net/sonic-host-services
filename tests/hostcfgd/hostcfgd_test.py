@@ -217,6 +217,25 @@ class TestHostcfgdDaemon(TestCase):
                         call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
+    def test_kdump_load(self):
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_INIT_CFG_DB)
+        MockConfigDb.CONFIG_DB['KDUMP'] = {
+            'config': {
+                "enabled": "true",
+            }
+        }
+        daemon = hostcfgd.HostConfigDaemon()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            daemon.kdumpCfg.load(MockConfigDb.CONFIG_DB['KDUMP'])
+
+            expected = [
+                call(['sonic-kdump-config', '--enable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])
+            ]
+
+            mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+
     def test_devicemeta_event(self):
         """
         Test handling DEVICE_METADATA events.
