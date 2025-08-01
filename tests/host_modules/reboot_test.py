@@ -54,12 +54,15 @@ class TestReboot(object):
     def test_populate_reboot_status_flag(self):
         with mock.patch("time.time", return_value=1617811205.25):
             self.reboot_module.populate_reboot_status_flag()
-            assert self.reboot_module.reboot_status_flag["active"] == False
-            assert self.reboot_module.reboot_status_flag["when"] == 0
-            assert self.reboot_module.reboot_status_flag["reason"] == ""
-            assert self.reboot_module.reboot_status_flag["count"] == 0
-            assert self.reboot_module.reboot_status_flag["method"] == ""
-            assert self.reboot_module.reboot_status_flag["status"] == RebootStatus.STATUS_UNKNOWN.value
+            return_value, get_reboot_status_flag_data = self.reboot_module.get_reboot_status_flag()
+            assert return_value == 0
+            get_reboot_status_flag_data = json.loads(get_reboot_status_flag_data)
+            assert get_reboot_status_flag_data["active"] == False
+            assert get_reboot_status_flag_data["when"] == 0
+            assert get_reboot_status_flag_data["reason"] == ""
+            assert get_reboot_status_flag_data["count"] == 0
+            assert get_reboot_status_flag_data["method"] == ""
+            assert get_reboot_status_flag_data["status"] == RebootStatus.STATUS_UNKNOWN.name
 
     def test_validate_reboot_request_success_cold_boot_enum_method(self):
         reboot_request = {"method": REBOOT_METHOD_COLD_BOOT_ENUM, "reason": "test reboot request reason"}
