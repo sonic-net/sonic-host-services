@@ -182,7 +182,7 @@ class TestReboot(object):
             self.reboot_module.execute_reboot("WARM")
             mock_run_command.assert_called_once_with("sudo warm-reboot")
             mock_sleep.assert_called_once_with(260)
-            mock_populate_reboot_status_flag.assert_called_once_with(False, int(time.time()), "Reboot command failed to execute", 'WARM', RebootStatus.STATUS_FAILURE.value)
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int(time.time()), "Reboot command failed to execute", 'WARM', RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_unknown_reboot(self, caplog):
         with caplog.at_level(logging.ERROR):
@@ -202,7 +202,7 @@ class TestReboot(object):
                     "stdout: ['stdout: execute cold reboot'], stderr: "
                     "['stderror: execute cold reboot']")
             assert caplog.records[0].message == msg
-            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 1, RebootStatus.STATUS_FAILURE.value)
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 1, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_issue_reboot_command_halt(self, caplog):
         with (
@@ -216,7 +216,7 @@ class TestReboot(object):
                    "stdout: ['stdout: execute halt reboot'], stderr: "
                    "['stderror: execute halt reboot']")
             assert caplog.records[0].message == msg
-            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 3, RebootStatus.STATUS_FAILURE.value)
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 3, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_success_halt(self):
         with (
@@ -231,7 +231,7 @@ class TestReboot(object):
             mock_run_command.assert_called_once_with("sudo reboot -p")
             mock_is_halt_command_running.assert_called()
             mock_is_container_running.assert_called_with("pmon")
-            mock_populate_reboot_status_flag.assert_called_once_with(False, 0, 'Halt reboot completed', 3, RebootStatus.STATUS_SUCCESS.value)
+            mock_populate_reboot_status_flag.assert_called_once_with(False, 0, 'Halt reboot completed', 3, RebootStatus.STATUS_SUCCESS)
 
     def test_execute_reboot_fail_halt_timeout(self, caplog):
         with (
@@ -248,7 +248,7 @@ class TestReboot(object):
             mock_sleep.assert_called_with(5)
             mock_is_halt_command_running.assert_called()
             assert any("HALT reboot failed: Services are still running" in record.message for record in caplog.records)
-            mock_populate_reboot_status_flag.assert_called_once_with(False, int(time.time()), 'Halt reboot did not complete', 3, RebootStatus.STATUS_FAILURE.value)
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int(time.time()), 'Halt reboot did not complete', 3, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_issue_reboot_command_warm(self, caplog):
         with (
@@ -262,7 +262,7 @@ class TestReboot(object):
                     "stdout: ['stdout: execute WARM reboot'], stderr: "
                     "['stderror: execute WARM reboot']")
             assert caplog.records[0].message == msg
-            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 'WARM', RebootStatus.STATUS_FAILURE.value)
+            mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 'WARM', RebootStatus.STATUS_FAILURE)
 
     def test_issue_reboot_success_cold_boot(self):
         with (
@@ -361,7 +361,7 @@ class TestReboot(object):
 
     def test_get_reboot_status_active(self):
         MSG="testing reboot response"
-        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG, REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
+        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG, REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
@@ -372,7 +372,7 @@ class TestReboot(object):
         assert response_data["status"] == RebootStatus.STATUS_SUCCESS.name
 
     def test_get_reboot_status_inactive(self):
-        self.reboot_module.populate_reboot_status_flag(False, 0, "", REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
+        self.reboot_module.populate_reboot_status_flag(False, 0, "", REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
