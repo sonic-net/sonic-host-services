@@ -54,7 +54,7 @@ class TestReboot(object):
     def test_populate_reboot_status_flag(self):
         with mock.patch("time.time", return_value=1617811205.25):
             self.reboot_module.populate_reboot_status_flag()
-            return_value, get_reboot_status_flag_data = self.reboot_module.get_reboot_status_flag()
+            return_value, get_reboot_status_flag_data = self.reboot_module.get_reboot_status()
             assert return_value == 0
             get_reboot_status_flag_data = json.loads(get_reboot_status_flag_data)
             assert get_reboot_status_flag_data["active"] == False
