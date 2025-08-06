@@ -199,3 +199,32 @@ class TestProcDockerStatsDaemon(object):
                             
                             # Verify utcnow() was called multiple times as expected
                             assert mock_datetime.utcnow.call_count >= 2        
+
+    def test_run_method_executes_with_utcnow(self):
+        """Test that run method executes and uses datetime.utcnow()"""
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        
+        # Mock all dependencies but allow datetime.utcnow() to run normally
+        with patch.object(pdstatsd, 'update_dockerstats_command'):
+            with patch.object(pdstatsd, 'update_processstats_command'):
+                with patch.object(pdstatsd, 'update_fipsstats_command'):
+                    with patch('time.sleep', side_effect=Exception("Stop after first iteration")):
+                        with patch('os.getuid', return_value=0):  # Mock as root
+                            with patch.object(pdstatsd, 'log_info'):
+                                with patch.object(pdstatsd, 'update_state_db') as mock_update_db:
+                                    # This will actually call run() method
+                                    try:
+                                        pdstatsd.run()
+                                    except Exception as e:
+                                        if "Stop after first iteration" in str(e):
+                                            # Verify that update_state_db was called
+                                            assert mock_update_db.call_count >= 3
+                                            # Verify that timestamps were passed
+                                            for call in mock_update_db.call_args_list:
+                                                args = call[0]
+                                                if len(args) >= 3 and 'lastupdate' in args[1]:
+                                                    timestamp_str = args[2]
+                                                    assert isinstance(timestamp_str, str)
+                                                    assert len(timestamp_str) > 0
+                                        else:
+                                            raise
