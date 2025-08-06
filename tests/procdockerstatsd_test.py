@@ -163,3 +163,39 @@ class TestProcDockerStatsDaemon(object):
 
         assert 1234 in pdstatsd.all_process_obj
         assert 9999 not in pdstatsd.all_process_obj
+
+    def test_datetime_utcnow_usage(self):
+        """Test that datetime.utcnow() is used instead of datetime.now() for consistent UTC timestamps"""
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+        
+        # Mock datetime.utcnow to return a fixed time for testing
+        fixed_time = datetime(2025, 7, 1, 12, 34, 56)
+        
+        with patch('procdockerstatsd.datetime') as mock_datetime:
+            mock_datetime.utcnow.return_value = fixed_time
+            
+            # Test the update_fipsstats_command method which uses datetime.utcnow()
+            pdstatsd.update_fipsstats_command()
+            
+            # Verify that utcnow() was called
+            mock_datetime.utcnow.assert_called_once()
+            
+            # Verify that now() was NOT called (ensuring we're using UTC)
+            mock_datetime.now.assert_not_called()
+            
+            # Test the main run loop datetime usage
+            with patch.object(pdstatsd, 'update_dockerstats_command'):
+                with patch.object(pdstatsd, 'update_processstats_command'):
+                    with patch.object(pdstatsd, 'update_fipsstats_command'):
+                        with patch('time.sleep'):  # Prevent actual sleep
+                            # Mock the first iteration of the run loop
+                            pdstatsd.update_dockerstats_command()
+                            datetimeobj = mock_datetime.utcnow()
+                            pdstatsd.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+                            pdstatsd.update_processstats_command()
+                            pdstatsd.update_state_db('PROCESS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+                            pdstatsd.update_fipsstats_command()
+                            pdstatsd.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+                            
+                            # Verify utcnow() was called multiple times as expected
+                            assert mock_datetime.utcnow.call_count >= 2        
