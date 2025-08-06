@@ -47,7 +47,7 @@ setup(
         'dbus-python',
         'systemd-python',
         'Jinja2>=2.10',
-        'PyGObject==3.50.0',
+        'PyGObject',
         'pycairo==1.26.1',
         'psutil'
     ] + sonic_dependencies,
