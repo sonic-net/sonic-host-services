@@ -65,12 +65,23 @@ class TestReboot(object):
     def test_populate_reboot_status_flag(self):
         with mock.patch("time.time", return_value=1617811205.25):
             self.reboot_module.populate_reboot_status_flag()
-            assert self.reboot_module.reboot_status_flag["active"] == False
-            assert self.reboot_module.reboot_status_flag["when"] == 0
-            assert self.reboot_module.reboot_status_flag["reason"] == ""
-            assert self.reboot_module.reboot_status_flag["count"] == 0
-            assert self.reboot_module.reboot_status_flag["method"] == ""
-            assert self.reboot_module.reboot_status_flag["status"] == RebootStatus.STATUS_UNKNOWN
+            return_value, get_reboot_status_flag_data = self.reboot_module.get_reboot_status()
+            assert return_value == 0
+            get_reboot_status_flag_data = json.loads(get_reboot_status_flag_data)
+            assert get_reboot_status_flag_data["active"] == False
+            assert get_reboot_status_flag_data["when"] == 0
+            assert get_reboot_status_flag_data["reason"] == ""
+            assert get_reboot_status_flag_data["count"] == 0
+            assert get_reboot_status_flag_data["method"] == ""
+            assert get_reboot_status_flag_data["status"] == RebootStatus.STATUS_UNKNOWN.value
+
+    def test_populate_reboot_status_flag_with_status(self):
+        with mock.patch("time.time", return_value=1617811205.25):
+            self.reboot_module.populate_reboot_status_flag(status=RebootStatus.STATUS_SUCCESS)
+            return_value, get_reboot_status_flag_data = self.reboot_module.get_reboot_status()
+            assert return_value == 0
+            get_reboot_status_flag_data = json.loads(get_reboot_status_flag_data)
+            assert get_reboot_status_flag_data["status"] == RebootStatus.STATUS_SUCCESS.value
 
     def test_validate_reboot_request_success_cold_boot_enum_method(self):
         reboot_request = {"method": REBOOT_METHOD_COLD_BOOT_ENUM, "reason": "test reboot request reason"}
@@ -372,7 +383,7 @@ class TestReboot(object):
 
     def test_get_reboot_status_active(self):
         MSG="testing reboot response"
-        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG, REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
+        self.reboot_module.populate_reboot_status_flag(True, TIME, MSG, REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
@@ -380,10 +391,10 @@ class TestReboot(object):
         assert response_data["when"] == TIME
         assert response_data["reason"] == MSG
         assert response_data["method"] == REBOOT_METHOD_COLD_BOOT_ENUM
-        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.name
+        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.value
 
     def test_get_reboot_status_inactive(self):
-        self.reboot_module.populate_reboot_status_flag(False, 0, "", REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS.name)
+        self.reboot_module.populate_reboot_status_flag(False, 0, "", REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_SUCCESS)
         result = self.reboot_module.get_reboot_status()
         assert result[0] == 0
         response_data = json.loads(result[1])
@@ -391,7 +402,7 @@ class TestReboot(object):
         assert response_data["when"] == 0
         assert response_data["reason"] == ""
         assert response_data["method"] == REBOOT_METHOD_COLD_BOOT_ENUM
-        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.name
+        assert response_data["status"] == RebootStatus.STATUS_SUCCESS.value
 
 #        assert result[1] == TEST_INACTIVE_RESPONSE_DATA
 
