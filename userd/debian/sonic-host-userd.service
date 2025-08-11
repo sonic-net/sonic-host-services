@@ -1,0 +1,15 @@
+[Unit]
+Description=User management daemon
+Requires=config-setup.service
+After=config-setup.service
+BindsTo=sonic.target
+After=sonic.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/userd
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=sonic.target
