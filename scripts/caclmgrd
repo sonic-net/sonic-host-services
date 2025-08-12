@@ -337,6 +337,10 @@ class ControlPlaneAclManager(logger.Logger):
             allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-s', chassis_midplane_ip, '-d', chassis_midplane_ip, '-j', 'ACCEPT'])
             allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-i', chassis_midplane_dev_name, '-j', 'ACCEPT'])
 
+        if device_info.is_smartswitch():
+            # Allow traffic to the chassis midplane IP
+            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-d', '169.254.200.254','-j', 'ACCEPT'])
+
         return allow_internal_chassis_midplane_traffic
 
     def generate_allow_internal_docker_ip_traffic_commands(self, namespace):
