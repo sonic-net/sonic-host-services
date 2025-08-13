@@ -67,6 +67,7 @@ EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_USER = "User issued 'warm-reboot' command [U
 EXPECTED_FIND_FIRSTBOOT_VERSION = " (First boot of SONiC version 20191130.52)"
 EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_FIRSTBOOT = "Unknown (First boot of SONiC version 20191130.52)"
 EXPECTED_FIND_SOFTWARE_HEATBEAT_LOSS = "Heartbeat with the Supervisor card lost"
+EXPECTED_FIND_SOFTWARE_KERNEL_PANIC = "Kernel Panic [Time: Sun Mar 28 13:45:12 UTC 2021]"
 
 EXPECTED_WATCHDOG_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_15_08', 'cause': 'Watchdog', 'user': 'N/A', 'time': 'N/A'}
 EXPECTED_USER_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_14_07', 'cause': 'reboot', 'user': 'admin', 'time': 'Thu Oct 22 03:11:08 UTC 2020'}
@@ -191,6 +192,14 @@ class TestDetermineRebootCause(object):
                 with mock.patch("determine_reboot_cause.find_hardware_reboot_cause", return_value=EXPECTED_HARDWARE_REBOOT_CAUSE):
                     previous_reboot_cause, additional_info = determine_reboot_cause.determine_reboot_cause()
                     assert previous_reboot_cause == EXPECTED_FIND_SOFTWARE_HEATBEAT_LOSS
+                    assert additional_info == "N/A"
+
+    def test_determine_reboot_cause_software_kernelpanic_hardware_other(self):
+        with mock.patch("determine_reboot_cause.find_proc_cmdline_reboot_cause", return_value=EXPECTED_PARSE_WARMFAST_REBOOT_FROM_PROC_CMDLINE):
+            with mock.patch("determine_reboot_cause.find_software_reboot_cause", return_value=EXPECTED_FIND_SOFTWARE_KERNEL_PANIC):
+                with mock.patch("determine_reboot_cause.find_hardware_reboot_cause", return_value=EXPECTED_HARDWARE_REBOOT_CAUSE):
+                    previous_reboot_cause, additional_info = determine_reboot_cause.determine_reboot_cause()
+                    assert previous_reboot_cause == EXPECTED_FIND_SOFTWARE_KERNEL_PANIC
                     assert additional_info == "N/A"
 
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_DIR', os.path.join(os.getcwd(), REBOOT_CAUSE_DIR))
