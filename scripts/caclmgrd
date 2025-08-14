@@ -106,7 +106,7 @@ class ControlPlaneAclManager(logger.Logger):
         },
         "EXTERNAL_CLIENT": {
             "ip_protocols": ["tcp"],
-            "multi_asic_ns_to_host_fwd":True
+            "multi_asic_ns_to_host_fwd":False
         },
         "ANY": {
             "ip_protocols": ["any"],
