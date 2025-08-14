@@ -183,11 +183,12 @@ def main():
                 else:
                     logger.log_warning(f"Reboot status polling timed out for {dpu_name}.")
 
-                # 3) Clear transition in STATE_DB (per HLD; arbitration avoids races)
-                _hset_state(db, key, {
-                    "state_transition_in_progress": "False",
-                    "transition_type": "none"
-                })
+                # NOTE:
+                # Do NOT clear CHASSIS_MODULE_INFO_TABLE transition flags here.
+                # Per HLD and platform flow, the transition is cleared by the
+                # platform's module.py AFTER set_admin_state(down) has completed
+                # (i.e., after the module is actually taken down). This avoids
+                # prematurely unblocking other components before shutdown finishes.
 
         time.sleep(1)
 

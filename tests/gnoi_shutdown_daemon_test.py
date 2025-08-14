@@ -1,6 +1,5 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
-import json
 import subprocess
 
 # Simulated message and DB content
@@ -59,6 +58,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Validate gNOI Reboot command
         calls = mock_exec_gnoi.call_args_list
+        assert len(calls) >= 2, "Expected at least 2 gNOI calls"
         cmd_args = calls[0][0][0]
         assert "-rpc" in cmd_args
         rpc_index = cmd_args.index("-rpc")
@@ -70,7 +70,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         rpc_index = status_cmd_args.index("-rpc")
         assert status_cmd_args[rpc_index + 1] == "RebootStatus"
 
-    @patch("gnoi_shutdown_daemon.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["dummy"], timeout=60))
+    @patch("gnoi_shutdown_daemon.subprocess.run",
+           side_effect=subprocess.TimeoutExpired(cmd=["dummy"], timeout=60))
     def test_execute_gnoi_command_timeout(self, mock_run):
         import gnoi_shutdown_daemon
         rc, stdout, stderr = gnoi_shutdown_daemon.execute_gnoi_command(["dummy"])
