@@ -14,9 +14,6 @@ mock_entry = {
     'transition_type': 'shutdown'
 }
 
-mock_ip_entry = {"ips@": "10.0.0.1"}
-mock_port_entry = {"gnmi_port": "12345"}
-mock_platform_entry = {"platform": "cisco-8101"}
 mock_platform_json = '{"dpu_halt_services_timeout": 30}'
 
 @patch("gnoi_shutdown_daemon.SonicV2Connector")
@@ -28,53 +25,61 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_shutdown_flow_success(self, mock_sleep, mock_open_fn, mock_exec_gnoi, mock_sonic):
         db_instance = MagicMock()
         pubsub = MagicMock()
-        pubsub.get_message.side_effect = [
-            mock_message, None, None, None
-        ]
+        pubsub.get_message.side_effect = [mock_message, None, None, None]
         db_instance.pubsub.return_value = pubsub
-        db_instance.get_all.side_effect = [mock_entry]
-        db_instance.get_entry.side_effect = [
-            mock_ip_entry,        # for get_dpu_ip
-            mock_port_entry,      # for get_gnmi_port
-            mock_platform_entry   # for platform
-        ]
-
-        mock_exec_gnoi.side_effect = [
-            (0, "OK", ""),                   # gnoi_client Reboot
-            (0, "reboot complete", ""),      # gnoi_client RebootStatus
-        ]
-
+        db_instance.get_all.side_effect = [mock_entry]  # STATE_DB HGETALL
         mock_sonic.return_value = db_instance
+
+        # gNOI client calls: Reboot then RebootStatus
+        mock_exec_gnoi.side_effect = [
+            (0, "OK", ""),
+            (0, "reboot complete", ""),
+        ]
 
         import gnoi_shutdown_daemon
         gnoi_shutdown_daemon.logger = MagicMock()
 
-        # Run one iteration of the main loop (guarded to prevent infinite loop)
-        with patch("builtins.__import__"):
-            try:
-                gnoi_shutdown_daemon.main()
-            except Exception:
-                pass
+        # Provide CONFIG_DB rows via _cfg_get_entry (daemon’s current path)
+        def _fake_cfg(table, key):
+            if table == "DHCP_SERVER_IPV4_PORT" and key == "bridge-midplane|dpu0":
+                return {"ips@": "10.0.0.1"}
+            if table == "DPU_PORT" and key in ("DPU0", "dpu0"):
+                return {"gnmi_port": "12345"}
+            if table == "DEVICE_METADATA" and key == "localhost":
+                return {"platform": "cisco-8101"}
+            return {}
 
-        # Validate gNOI Reboot command
+        with patch.object(gnoi_shutdown_daemon, "_cfg_get_entry", side_effect=_fake_cfg):
+            # Run one iteration of the main loop (guarded)
+            with patch("builtins.__import__"):
+                try:
+                    gnoi_shutdown_daemon.main()
+                except Exception:
+                    pass
+
+        # Validate gNOI invocations
         calls = mock_exec_gnoi.call_args_list
         assert len(calls) >= 2, "Expected at least 2 gNOI calls"
+
+        # Reboot
         cmd_args = calls[0][0][0]
         assert "-rpc" in cmd_args
-        rpc_index = cmd_args.index("-rpc")
-        assert cmd_args[rpc_index + 1] == "Reboot"
+        i = cmd_args.index("-rpc")
+        assert cmd_args[i + 1] == "Reboot"
 
-        # Validate gNOI RebootStatus command
-        status_cmd_args = calls[1][0][0]
-        assert "-rpc" in status_cmd_args
-        rpc_index = status_cmd_args.index("-rpc")
-        assert status_cmd_args[rpc_index + 1] == "RebootStatus"
+        # RebootStatus
+        status_args = calls[1][0][0]
+        assert "-rpc" in status_args
+        i = status_args.index("-rpc")
+        assert status_args[i + 1] == "RebootStatus"
 
-    @patch("gnoi_shutdown_daemon.subprocess.run",
-           side_effect=subprocess.TimeoutExpired(cmd=["dummy"], timeout=60))
-    def test_execute_gnoi_command_timeout(self, mock_run):
-        import gnoi_shutdown_daemon
-        rc, stdout, stderr = gnoi_shutdown_daemon.execute_gnoi_command(["dummy"])
-        self.assertEqual(rc, -1)
-        self.assertEqual(stdout, "")
-        self.assertEqual(stderr, "Command timed out.")
+
+# Keep this test OUTSIDE the class so it doesn’t receive the class-level patches
+@patch("gnoi_shutdown_daemon.subprocess.run",
+       side_effect=subprocess.TimeoutExpired(cmd=["dummy"], timeout=60))
+def test_execute_gnoi_command_timeout(mock_run):
+    import gnoi_shutdown_daemon
+    rc, stdout, stderr = gnoi_shutdown_daemon.execute_gnoi_command(["dummy"])
+    assert rc == -1
+    assert stdout == ""
+    assert stderr == "Command timed out."
