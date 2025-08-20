@@ -25,7 +25,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_shutdown_flow_success(self, mock_sleep, mock_open_fn, mock_exec_gnoi, mock_sonic):
         db_instance = MagicMock()
         pubsub = MagicMock()
-        pubsub.get_message.side_effect = [mock_message, None, None, None]
+        # First call delivers our event, second raises to exit the daemon loop
+        pubsub.get_message.side_effect = [mock_message, Exception("stop")]
         db_instance.pubsub.return_value = pubsub
         db_instance.get_all.side_effect = [mock_entry]  # STATE_DB HGETALL
         mock_sonic.return_value = db_instance
@@ -50,12 +51,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             return {}
 
         with patch.object(gnoi_shutdown_daemon, "_cfg_get_entry", side_effect=_fake_cfg):
-            # Run one iteration of the main loop (guarded)
-            with patch("builtins.__import__"):
-                try:
-                    gnoi_shutdown_daemon.main()
-                except Exception:
-                    pass
+            # Run until our injected exception stops the loop
+            try:
+                gnoi_shutdown_daemon.main()
+            except Exception:
+                pass
 
         # Validate gNOI invocations
         calls = mock_exec_gnoi.call_args_list
@@ -82,4 +82,5 @@ def test_execute_gnoi_command_timeout(mock_run):
     rc, stdout, stderr = gnoi_shutdown_daemon.execute_gnoi_command(["dummy"])
     assert rc == -1
     assert stdout == ""
-    assert stderr == "Command timed out."
+    # Matches daemon’s current error text
+    assert stderr == "Command timed out after 60s."
