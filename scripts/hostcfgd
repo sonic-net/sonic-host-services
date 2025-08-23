@@ -1585,42 +1585,42 @@ class MgmtIfaceCfg(object):
     def update_mgmt_iface(self, iface, key, data):
         """Handle update management interface config
         """
-        syslog.syslog(syslog.LOG_DEBUG, 'TEST-1 MgmtIfaceCfg: Starting interface update')
+        syslog.syslog(syslog.LOG_DEBUG, 'MgmtIfaceCfg: Starting interface update')
 
         existing_data = self.iface_config_data.get(key)
 
         # Check if data has changed
         if data != existing_data:
-            syslog.syslog(syslog.LOG_INFO, f'TEST-2 MgmtIfaceCfg: Updating config for {iface} with {data}')
+            syslog.syslog(syslog.LOG_INFO, f'MgmtIfaceCfg: Updating config for {iface} with {data}')
             # Update the interface configuration
             self.iface_config_data[key] = data
         elif not data:
             # If new data is empty, remove the key if it exists
             if key in self.iface_config_data:
                 self.iface_config_data.pop(key)
-                syslog.syslog(syslog.LOG_INFO, f'TEST-3 MgmtIfaceCfg: Removed config for {iface}')
+                syslog.syslog(syslog.LOG_INFO, f'MgmtIfaceCfg: Removed config for {iface}')
                 
                 # This entry is created explicitly by sonic-gnmi, but during delete, this entry is not deleted.
                 # This causes the interface.j2 to think static ip is still configured
                 subprocess.run(['redis-cli', '-n', '4', 'DEL', f'MGMT_INTERFACE|{iface}', '', ''], check=True)
             else:
-                syslog.syslog(syslog.LOG_DEBUG, f'TEST-4 MgmtIfaceCfg: No existing config to remove for {iface}')
+                syslog.syslog(syslog.LOG_DEBUG, f'MgmtIfaceCfg: No existing config to remove for {iface}')
                 # No change; no need to restart services
                 return
         else:
             # Data hasn't changed; no need to proceed
-            syslog.syslog(syslog.LOG_DEBUG, f'TEST-5 MgmtIfaceCfg: No changes detected for {iface}')
+            syslog.syslog(syslog.LOG_DEBUG, f'MgmtIfaceCfg: No changes detected for {iface}')
             return
 
         # Restart services after configuration change
         try:
-            syslog.syslog(syslog.LOG_INFO, f'TEST-6 MgmtIfaceCfg: Updated:{self.iface_config_data}')
+            syslog.syslog(syslog.LOG_INFO, f'MgmtIfaceCfg: Updated:{self.iface_config_data}')
 
             run_cmd(['sudo', 'systemctl', 'restart', 'interfaces-config'], True, True)
 
-            syslog.syslog(syslog.LOG_INFO, 'TEST-7 MgmtIfaceCfg: Successfully restarted services')
+            syslog.syslog(syslog.LOG_INFO, 'MgmtIfaceCfg: Successfully restarted services')
         except subprocess.CalledProcessError:
-            syslog.syslog(syslog.LOG_ERR, 'TEST-8 MgmtIfaceCfg: Failed to restart management interface services')
+            syslog.syslog(syslog.LOG_ERR, 'MgmtIfaceCfg: Failed to restart management interface services')
 
     def update_mgmt_vrf(self, data):
         """Handle update management VRF state
