@@ -1585,7 +1585,7 @@ class MgmtIfaceCfg(object):
     def update_mgmt_iface(self, iface, key, data):
         """Handle update management interface config
         """
-        syslog.syslog(syslog.LOG_DEBUG, 'MgmtIfaceCfg: Starting interface update')
+        syslog.syslog(syslog.LOG_DEBUG, 'MgmtIfaceCfg: mgmt iface update')
 
         existing_data = self.iface_config_data.get(key)
 
