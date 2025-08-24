@@ -2,7 +2,7 @@
 """
 gnoi-shutdown-daemon
 
-Listens for CHASSIS_MODULE_INFO_TABLE state changes in STATE_DB and, when a
+Listens for CHASSIS_MODULE_TABLE state changes in STATE_DB and, when a
 SmartSwitch DPU module enters a "shutdown" transition, issues a gNOI Reboot
 (method HALT) toward that DPU and polls RebootStatus until complete or timeout.
 """
@@ -23,49 +23,32 @@ except ImportError:
     from swsscommon.swsscommon import SonicV2Connector
 
 from sonic_py_common import syslogger
+# Centralized transition API on ModuleBase
+from sonic_platform_base.module_base import ModuleBase
 
 _v2 = None
 SYSLOG_IDENTIFIER = "gnoi-shutdown-daemon"
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
-# Connector helpers
+# ##########
+# DB helpers
+# ##########
+
 def _get_dbid_state(db) -> int:
+    """Resolve STATE_DB numeric ID across connector implementations."""
     try:
         return db.get_dbid(db.STATE_DB)
     except Exception:
+        # Default STATE_DB index in SONiC redis instances
         return 6
 
 def _get_pubsub(db):
+    """Return a pubsub object (swsssdk or raw redis client) for keyspace notifications."""
     try:
-        return db.pubsub()  # swsssdk
+        return db.pubsub()  # swsssdk exposes pubsub()
     except AttributeError:
         client = db.get_redis_client(db.STATE_DB)
         return client.pubsub()
-
-def _hgetall_state(db, key: str) -> dict:
-    try:
-        return db.get_all(db.STATE_DB, key) or {}
-    except Exception:
-        client = db.get_redis_client(db.STATE_DB)
-        raw = client.hgetall(key)
-        return {k.decode(): v.decode() for k, v in raw.items()}
-
-def _hset_state(db, key, m):
-    """Write multiple fields to a STATE_DB hash, compatible across stacks."""
-    m = {k: str(v) for k, v in m.items()}
-    try:
-        db.hmset(db.STATE_DB, key, m); return
-    except AttributeError:
-        pass
-    try:
-        for k, v in m.items():
-            db.hset(key, k, v); return
-    except (AttributeError, TypeError):
-        pass
-    from swsscommon import swsscommon
-    table, _, obj = key.partition('|')
-    t = swsscommon.Table(db, table)
-    t.set(obj, swsscommon.FieldValuePairs(list(m.items())))
 
 def _cfg_get_entry(table, key):
     """Read CONFIG_DB row via unix-socket V2 API and normalize to str."""
@@ -78,7 +61,10 @@ def _cfg_get_entry(table, key):
     def _s(x): return x.decode("utf-8", "ignore") if isinstance(x, (bytes, bytearray)) else x
     return {_s(k): _s(v) for k, v in raw.items()}
 
+# ############
 # gNOI helpers
+# ############
+
 def execute_gnoi_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC):
     """Run gnoi_client with a timeout; return (rc, stdout, stderr)."""
     try:
@@ -101,14 +87,23 @@ def get_gnmi_port(dpu_name: str):
             return str(entry.get("gnmi_port"))
     return "8080"
 
+# #########
 # Main loop
+# #########
+
 def main():
+    # Connect for STATE_DB pubsub + reads
     db = SonicV2Connector()
     db.connect(db.STATE_DB)
 
+    # Centralized transition reader
+    module_base = ModuleBase()
+
     pubsub = _get_pubsub(db)
     state_dbid = _get_dbid_state(db)
-    topic = f"__keyspace@{state_dbid}__:CHASSIS_MODULE_INFO_TABLE|*"
+
+    # Listen to keyspace notifications for CHASSIS_MODULE_TABLE keys
+    topic = f"__keyspace@{state_dbid}__:CHASSIS_MODULE_TABLE|*"
     pubsub.psubscribe(topic)
 
     logger.log_info("gnoi-shutdown-daemon started and listening for shutdown events.")
@@ -117,18 +112,24 @@ def main():
         message = pubsub.get_message()
         if message and message.get("type") == "pmessage":
             channel = message.get("channel", "")
+            # channel format: "__keyspace@N__:CHASSIS_MODULE_TABLE|DPU0"
             key = channel.split(":", 1)[-1] if ":" in channel else channel
-            if not key.startswith("CHASSIS_MODULE_INFO_TABLE|"):
+
+            if not key.startswith("CHASSIS_MODULE_TABLE|"):
                 continue
 
-            # Parse DPU name
+            # Extract module name
             try:
                 dpu_name = key.split("|", 1)[1]
             except IndexError:
                 continue
 
-            entry = _hgetall_state(db, key)
-            if not entry:
+            # Read state via centralized API
+            try:
+                entry = module_base.get_module_state_transition(db, dpu_name) or {}
+            except Exception as e:
+                logger.log_error(f"Failed reading transition state for {dpu_name}: {e}")
+                time.sleep(1)
                 continue
 
             if entry.get("state_transition_in_progress") == "True" and entry.get("transition_type") == "shutdown":
@@ -140,10 +141,11 @@ def main():
                         raise RuntimeError("DPU IP not found")
                 except Exception as e:
                     logger.log_error(f"Error getting DPU IP or port for {dpu_name}: {e}")
+                    time.sleep(1)
                     continue
 
                 # 1) Send Reboot HALT
-                logger.log_notice(f"Issuing gNOI Reboot to {dpu_ip}:{port}") 
+                logger.log_notice(f"Issuing gNOI Reboot to {dpu_ip}:{port}")
                 reboot_cmd = [
                     "docker", "exec", "gnmi", "gnoi_client",
                     f"-target={dpu_ip}:{port}",
@@ -156,11 +158,14 @@ def main():
                 if rc != 0:
                     logger.log_error(f"gNOI Reboot command failed for {dpu_name}: {err or out}")
                     # As per HLD, daemon just logs and returns.
+                    time.sleep(1)
                     continue
 
                 # 2) Poll RebootStatus with a real deadline
-                logger.log_notice(f"Polling RebootStatus for {dpu_name} at {dpu_ip}:{port} "
-                                f"(timeout {STATUS_POLL_TIMEOUT_SEC}s, interval {STATUS_POLL_INTERVAL_SEC}s)")  # <— added visibility
+                logger.log_notice(
+                    f"Polling RebootStatus for {dpu_name} at {dpu_ip}:{port} "
+                    f"(timeout {STATUS_POLL_TIMEOUT_SEC}s, interval {STATUS_POLL_INTERVAL_SEC}s)"
+                )
                 deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
                 reboot_successful = False
 
@@ -184,7 +189,7 @@ def main():
                     logger.log_warning(f"Reboot status polling timed out for {dpu_name}.")
 
                 # NOTE:
-                # Do NOT clear CHASSIS_MODULE_INFO_TABLE transition flags here.
+                # Do NOT clear CHASSIS_MODULE_TABLE transition flags here.
                 # Per HLD and platform flow, the transition is cleared by the
                 # platform's module.py AFTER set_admin_state(down) has completed
                 # (i.e., after the module is actually taken down). This avoids
