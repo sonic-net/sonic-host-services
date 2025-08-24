@@ -1599,10 +1599,6 @@ class MgmtIfaceCfg(object):
             if key in self.iface_config_data:
                 self.iface_config_data.pop(key)
                 syslog.syslog(syslog.LOG_INFO, f'MgmtIfaceCfg: Removed config for {iface}')
-                
-                # This entry is created explicitly by sonic-gnmi, but during delete, this entry is not deleted.
-                # This causes the interface.j2 to think static ip is still configured
-                subprocess.run(['redis-cli', '-n', '4', 'DEL', f'MGMT_INTERFACE|{iface}', '', ''], check=True)
             else:
                 syslog.syslog(syslog.LOG_DEBUG, f'MgmtIfaceCfg: No existing config to remove for {iface}')
                 # No change; no need to restart services
