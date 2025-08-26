@@ -208,6 +208,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 except Exception:
                     pass
 
+            calls = [c[0][0] for c in mock_exec_gnoi.call_args_list]
+
             # Assertions (still flexible but we expect 2 calls here)
             assert len(calls) >= 2
             reboot_args = calls[0]
