@@ -161,7 +161,20 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
 
     def test_shutdown_happy_path_reboot_and_status(self):
+        from unittest.mock import call
+
+        # Stub ModuleBase used by the daemon
+        def _fake_transition(*_args, **_kwargs):
+            return {"state_transition_in_progress": "True", "transition_type": "shutdown"}
+
+        class _MBStub:
+            def __init__(self, *a, **k):  # allow construction if the code instantiates ModuleBase
+                pass
+            # Support both instance and class access
+            get_module_state_transition = staticmethod(_fake_transition)
+
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+            patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub), \
             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
             patch("gnoi_shutdown_daemon.open", new_callable=mock_open, read_data='{"dpu_halt_services_timeout": 30}'), \
             patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
@@ -169,6 +182,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
             import gnoi_shutdown_daemon as d
 
+            # Pubsub event -> shutdown for DPU0
             pubsub = MagicMock()
             pubsub.get_message.side_effect = [
                 {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
@@ -178,18 +192,13 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             db.pubsub.return_value = pubsub
             mock_sonic.return_value = db
 
-            d.module_base = types.SimpleNamespace(
-                get_module_state_transition=lambda *_: {
-                    "state_transition_in_progress": "True",
-                    "transition_type": "shutdown",
-                }
-            )
-
+            # Provide IP and port
             with patch("gnoi_shutdown_daemon._cfg_get_entry",
                     side_effect=lambda table, key:
                         {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else
                         ({"gnmi_port": "12345"} if table == "DPU_PORT" else {})):
 
+                # Reboot then RebootStatus OK
                 mock_exec_gnoi.side_effect = [
                     (0, "OK", ""),                 # Reboot
                     (0, "reboot complete", ""),    # RebootStatus
@@ -199,7 +208,12 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 except Exception:
                     pass
 
+            # --- Debug prints (requested) ---
             calls = [c[0][0] for c in mock_exec_gnoi.call_args_list]
+            print("gNOI calls:", calls)
+            print("logger calls:", mock_logger.method_calls)
+
+            # Assertions (still flexible but we expect 2 calls here)
             assert len(calls) >= 2
             reboot_args = calls[0]
             assert "-rpc" in reboot_args and reboot_args[reboot_args.index("-rpc") + 1].endswith("Reboot")
@@ -211,7 +225,17 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
 
     def test_shutdown_error_branch_no_ip(self):
+        # Stub ModuleBase used by the daemon
+        def _fake_transition(*_args, **_kwargs):
+            return {"state_transition_in_progress": "True", "transition_type": "shutdown"}
+
+        class _MBStub:
+            def __init__(self, *a, **k):
+                pass
+            get_module_state_transition = staticmethod(_fake_transition)
+
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+            patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub), \
             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
             patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
             patch("gnoi_shutdown_daemon.logger") as mock_logger:
@@ -227,19 +251,20 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             db.pubsub.return_value = pubsub
             mock_sonic.return_value = db
 
-            d.module_base = types.SimpleNamespace(
-                get_module_state_transition=lambda *_: {
-                    "state_transition_in_progress": "True",
-                    "transition_type": "shutdown",
-                }
-            )
-
+            # Config returns nothing -> no IP -> error branch
             with patch("gnoi_shutdown_daemon._cfg_get_entry", return_value={}):
                 try:
                     d.main()
                 except Exception:
                     pass
 
+            # --- Debug prints (requested) ---
+            print("gNOI call_count:", mock_exec_gnoi.call_count)
+            print("logger calls:", mock_logger.method_calls)
+
+            # No gNOI calls should be made
             assert mock_exec_gnoi.call_count == 0
+
+            # Confirm we logged the IP/port error (message text may vary slightly)
             all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
             assert "Error getting DPU IP or port" in all_logs
