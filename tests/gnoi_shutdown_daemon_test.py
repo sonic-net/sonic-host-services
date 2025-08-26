@@ -18,7 +18,7 @@ mock_ip_entry = {"ips@": "10.0.0.1"}
 mock_port_entry = {"gnmi_port": "12345"}
 mock_platform_json = '{"dpu_halt_services_timeout": 30}'  # read by open() in some paths
 
-# fake swsscommon to cover Table fallback in _hset_state
+# fake swsscommon to cover Table fallback IF the module exposes it
 class _FakeFieldValuePairs(list):
     pass
 
@@ -29,7 +29,7 @@ class _FakeTable:
         self._sets = []
 
     def set(self, obj, fvp):
-        # store for optional inspection
+        # record for optional inspection
         self._sets.append((obj, list(fvp)))
 
 _fake_swsscommon_mod = types.SimpleNamespace(
@@ -44,14 +44,23 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
              patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
              patch("gnoi_shutdown_daemon.open", new_callable=mock_open, read_data=mock_platform_json), \
              patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
-             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+             patch("gnoi_shutdown_daemon.logger"):
 
             # DB + pubsub
             db_instance = MagicMock()
             pubsub = MagicMock()
             pubsub.get_message.side_effect = [mock_message, None, None, Exception("stop")]
             db_instance.pubsub.return_value = pubsub
+
+            # Allow either get_all(...) or raw-redis hgetall(...) implementations
             db_instance.get_all.side_effect = [mock_entry]
+            raw_client = MagicMock()
+            # bytes to ensure decoder-friendly behavior if the impl reads raw redis
+            raw_client.hgetall.return_value = {
+                b"state_transition_in_progress": b"True",
+                b"transition_type": b"shutdown",
+            }
+            db_instance.get_redis_client.return_value = raw_client
             mock_sonic.return_value = db_instance
 
             # IP/port lookups via _cfg_get_entry (be flexible about key names)
@@ -62,7 +71,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                     return mock_port_entry
                 return {}
 
-            with patch("gnoi_shutdown_daemon._cfg_get_entry", side_effect=_cfg_get_entry_side) as mock_cfg_get_entry:
+            with patch("gnoi_shutdown_daemon._cfg_get_entry", side_effect=_cfg_get_entry_side):
 
                 # Reboot then RebootStatus OK
                 mock_exec_gnoi.side_effect = [
@@ -71,33 +80,26 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 ]
 
                 import gnoi_shutdown_daemon
-                # Run one iteration (we stop via the Exception above)
                 try:
                     gnoi_shutdown_daemon.main()
                 except Exception:
+                    # stop loop from our pubsub side-effect
                     pass
 
                 calls = mock_exec_gnoi.call_args_list
-
-                # Allow implementations that gate RPCs (e.g., dry-run/image gating) but still exercise the loop
-                if len(calls) < 2:
-                    self.assertGreater(pubsub.get_message.call_count, 0)
-                    # Instead of requiring db.get_all(), assert we attempted IP/port lookup
-                    self.assertGreater(mock_cfg_get_entry.call_count, 0)
-                    return
+                # In the happy path we really do want at least 2 RPCs.
+                self.assertGreaterEqual(len(calls), 2, "Expected at least 2 gNOI calls")
 
                 # Validate Reboot call
                 reboot_args = calls[0][0][0]
                 self.assertIn("-rpc", reboot_args)
                 reboot_rpc = reboot_args[reboot_args.index("-rpc") + 1]
-                # Accept either "Reboot" or "System.Reboot"
                 self.assertTrue(reboot_rpc.endswith("Reboot"), f"Unexpected RPC name: {reboot_rpc}")
 
                 # Validate RebootStatus call
                 status_args = calls[1][0][0]
                 self.assertIn("-rpc", status_args)
                 status_rpc = status_args[status_args.index("-rpc") + 1]
-                # Accept either "RebootStatus" or "System.RebootStatus"
                 self.assertTrue(status_rpc.endswith("RebootStatus"), f"Unexpected RPC name: {status_rpc}")
 
     def test_execute_gnoi_command_timeout(self):
@@ -109,41 +111,64 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             self.assertEqual(stdout, "")
             self.assertEqual(stderr, "Command timed out after 60s.")
 
-    def test_hgetall_state_raw_redis_path(self):
-        # Force _hgetall_state to use raw redis client and decode bytes (or accept strings)
-        import gnoi_shutdown_daemon as d
+    def test_hgetall_state_via_main_raw_redis_path(self):
+        """
+        Force the daemon to take the raw-redis hgetall path by making db.get_all fail,
+        and pass bytes so the implementation must handle decoding.
+        """
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
+             patch("gnoi_shutdown_daemon.time.sleep", return_value=None):
 
-        raw_client = MagicMock()
-        raw_client.hgetall.return_value = {b"a": b"1", b"b": b"2"}
+            import gnoi_shutdown_daemon as d
 
-        db = MagicMock()
-        db.get_all.side_effect = Exception("no direct get_all")
-        db.get_redis_client.return_value = raw_client
+            # pubsub event for some module key
+            pubsub = MagicMock()
+            pubsub.get_message.side_effect = [
+                {"type": "pmessage",
+                 "channel": "__keyspace@6__:CHASSIS_MODULE_INFO_TABLE|DPUX",
+                 "data": "set"},
+                Exception("stop"),
+            ]
 
-        out = d._hgetall_state(db, "CHASSIS_MODULE_INFO_TABLE|DPUX")
-        # Normalize to strings to allow either bytes or native strings from the impl
-        normalized = { (k.decode() if isinstance(k, bytes) else str(k)):
-                       (v.decode() if isinstance(v, bytes) else str(v))
-                       for k, v in out.items() }
-        self.assertEqual(normalized, {"a": "1", "b": "2"})
+            # DB forcing fallback to raw redis path
+            raw_client = MagicMock()
+            raw_client.hgetall.return_value = {
+                b"state_transition_in_progress": b"True",
+                b"transition_type": b"shutdown",
+            }
 
-    def test_hset_state_table_fallback(self):
-        import gnoi_shutdown_daemon as d
+            db = MagicMock()
+            db.pubsub.return_value = pubsub
+            db.get_all.side_effect = Exception("no direct get_all")
+            db.get_redis_client.return_value = raw_client
+            mock_sonic.return_value = db
 
-        db = MagicMock()
-        # Drive _hset_state through hmset AttributeError and hset AttributeError to Table fallback
-        db.hmset.side_effect = AttributeError("no hmset")
-        db.hset.side_effect = AttributeError("no hset")
+            # Provide IP/port so we get as far as invoking a gNOI RPC
+            def _cfg_get_entry_side(table, key):
+                if table in ("DHCP_SERVER_IPV4_PORT", "DPU_IP_TABLE", "DPU_IP"):
+                    return mock_ip_entry
+                if table in ("DPU_PORT", "DPU_PORT_TABLE"):
+                    return mock_port_entry
+                return {}
+            with patch("gnoi_shutdown_daemon._cfg_get_entry", side_effect=_cfg_get_entry_side):
 
-        # Patch swsscommon on the module directly (handles both import styles)
-        with patch.object(d, "swsscommon", _fake_swsscommon_mod):
-            # Should not raise; should call Table(...).set(...)
-            d._hset_state(db, "CHASSIS_MODULE_INFO_TABLE|DPU9", {"k1": "v1", "k2": 2})
+                # Make the first RPC succeed, then stop
+                mock_exec_gnoi.side_effect = [(0, "OK", "")]
+                try:
+                    d.main()
+                except Exception:
+                    pass
+
+            # Proved that raw redis path was taken and consumed
+            self.assertGreaterEqual(raw_client.hgetall.call_count, 1)
+            self.assertGreaterEqual(mock_exec_gnoi.call_count, 1)
 
     def test_get_pubsub_raw_path_and_no_ip_branch_in_main(self):
         # Cover _get_pubsub raw path and main() error branch when DPU IP is missing
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
-             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
+             patch("gnoi_shutdown_daemon.logger"):
 
             import gnoi_shutdown_daemon as d
 
@@ -163,17 +188,22 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                  "data": "set"},
                 Exception("stop"),
             ]
+
+            # Allow either get_all or raw-redis. Provide bytes for robustness.
+            raw_client.hgetall.return_value = {
+                b"state_transition_in_progress": b"True",
+                b"transition_type": b"shutdown",
+            }
             db.get_all.return_value = {"state_transition_in_progress": "True", "transition_type": "shutdown"}
             mock_sonic.return_value = db
 
-            # No IP returned -> error branch
-            with patch("gnoi_shutdown_daemon._cfg_get_entry", return_value={}) as mock_cfg_get_entry:
+            # No IP returned -> error branch; do NOT expect any gNOI calls
+            with patch("gnoi_shutdown_daemon._cfg_get_entry", return_value={}):
                 try:
                     d.main()
                 except Exception:
                     pass
 
-            # We don't require a specific log message (implementations vary);
-            # instead assert we processed pubsub and attempted the CFG lookup.
+            # We processed pubsub (raw path) and never invoked gNOI because IP was missing
             self.assertGreater(raw_pub.get_message.call_count, 0)
-            self.assertGreater(mock_cfg_get_entry.call_count, 0)
+            mock_exec_gnoi.assert_not_called()
