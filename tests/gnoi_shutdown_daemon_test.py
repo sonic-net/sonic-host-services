@@ -160,72 +160,86 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             self.assertIn("Command timed out after 60s.", err)
 
 
-    def test_status_poll_timeout_path(self):
-        # Covers the "RebootStatus" polling loop timing out (log_warning path)
+    def test_shutdown_happy_path_reboot_and_status(self):
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
-            patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
             patch("gnoi_shutdown_daemon.open", new_callable=mock_open, read_data='{"dpu_halt_services_timeout": 30}'), \
-            patch("gnoi_shutdown_daemon.logger"):
+            patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+            patch("gnoi_shutdown_daemon.logger") as mock_logger:
 
             import gnoi_shutdown_daemon as d
 
-            # Make polling quick and deterministic for the test
-            old_timeout, old_interval = d.STATUS_POLL_TIMEOUT_SEC, d.STATUS_POLL_INTERVAL_SEC
-            d.STATUS_POLL_TIMEOUT_SEC, d.STATUS_POLL_INTERVAL_SEC = 0.1, 0
-            try:
-                # One shutdown event, then stop the loop via Exception
-                pubsub = MagicMock()
-                pubsub.get_message.side_effect = [
-                    {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
-                    Exception("stop"),
-                ]
-                db = MagicMock()
-                db.pubsub.return_value = pubsub
-                mock_sonic.return_value = db
+            pubsub = MagicMock()
+            pubsub.get_message.side_effect = [
+                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
+                Exception("stop"),
+            ]
+            db = MagicMock()
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
 
-                # Transition indicates shutdown-in-progress
-                d.module_base = types.SimpleNamespace(
-                    get_module_state_transition=lambda *_: {
-                        "state_transition_in_progress": "True",
-                        "transition_type": "shutdown",
-                    }
-                )
+            d.module_base = types.SimpleNamespace(
+                get_module_state_transition=lambda *_: {
+                    "state_transition_in_progress": "True",
+                    "transition_type": "shutdown",
+                }
+            )
 
-                # Provide IP and port (if the implementation decides to look them up)
-                with patch(
-                    "gnoi_shutdown_daemon._cfg_get_entry",
+            with patch("gnoi_shutdown_daemon._cfg_get_entry",
                     side_effect=lambda table, key:
                         {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else
-                        ({"gnmi_port": "12345"} if table == "DPU_PORT" else {})
-                ):
-                    # First call: Reboot OK. Subsequent calls: RebootStatus never reports completion.
-                    mock_exec_gnoi.side_effect = [(0, "OK", "")] + [(0, "still rebooting", "")] * 3
+                        ({"gnmi_port": "12345"} if table == "DPU_PORT" else {})):
 
-                    # Time moves past the deadline so the loop times out cleanly
-                    with patch("gnoi_shutdown_daemon.time.monotonic",
-                            side_effect=[0.0, 0.02, 0.05, 0.2]):
-                        try:
-                            d.main()
-                        except Exception:
-                            # stop the daemon loop from the pubsub side-effect
-                            pass
-            finally:
-                # Restore original timing constants to avoid leaking into other tests
-                d.STATUS_POLL_TIMEOUT_SEC, d.STATUS_POLL_INTERVAL_SEC = old_timeout, old_interval
+                mock_exec_gnoi.side_effect = [
+                    (0, "OK", ""),                 # Reboot
+                    (0, "reboot complete", ""),    # RebootStatus
+                ]
+                try:
+                    d.main()
+                except Exception:
+                    pass
 
-            # some builds may gate/skip RPCs; verify them if present,
-            # otherwise prove the loop ran.
             calls = [c[0][0] for c in mock_exec_gnoi.call_args_list]
-            if len(calls) >= 2:
-                reboot_args = calls[0]
-                self.assertIn("-rpc", reboot_args)
-                self.assertTrue(reboot_args[reboot_args.index("-rpc") + 1].endswith("Reboot"))
+            assert len(calls) >= 2
+            reboot_args = calls[0]
+            assert "-rpc" in reboot_args and reboot_args[reboot_args.index("-rpc") + 1].endswith("Reboot")
+            status_args = calls[1]
+            assert "-rpc" in status_args and status_args[status_args.index("-rpc") + 1].endswith("RebootStatus")
 
-                status_args = calls[1]
-                self.assertIn("-rpc", status_args)
-                self.assertTrue(status_args[status_args.index("-rpc") + 1].endswith("RebootStatus"))
-            else:
-                # Fallback proof the path executed; don’t require config lookups,
-                # since some builds gate that path entirely.
-                self.assertGreater(pubsub.get_message.call_count, 0)
+            all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
+            assert "Reboot completed successfully" in all_logs
+
+
+    def test_shutdown_error_branch_no_ip(self):
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+            patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
+            patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+            patch("gnoi_shutdown_daemon.logger") as mock_logger:
+
+            import gnoi_shutdown_daemon as d
+
+            pubsub = MagicMock()
+            pubsub.get_message.side_effect = [
+                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
+                Exception("stop"),
+            ]
+            db = MagicMock()
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
+
+            d.module_base = types.SimpleNamespace(
+                get_module_state_transition=lambda *_: {
+                    "state_transition_in_progress": "True",
+                    "transition_type": "shutdown",
+                }
+            )
+
+            with patch("gnoi_shutdown_daemon._cfg_get_entry", return_value={}):
+                try:
+                    d.main()
+                except Exception:
+                    pass
+
+            assert mock_exec_gnoi.call_count == 0
+            all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
+            assert "Error getting DPU IP or port" in all_logs
