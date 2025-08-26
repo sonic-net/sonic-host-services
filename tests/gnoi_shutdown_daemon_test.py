@@ -149,18 +149,18 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             # Robust, implementation-agnostic assertion: the daemon consumed events
             self.assertGreater(pubsub.get_message.call_count, 0)
 
-    def test_execute_gnoi_command_timeout_branch():
-        # Covers the TimeoutExpired branch -> (-1, "", "Command timed out after ...")
+    def test_execute_gnoi_command_timeout_branch(self):
+        # Covers the TimeoutExpired branch -> (-1, "", "Command timed out after 60s.")
         with patch("gnoi_shutdown_daemon.subprocess.run",
                 side_effect=subprocess.TimeoutExpired(cmd=["gnoi_client"], timeout=60)):
             import gnoi_shutdown_daemon as d
             rc, out, err = d.execute_gnoi_command(["gnoi_client"], timeout_sec=60)
-            assert rc == -1
-            assert out == ""
-            assert "Command timed out after 60s." in err
+            self.assertEqual(rc, -1)
+            self.assertEqual(out, "")
+            self.assertIn("Command timed out after 60s.", err)
 
 
-    def test_status_poll_timeout_path():
+    def test_status_poll_timeout_path(self):
         # Covers the "RebootStatus" polling loop timing out (log_warning path)
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
@@ -215,5 +215,5 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
             # Assert we actually issued a Reboot and at least one RebootStatus
             calls = [c[0][0] for c in mock_exec_gnoi.call_args_list]
-            assert any(("-rpc" in args and args[args.index("-rpc")+1] == "Reboot") for args in calls)
-            assert any(("-rpc" in args and args[args.index("-rpc")+1] == "RebootStatus") for args in calls)
+            self.assertTrue(any(("-rpc" in args and args[args.index("-rpc")+1] == "Reboot") for args in calls))
+            self.assertTrue(any(("-rpc" in args and args[args.index("-rpc")+1] == "RebootStatus") for args in calls))
