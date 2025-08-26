@@ -208,11 +208,6 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 except Exception:
                     pass
 
-            # --- Debug prints (requested) ---
-            calls = [c[0][0] for c in mock_exec_gnoi.call_args_list]
-            print("gNOI calls:", calls)
-            print("logger calls:", mock_logger.method_calls)
-
             # Assertions (still flexible but we expect 2 calls here)
             assert len(calls) >= 2
             reboot_args = calls[0]
@@ -258,13 +253,103 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 except Exception:
                     pass
 
-            # --- Debug prints (requested) ---
-            print("gNOI call_count:", mock_exec_gnoi.call_count)
-            print("logger calls:", mock_logger.method_calls)
-
             # No gNOI calls should be made
             assert mock_exec_gnoi.call_count == 0
 
             # Confirm we logged the IP/port error (message text may vary slightly)
             all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
             assert "Error getting DPU IP or port" in all_logs
+
+    def test__get_dbid_state_success_and_default(self):
+        import gnoi_shutdown_daemon as d
+
+        # Success path: db.get_dbid works
+        db_ok = MagicMock()
+        db_ok.STATE_DB = 6
+        db_ok.get_dbid.return_value = 6
+        assert d._get_dbid_state(db_ok) == 6
+        db_ok.get_dbid.assert_called_once_with(db_ok.STATE_DB)
+
+        # Default/fallback path: db.get_dbid raises -> return 6
+        db_fail = MagicMock()
+        db_fail.STATE_DB = 6
+        db_fail.get_dbid.side_effect = Exception("boom")
+        assert d._get_dbid_state(db_fail) == 6
+
+
+    def test__get_pubsub_prefers_db_pubsub_and_falls_back(self):
+        import gnoi_shutdown_daemon as d
+
+        # 1) swsssdk-style path: db.pubsub() exists
+        pub1 = MagicMock(name="pubsub_direct")
+        db1 = MagicMock()
+        db1.pubsub.return_value = pub1
+        got1 = d._get_pubsub(db1)
+        assert got1 is pub1
+        db1.pubsub.assert_called_once()
+        db1.get_redis_client.assert_not_called()
+
+        # 2) raw-redis fallback: db.pubsub raises AttributeError -> use client.pubsub()
+        raw_pub = MagicMock(name="pubsub_raw")
+        raw_client = MagicMock()
+        raw_client.pubsub.return_value = raw_pub
+
+        db2 = MagicMock()
+        db2.STATE_DB = 6
+        db2.pubsub.side_effect = AttributeError("no pubsub on this client")
+        db2.get_redis_client.return_value = raw_client
+
+        got2 = d._get_pubsub(db2)
+        assert got2 is raw_pub
+        db2.get_redis_client.assert_called_once_with(db2.STATE_DB)
+        raw_client.pubsub.assert_called_once()
+
+
+    def test__cfg_get_entry_initializes_v2_and_decodes_bytes(self):
+        """
+        Force _cfg_get_entry() to import a fake swsscommon, create a SonicV2Connector,
+        connect to CONFIG_DB, call get_all, and decode bytes -> str.
+        """
+        import sys
+        import types as _types
+        import gnoi_shutdown_daemon as d
+
+        # Fresh start so we cover the init branch
+        d._v2 = None
+
+        # Fake swsscommon.swsscommon.SonicV2Connector
+        class _FakeV2:
+            CONFIG_DB = 99
+            def __init__(self, use_unix_socket_path=False):
+                self.use_unix_socket_path = use_unix_socket_path
+                self.connected_dbid = None
+                self.get_all_calls = []
+            def connect(self, dbid):
+                self.connected_dbid = dbid
+            def get_all(self, dbid, key):
+                # return bytes to exercise decode path
+                self.get_all_calls.append((dbid, key))
+                return {b"ips@": b"10.1.1.1", b"foo": b"bar"}
+
+        fake_pkg = _types.ModuleType("swsscommon")
+        fake_sub = _types.ModuleType("swsscommon.swsscommon")
+        fake_sub.SonicV2Connector = _FakeV2
+        fake_pkg.swsscommon = fake_sub
+
+        # Inject our fake package/submodule so `from swsscommon import swsscommon` works
+        with patch.dict(sys.modules, {
+            "swsscommon": fake_pkg,
+            "swsscommon.swsscommon": fake_sub,
+        }):
+            try:
+                out = d._cfg_get_entry("DHCP_SERVER_IPV4_PORT", "bridge-midplane|dpu0")
+                # Decoded strings expected
+                assert out == {"ips@": "10.1.1.1", "foo": "bar"}
+                # v2 was created and connected to CONFIG_DB
+                assert isinstance(d._v2, _FakeV2)
+                assert d._v2.connected_dbid == d._v2.CONFIG_DB
+                # Called get_all with the normalized key
+                assert d._v2.get_all_calls == [(d._v2.CONFIG_DB, "DHCP_SERVER_IPV4_PORT|bridge-midplane|dpu0")]
+            finally:
+                # Don’t leak the cached connector into other tests
+                d._v2 = None
