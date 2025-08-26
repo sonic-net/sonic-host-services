@@ -10,12 +10,33 @@ class MockConfigDb(object):
         self.handlers = {}
 
     @staticmethod
+    def init_kdump():
+        """Ensure KDUMP section exists with defaults."""
+        if MockConfigDb.CONFIG_DB is None:
+            MockConfigDb.CONFIG_DB = {}
+
+        if "KDUMP" not in MockConfigDb.CONFIG_DB:
+            MockConfigDb.CONFIG_DB["KDUMP"] = {
+                "config": {
+                    "enabled": "false",
+                    "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                }
+            }
+        elif "config" not in MockConfigDb.CONFIG_DB["KDUMP"]:
+            MockConfigDb.CONFIG_DB["KDUMP"]["config"] = {
+                "enabled": "false",
+                "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+            }
+
+    @staticmethod
     def set_config_db(test_config_db):
         MockConfigDb.CONFIG_DB = test_config_db
+        MockConfigDb.init_kdump()
 
     @staticmethod
     def mod_config_db(test_config_db):
         MockConfigDb.CONFIG_DB.update(test_config_db)
+        MockConfigDb.init_kdump()
 
     @staticmethod
     def deserialize_key(key, separator="|"):
@@ -43,7 +64,8 @@ class MockConfigDb(object):
                 for key in MockConfigDb.CONFIG_DB[pattern]]
 
     def get_entry(self, key, field):
-        return MockConfigDb.CONFIG_DB[key][field]
+        return MockConfigDb.CONFIG_DB.get(key, {}).get(field, {})
+
 
     def mod_entry(self, key, field, data):
         existing_data = self.get_entry(key, field)
