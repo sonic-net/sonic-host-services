@@ -64,8 +64,7 @@ class MockConfigDb(object):
                 for key in MockConfigDb.CONFIG_DB[pattern]]
 
     def get_entry(self, key, field):
-        return MockConfigDb.CONFIG_DB.get(key, {}).get(field, {})
-
+        return MockConfigDb.CONFIG_DB[key][field]
 
     def mod_entry(self, key, field, data):
         existing_data = self.get_entry(key, field)
