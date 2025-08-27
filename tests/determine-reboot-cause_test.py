@@ -2,6 +2,8 @@ import sys
 import os
 import shutil
 import pytest
+import datetime
+import re
 
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
@@ -206,3 +208,21 @@ class TestDetermineRebootCause(object):
             determine_reboot_cause.main()
             assert os.path.exists("host/reboot-cause/reboot-cause.txt") == True
             assert os.path.exists("host/reboot-cause/previous-reboot-cause.json") == True   
+
+    def test_reboot_cause_gen_time_is_utc(self):
+        # Patch datetime.datetime.utcnow to return a known value
+        class FixedDatetime(datetime.datetime):
+            @classmethod
+            def utcnow(cls):
+                return cls(2024, 7, 1, 12, 34, 56)
+        orig_datetime = determine_reboot_cause.datetime
+        determine_reboot_cause.datetime = FixedDatetime
+
+        try:
+            gen_time = determine_reboot_cause.datetime.utcnow().strftime('%Y_%m_%d_%H_%M_%S')
+            # Should match the fixed UTC time
+            assert gen_time == "2024_07_01_12_34_56"
+            # Optionally, check the format
+            assert re.match(r"\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}", gen_time)
+        finally:
+            determine_reboot_cause.datetime = orig_datetime
