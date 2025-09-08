@@ -132,7 +132,7 @@ def main():
                 time.sleep(1)
                 continue
 
-            if entry.get("state_transition_in_progress") == "True" and entry.get("transition_type") == "shutdown":
+            if entry.get("state_transition_in_progress", "False") == "True" and entry.get("transition_type") == "shutdown":
                 logger.log_info(f"Shutdown request detected for {dpu_name}. Initiating gNOI reboot.")
                 try:
                     dpu_ip = get_dpu_ip(dpu_name)
