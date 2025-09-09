@@ -45,6 +45,9 @@ setup(
         'scripts/sonic-host-server',
         'scripts/ldap.py'
     ],
+    # install the module that the console script imports
+    py_modules=['gnoi_shutdown_daemon'],
+    package_dir={'': 'scripts'},
     entry_points={
         'console_scripts': [
             'gnoi-shutdown-daemon = gnoi_shutdown_daemon:main'
