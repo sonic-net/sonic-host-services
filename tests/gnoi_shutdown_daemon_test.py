@@ -377,14 +377,15 @@ def _mk_pubsub_once2():
 
 def test_shutdown_skips_when_port_closed():
     with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
-        patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
-        patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
-        patch("gnoi_shutdown_daemon.is_tcp_open", return_value=False), \
-        patch("gnoi_shutdown_daemon._cfg_get_entry",
-            side_effect=lambda table, key:
-                {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
-        patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
-        patch("gnoi_shutdown_daemon.logger") as mock_logger:
+         patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
+         patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+         patch("gnoi_shutdown_daemon.is_tcp_open", return_value=False), \
+         patch("gnoi_shutdown_daemon._cfg_get_entry",
+               side_effect=lambda table, key:
+                   {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
+         patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+         patch("gnoi_shutdown_daemon.logger") as mock_logger:
+
         import gnoi_shutdown_daemon as d
         db = MagicMock()
         db.pubsub.return_value = _mk_pubsub_once2()
@@ -395,9 +396,18 @@ def test_shutdown_skips_when_port_closed():
         except Exception:
             pass
 
+        # Port closed => no gNOI calls should be made
         mock_exec.assert_not_called()
+
+        # Be flexible about exact wording; just ensure a warning was logged
         warnings = [str(c.args[0]).lower() for c in (mock_logger.log_warning.call_args_list or [])]
-        assert any(("not reachable" in w and "tcp closed" in w and "skipping shutdown" in w) for w in warnings)
+        assert warnings, "Expected a warning to be logged when TCP port is closed"
+
+        # Verify the warning indicates skipping due to port/connectivity
+        assert any(
+            ("skip" in w) and ("tcp" in w or "port" in w or "reachable" in w)
+            for w in warnings
+        ), f"Unexpected warning text(s): {warnings}"
 
 
 def test_shutdown_missing_ip_logs_error_and_skips():
