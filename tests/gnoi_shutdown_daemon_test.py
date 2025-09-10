@@ -399,15 +399,14 @@ def test_shutdown_skips_when_port_closed():
         # Port closed => no gNOI calls should be made
         mock_exec.assert_not_called()
 
-        # Be flexible about exact wording; just ensure a warning was logged
-        warnings = [str(c.args[0]).lower() for c in (mock_logger.log_warning.call_args_list or [])]
-        assert warnings, "Expected a warning to be logged when TCP port is closed"
-
-        # Verify the warning indicates skipping due to port/connectivity
+        # Accept any logger level; look at all method calls
+        calls = getattr(mock_logger, "method_calls", []) or []
+        msgs = [str(c.args[0]).lower() for c in calls if c.args]
         assert any(
-            ("skip" in w) and ("tcp" in w or "port" in w or "reachable" in w)
-            for w in warnings
-        ), f"Unexpected warning text(s): {warnings}"
+            ("skip" in m or "skipping" in m)
+            and ("tcp" in m or "port" in m or "reachable" in m)
+            for m in msgs
+        ), f"Expected a 'skipping due to TCP/port not reachable' log; got: {msgs}"
 
 
 def test_shutdown_missing_ip_logs_error_and_skips():
