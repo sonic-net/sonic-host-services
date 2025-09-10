@@ -48,7 +48,7 @@ setup(
         'dbus-python',
         'systemd-python',
         'Jinja2>=2.10',
-        'PyGObject==3.50.0',
+        'PyGObject',
         'pycairo==1.26.1',
         'psutil'
     ] + sonic_dependencies,
@@ -61,7 +61,7 @@ setup(
         'pytest',
         'pyfakefs',
         'sonic-py-common',
-        'deepdiff==6.2.2',
+        'deepdiff>=6.2.2',
         'psutil'
     ],
     extras_require = {
@@ -70,7 +70,7 @@ setup(
             'pytest',
             'pyfakefs',
             'sonic-py-common',
-            'deepdiff==6.2.2'
+            'deepdiff>=6.2.2'
         ]
     },
     classifiers = [

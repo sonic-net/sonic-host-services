@@ -15,6 +15,7 @@ def bus_path(mod_name):
     return BUS_PATH + '/' + mod_name
 
 method = dbus.service.method
+signal = dbus.service.signal
 
 class HostService(dbus.service.Object):
     """Service class for top level DBus endpoint"""
