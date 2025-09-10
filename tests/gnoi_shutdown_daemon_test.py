@@ -178,8 +178,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec_gnoi, \
             patch("gnoi_shutdown_daemon.open", new_callable=mock_open, read_data='{"dpu_halt_services_timeout": 30}'), \
             patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
-            patch("gnoi_shutdown_daemon.logger") as mock_logger:
-
+            patch("gnoi_shutdown_daemon.logger") as mock_logger, \
+            patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True):
             import gnoi_shutdown_daemon as d
 
             # Pubsub event -> shutdown for DPU0
