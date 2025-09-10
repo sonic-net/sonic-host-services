@@ -396,8 +396,8 @@ def test_shutdown_skips_when_port_closed():
             pass
 
         mock_exec.assert_not_called()
-        assert any("gnmi port not open" in str(c.args[0]).lower()
-                for c in (mock_logger.log_warning.call_args_list or []))
+        warnings = [str(c.args[0]).lower() for c in (mock_logger.log_warning.call_args_list or [])]
+        assert any(("not reachable" in w and "tcp closed" in w and "skipping shutdown" in w) for w in warnings)
 
 
 def test_shutdown_missing_ip_logs_error_and_skips():
