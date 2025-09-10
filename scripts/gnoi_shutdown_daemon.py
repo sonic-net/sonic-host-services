@@ -10,6 +10,8 @@ SmartSwitch DPU module enters a "shutdown" transition, issues a gNOI Reboot
 import json
 import time
 import subprocess
+import socket
+import os
 
 REBOOT_RPC_TIMEOUT_SEC   = 60   # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC  = 60   # overall time - polling RebootStatus
@@ -29,6 +31,19 @@ from sonic_platform_base.module_base import ModuleBase
 _v2 = None
 SYSLOG_IDENTIFIER = "gnoi-shutdown-daemon"
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
+
+# ##########
+# helper
+# ##########
+def is_tcp_open(host: str, port: int, timeout: float = None) -> bool:
+    """Fast reachability test for <host,port>. No side effects."""
+    if timeout is None:
+        timeout = float(os.getenv("GNOI_DIAL_TIMEOUT", "1.0"))
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 # ##########
 # DB helpers
@@ -141,6 +156,12 @@ def main():
                         raise RuntimeError("DPU IP not found")
                 except Exception as e:
                     logger.log_error(f"Error getting DPU IP or port for {dpu_name}: {e}")
+                    time.sleep(1)
+                    continue
+
+                # skip if TCP is not reachable
+                if not is_tcp_open(dpu_ip, int(port)):
+                    logger.log_info(f"Skipping {dpu_name}: {dpu_ip}:{port} unreachable (offline/down)")
                     time.sleep(1)
                     continue
 

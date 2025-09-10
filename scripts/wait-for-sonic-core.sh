@@ -3,17 +3,22 @@ set -euo pipefail
 
 log() { echo "[wait-for-sonic-core] $*"; }
 
-# Hard deps we expect to be up before we start
-for svc in swss.service pmon.service; do
-  if systemctl is-active --quiet "$svc"; then
-    log "Service $svc is active"
-  else
-    log "Waiting for $svc to become active…"
-    systemctl is-active -q "$svc" || true
-    systemctl --no-pager --full status "$svc" || true
-    exit 0  # let systemd retry; ExecStartPre must be quick
-  fi
-done
+# Hard dep we expect to be up before we start: swss
+if systemctl is-active --quiet swss.service; then
+  log "Service swss.service is active"
+else
+  log "Waiting for swss.service to become active…"
+  systemctl is-active -q swss.service || true
+  systemctl --no-pager --full status swss.service || true
+  exit 0  # let systemd retry; ExecStartPre must be quick
+fi
+
+# pmon is advisory: proceed even if it's not active yet
+if systemctl is-active --quiet pmon.service; then
+  log "Service pmon.service is active"
+else
+  log "pmon.service not active yet (advisory)"
+fi
 
 # Wait for CHASSIS_MODULE_TABLE to exist (best-effort, bounded time)
 MAX_WAIT=${WAIT_CORE_MAX_SECONDS:-60}
