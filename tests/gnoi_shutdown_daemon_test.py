@@ -357,103 +357,96 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 d._v2 = None
 
 
-    def _mb_shutdown_transition2(*_a, **_k):
+class _MBStub2:
+    def __init__(self, *a, **k):
+        pass
+
+    @staticmethod
+    def get_module_state_transition(*_a, **_k):
         return {"state_transition_in_progress": "True", "transition_type": "shutdown"}
 
-    class _MBStub2:
-        def __init__(self, *a, **k):  # allow construction
+
+def _mk_pubsub_once2():
+    pubsub = MagicMock()
+    pubsub.get_message.side_effect = [
+        {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
+        Exception("stop"),
+    ]
+    return pubsub
+
+
+def test_shutdown_skips_when_port_closed():
+    with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+        patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
+        patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+        patch("gnoi_shutdown_daemon.is_tcp_open", return_value=False), \
+        patch("gnoi_shutdown_daemon._cfg_get_entry",
+            side_effect=lambda table, key:
+                {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
+        patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+        patch("gnoi_shutdown_daemon.logger") as mock_logger:
+        import gnoi_shutdown_daemon as d
+        db = MagicMock()
+        db.pubsub.return_value = _mk_pubsub_once2()
+        mock_sonic.return_value = db
+
+        try:
+            d.main()
+        except Exception:
             pass
-        # Support static access used by the daemon
-        get_module_state_transition = staticmethod(_mb_shutdown_transition2)
+
+        mock_exec.assert_not_called()
+        assert any("gnmi port not open" in str(c.args[0]).lower()
+                for c in (mock_logger.log_warning.call_args_list or []))
 
 
-    def _mk_pubsub_once2():
-        pubsub = MagicMock()
-        pubsub.get_message.side_effect = [
-            {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
-            Exception("stop"),
+def test_shutdown_missing_ip_logs_error_and_skips():
+    with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+        patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
+        patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+        patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True), \
+        patch("gnoi_shutdown_daemon._cfg_get_entry", return_value={}), \
+        patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+        patch("gnoi_shutdown_daemon.logger") as mock_logger:
+        import gnoi_shutdown_daemon as d
+        db = MagicMock()
+        db.pubsub.return_value = _mk_pubsub_once2()
+        mock_sonic.return_value = db
+
+        try:
+            d.main()
+        except Exception:
+            pass
+
+        mock_exec.assert_not_called()
+        assert any("ip not found" in str(c.args[0]).lower()
+                for c in (mock_logger.log_error.call_args_list or []))
+
+
+def test_shutdown_reboot_nonzero_does_not_poll_status():
+    with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+        patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
+        patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+        patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True), \
+        patch("gnoi_shutdown_daemon._cfg_get_entry",
+            side_effect=lambda table, key:
+                {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
+        patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+        patch("gnoi_shutdown_daemon.logger") as mock_logger:
+        import gnoi_shutdown_daemon as d
+        db = MagicMock()
+        db.pubsub.return_value = _mk_pubsub_once2()
+        mock_sonic.return_value = db
+
+        mock_exec.side_effect = [
+            (1, "", "boom"),  # Reboot -> non-zero rc
         ]
-        return pubsub
 
+        try:
+            d.main()
+        except Exception:
+            pass
 
-    def test_shutdown_skips_when_port_closed():
-        # is_tcp_open() False -> no gNOI calls; logs a warning
-        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
-            patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
-            patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
-            patch("gnoi_shutdown_daemon.is_tcp_open", return_value=False), \
-            patch("gnoi_shutdown_daemon._cfg_get_entry",
-                side_effect=lambda table, key:
-                    {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
-            patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
-            patch("gnoi_shutdown_daemon.logger") as mock_logger:
-            import gnoi_shutdown_daemon as d
-            db = MagicMock()
-            db.pubsub.return_value = _mk_pubsub_once2()
-            mock_sonic.return_value = db
-
-            try:
-                d.main()
-            except Exception:
-                pass
-
-            mock_exec.assert_not_called()
-            # Ensure we emitted the skip warning
-            assert any("gnmi port not open" in str(c.args[0]).lower()
-                    for c in (mock_logger.log_warning.call_args_list or []))
-
-
-    def test_shutdown_missing_ip_logs_error_and_skips():
-        # Missing DPU IP -> logs error; no gNOI calls
-        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
-            patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
-            patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
-            patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True), \
-            patch("gnoi_shutdown_daemon._cfg_get_entry", return_value={}), \
-            patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
-            patch("gnoi_shutdown_daemon.logger") as mock_logger:
-            import gnoi_shutdown_daemon as d
-            db = MagicMock()
-            db.pubsub.return_value = _mk_pubsub_once2()
-            mock_sonic.return_value = db
-
-            try:
-                d.main()
-            except Exception:
-                pass
-
-            mock_exec.assert_not_called()
-            assert any("ip not found" in str(c.args[0]).lower()
-                    for c in (mock_logger.log_error.call_args_list or []))
-
-
-    def test_shutdown_reboot_nonzero_does_not_poll_status():
-        # Reboot returns non-zero -> log error; do NOT issue RebootStatus
-        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
-            patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
-            patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
-            patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True), \
-            patch("gnoi_shutdown_daemon._cfg_get_entry",
-                side_effect=lambda table, key:
-                    {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
-            patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
-            patch("gnoi_shutdown_daemon.logger") as mock_logger:
-            import gnoi_shutdown_daemon as d
-            db = MagicMock()
-            db.pubsub.return_value = _mk_pubsub_once2()
-            mock_sonic.return_value = db
-
-            # First call = Reboot (fail), so second (status) should not happen
-            mock_exec.side_effect = [
-                (1, "", "boom"),  # Reboot -> non-zero rc
-            ]
-
-            try:
-                d.main()
-            except Exception:
-                pass
-
-            # Only one gNOI invocation (the failing Reboot), no status polling
-            assert mock_exec.call_count == 1
-            assert any("reboot command failed" in str(c.args[0]).lower()
-                    for c in (mock_logger.log_error.call_args_list or []))
+        assert mock_exec.call_count == 1
+        assert any("reboot command failed" in str(c.args[0]).lower()
+                for c in (mock_logger.log_error.call_args_list or []))
