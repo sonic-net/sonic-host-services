@@ -43,6 +43,7 @@ setup(
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
         'scripts/check_platform.sh',
+        'scripts/wait-for-sonic-core.sh',
         'scripts/sonic-host-server',
         'scripts/ldap.py'
     ],

@@ -1,11 +1,14 @@
 [Unit]
 Description=gNOI based DPU Graceful Shutdown Daemon
-After=database.service
-Requires=database.service
+Requires=database.service swss.service pmon.service
+Wants=network-online.target
+After=network-online.target database.service swss.service pmon.service
 
 [Service]
 Type=simple
+# Pre-flight checks (run in order)
 ExecStartPre=/usr/local/bin/check_platform.sh
+ExecStartPre=/usr/local/bin/wait-for-sonic-core.sh
 ExecStart=/usr/local/bin/gnoi-shutdown-daemon
 Restart=always
 RestartSec=5
