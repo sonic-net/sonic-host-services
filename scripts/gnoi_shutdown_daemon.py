@@ -17,6 +17,7 @@ REBOOT_RPC_TIMEOUT_SEC   = 60   # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC  = 60   # overall time - polling RebootStatus
 STATUS_POLL_INTERVAL_SEC = 5    # delay between polls
 STATUS_RPC_TIMEOUT_SEC   = 10   # per RebootStatus RPC timeout
+REBOOT_METHOD_HALT = 3          # gNOI System.Reboot method: HALT
 
 # Support both interfaces: swsssdk and swsscommon
 try:
@@ -173,7 +174,7 @@ def main():
                     "-logtostderr", "-notls",
                     "-module", "System",
                     "-rpc", "Reboot",
-                    "-jsonin", json.dumps({"method": 3, "message": "Triggered by SmartSwitch graceful shutdown"})
+                    "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
                 ]
                 rc, out, err = execute_gnoi_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
                 if rc != 0:

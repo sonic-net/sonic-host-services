@@ -6,7 +6,7 @@ import types
 # Common fixtures
 mock_message = {
     "type": "pmessage",
-    "channel": "__keyspace@6__:CHASSIS_MODULE_INFO_TABLE|DPU0",
+    "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0",
     "data": "set",
 }
 mock_entry = {
@@ -116,7 +116,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
             pubsub = MagicMock()
             pubsub.get_message.side_effect = [
-                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_INFO_TABLE|DPUX", "data": "set"},
+                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPUX", "data": "set"},
                 Exception("stop"),
             ]
 
