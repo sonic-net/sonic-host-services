@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+# See debhelper(7) (uncomment to enable)
+# output every command that modifies files on the build system.
+#export DH_VERBOSE = 1
+
+%:
+	dh $@ --no-auto
+
+override_dh_auto_configure:
+	# do nothing
+
+override_dh_auto_install:
+	# do nothing
+
+override_dh_auto_build:
+	cd crates/procdockerstatsd_rs && cargo build --release
+
+override_dh_auto_clean:
+	cd crates/procdockerstatsd_rs && cargo clean --release
+
+override_dh_auto_test:
+	# do nothing
+	:

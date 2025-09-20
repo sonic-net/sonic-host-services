@@ -14,5 +14,5 @@ daemonize = "0.5"
 chrono = "0.4"
 
 [[bin]]
-name = "procdockerstatsd_rs"
-path = "main.rs"
+name = "procdockerstatsd"
+path = "src/main.rs"
