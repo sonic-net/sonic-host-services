@@ -459,3 +459,94 @@ def test_shutdown_reboot_nonzero_does_not_poll_status():
         assert mock_exec.call_count == 1
         assert any("reboot command failed" in str(c.args[0]).lower()
                 for c in (mock_logger.log_error.call_args_list or []))
+
+
+    def test_gnoi_shutdown_daemon_core_paths(self):
+        # 1) Pre-stub BOTH DB bindings so module import never touches real deps
+        swsscommon = types.ModuleType("swsscommon")
+        swsscommon_sub = types.ModuleType("swsscommon.swsscommon")
+        class _PlaceholderCommon:
+            pass
+        swsscommon_sub.SonicV2Connector = _PlaceholderCommon
+        swsscommon.swsscommon = swsscommon_sub
+
+        swsssdk = types.ModuleType("swsssdk")
+        class _PlaceholderSdk:
+            pass
+        swsssdk.SonicV2Connector = _PlaceholderSdk
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "swsscommon": swsscommon,
+                "swsscommon.swsscommon": swsscommon_sub,
+                "swsssdk": swsssdk,
+            },
+            clear=False,
+        ):
+            mod = importlib.import_module("scripts.gnoi_shutdown_daemon")
+            mod = importlib.reload(mod)
+
+            # 2) is_tcp_open(): false then true
+            with mock.patch("socket.create_connection", side_effect=OSError()):
+                self.assertFalse(mod.is_tcp_open("127.0.0.1", 12345, timeout=0.01))
+
+            class _DummySock:
+                def __enter__(self): return self
+                def __exit__(self, exc_type, exc, tb): return False
+
+            with mock.patch("socket.create_connection", return_value=_DummySock()):
+                self.assertTrue(mod.is_tcp_open("127.0.0.1", 12345, timeout=0.01))
+
+            # 3) execute_gnoi_command(): timeout and generic exception
+            import subprocess
+            with mock.patch("subprocess.run",
+                            side_effect=subprocess.TimeoutExpired(cmd=["x"], timeout=2)):
+                rc, out, err = mod.execute_gnoi_command(["x"], timeout_sec=2)
+                self.assertEqual(rc, -1)
+                self.assertEqual(out, "")
+                self.assertIn("timed out", err.lower())
+
+            with mock.patch("subprocess.run", side_effect=RuntimeError("boom")):
+                rc, out, err = mod.execute_gnoi_command(["x"], timeout_sec=1)
+                self.assertEqual(rc, -2)
+                self.assertEqual(out, "")
+                self.assertIn("failed", err.lower())
+
+            # 4) TimeoutEnforcer._list_modules(): byte-key decoding & return
+            class _FakeRedisClient:
+                def keys(self, pattern):
+                    return [b"CHASSIS_MODULE_TABLE|DPU7", b"CHASSIS_MODULE_TABLE|DPU4"]
+
+            class _FakeDB:
+                STATE_DB = object()
+                def get_redis_client(self, _): return _FakeRedisClient()
+
+            fake_db = _FakeDB()
+            fake_mb = mock.Mock()
+
+            te = mod.TimeoutEnforcer(fake_db, fake_mb, interval_sec=0)
+            names = te._list_modules()
+            self.assertEqual(names, ["DPU4", "DPU7"])
+
+            # 5) TimeoutEnforcer.run(): in-progress → timed-out → clear()
+            te2 = mod.TimeoutEnforcer(fake_db, fake_mb, interval_sec=0)
+            calls = {"n": 0}
+            def _fake_list_modules():
+                calls["n"] += 1
+                if calls["n"] >= 2:
+                    te2.stop()
+                return ["DPU9"]
+            te2._list_modules = _fake_list_modules
+
+            fake_mb.get_module_state_transition.return_value = {
+                "state_transition_in_progress": "True",
+                "transition_type": "shutdown",
+            }
+            fake_mb._load_transition_timeouts.return_value = {"shutdown": 1}
+            fake_mb.is_module_state_transition_timed_out.return_value = True
+
+            te2.run()
+            fake_mb.clear_module_state_transition.assert_called_once()
+            args, _ = fake_mb.clear_module_state_transition.call_args
+            self.assertEqual(args[1], "DPU9")
