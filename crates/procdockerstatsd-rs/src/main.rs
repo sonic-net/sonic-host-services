@@ -3,15 +3,22 @@ use std::thread::sleep;
 use std::time::Duration;
 use redis::{Commands, Connection, Client};
 use regex::Regex;
-use sysinfo::{System, Process};
-use chrono::Utc;
+use sysinfo::{System, Process, Pid};
+use chrono::{Utc, DateTime};
 use std::fs;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
+use std::time::UNIX_EPOCH;
 
 
 const REDIS_URL: &str = "redis://127.0.0.1/";
 const UPDATE_INTERVAL: u64 = 120; // 2 minutes
+
+struct ProcDockerStats {
+    redis_conn: Connection,
+    system: System,
+    process_cache: HashMap<u32, std::time::Instant>,
+}
 
 
 fn run_command(cmd: &[&str]) -> Option<String> {
@@ -30,9 +37,11 @@ fn convert_to_bytes(value: &str) -> u64 {
         let num: f64 = caps[1].parse().unwrap_or(0.0);
         let unit = &caps[2];
         match unit.to_lowercase().as_str() {
-            "kb" => (num * 1024.0) as u64,
-            "mb" | "mib" => (num * 1024.0 * 1024.0) as u64,
-            "gb" | "gib" => (num * 1024.0 * 1024.0 * 1024.0) as u64,
+            "b" => num as u64,
+            "kb" => (num * 1000.0) as u64,
+            "mb" => (num * 1000.0 * 1000.0) as u64,
+            "mib" => (num * 1024.0 * 1024.0) as u64,
+            "gib" => (num * 1024.0 * 1024.0 * 1024.0) as u64,
             _ => num as u64,
         }
     } else {
@@ -40,121 +49,252 @@ fn convert_to_bytes(value: &str) -> u64 {
     }
 }
 
-fn parse_docker_stats(output: &str) -> Vec<HashMap<String, String>> {
-    let lines: Vec<&str> = output.lines().collect();
+fn format_docker_cmd_output(cmdout: &str) -> Vec<HashMap<String, String>> {
+    static MULTI_SPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"   +").unwrap());
+
+    let lines: Vec<&str> = cmdout.lines().collect();
     if lines.len() < 2 { return vec![]; }
 
-    let keys: Vec<&str> = lines[0].split_whitespace().collect();
-    let mut stats_list = Vec::new();
-    
+    let keys: Vec<&str> = MULTI_SPACE_RE.split(lines[0]).collect();
+    let mut docker_data_list = Vec::new();
+
     for line in &lines[1..] {
-        let values: Vec<&str> = line.split_whitespace().collect();
+        let values: Vec<&str> = MULTI_SPACE_RE.split(line).collect();
         if values.len() >= keys.len() {
-            let mut stats = HashMap::new();
-            stats.insert("CONTAINER ID".to_string(), values[0].to_string());
-            stats.insert("NAME".to_string(), values[1].to_string());
-            stats.insert("CPU%".to_string(), values[2].trim_end_matches('%').to_string());
-            stats.insert("MEM_BYTES".to_string(), convert_to_bytes(values[3]).to_string());
-            stats.insert("MEM_LIMIT_BYTES".to_string(), convert_to_bytes(values[5]).to_string());
-            stats.insert("MEM%".to_string(), values[6].trim_end_matches('%').to_string());
-            stats.insert("NET_IN_BYTES".to_string(), convert_to_bytes(values[7]).to_string());
-            stats.insert("NET_OUT_BYTES".to_string(), convert_to_bytes(values[9]).to_string());
-            stats.insert("BLOCK_IN_BYTES".to_string(), convert_to_bytes(values[10]).to_string());
-            stats.insert("BLOCK_OUT_BYTES".to_string(), convert_to_bytes(values[12]).to_string());
-            stats.insert("PIDS".to_string(), values[13].to_string());
-            stats_list.push(stats);
+            let mut docker_data = HashMap::new();
+
+            // Map values to keys just like Python
+            for (key, value) in keys.iter().zip(values.iter()) {
+                docker_data.insert(key.to_string(), value.to_string());
+            }
+            docker_data_list.push(docker_data);
         }
     }
-    stats_list
+    create_docker_dict(docker_data_list)
 }
 
-fn collect_docker_stats(conn: &mut Connection) {
-    if let Some(output) = run_command(&["docker", "stats", "--no-stream", "-a"]) {
-        let stats_list = parse_docker_stats(&output);
-        let _: () = redis::cmd("DEL").arg("DOCKER_STATS|*").execute(conn);
-        for stats in stats_list {
-            let key = format!("DOCKER_STATS|{}", stats["CONTAINER ID"]);
-            
-            // Convert the HashMap to a vector of tuples
-            let stats_vec: Vec<(String, String)> = stats.into_iter().collect();
-            let _: () = conn.hset_multiple(&key, &stats_vec).unwrap();
+fn create_docker_dict(dict_list: Vec<HashMap<String, String>>) -> Vec<HashMap<String, String>> {
+    let mut dockerdict_list = Vec::new();
+
+    for row in dict_list {
+        if let Some(cid) = row.get("CONTAINER ID") {
+            let mut dockerdict = HashMap::new();
+            dockerdict.insert("CONTAINER ID".to_string(), cid.clone());
+
+            if let Some(name) = row.get("NAME") {
+                dockerdict.insert("NAME".to_string(), name.clone());
+            }
+
+            if let Some(cpu) = row.get("CPU %") {
+                let cpu_clean = cpu.trim_end_matches('%');
+                dockerdict.insert("CPU%".to_string(), cpu_clean.to_string());
+            }
+
+            if let Some(mem_usage) = row.get("MEM USAGE / LIMIT") {
+                let memuse: Vec<&str> = mem_usage.split(" / ").collect();
+                if memuse.len() >= 2 {
+                    dockerdict.insert("MEM_BYTES".to_string(), convert_to_bytes(memuse[0]).to_string());
+                    dockerdict.insert("MEM_LIMIT_BYTES".to_string(), convert_to_bytes(memuse[1]).to_string());
+                }
+            }
+
+            if let Some(mem_pct) = row.get("MEM %") {
+                let mem_clean = mem_pct.trim_end_matches('%');
+                dockerdict.insert("MEM%".to_string(), mem_clean.to_string());
+            }
+
+            if let Some(net_io) = row.get("NET I/O") {
+                let netio: Vec<&str> = net_io.split(" / ").collect();
+                if netio.len() >= 2 {
+                    dockerdict.insert("NET_IN_BYTES".to_string(), convert_to_bytes(netio[0]).to_string());
+                    dockerdict.insert("NET_OUT_BYTES".to_string(), convert_to_bytes(netio[1]).to_string());
+                }
+            }
+
+            if let Some(block_io) = row.get("BLOCK I/O") {
+                let blockio: Vec<&str> = block_io.split(" / ").collect();
+                if blockio.len() >= 2 {
+                    dockerdict.insert("BLOCK_IN_BYTES".to_string(), convert_to_bytes(blockio[0]).to_string());
+                    dockerdict.insert("BLOCK_OUT_BYTES".to_string(), convert_to_bytes(blockio[1]).to_string());
+                }
+            }
+
+            if let Some(pids) = row.get("PIDS") {
+                dockerdict.insert("PIDS".to_string(), pids.clone());
+            }
+
+            dockerdict_list.push(dockerdict);
         }
     }
+    dockerdict_list
 }
 
-fn collect_process_stats(conn: &mut Connection) {
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    
-    let mut process_list: Vec<&Process> = sys.processes().values().collect();
-    
-    // Sort processes by CPU usage in descending order and take top 1024
-    process_list.sort_by(|a, b| b.cpu_usage().partial_cmp(&a.cpu_usage()).unwrap());
-    let top_processes = process_list.iter().take(1024);
-    
-    let mut active_pids = std::collections::HashSet::new();
-    
-    for process in top_processes {
+impl ProcDockerStats {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        // Check root privileges like Python version
+        if unsafe { libc::getuid() } != 0 {
+            eprintln!("Must be root to run this daemon");
+            std::process::exit(1);
+        }
+
+        let client = Client::open(REDIS_URL)?;
+        let conn = client.get_connection()?;
+
+        Ok(ProcDockerStats {
+            redis_conn: conn,
+            system: System::new_all(),
+            process_cache: HashMap::new(),
+        })
+    }
+
+    fn update_dockerstats_command(&mut self) {
+        if let Some(output) = run_command(&["docker", "stats", "--no-stream", "-a"]) {
+            let stats_list = format_docker_cmd_output(&output);
+            let _: () = redis::cmd("DEL").arg("DOCKER_STATS|*").execute(&mut self.redis_conn);
+            for stats in stats_list {
+                let key = format!("DOCKER_STATS|{}", stats["CONTAINER ID"]);
+
+                // Convert the HashMap to a vector of tuples
+                let stats_vec: Vec<(String, String)> = stats.into_iter().collect();
+                self.batch_update_state_db(&key, stats_vec);
+            }
+        }
+    }
+
+    fn update_processstats_command(&mut self) {
+        // Refresh system info like Python's process_iter
+        self.system.refresh_all();
+
+        let mut process_list: Vec<&Process> = self.system.processes().values().collect();
+
+        // Sort processes by CPU usage in descending order and take top 1024
+        process_list.sort_by(|a, b| b.cpu_usage().partial_cmp(&a.cpu_usage()).unwrap());
+        let top_processes = process_list.iter().take(1024);
+
+        let mut active_pids = std::collections::HashSet::new();
+
+        // Clear stale processes from cache first like Python does
+        for process in top_processes {
         let pid = process.pid().as_u32();
         active_pids.insert(pid);
 
         let key = format!("PROCESS_STATS|{}", pid);
 
+        // Format STIME like Python: datetime.utcfromtimestamp(stime).strftime("%b%d")
+        let stime_formatted = {
+            let start_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(process.start_time());
+            let datetime: chrono::DateTime<chrono::Utc> = start_time.into();
+            datetime.format("%b%d").to_string()
+        };
+
+        // Format TIME like Python: str(timedelta(seconds=int(ttime.user + ttime.system)))
+        let time_formatted = {
+            let cpu_time = process.cpu_time();
+            let total_seconds = cpu_time as u64;
+            let hours = total_seconds / 3600;
+            let minutes = (total_seconds % 3600) / 60;
+            let seconds = total_seconds % 60;
+            if hours > 0 {
+                format!("{}:{:02}:{:02}", hours, minutes, seconds)
+            } else {
+                format!("{}:{:02}", minutes, seconds)
+            }
+        };
+
         let stats: Vec<(String, String)> = vec![
             ("UID".to_string(), process.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
             ("PPID".to_string(), process.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
-            ("CMD".to_string(), process.cmd().join(" ")),
             ("CPU".to_string(), format!("{:.2}", process.cpu_usage() as f64)),
-            ("MEM".to_string(), process.memory().to_string()),
-            ("STIME".to_string(), process.start_time().to_string()),
+            ("MEM".to_string(), format!("{:.1}", process.memory_percent())), // Memory as percentage like Python
+            ("STIME".to_string(), stime_formatted),
+            ("TT".to_string(), process.terminal().unwrap_or("?").to_string()), // Terminal like Python
+            ("TIME".to_string(), time_formatted), // CPU time like Python
+            ("CMD".to_string(), process.cmd().join(" ")),
         ];
 
-        let _: () = conn.hset_multiple(&key, &stats).unwrap();
+        self.batch_update_state_db(&key, stats);
     }
 
     // Remove stale process stats from Redis
-    let existing_keys: Vec<String> = conn.keys("PROCESS_STATS|*").unwrap_or_default();
+    let existing_keys: Vec<String> = self.redis_conn.keys("PROCESS_STATS|*").unwrap_or_default();
     for key in existing_keys {
         if let Some(pid_str) = key.strip_prefix("PROCESS_STATS|") {
             if let Ok(pid) = pid_str.parse::<u32>() {
                 if !active_pids.contains(&pid) {
-                    let _: () = conn.del(&key).unwrap();
+                    let _: () = self.redis_conn.del(&key).unwrap();
                 }
             }
         }
     }
 }
 
+    fn update_fipsstats_command(&mut self) {
+        let kernel_cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
+        let enforced = kernel_cmdline.contains("sonic_fips=1") || kernel_cmdline.contains("fips=1");
 
-fn collect_fips_stats(conn: &mut Connection) {
-    let kernel_cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
-    let enforced = kernel_cmdline.contains("sonic_fips=1") || kernel_cmdline.contains("fips=1");
-    let enabled = run_command(&["sudo", "openssl", "engine", "-vv"]).map_or(false, |out| out.contains("symcryp"));
-    
-    let key = "FIPS_STATS|state";
-    let mut stats = HashMap::new();
-    stats.insert("timestamp".to_string(), Utc::now().to_rfc3339());
-    stats.insert("enforced".to_string(), enforced.to_string());
-    stats.insert("enabled".to_string(), enabled.to_string());
-    
-    // Convert the HashMap to a vector of tuples
-    let stats_vec: Vec<(String, String)> = stats.into_iter().collect();
-    
-    // Pass the vector of tuples to hset_multiple
-    let _: () = conn.hset_multiple(&key, &stats_vec).unwrap();
+        // Check FIPS runtime status using pipe like Python: openssl engine -vv | grep -i symcryp
+        let enabled = {
+            let openssl_output = Command::new("sudo")
+                .args(&["openssl", "engine", "-vv"])
+                .output()
+                .ok();
+
+            if let Some(output) = openssl_output {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let grep_output = Command::new("grep")
+                    .args(&["-i", "symcryp"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .and_then(|mut child| {
+                        use std::io::Write;
+                        if let Some(stdin) = child.stdin.as_mut() {
+                            let _ = stdin.write_all(stdout.as_bytes());
+                        }
+                        child.wait_with_output()
+                    });
+
+                grep_output.map_or(false, |output| output.status.success())
+            } else {
+                false
+            }
+        };
+
+        let key = "FIPS_STATS|state";
+        let mut stats = HashMap::new();
+        stats.insert("timestamp".to_string(), Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()); // Match Python isoformat
+        stats.insert("enforced".to_string(), enforced.to_string());
+        stats.insert("enabled".to_string(), enabled.to_string());
+
+        // Convert the HashMap to a vector of tuples
+        let stats_vec: Vec<(String, String)> = stats.into_iter().collect();
+
+        // Pass the vector of tuples to hset_multiple
+        let _: () = self.batch_update_state_db(&key, stats_vec);
+    }
+
+    fn update_state_db(&mut self, key1: &str, key2: &str, value2: &str) {
+        let _: () = self.redis_conn.hset(key1, key2, value2).unwrap();
+    }
+
+    fn batch_update_state_db(&mut self, key1: &str, fvs: Vec<(String, String)>) {
+        let _: () = self.redis_conn.hset_multiple(key1, &fvs).unwrap();
+    }
+
+    fn run(&mut self) {
+        loop {
+            self.update_dockerstats_command();
+            self.update_processstats_command();
+            self.update_fipsstats_command();
+
+            let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string(); // Match Python str(datetime)
+            let _: () = self.redis_conn.set("STATS|LastUpdateTime", timestamp).unwrap();
+            sleep(Duration::from_secs(UPDATE_INTERVAL));
+        }
+    }
 }
 
 fn main() {
-    let client = Client::open(REDIS_URL).expect("Failed to connect to Redis");
-    let mut conn = client.get_connection().expect("Failed to get Redis connection");
-    
-    loop {
-        collect_docker_stats(&mut conn);
-        collect_process_stats(&mut conn);
-        collect_fips_stats(&mut conn);
-
-        let timestamp = Utc::now().to_rfc3339();
-        let _: () = conn.set("STATS|LastUpdateTime", timestamp).unwrap();
-        sleep(Duration::from_secs(UPDATE_INTERVAL));
-    }
+    let mut daemon = ProcDockerStats::new().expect("Failed to initialize daemon");
+    daemon.run();
 }
