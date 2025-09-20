@@ -4,7 +4,7 @@
 #export DH_VERBOSE = 1
 
 %:
-	dh $@ --no-auto
+	dh $@
 
 override_dh_auto_configure:
 	# do nothing
@@ -13,10 +13,10 @@ override_dh_auto_install:
 	# do nothing
 
 override_dh_auto_build:
-	cd crates/procdockerstatsd_rs && cargo build --release
+	cargo build --release --all
 
 override_dh_auto_clean:
-	cd crates/procdockerstatsd_rs && cargo clean --release
+	cargo clean --release
 
 override_dh_auto_test:
 	# do nothing

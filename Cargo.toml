@@ -1,0 +1,38 @@
+[workspace]
+resolver = '2'
+members = [
+    "crates/procdockerstatsd-rs",
+]
+exclude = []
+
+[workspace.package]
+version = "1.0.0"
+authors = ["SONiC"]
+license = "Apache-2.0"
+repository = "https://github.com/sonic-net/sonic-buildimage"
+documentation = "https://github.com/sonic-net/sonic-buildimage/blob/master/README.md"
+keywords = ["sonic"]
+edition = "2021"
+
+[workspace.lints.rust]
+unused_extern_crates = 'warn'
+trivial_numeric_casts = 'warn'
+unstable_features = 'warn'
+unused_import_braces = 'warn'
+
+[workspace.dependencies]
+# Redis and system info
+redis = "0.23"
+sysinfo = "0.30"
+
+# Regex and pattern matching
+regex = "1.10"
+
+# Time and date handling
+chrono = "0.4"
+
+# Process management
+daemonize = "0.5"
+
+# System calls
+libc = "0.2"

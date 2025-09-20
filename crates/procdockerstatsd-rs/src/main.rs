@@ -7,6 +7,7 @@ use sysinfo::{System, Process};
 use chrono::Utc;
 use std::fs;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 
 const REDIS_URL: &str = "redis://127.0.0.1/";
@@ -24,8 +25,8 @@ fn run_command(cmd: &[&str]) -> Option<String> {
 }
 
 fn convert_to_bytes(value: &str) -> u64 {
-    let re = Regex::new(r"(\d+\.?\d*)([a-zA-Z]+)").unwrap();
-    if let Some(caps) = re.captures(value) {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+\.?\d*)([a-zA-Z]+)").unwrap());
+    if let Some(caps) = RE.captures(value) {
         let num: f64 = caps[1].parse().unwrap_or(0.0);
         let unit = &caps[2];
         match unit.to_lowercase().as_str() {
