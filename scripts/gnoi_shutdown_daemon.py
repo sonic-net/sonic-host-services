@@ -5,6 +5,10 @@ gnoi-shutdown-daemon
 Listens for CHASSIS_MODULE_TABLE state changes in STATE_DB and, when a
 SmartSwitch DPU module enters a "shutdown" transition, issues a gNOI Reboot
 (method HALT) toward that DPU and polls RebootStatus until complete or timeout.
+
+Additionally, a lightweight background thread periodically enforces timeout
+clearing of stuck transitions (startup/shutdown/reboot) using ModuleBase’s
+common APIs, so all code paths (CLI, chassisd, platform, gNOI) benefit.
 """
 
 import json
@@ -12,6 +16,7 @@ import time
 import subprocess
 import socket
 import os
+import threading
 
 REBOOT_RPC_TIMEOUT_SEC   = 60   # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC  = 60   # overall time - polling RebootStatus
@@ -103,6 +108,63 @@ def get_gnmi_port(dpu_name: str):
             return str(entry.get("gnmi_port"))
     return "8080"
 
+# ###############
+# Timeout Enforcer
+# ###############
+class TimeoutEnforcer(threading.Thread):
+    """
+    Periodically enforces CHASSIS_MODULE_TABLE transition timeouts for all modules.
+    Uses ModuleBase’s common helpers so all code paths benefit (CLI, chassisd, platform, gNOI).
+    """
+    def __init__(self, db, module_base: ModuleBase, interval_sec: int = 5):
+        super().__init__(daemon=True, name="timeout-enforcer")
+        self._db = db
+        self._mb = module_base
+        self._interval = max(1, int(interval_sec))
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def _list_modules(self):
+        """Discover module names by scanning CHASSIS_MODULE_TABLE keys."""
+        try:
+            client = self._db.get_redis_client(self._db.STATE_DB)
+            keys = client.keys("CHASSIS_MODULE_TABLE|*")
+            out = []
+            for k in keys or []:
+                if isinstance(k, (bytes, bytearray)):
+                    k = k.decode("utf-8", "ignore")
+                _, _, name = k.partition("|")
+                if name:
+                    out.append(name)
+            return sorted(out)
+        except Exception:
+            return []
+
+    def run(self):
+        while not self._stop.is_set():
+            try:
+                for name in self._list_modules():
+                    try:
+                        entry = self._mb.get_module_state_transition(self._db, name) or {}
+                        inprog = str(entry.get("state_transition_in_progress", "")).lower() in ("1", "true", "yes", "on")
+                        if not inprog:
+                            continue
+                        op = entry.get("transition_type", "startup")
+                        timeouts = self._mb._load_transition_timeouts()
+                        # Fallback safely to defaults if key missing/unknown
+                        timeout_sec = int(timeouts.get(op, ModuleBase._TRANSITION_TIMEOUT_DEFAULTS.get(op, 300)))
+                        if self._mb.is_module_state_transition_timed_out(self._db, name, timeout_sec):
+                            self._mb.clear_module_state_transition(self._db, name)
+                            logger.log_info(f"Cleared transition after timeout for {name}")
+                    except Exception as e:
+                        # Keep loop resilient; log at debug noise level
+                        logger.log_debug(f"Timeout enforce error for {name}: {e}")
+            except Exception as e:
+                logger.log_debug(f"TimeoutEnforcer loop error: {e}")
+            self._stop.wait(self._interval)
+
 # #########
 # Main loop
 # #########
@@ -124,6 +186,10 @@ def main():
 
     logger.log_info("gnoi-shutdown-daemon started and listening for shutdown events.")
 
+    # Start background timeout enforcement so stuck transitions auto-clear
+    enforcer = TimeoutEnforcer(db, module_base, interval_sec=5)
+    enforcer.start()
+
     while True:
         message = pubsub.get_message()
         if message and message.get("type") == "pmessage":
@@ -132,12 +198,14 @@ def main():
             key = channel.split(":", 1)[-1] if ":" in channel else channel
 
             if not key.startswith("CHASSIS_MODULE_TABLE|"):
+                time.sleep(1)
                 continue
 
             # Extract module name
             try:
                 dpu_name = key.split("|", 1)[1]
             except IndexError:
+                time.sleep(1)
                 continue
 
             # Read state via centralized API
@@ -221,3 +289,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
