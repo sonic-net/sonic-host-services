@@ -358,6 +358,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
 
     def test_timeout_enforcer_covers_all_paths(self):
+        import sys
+        import importlib
+        import unittest
+        from unittest import mock
+
         # --- Pre-stub swsscommon/swsssdk and ModuleBase before import ---
         swsscommon = types.ModuleType("swsscommon")
         swsscommon_sub = types.ModuleType("swsscommon.swsscommon")
