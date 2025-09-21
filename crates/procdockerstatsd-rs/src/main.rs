@@ -182,46 +182,59 @@ impl ProcDockerStats {
 
         // Clear stale processes from cache first like Python does
         for process in top_processes {
-        let pid = process.pid().as_u32();
-        active_pids.insert(pid);
+            // Add error handling similar to Python's try/except for NoSuchProcess, AccessDenied, ZombieProcess
+            let pid = process.pid().as_u32();
+            active_pids.insert(pid);
 
-        let key = format!("PROCESS_STATS|{}", pid);
-
-        // Format STIME like Python: datetime.utcfromtimestamp(stime).strftime("%b%d")
-        let stime_formatted = {
-            let start_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(process.start_time());
-            let datetime: chrono::DateTime<chrono::Utc> = start_time.into();
-            datetime.format("%b%d").to_string()
-        };
-
-        // Format TIME like Python: str(timedelta(seconds=int(ttime.user + ttime.system)))
-        let time_formatted = {
-            let cpu_time = process.cpu_time();
-            let total_seconds = cpu_time as u64;
-            let hours = total_seconds / 3600;
-            let minutes = (total_seconds % 3600) / 60;
-            let seconds = total_seconds % 60;
-            if hours > 0 {
-                format!("{}:{:02}:{:02}", hours, minutes, seconds)
-            } else {
-                format!("{}:{:02}", minutes, seconds)
+            // Skip processes that no longer exist or we can't access
+            if !process.status().is_some() {
+                continue;
             }
-        };
 
-        let stats: Vec<(String, String)> = vec![
-            ("PID".to_string(), pid.to_string()),
-            ("UID".to_string(), process.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
-            ("PPID".to_string(), process.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
-            ("CPU".to_string(), format!("{:.2}", process.cpu_usage() as f64)),
-            ("MEM".to_string(), format!("{:.1}", process.memory_percent())), // Memory as percentage like Python
-            ("STIME".to_string(), stime_formatted),
-            ("TT".to_string(), process.terminal().unwrap_or("?").to_string()), // Terminal like Python
-            ("TIME".to_string(), time_formatted), // CPU time like Python
-            ("CMD".to_string(), process.cmd().join(" ")),
-        ];
+            let key = format!("PROCESS_STATS|{}", pid);
 
-        self.batch_update_state_db(&key, stats);
-    }
+            // Format STIME like Python: datetime.utcfromtimestamp(stime).strftime("%b%d")
+            let stime_formatted = {
+                let start_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(process.start_time());
+                let datetime: chrono::DateTime<chrono::Utc> = start_time.into();
+                datetime.format("%b%d").to_string()
+            };
+
+            // Format TIME like Python: str(timedelta(seconds=int(ttime.user + ttime.system)))
+            let time_formatted = {
+                let cpu_time = process.cpu_time();
+                let total_seconds = cpu_time as u64;
+                let hours = total_seconds / 3600;
+                let minutes = (total_seconds % 3600) / 60;
+                let seconds = total_seconds % 60;
+                if hours > 0 {
+                    format!("{}:{:02}:{:02}", hours, minutes, seconds)
+                } else {
+                    format!("{}:{:02}", minutes, seconds)
+                }
+            };
+
+            // Safely access process fields that might fail
+            let cmd_string = if process.cmd().is_empty() {
+                String::new()
+            } else {
+                process.cmd().join(" ")
+            };
+
+            let stats: Vec<(String, String)> = vec![
+                ("PID".to_string(), pid.to_string()),
+                ("UID".to_string(), process.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
+                ("PPID".to_string(), process.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
+                ("CPU".to_string(), format!("{:.2}", process.cpu_usage() as f64)),
+                ("MEM".to_string(), format!("{:.1}", process.memory_percent())), // Memory as percentage like Python
+                ("STIME".to_string(), stime_formatted),
+                ("TT".to_string(), process.terminal().unwrap_or("?").to_string()), // Terminal like Python
+                ("TIME".to_string(), time_formatted), // CPU time like Python
+                ("CMD".to_string(), cmd_string),
+            ];
+
+            self.batch_update_state_db(&key, stats);
+        }
 
     // Remove stale process stats from Redis
     let existing_keys: Vec<String> = self.redis_conn.keys("PROCESS_STATS|*").unwrap_or_default();
