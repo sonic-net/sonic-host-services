@@ -49,11 +49,11 @@ fn convert_to_bytes(value: &str) -> u64 {
     }
 }
 
-fn format_docker_cmd_output(cmdout: &str) -> Vec<HashMap<String, String>> {
+fn format_docker_cmd_output(cmdout: &str) -> HashMap<String, HashMap<String, String>> {
     static MULTI_SPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"   +").unwrap());
 
     let lines: Vec<&str> = cmdout.lines().collect();
-    if lines.len() < 2 { return vec![]; }
+    if lines.len() < 2 { return HashMap::new(); }
 
     let keys: Vec<&str> = MULTI_SPACE_RE.split(lines[0]).collect();
     let mut docker_data_list = Vec::new();
@@ -73,60 +73,60 @@ fn format_docker_cmd_output(cmdout: &str) -> Vec<HashMap<String, String>> {
     create_docker_dict(docker_data_list)
 }
 
-fn create_docker_dict(dict_list: Vec<HashMap<String, String>>) -> Vec<HashMap<String, String>> {
-    let mut dockerdict_list = Vec::new();
+fn create_docker_dict(dict_list: Vec<HashMap<String, String>>) -> HashMap<String, HashMap<String, String>> {
+    let mut dockerdict = HashMap::new();
 
     for row in dict_list {
         if let Some(cid) = row.get("CONTAINER ID") {
-            let mut dockerdict = HashMap::new();
-            dockerdict.insert("CONTAINER ID".to_string(), cid.clone());
+            let key = format!("DOCKER_STATS|{}", cid);
+            let mut container_data = HashMap::new();
 
             if let Some(name) = row.get("NAME") {
-                dockerdict.insert("NAME".to_string(), name.clone());
+                container_data.insert("NAME".to_string(), name.clone());
             }
 
             if let Some(cpu) = row.get("CPU %") {
                 let cpu_clean = cpu.trim_end_matches('%');
-                dockerdict.insert("CPU%".to_string(), cpu_clean.to_string());
+                container_data.insert("CPU%".to_string(), cpu_clean.to_string());
             }
 
             if let Some(mem_usage) = row.get("MEM USAGE / LIMIT") {
                 let memuse: Vec<&str> = mem_usage.split(" / ").collect();
                 if memuse.len() >= 2 {
-                    dockerdict.insert("MEM_BYTES".to_string(), convert_to_bytes(memuse[0]).to_string());
-                    dockerdict.insert("MEM_LIMIT_BYTES".to_string(), convert_to_bytes(memuse[1]).to_string());
+                    container_data.insert("MEM_BYTES".to_string(), convert_to_bytes(memuse[0]).to_string());
+                    container_data.insert("MEM_LIMIT_BYTES".to_string(), convert_to_bytes(memuse[1]).to_string());
                 }
             }
 
             if let Some(mem_pct) = row.get("MEM %") {
                 let mem_clean = mem_pct.trim_end_matches('%');
-                dockerdict.insert("MEM%".to_string(), mem_clean.to_string());
+                container_data.insert("MEM%".to_string(), mem_clean.to_string());
             }
 
             if let Some(net_io) = row.get("NET I/O") {
                 let netio: Vec<&str> = net_io.split(" / ").collect();
                 if netio.len() >= 2 {
-                    dockerdict.insert("NET_IN_BYTES".to_string(), convert_to_bytes(netio[0]).to_string());
-                    dockerdict.insert("NET_OUT_BYTES".to_string(), convert_to_bytes(netio[1]).to_string());
+                    container_data.insert("NET_IN_BYTES".to_string(), convert_to_bytes(netio[0]).to_string());
+                    container_data.insert("NET_OUT_BYTES".to_string(), convert_to_bytes(netio[1]).to_string());
                 }
             }
 
             if let Some(block_io) = row.get("BLOCK I/O") {
                 let blockio: Vec<&str> = block_io.split(" / ").collect();
                 if blockio.len() >= 2 {
-                    dockerdict.insert("BLOCK_IN_BYTES".to_string(), convert_to_bytes(blockio[0]).to_string());
-                    dockerdict.insert("BLOCK_OUT_BYTES".to_string(), convert_to_bytes(blockio[1]).to_string());
+                    container_data.insert("BLOCK_IN_BYTES".to_string(), convert_to_bytes(blockio[0]).to_string());
+                    container_data.insert("BLOCK_OUT_BYTES".to_string(), convert_to_bytes(blockio[1]).to_string());
                 }
             }
 
             if let Some(pids) = row.get("PIDS") {
-                dockerdict.insert("PIDS".to_string(), pids.clone());
+                container_data.insert("PIDS".to_string(), pids.clone());
             }
 
-            dockerdict_list.push(dockerdict);
+            dockerdict.insert(key, container_data);
         }
     }
-    dockerdict_list
+    dockerdict
 }
 
 impl ProcDockerStats {
@@ -147,17 +147,24 @@ impl ProcDockerStats {
         })
     }
 
-    fn update_dockerstats_command(&mut self) {
-        if let Some(output) = run_command(&["docker", "stats", "--no-stream", "-a"]) {
-            let stats_list = format_docker_cmd_output(&output);
+    fn update_dockerstats_command(&mut self) -> bool {
+        let cmd = ["docker", "stats", "--no-stream", "-a"];
+        if let Some(output) = run_command(&cmd) {
+            let stats_dict = format_docker_cmd_output(&output);
+            if stats_dict.is_empty() {
+                eprintln!("formatting for docker output failed");
+                return false;
+            }
             let _: () = redis::cmd("DEL").arg("DOCKER_STATS|*").execute(&mut self.redis_conn);
-            for stats in stats_list {
-                let key = format!("DOCKER_STATS|{}", stats["CONTAINER ID"]);
-
+            for (key, container_data) in stats_dict {
                 // Convert the HashMap to a vector of tuples
-                let stats_vec: Vec<(String, String)> = stats.into_iter().collect();
+                let stats_vec: Vec<(String, String)> = container_data.into_iter().collect();
                 self.batch_update_state_db(&key, stats_vec);
             }
+            true
+        } else {
+            eprintln!("'{:?}' returned null output", cmd);
+            false
         }
     }
 
@@ -202,6 +209,7 @@ impl ProcDockerStats {
         };
 
         let stats: Vec<(String, String)> = vec![
+            ("PID".to_string(), pid.to_string()),
             ("UID".to_string(), process.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
             ("PPID".to_string(), process.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
             ("CPU".to_string(), format!("{:.2}", process.cpu_usage() as f64)),
@@ -284,11 +292,15 @@ impl ProcDockerStats {
     fn run(&mut self) {
         loop {
             self.update_dockerstats_command();
-            self.update_processstats_command();
-            self.update_fipsstats_command();
+            let datetimeobj = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string(); // Match Python str(datetime)
+            self.update_state_db("DOCKER_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
 
-            let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string(); // Match Python str(datetime)
-            let _: () = self.redis_conn.set("STATS|LastUpdateTime", timestamp).unwrap();
+            self.update_processstats_command();
+            self.update_state_db("PROCESS_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
+
+            self.update_fipsstats_command();
+            self.update_state_db("FIPS_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
+
             sleep(Duration::from_secs(UPDATE_INTERVAL));
         }
     }
