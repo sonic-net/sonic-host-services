@@ -236,18 +236,18 @@ impl ProcDockerStats {
             self.batch_update_state_db(&key, stats);
         }
 
-    // Remove stale process stats from Redis
-    let existing_keys: Vec<String> = self.redis_conn.keys("PROCESS_STATS|*").unwrap_or_default();
-    for key in existing_keys {
-        if let Some(pid_str) = key.strip_prefix("PROCESS_STATS|") {
-            if let Ok(pid) = pid_str.parse::<u32>() {
-                if !active_pids.contains(&pid) {
-                    let _: () = self.redis_conn.del(&key).unwrap();
+        // Remove stale process stats from Redis
+        let existing_keys: Vec<String> = self.redis_conn.keys("PROCESS_STATS|*").unwrap_or_default();
+        for key in existing_keys {
+            if let Some(pid_str) = key.strip_prefix("PROCESS_STATS|") {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    if !active_pids.contains(&pid) {
+                        let _: () = self.redis_conn.del(&key).unwrap();
+                    }
                 }
             }
         }
     }
-}
 
     fn update_fipsstats_command(&mut self) {
         let kernel_cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
