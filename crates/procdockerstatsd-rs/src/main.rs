@@ -200,11 +200,22 @@ impl ProcDockerStats {
         // Refresh system info like Python's process_iter
         self.system.refresh_all();
 
-        let mut process_list: Vec<&Process> = self.system.processes().values().collect();
+        let process_list: Vec<&Process> = self.system.processes().values().collect();
 
-        // Sort processes by CPU usage in descending order and take top 1024
-        process_list.sort_by(|a, b| b.cpu_usage().partial_cmp(&a.cpu_usage()).unwrap());
-        let top_processes = process_list.iter().take(1024);
+        // Sort processes by CPU usage with error handling for race conditions (like Python commit d409f27)
+        let mut valid_processes = Vec::new();
+        for process_obj in process_list {
+            // Handle potential race condition where process might quit during CPU calculation
+            match process_obj.status() {
+                ProcessStatus::Unknown(_) | ProcessStatus::Zombie => continue,
+                _ => {
+                    let cpu = process_obj.cpu_usage();
+                    valid_processes.push((cpu, process_obj));
+                }
+            }
+        }
+        valid_processes.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        let top_processes = valid_processes.iter().take(1024).map(|(_, p)| *p);
 
         let total_memory = self.system.total_memory() as f64;
         let mut pid_set = std::collections::HashSet::new();
@@ -257,8 +268,8 @@ impl ProcDockerStats {
                 ("PID".to_string(), pid.to_string()),
                 ("UID".to_string(), process_obj.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
                 ("PPID".to_string(), process_obj.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
-                ("CPU".to_string(), format!("{:.2}", process_obj.cpu_usage() as f64)),
-                ("MEM".to_string(), format!("{:.1}", process_obj.memory() as f64 * 100.0 / total_memory)),
+                ("%CPU".to_string(), format!("{:.2}", process_obj.cpu_usage() as f64)),
+                ("%MEM".to_string(), format!("{:.1}", process_obj.memory() as f64 * 100.0 / total_memory)),
                 ("STIME".to_string(), stime_formatted),
                 ("TT".to_string(), get_terminal_name(pid)),
                 ("TIME".to_string(), time_formatted), // CPU time like Python
