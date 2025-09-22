@@ -23,7 +23,7 @@ unused_import_braces = 'warn'
 [workspace.dependencies]
 # Redis and system info
 redis = "0.23"
-sysinfo = "0.30"
+sysinfo = "0.35.0"
 
 # Regex and pattern matching
 regex = "1.10"
@@ -36,3 +36,9 @@ daemonize = "0.5"
 
 # System calls
 libc = "0.2"
+
+# Python psutil equivalent
+psutil = "3.2.2"
+
+# Process filesystem access
+procfs = "0.17"

@@ -3,12 +3,13 @@ use std::thread::sleep;
 use std::time::Duration;
 use redis::{Commands, Connection, Client};
 use regex::Regex;
-use sysinfo::{System, Process, Pid};
-use chrono::{Utc, DateTime};
+use sysinfo::{System, Process, ProcessStatus};
+use chrono::Utc;
 use std::fs;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-use std::time::UNIX_EPOCH;
+use std::sync::LazyLock;
+use psutil;
+use procfs;
 
 
 const REDIS_URL: &str = "redis://127.0.0.1/";
@@ -28,6 +29,33 @@ fn run_command(cmd: &[&str]) -> Option<String> {
     } else {
         eprintln!("Error running command: {:?}", cmd);
         None
+    }
+}
+
+fn get_memory_percent(pid: u32) -> String {
+    match psutil::process::Process::new(pid) {
+        Ok(proc) => match proc.memory_percent() {
+            Ok(mem_pct) => format!("{:.1}", mem_pct),
+            Err(_) => String::new()
+        },
+        Err(_) => String::new()
+    }
+}
+
+fn get_terminal_name(pid: u32) -> String {
+    match procfs::process::Process::new(pid as i32) {
+        Ok(proc) => match proc.stat() {
+            Ok(stat) => {
+                let (major, minor) = stat.tty_nr();
+                if major == 0 && minor == 0 {
+                    "?".to_string()
+                } else {
+                    format!("pts/{}", minor)
+                }
+            }
+            Err(_) => "?".to_string()
+        },
+        Err(_) => "?".to_string()
     }
 }
 
@@ -178,35 +206,39 @@ impl ProcDockerStats {
         process_list.sort_by(|a, b| b.cpu_usage().partial_cmp(&a.cpu_usage()).unwrap());
         let top_processes = process_list.iter().take(1024);
 
-        let mut active_pids = std::collections::HashSet::new();
+        let total_memory = self.system.total_memory() as f64;
+        let mut pid_set = std::collections::HashSet::new();
+        let mut processdata = Vec::new();
 
-        // Clear stale processes from cache first like Python does
-        for process in top_processes {
+        // Collect all process data first before making mutable calls
+        for process_obj in top_processes {
             // Add error handling similar to Python's try/except for NoSuchProcess, AccessDenied, ZombieProcess
-            let pid = process.pid().as_u32();
-            active_pids.insert(pid);
+            let pid = process_obj.pid().as_u32();
+            pid_set.insert(pid);
 
-            // Skip processes that no longer exist or we can't access
-            if !process.status().is_some() {
-                continue;
+            // Skip processes similar to Python exception handling: NoSuchProcess, AccessDenied, ZombieProcess
+            match process_obj.status() {
+                ProcessStatus::Unknown(_) | ProcessStatus::Zombie => continue,
+                _ => {}
             }
 
-            let key = format!("PROCESS_STATS|{}", pid);
+            let value = format!("PROCESS_STATS|{}", pid);
 
             // Format STIME like Python: datetime.utcfromtimestamp(stime).strftime("%b%d")
             let stime_formatted = {
-                let start_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(process.start_time());
+                let start_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(process_obj.start_time());
                 let datetime: chrono::DateTime<chrono::Utc> = start_time.into();
                 datetime.format("%b%d").to_string()
             };
 
             // Format TIME like Python: str(timedelta(seconds=int(ttime.user + ttime.system)))
             let time_formatted = {
-                let cpu_time = process.cpu_time();
-                let total_seconds = cpu_time as u64;
+                // Use accumulated_cpu_time() to get actual CPU time (user + system) in milliseconds, convert to seconds
+                let total_seconds = process_obj.accumulated_cpu_time() / 1000; // Convert milliseconds to seconds
                 let hours = total_seconds / 3600;
                 let minutes = (total_seconds % 3600) / 60;
                 let seconds = total_seconds % 60;
+                // Python timedelta format: "H:MM:SS" or "M:SS" for values under 1 hour
                 if hours > 0 {
                     format!("{}:{:02}:{:02}", hours, minutes, seconds)
                 } else {
@@ -215,37 +247,44 @@ impl ProcDockerStats {
             };
 
             // Safely access process fields that might fail
-            let cmd_string = if process.cmd().is_empty() {
+            let cmd = if process_obj.cmd().is_empty() {
                 String::new()
             } else {
-                process.cmd().join(" ")
+                process_obj.cmd().iter().map(|s| s.to_string_lossy()).collect::<Vec<_>>().join(" ")
             };
 
             let stats: Vec<(String, String)> = vec![
                 ("PID".to_string(), pid.to_string()),
-                ("UID".to_string(), process.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
-                ("PPID".to_string(), process.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
-                ("CPU".to_string(), format!("{:.2}", process.cpu_usage() as f64)),
-                ("MEM".to_string(), format!("{:.1}", process.memory_percent())), // Memory as percentage like Python
+                ("UID".to_string(), process_obj.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
+                ("PPID".to_string(), process_obj.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
+                ("CPU".to_string(), format!("{:.2}", process_obj.cpu_usage() as f64)),
+                ("MEM".to_string(), format!("{:.1}", process_obj.memory() as f64 * 100.0 / total_memory)),
                 ("STIME".to_string(), stime_formatted),
-                ("TT".to_string(), process.terminal().unwrap_or("?").to_string()), // Terminal like Python
+                ("TT".to_string(), get_terminal_name(pid)),
                 ("TIME".to_string(), time_formatted), // CPU time like Python
-                ("CMD".to_string(), cmd_string),
+                ("CMD".to_string(), cmd),
             ];
 
-            self.batch_update_state_db(&key, stats);
+            processdata.push((value, stats));
         }
 
-        // Remove stale process stats from Redis
-        let existing_keys: Vec<String> = self.redis_conn.keys("PROCESS_STATS|*").unwrap_or_default();
-        for key in existing_keys {
-            if let Some(pid_str) = key.strip_prefix("PROCESS_STATS|") {
-                if let Ok(pid) = pid_str.parse::<u32>() {
-                    if !active_pids.contains(&pid) {
-                        let _: () = self.redis_conn.del(&key).unwrap();
-                    }
-                }
+        // erase dead process - equivalent to Python lines 159-165
+        let mut remove_keys = Vec::new();
+        for &cached_pid in self.process_cache.keys() {
+            if !pid_set.contains(&cached_pid) {
+                remove_keys.push(cached_pid);
             }
+        }
+        for pid in remove_keys {
+            self.process_cache.remove(&pid);
+        }
+
+        // Wipe out all data before updating with new values (like Python)
+        let _: () = redis::cmd("DEL").arg("PROCESS_STATS|*").execute(&mut self.redis_conn);
+
+        // Now make all the mutable calls after collecting the data
+        for (value, stats) in processdata {
+            self.batch_update_state_db(&value, stats);
         }
     }
 

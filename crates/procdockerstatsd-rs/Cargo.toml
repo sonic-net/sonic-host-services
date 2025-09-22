@@ -13,6 +13,8 @@ regex.workspace = true
 daemonize.workspace = true
 chrono.workspace = true
 libc.workspace = true
+psutil.workspace = true
+procfs.workspace = true
 
 [[bin]]
 name = "procdockerstatsd-rs"
