@@ -54,8 +54,18 @@ class TestCaclmgrdChassisMidplane(TestCase):
 
     def test_get_midplane_bridge_ip_from_configdb(self):
         """Test the get_midplane_bridge_ip_from_configdb method"""
-        # Mock ConfigDB data
+        # Mock ConfigDB data with required tables
         mock_config_db = {
+            "DEVICE_METADATA": {
+                "localhost": {
+                    "subtype": "ToR"
+                }
+            },
+            "FEATURE": {
+                "feature1": {
+                    "state": "enabled"
+                }
+            },
             "MID_PLANE_BRIDGE": {
                 "GLOBAL": {
                     "ip_prefix": "169.254.200.254/24"
