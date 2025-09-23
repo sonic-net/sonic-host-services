@@ -1,6 +1,7 @@
 """Tests for gnoi_reset."""
 
-import imp
+import importlib.util
+import importlib.machinery
 import os
 import sys
 import logging
@@ -21,8 +22,19 @@ ZERO_FILL_REQUEST = '{"factory_os": true, "zero_fill": true}'
 RETAIN_CERTS_REQUEST = '{"factory_os": true, "retainCerts": true}'
 INVALID_RESET_REQUEST = '"factory_os": true, "zero_fill": true'
 
-imp.load_source("host_service", host_modules_path + "/host_service.py")
-imp.load_source("gnoi_reset", host_modules_path + "/gnoi_reset.py")
+
+def load_source(modname, filename):
+    loader = importlib.machinery.SourceFileLoader(modname, filename)
+    spec = importlib.util.spec_from_file_location(modname, filename, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    # The module is always executed and not cached in sys.modules.
+    # Uncomment the following line to cache the module.
+    sys.modules[module.__name__] = module
+    loader.exec_module(module)
+    return module
+
+load_source("host_service", host_modules_path + "/host_service.py")
+load_source("gnoi_reset", host_modules_path + "/gnoi_reset.py")
 from gnoi_reset import *
 
 
