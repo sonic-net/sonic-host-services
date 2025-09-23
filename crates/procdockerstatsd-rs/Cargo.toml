@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-redis.workspace = true
+swss-common.workspace = true
 sysinfo.workspace = true
 regex.workspace = true
 daemonize.workspace = true

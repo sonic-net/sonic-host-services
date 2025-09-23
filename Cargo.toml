@@ -21,9 +21,9 @@ unstable_features = 'warn'
 unused_import_braces = 'warn'
 
 [workspace.dependencies]
-# Redis and system info
-redis = "0.23"
+# System info and SONiC database
 sysinfo = "0.35.0"
+swss-common = { path = "../sonic-swss-common/crates/swss-common" }
 
 # Regex and pattern matching
 regex = "1.10"

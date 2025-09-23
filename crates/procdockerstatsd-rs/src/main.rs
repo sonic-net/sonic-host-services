@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
-use redis::{Commands, Connection, Client};
+use swss_common::SonicV2Connector;
 use regex::Regex;
 use sysinfo::{System, Process, ProcessStatus};
 use chrono::Utc;
@@ -12,11 +12,10 @@ use psutil;
 use procfs;
 
 
-const REDIS_URL: &str = "redis://127.0.0.1/";
 const UPDATE_INTERVAL: u64 = 120; // 2 minutes
 
 struct ProcDockerStats {
-    redis_conn: Connection,
+    state_db: SonicV2Connector,
     system: System,
     process_cache: HashMap<u32, std::time::Instant>,
 }
@@ -165,38 +164,38 @@ impl ProcDockerStats {
             std::process::exit(1);
         }
 
-        let client = Client::open(REDIS_URL)?;
-        let conn = client.get_connection()?;
+        let state_db = SonicV2Connector::new(false, None)?;
+        state_db.connect("STATE_DB", true)?;
 
         Ok(ProcDockerStats {
-            redis_conn: conn,
+            state_db,
             system: System::new_all(),
             process_cache: HashMap::new(),
         })
     }
 
-    fn update_dockerstats_command(&mut self) -> bool {
+    fn update_dockerstats_command(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let cmd = ["docker", "stats", "--no-stream", "-a"];
         if let Some(output) = run_command(&cmd) {
             let stats_dict = format_docker_cmd_output(&output);
             if stats_dict.is_empty() {
                 eprintln!("formatting for docker output failed");
-                return false;
+                return Ok(false);
             }
-            let _: () = redis::cmd("DEL").arg("DOCKER_STATS|*").execute(&mut self.redis_conn);
+            self.state_db.delete_all_by_pattern("STATE_DB", "DOCKER_STATS|*")?;
             for (key, container_data) in stats_dict {
                 // Convert the HashMap to a vector of tuples
                 let stats_vec: Vec<(String, String)> = container_data.into_iter().collect();
-                self.batch_update_state_db(&key, stats_vec);
+                self.batch_update_state_db(&key, stats_vec)?;
             }
-            true
+            Ok(true)
         } else {
             eprintln!("'{:?}' returned null output", cmd);
-            false
+            Ok(false)
         }
     }
 
-    fn update_processstats_command(&mut self) {
+    fn update_processstats_command(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Refresh system info like Python's process_iter
         self.system.refresh_all();
 
@@ -291,15 +290,17 @@ impl ProcDockerStats {
         }
 
         // Wipe out all data before updating with new values (like Python)
-        let _: () = redis::cmd("DEL").arg("PROCESS_STATS|*").execute(&mut self.redis_conn);
+        self.state_db.delete_all_by_pattern("STATE_DB", "PROCESS_STATS|*")?;
 
         // Now make all the mutable calls after collecting the data
         for (value, stats) in processdata {
-            self.batch_update_state_db(&value, stats);
+            self.batch_update_state_db(&value, stats)?;
         }
+
+        Ok(())
     }
 
-    fn update_fipsstats_command(&mut self) {
+    fn update_fipsstats_command(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let kernel_cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
         let enforced = kernel_cmdline.contains("sonic_fips=1") || kernel_cmdline.contains("fips=1");
 
@@ -340,16 +341,20 @@ impl ProcDockerStats {
         // Convert the HashMap to a vector of tuples
         let stats_vec: Vec<(String, String)> = stats.into_iter().collect();
 
-        // Pass the vector of tuples to hset_multiple
-        let _: () = self.batch_update_state_db(&key, stats_vec);
+        // Pass the vector of tuples to set
+        self.batch_update_state_db(&key, stats_vec)?;
+
+        Ok(())
     }
 
-    fn update_state_db(&mut self, key1: &str, key2: &str, value2: &str) {
-        let _: () = self.redis_conn.hset(key1, key2, value2).unwrap();
+    fn update_state_db(&mut self, key1: &str, key2: &str, value2: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.state_db.set("STATE_DB", key1, key2, value2, false)?;
+        Ok(())
     }
 
-    fn batch_update_state_db(&mut self, key1: &str, fvs: Vec<(String, String)>) {
-        let _: () = self.redis_conn.hset_multiple(key1, &fvs).unwrap();
+    fn batch_update_state_db(&mut self, key1: &str, fvs: Vec<(String, String)>) -> Result<(), Box<dyn std::error::Error>> {
+        self.state_db.hmset("STATE_DB", key1, fvs)?;
+        Ok(())
     }
 
     fn run(&mut self) {
