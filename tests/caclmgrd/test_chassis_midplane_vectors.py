@@ -10,6 +10,9 @@ CACLMGRD_CHASSIS_MIDPLANE_TEST_VECTOR = [
             "return": [
                 ['iptables', '-A', 'INPUT', '-s', '1.0.0.33', '-d', '1.0.0.33', '-j', 'ACCEPT'],
                 ['iptables', '-A', 'INPUT', '-i', 'eth1-midplane', '-j', 'ACCEPT']
+            ],
+            "return_smartswitch": [
+                ['iptables', '-A', 'INPUT', '-d', '169.254.200.254','-j', 'ACCEPT']
             ]
         }
     ]
