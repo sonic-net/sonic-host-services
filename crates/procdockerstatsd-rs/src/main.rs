@@ -323,7 +323,7 @@ impl ProcDockerStats {
 
         let key = "FIPS_STATS|state";
         let mut stats = HashMap::new();
-        stats.insert("timestamp".to_string(), Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()); // Match Python isoformat
+        stats.insert("timestamp".to_string(), Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string()); // Match Python datetime.utcnow().isoformat()
         stats.insert("enforced".to_string(), enforced.to_string());
         stats.insert("enabled".to_string(), enabled.to_string());
 
