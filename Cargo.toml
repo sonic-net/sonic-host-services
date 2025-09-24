@@ -42,3 +42,8 @@ psutil = "3.2.2"
 
 # Process filesystem access
 procfs = "0.17"
+
+# Logging
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+syslog-tracing = "0.3"

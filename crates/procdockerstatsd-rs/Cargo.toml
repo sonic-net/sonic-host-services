@@ -15,6 +15,9 @@ chrono.workspace = true
 libc.workspace = true
 psutil.workspace = true
 procfs.workspace = true
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+syslog-tracing = { workspace = true }
 
 [[bin]]
 name = "procdockerstatsd-rs"

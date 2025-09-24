@@ -10,6 +10,10 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use psutil;
 use procfs;
+use tracing::{error, info};
+use tracing_subscriber::prelude::*;
+use syslog_tracing;
+use std::ffi::CString;
 
 
 const UPDATE_INTERVAL: u64 = 120; // 2 minutes
@@ -26,7 +30,7 @@ fn run_command(cmd: &[&str]) -> Option<String> {
     if output.status.success() {
         Some(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        eprintln!("Error running command: {:?}", cmd);
+        error!("Error running command: {:?}", cmd);
         None
     }
 }
@@ -173,7 +177,7 @@ impl ProcDockerStats {
         if let Some(output) = run_command(&cmd) {
             let stats_dict = format_docker_cmd_output(&output);
             if stats_dict.is_empty() {
-                eprintln!("formatting for docker output failed");
+                error!("formatting for docker output failed");
                 return Ok(false);
             }
             self.state_db.delete_all_by_pattern("STATE_DB", "DOCKER_STATS|*")?;
@@ -184,7 +188,7 @@ impl ProcDockerStats {
             }
             Ok(true)
         } else {
-            eprintln!("'{:?}' returned null output", cmd);
+            error!("'{:?}' returned null output", cmd);
             Ok(false)
         }
     }
@@ -259,8 +263,8 @@ impl ProcDockerStats {
 
             let stats: Vec<(String, String)> = vec![
                 ("PID".to_string(), pid.to_string()),
-                ("UID".to_string(), process_obj.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "0".to_string())),
-                ("PPID".to_string(), process_obj.parent().map(|p| p.to_string()).unwrap_or_else(|| "0".to_string())),
+                ("UID".to_string(), process_obj.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "".to_string())),
+                ("PPID".to_string(), process_obj.parent().map(|p| p.to_string()).unwrap_or_else(|| "".to_string())),
                 ("%CPU".to_string(), format!("{:.2}", process_obj.cpu_usage() as f64)),
                 ("%MEM".to_string(), format!("{:.1}", process_obj.memory() as f64 * 100.0 / total_memory)),
                 ("STIME".to_string(), stime_formatted),
@@ -354,9 +358,11 @@ impl ProcDockerStats {
     fn run(&mut self) {
         // Check root privileges like Python version
         if unsafe { libc::getuid() } != 0 {
-            eprintln!("Must be root to run this daemon");
+            error!("Must be root to run this daemon");
             std::process::exit(1);
         }
+
+        info!("Started procdockerstatsd daemon");
 
         loop {
             self.update_dockerstats_command();
@@ -375,6 +381,23 @@ impl ProcDockerStats {
 }
 
 fn main() {
+    // Initialize tracing with syslog like sonic-ctrmgrd-rs example
+    let identity = CString::new("procdockerstatsd").unwrap();
+    let syslog = syslog_tracing::Syslog::new(
+        identity,
+        syslog_tracing::Options::LOG_PID,
+        syslog_tracing::Facility::Daemon
+    ).unwrap();
+    tracing_subscriber::fmt()
+        .with_writer(syslog)
+        .with_ansi(false)
+        .with_target(false)
+        .with_level(false)
+        .without_time()
+        .init();
+
+    info!("Starting up procdockerstatsd daemon");
+
     let mut daemon = ProcDockerStats::new().expect("Failed to initialize daemon");
     daemon.run();
 }
