@@ -158,12 +158,6 @@ fn create_docker_dict(dict_list: Vec<HashMap<String, String>>) -> HashMap<String
 
 impl ProcDockerStats {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        // Check root privileges like Python version
-        if unsafe { libc::getuid() } != 0 {
-            eprintln!("Must be root to run this daemon");
-            std::process::exit(1);
-        }
-
         let state_db = SonicV2Connector::new(false, None)?;
         state_db.connect("STATE_DB", true)?;
 
@@ -358,6 +352,12 @@ impl ProcDockerStats {
     }
 
     fn run(&mut self) {
+        // Check root privileges like Python version
+        if unsafe { libc::getuid() } != 0 {
+            eprintln!("Must be root to run this daemon");
+            std::process::exit(1);
+        }
+
         loop {
             self.update_dockerstats_command();
             let datetimeobj = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string(); // Match Python str(datetime)
