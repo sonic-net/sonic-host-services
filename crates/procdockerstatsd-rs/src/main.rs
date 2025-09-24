@@ -302,31 +302,22 @@ impl ProcDockerStats {
         let kernel_cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
         let enforced = kernel_cmdline.contains("sonic_fips=1") || kernel_cmdline.contains("fips=1");
 
-        // Check FIPS runtime status using pipe like Python: openssl engine -vv | grep -i symcryp
+        // Check FIPS runtime status - simplified to match Python logic: not any(exitcode)
         let enabled = {
-            let openssl_output = Command::new("sudo")
+            match Command::new("sudo")
                 .args(&["openssl", "engine", "-vv"])
                 .output()
-                .ok();
-
-            if let Some(output) = openssl_output {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let grep_output = Command::new("grep")
-                    .args(&["-i", "symcryp"])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .and_then(|mut child| {
-                        use std::io::Write;
-                        if let Some(stdin) = child.stdin.as_mut() {
-                            let _ = stdin.write_all(stdout.as_bytes());
-                        }
-                        child.wait_with_output()
-                    });
-
-                grep_output.map_or(false, |output| output.status.success())
-            } else {
-                false
+            {
+                Ok(output) => {
+                    if output.status.success() {
+                        // Search for "symcryp" case-insensitive in the output
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        stdout.to_lowercase().contains("symcryp")
+                    } else {
+                        false
+                    }
+                }
+                Err(_) => false,
             }
         };
 
