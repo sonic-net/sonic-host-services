@@ -24,12 +24,7 @@ STATUS_POLL_INTERVAL_SEC = 5    # delay between polls
 STATUS_RPC_TIMEOUT_SEC   = 10   # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3          # gNOI System.Reboot method: HALT
 
-# Support both interfaces: swsssdk and swsscommon
-try:
-    from swsssdk import SonicV2Connector
-except ImportError:
-    from swsscommon.swsscommon import SonicV2Connector
-
+from swsscommon.swsscommon import SonicV2Connector
 from sonic_py_common import syslogger
 # Centralized transition API on ModuleBase
 from sonic_platform_base.module_base import ModuleBase
@@ -64,9 +59,13 @@ def _get_dbid_state(db) -> int:
         return 6
 
 def _get_pubsub(db):
-    """Return a pubsub object (swsssdk or raw redis client) for keyspace notifications."""
+    """Return a pubsub object for keyspace notifications.
+
+    Prefer a direct pubsub() if the connector exposes one; otherwise,
+    fall back to the raw redis client's pubsub().
+    """
     try:
-        return db.pubsub()  # swsssdk exposes pubsub()
+        return db.pubsub()  # some connectors expose pubsub()
     except AttributeError:
         client = db.get_redis_client(db.STATE_DB)
         return client.pubsub()

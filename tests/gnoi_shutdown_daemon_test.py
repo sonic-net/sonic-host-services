@@ -362,17 +362,14 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         import importlib
         import unittest
         from unittest import mock
+        import types
 
-        # --- Pre-stub swsscommon/swsssdk and ModuleBase before import ---
+        # Pre-stub ONLY swsscommon and ModuleBase before import
         swsscommon = types.ModuleType("swsscommon")
         swsscommon_sub = types.ModuleType("swsscommon.swsscommon")
         class _SC: pass
         swsscommon_sub.SonicV2Connector = _SC
         swsscommon.swsscommon = swsscommon_sub
-
-        swsssdk = types.ModuleType("swsssdk")
-        class _SDK: pass
-        swsssdk.SonicV2Connector = _SDK
 
         spb = types.ModuleType("sonic_platform_base")
         spb_mb = types.ModuleType("sonic_platform_base.module_base")
@@ -386,7 +383,6 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             {
                 "swsscommon": swsscommon,
                 "swsscommon.swsscommon": swsscommon_sub,
-                "swsssdk": swsssdk,
                 "sonic_platform_base": spb,
                 "sonic_platform_base.module_base": spb_mb,
             },
