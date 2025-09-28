@@ -50,6 +50,8 @@ MKHOME_DIR_LIB_REG = r'.*pam_mkhomedir'
 ETC_PAMD_SSHD = "/etc/pam.d/sshd"
 ETC_PAMD_LOGIN = "/etc/pam.d/login"
 ETC_LOGIN_DEF = "/etc/login.defs"
+ETC_LOCALTIME = "/etc/localtime"
+ZONEINFO_DIR = "/usr/share/zoneinfo"
 
 # Linux login.def default values (password hardening disable)
 LINUX_DEFAULT_PASS_MAX_DAYS = 99999
@@ -1474,6 +1476,17 @@ class DeviceMetaCfg(object):
 
         # Load appropriate config
         self.timezone = dev_meta.get('localhost', {}).get('timezone')
+        if self.timezone:
+            try:
+                desired_tz = os.path.realpath(f"{ZONEINFO_DIR}/{self.timezone}")
+                current_tz = os.path.realpath(ETC_LOCALTIME)
+                if desired_tz != current_tz:
+                    run_cmd(['timedatectl', 'set-timezone', self.timezone])
+                    syslog.syslog(syslog.LOG_INFO, f'Applied initial timezone: {self.timezone}')
+                    run_cmd(['systemctl', 'restart', 'rsyslog'])
+                    syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog after changing timezone')
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f"Failed to set initial timezone {self.timezone}: {e}")
         self.syslog_with_osversion = dev_meta.get('localhost', {}).get('syslog_with_osversion')
 
     def hostname_update(self, data):

@@ -842,3 +842,41 @@ class TestMemoryStatisticsCfgd(TestCase):
             pid = self.mem_stat_cfg.get_memory_statistics_pid()
             self.assertIsNone(pid)
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID 123 does not correspond to memory_statistics_service.py.")
+
+
+class TestDeviceMetaCfgLoad(TestCase):
+    """Test suite for DeviceMetaCfg load method with timezone functionality."""
+
+    def setUp(self):
+        """Set up test environment before each test case."""
+        self.devmeta_cfg = hostcfgd.DeviceMetaCfg()
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_load_initial_timezone_different_from_current(self, mock_syslog, mock_run_cmd, mock_realpath):
+        """ Test initial timezone setting when desired timezone differs from current. """
+        mock_realpath.side_effect = [
+            '/usr/share/zoneinfo/America/New_York',
+            '/usr/share/zoneinfo/UTC'
+        ]
+        dev_meta = {
+            'localhost': {
+                'hostname': 'test-host', 
+                'timezone': 'America/New_York'
+            }
+        }
+        
+        self.devmeta_cfg.load(dev_meta)
+        
+        expected_calls = [
+            call(['timedatectl', 'set-timezone', 'America/New_York']),
+            call(['systemctl', 'restart', 'rsyslog'])
+        ]
+        mock_run_cmd.assert_has_calls(expected_calls, any_order=False)
+        
+        expected_syslog_calls = [
+            call(mock.ANY, 'Applied initial timezone: America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Restart rsyslog after changing timezone')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
