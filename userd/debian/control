@@ -1,0 +1,11 @@
+Source: sonic-host-userd
+Maintainer: SONiC Maintainers <maintainers@sonic.net>
+Section: misc
+Priority: optional
+Standards-Version: 0.1
+Build-Depends: debhelper (>=11), cmake, g++, pkg-config, libcrypt-dev, nlohmann-json3-dev, libswsscommon-dev
+
+Package: sonic-host-userd
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, sonic-host-services-data, libswsscommon
+Description: SONiC host userd binary

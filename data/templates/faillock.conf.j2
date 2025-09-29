@@ -1,0 +1,27 @@
+# PAM faillock configuration managed by userd
+# Do not edit manually - changes will be overwritten
+
+# Global settings
+dir = /var/run/faillock
+audit
+silent
+no_log_info
+
+{% if security_policies %}
+# Role-based security policies
+{% for role, policy in security_policies.items() %}
+{% if policy.max_login_attempts %}
+# {{ role }} role settings
+deny = {{ policy.max_login_attempts }}
+unlock_time = 900  # 15 minutes
+{% endif %}
+{% endfor %}
+{% else %}
+# Default settings when no policies are configured
+deny = 5
+unlock_time = 900
+{% endif %}
+
+# Additional settings
+fail_interval = 900
+root_unlock_time = 900
