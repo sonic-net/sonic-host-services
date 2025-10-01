@@ -13,6 +13,16 @@ else
   exit 0  # let systemd retry; ExecStartPre must be quick
 fi
 
+# Hard dep we expect to be up before we start: gnmi
+if systemctl is-active --quiet gnmi.service; then
+  log "Service gnmi.service is active"
+else
+  log "Waiting for gnmi.service to become active…"
+  systemctl is-active -q gnmi.service || true
+  systemctl --no-pager --full status gnmi.service || true
+  exit 0  # let systemd retry; ExecStartPre must be quick
+fi
+
 # pmon is advisory: proceed even if it's not active yet
 if systemctl is-active --quiet pmon.service; then
   log "Service pmon.service is active"

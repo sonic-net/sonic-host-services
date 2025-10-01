@@ -276,9 +276,9 @@ def main():
                     time.sleep(STATUS_POLL_INTERVAL_SEC)
 
                 if reboot_successful:
-                    logger.log_info(f"Reboot completed successfully for {dpu_name}.")
+                    logger.log_info(f"Halting the services on DPU is successful for {dpu_name}.")
                 else:
-                    logger.log_warning(f"Reboot status polling timed out for {dpu_name}.")
+                    logger.log_warning(f"Status polling of halting the services on DPU timed out for {dpu_name}.")
 
                 # NOTE:
                 # Do NOT clear CHASSIS_MODULE_TABLE transition flags here.
