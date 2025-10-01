@@ -218,8 +218,9 @@ def main():
                 time.sleep(1)
                 continue
 
-            if entry.get("state_transition_in_progress", "False") == "True" and entry.get("transition_type") == "shutdown":
-                logger.log_info(f"Shutdown request detected for {dpu_name}. Initiating gNOI reboot.")
+            type = entry.get("transition_type")
+            if entry.get("state_transition_in_progress", "False") == "True" and (type == "shutdown" or type == "reboot"):
+                logger.log_info(f"{type} request detected for {dpu_name}. Initiating gNOI reboot.")
                 try:
                     dpu_ip = get_dpu_ip(dpu_name)
                     port = get_gnmi_port(dpu_name)
@@ -276,18 +277,20 @@ def main():
                     time.sleep(STATUS_POLL_INTERVAL_SEC)
 
                 if reboot_successful:
+                    if type == "reboot":
+                        success = module_base.clear_module_state_transition(db, dpu_name)
+                        if success:
+                            logger.log_info(f"Cleared transition for {dpu_name}")
+                        else:
+                            logger.log_warning(f"Failed to clear transition for {dpu_name}")
                     logger.log_info(f"Halting the services on DPU is successful for {dpu_name}.")
                 else:
                     logger.log_warning(f"Status polling of halting the services on DPU timed out for {dpu_name}.")
 
                 # NOTE:
-                # Do NOT clear CHASSIS_MODULE_TABLE transition flags here.
-                # Per HLD and platform flow, the transition is cleared by the
-                # platform's module.py AFTER set_admin_state(down) has completed
-                # (i.e., after the module is actually taken down). This avoids
-                # prematurely unblocking other components before shutdown finishes.
-
-        time.sleep(1)
+                # The CHASSIS_MODULE_TABLE transition flag is cleared for startup/shutdown in
+                # module_base.py. The daemon does not clear it. For reboot transitions, the
+                # daemon relies on the TimeoutEnforcer thread to clear any stuck transitions.
 
 if __name__ == "__main__":
     main()

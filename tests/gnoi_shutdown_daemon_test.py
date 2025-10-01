@@ -172,6 +172,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 pass
             # Support both instance and class access
             get_module_state_transition = staticmethod(_fake_transition)
+            clear_module_state_transition = staticmethod(lambda db, name: True)
 
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
              patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub), \
@@ -220,6 +221,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             self.assertTrue(status_args[status_args.index("-rpc") + 1].endswith("RebootStatus"))
 
             all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
+            self.assertIn("shutdown request detected for DPU0", all_logs)
             self.assertIn("Halting the services on DPU is successful for DPU0", all_logs)
 
 
@@ -550,6 +552,10 @@ class _MBStub2:
     @staticmethod
     def get_module_state_transition(*_a, **_k):
         return {"state_transition_in_progress": "True", "transition_type": "shutdown"}
+    
+    @staticmethod
+    def clear_module_state_transition(db, name):
+        return True
 
 
 def _mk_pubsub_once2():
@@ -648,3 +654,141 @@ def _mk_pubsub_once2():
             self.assertEqual(mock_exec.call_count, 1)
             self.assertTrue(any("reboot command failed" in str(c.args[0]).lower()
                     for c in (mock_logger.log_error.call_args_list or [])))
+
+    def test_reboot_transition_type_success(self):
+        """Test that reboot transition type is handled correctly and clears transition on success"""
+        
+        class _MBStubReboot:
+            def __init__(self, *a, **k):
+                pass
+                
+            @staticmethod
+            def get_module_state_transition(*_a, **_k):
+                return {"state_transition_in_progress": "True", "transition_type": "reboot"}
+            
+            @staticmethod
+            def clear_module_state_transition(db, name):
+                return True
+        
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+             patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStubReboot), \
+             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+             patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True), \
+             patch("gnoi_shutdown_daemon._cfg_get_entry",
+                   side_effect=lambda table, key:
+                       {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
+             patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+            import gnoi_shutdown_daemon as d
+            db = MagicMock()
+            pubsub = MagicMock()
+            pubsub.get_message.side_effect = [
+                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
+                Exception("stop"),
+            ]
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
+
+            mock_exec.side_effect = [
+                (0, "OK", ""),  # Reboot command
+                (0, "reboot complete", ""),  # RebootStatus
+            ]
+
+            try:
+                d.main()
+            except Exception:
+                pass
+
+            # Should make both Reboot and RebootStatus calls
+            self.assertEqual(mock_exec.call_count, 2)
+            
+            # Check logs for reboot-specific messages
+            all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
+            self.assertIn("reboot request detected for DPU0", all_logs)
+            self.assertIn("Cleared transition for DPU0", all_logs)
+            self.assertIn("Halting the services on DPU is successful for DPU0", all_logs)
+
+    def test_reboot_transition_clear_failure(self):
+        """Test that reboot transition logs warning when clear fails"""
+        
+        class _MBStubRebootFail:
+            def __init__(self, *a, **k):
+                pass
+                
+            @staticmethod
+            def get_module_state_transition(*_a, **_k):
+                return {"state_transition_in_progress": "True", "transition_type": "reboot"}
+            
+            @staticmethod
+            def clear_module_state_transition(db, name):
+                return False  # Simulate failure
+        
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+             patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStubRebootFail), \
+             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+             patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True), \
+             patch("gnoi_shutdown_daemon._cfg_get_entry",
+                   side_effect=lambda table, key:
+                       {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
+             patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+            import gnoi_shutdown_daemon as d
+            db = MagicMock()
+            pubsub = MagicMock()
+            pubsub.get_message.side_effect = [
+                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
+                Exception("stop"),
+            ]
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
+
+            mock_exec.side_effect = [
+                (0, "OK", ""),  # Reboot command
+                (0, "reboot complete", ""),  # RebootStatus
+            ]
+
+            try:
+                d.main()
+            except Exception:
+                pass
+
+            # Check for warning log when clear fails
+            all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
+            self.assertIn("Failed to clear transition for DPU0", all_logs)
+
+    def test_status_polling_timeout_warning(self):
+        """Test that timeout during status polling logs the appropriate warning"""
+        
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+             patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
+             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+             patch("gnoi_shutdown_daemon.is_tcp_open", return_value=True), \
+             patch("gnoi_shutdown_daemon._cfg_get_entry",
+                   side_effect=lambda table, key:
+                       {"ips@": "10.0.0.1"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "8080"}), \
+             patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+             patch("gnoi_shutdown_daemon.time.monotonic", side_effect=[0, 100]), \
+             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+            import gnoi_shutdown_daemon as d
+            db = MagicMock()
+            pubsub = MagicMock()
+            pubsub.get_message.side_effect = [
+                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0", "data": "set"},
+                Exception("stop"),
+            ]
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
+
+            mock_exec.side_effect = [
+                (0, "OK", ""),  # Reboot command
+                (0, "not complete", ""),  # RebootStatus - never returns complete
+            ]
+
+            try:
+                d.main()
+            except Exception:
+                pass
+
+            # Check for timeout warning
+            all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
+            self.assertIn("Status polling of halting the services on DPU timed out for DPU0", all_logs)
