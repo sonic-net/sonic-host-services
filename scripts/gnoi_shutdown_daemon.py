@@ -155,8 +155,11 @@ class TimeoutEnforcer(threading.Thread):
                         # Fallback safely to defaults if key missing/unknown
                         timeout_sec = int(timeouts.get(op, ModuleBase._TRANSITION_TIMEOUT_DEFAULTS.get(op, 300)))
                         if self._mb.is_module_state_transition_timed_out(self._db, name, timeout_sec):
-                            self._mb.clear_module_state_transition(self._db, name)
-                            logger.log_info(f"Cleared transition after timeout for {name}")
+                            success = self._mb.clear_module_state_transition(self._db, name)
+                            if success:
+                                logger.log_info(f"Cleared transition after timeout for {name}")
+                            else:
+                                logger.log_warning(f"Failed to clear transition timeout for {name}")
                     except Exception as e:
                         # Keep loop resilient; log at debug noise level
                         logger.log_debug(f"Timeout enforce error for {name}: {e}")
