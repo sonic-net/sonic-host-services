@@ -220,7 +220,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             self.assertTrue(status_args[status_args.index("-rpc") + 1].endswith("RebootStatus"))
 
             all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
-            self.assertIn("Reboot completed successfully", all_logs)
+            self.assertIn("Halting the services on DPU is successful for DPU0", all_logs)
 
 
     def test_shutdown_error_branch_no_ip(self):
