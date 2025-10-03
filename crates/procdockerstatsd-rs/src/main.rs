@@ -276,7 +276,7 @@ impl ProcDockerStats {
             processdata.push((value, stats));
         }
 
-        // erase dead process - equivalent to Python lines 159-165
+        // erase dead process
         let mut remove_keys = Vec::new();
         for &cached_pid in self.process_cache.keys() {
             if !pid_set.contains(&cached_pid) {
