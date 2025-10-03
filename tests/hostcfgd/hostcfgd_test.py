@@ -55,14 +55,13 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config']),
-                call(['systemctl', 'restart', 'ntp'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({}, MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
     def test_ntp_global_update_ntp_servers(self):
@@ -76,14 +75,13 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config']),
-                call(['systemctl', 'restart', 'ntp'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({'0.debian.pool.ntp.org': {}}, {})
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
     def test_ntp_is_caching_config(self):
@@ -118,7 +116,7 @@ class TesNtpCfgd(TestCase):
 
             ntpcfgd.handle_ntp_source_intf_chg('eth0')
             mocked_subprocess.check_call.assert_has_calls([
-                call(['systemctl', 'restart', 'ntp-config'])
+                call(['systemctl', 'restart', 'chrony'])
             ])
 
 
@@ -193,7 +191,7 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['systemctl', 'restart', 'ntp-config']),
+            expected = [call(['systemctl', 'restart', 'chrony']),
             call(['iptables', '-t', 'mangle', '--append', 'PREROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-d', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460']),
             call(['iptables', '-t', 'mangle', '--append', 'POSTROUTING', '-p', 'tcp', '--tcp-flags', 'SYN', 'SYN', '-s', '10.184.8.233', '-j', 'TCPMSS', '--set-mss', '1460'])]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
@@ -212,16 +210,72 @@ class TestHostcfgdDaemon(TestCase):
                 daemon.start()
             except TimeoutError:
                 pass
-            expected = [call(['sonic-kdump-config', '--disable']),
-                        call(['sonic-kdump-config', '--num_dumps', '3']),
-                        call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M'])]
+            expected = [
+                call(['sonic-kdump-config', '--disable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M']),
+                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
+                call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
+            ]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
+    def test_kdump_load(self):
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_INIT_CFG_DB)
+        MockConfigDb.CONFIG_DB['KDUMP'] = {
+            'config': {
+                "enabled": "true",
+            }
+        }
+        daemon = hostcfgd.HostConfigDaemon()
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            daemon.kdumpCfg.load(MockConfigDb.CONFIG_DB['KDUMP'])
+
+            expected = [
+                call(['sonic-kdump-config', '--enable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M']),
+                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
+                call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
+            ]
+
+            mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+
+    def test_kdump_event_with_proc_cmdline(self):
+        os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        daemon = hostcfgd.HostConfigDaemon()
+        default=daemon.kdumpCfg.kdump_defaults
+        daemon.kdumpCfg.load(default)
+        daemon.register_callbacks()
+        MockConfigDb.event_queue = [('KDUMP', 'config')]
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value': ('output', 'error')}
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            expected = [
+                call(['sonic-kdump-config', '--enable']),
+                call(['sonic-kdump-config', '--num_dumps', '3']),
+                call(['sonic-kdump-config', '--memory', '8G-:1G']),
+                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
+                call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
+            ]
+            mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
+        os.environ["HOSTCFGD_UNIT_TESTING"] = ""
+        
     def test_devicemeta_event(self):
         """
         Test handling DEVICE_METADATA events.
         1) Hostname reload
         1) Timezone reload
+        1) syslog_with_osversion flag change
         """
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [(swsscommon.CFG_DEVICE_METADATA_TABLE_NAME,
@@ -272,12 +326,28 @@ class TestHostcfgdDaemon(TestCase):
             with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
                 mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
                 try:
-                    daemon.start() 
+                    daemon.start()
                 except TimeoutError:
                     pass
 
                 expected = [
                     call(original_syslog.LOG_INFO, 'Hostname was not updated: Already set up with the same name: SameHostName')
+                ]
+                mocked_syslog.syslog.assert_has_calls(expected)
+
+        daemon.devmetacfg.syslog_with_osversion = "false"
+        HOSTCFG_DAEMON_CFG_DB["DEVICE_METADATA"]["localhost"]["syslog_with_osversion"] = 'true'
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        with mock.patch('hostcfgd.syslog') as mocked_syslog:
+            with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+                mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+                try:
+                    daemon.start()
+                except TimeoutError:
+                    pass
+
+                expected = [
+                    call(original_syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog-config after feature flag change to true')
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
 
@@ -313,10 +383,9 @@ class TestHostcfgdDaemon(TestCase):
 
                 expected = [
                     call(['sudo', 'systemctl', 'restart', 'interfaces-config']),
-                    call(['sudo', 'systemctl', 'restart', 'ntp-config']),
-                    call(['service', 'ntp', 'stop']),
+                    call(['systemctl', 'stop', 'chrony']),
                     call(['systemctl', 'restart', 'interfaces-config']),
-                    call(['service', 'ntp', 'start']),
+                    call(['systemctl', 'start', 'chrony']),
                     call(['ip', '-4', 'route', 'del', 'default', 'dev', 'eth0', 'metric', '202'])
                 ]
                 mocked_subprocess.check_call.assert_has_calls(expected)
@@ -496,7 +565,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         """
         mock_process = mock.Mock()
         mock_process.name.return_value = "memory_statistics_service.py"
-        
+
         with mock.patch('builtins.open', mock.mock_open(read_data="123")), \
              mock.patch('hostcfgd.psutil.pid_exists', return_value=True), \
              mock.patch('hostcfgd.psutil.Process', return_value=mock_process):
@@ -536,7 +605,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         mock_process_instance = mock.Mock()
         mock_process_instance.name.return_value = "wrong_process"
         mock_process.return_value = mock_process_instance
-        
+
         mock_open = mock.mock_open(read_data="123")
         with mock.patch('builtins.open', mock_open):
             with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
@@ -591,28 +660,28 @@ class TestMemoryStatisticsCfgd(TestCase):
     def test_memory_statistics_disable_with_shutdown(self):
         """Test disabling memory statistics with full shutdown chain"""
         self.mem_stat_cfg.cache['enabled'] = 'true'
-        
+
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
              mock.patch('hostcfgd.os.kill') as mock_kill, \
              mock.patch.object(self.mem_stat_cfg, 'wait_for_shutdown') as mock_wait:
-            
+
             self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
-            
+
             mock_get_pid.assert_called_once()
             mock_kill.assert_called_once_with(123, signal.SIGTERM)
             mock_wait.assert_called_once_with(123)
-            
+
             self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
 
     def test_memory_statistics_disable_no_running_daemon(self):
         """Test disabling memory statistics when daemon is not running"""
         self.mem_stat_cfg.cache['enabled'] = 'true'
-        
+
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=None) as mock_get_pid:
             self.mem_stat_cfg.memory_statistics_update('enabled', 'false')
-            
+
             mock_get_pid.assert_called_once()
-            
+
             self.assertEqual(self.mem_stat_cfg.cache['enabled'], 'false')
 
     # Group 6: Reload Tests
@@ -642,9 +711,9 @@ class TestMemoryStatisticsCfgd(TestCase):
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
             mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
             mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-            
+
             self.mem_stat_cfg.reload_memory_statistics()
-            
+
             mock_get_pid.assert_called_once()
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to reload MemoryStatisticsDaemon: Test error")
 
@@ -677,7 +746,7 @@ class TestMemoryStatisticsCfgd(TestCase):
     def test_wait_for_shutdown_no_process(self, mock_process):
         """Test shutdown waiting when process doesn't exist"""
         mock_process.side_effect = psutil.NoSuchProcess(123)
-        
+
         with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
             self.mem_stat_cfg.wait_for_shutdown(123)
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: MemoryStatisticsDaemon process not found.")
@@ -687,9 +756,9 @@ class TestMemoryStatisticsCfgd(TestCase):
         with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123) as mock_get_pid, \
             mock.patch('hostcfgd.os.kill', side_effect=Exception("Test error")), \
             mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-            
+
             self.mem_stat_cfg.shutdown_memory_statistics()
-            
+
             mock_get_pid.assert_called_once()
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to shutdown MemoryStatisticsDaemon: Test error")
 
@@ -698,9 +767,9 @@ class TestMemoryStatisticsCfgd(TestCase):
         mock_process = mock.Mock()
         with mock.patch('hostcfgd.psutil.Process', return_value=mock_process) as mock_process_class, \
             mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
-            
+
             self.mem_stat_cfg.wait_for_shutdown(123)
-            
+
             mock_process_class.assert_called_once_with(123)
             mock_process.wait.assert_called_once_with(timeout=10)
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: MemoryStatisticsDaemon stopped gracefully")
@@ -718,11 +787,11 @@ class TestMemoryStatisticsCfgd(TestCase):
 
     def test_apply_setting_exception(self):
         """Test exception handling in apply_setting"""
-        with mock.patch.object(self.mem_stat_cfg, 'restart_memory_statistics', 
+        with mock.patch.object(self.mem_stat_cfg, 'restart_memory_statistics',
                              side_effect=Exception("Test error")):
             with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                 self.mem_stat_cfg.apply_setting('enabled', 'true')
-                mock_syslog.assert_any_call(mock.ANY, 
+                mock_syslog.assert_any_call(mock.ANY,
                     "MemoryStatisticsCfg: Exception in apply_setting() for key 'enabled': Test error")
 
     @mock.patch('hostcfgd.psutil.Process')
@@ -730,23 +799,23 @@ class TestMemoryStatisticsCfgd(TestCase):
         """Test general exception handling in get_memory_statistics_pid"""
         mock_process.side_effect = Exception("Unexpected error")
         mock_open = mock.mock_open(read_data="123")
-        
+
         with mock.patch('hostcfgd.psutil.pid_exists', return_value=True):
             with mock.patch('builtins.open', mock_open):
                 with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                     pid = self.mem_stat_cfg.get_memory_statistics_pid()
                     self.assertIsNone(pid)
-                    mock_syslog.assert_any_call(mock.ANY, 
+                    mock_syslog.assert_any_call(mock.ANY,
                         "MemoryStatisticsCfg: Exception failed to retrieve MemoryStatisticsDaemon PID: Unexpected error")
-                    
+
     def test_memory_statistics_handler_exception(self):
         """Test exception handling in memory_statistics_handler"""
         daemon = hostcfgd.HostConfigDaemon()
-        with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update', 
+        with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update',
                              side_effect=Exception("Handler error")):
             with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
                 daemon.memory_statistics_handler('enabled', None, 'true')
-                mock_syslog.assert_any_call(mock.ANY, 
+                mock_syslog.assert_any_call(mock.ANY,
                     "MemoryStatisticsCfg: Error while handling memory statistics update: Handler error")
 
     @mock.patch('hostcfgd.psutil.Process')
@@ -755,7 +824,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         mock_process.side_effect = Exception("Unexpected shutdown error")
         with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
             self.mem_stat_cfg.wait_for_shutdown(123)
-            mock_syslog.assert_any_call(mock.ANY, 
+            mock_syslog.assert_any_call(mock.ANY,
                 "MemoryStatisticsCfg: Exception in wait_for_shutdown(): Unexpected shutdown error")
 
     def test_process_name_mismatch(self):
@@ -765,7 +834,7 @@ class TestMemoryStatisticsCfgd(TestCase):
         """
         mock_process = mock.Mock()
         mock_process.name.return_value = "wrong_process_name"
-        
+
         with mock.patch('builtins.open', mock.mock_open(read_data="123")), \
              mock.patch('hostcfgd.psutil.pid_exists', return_value=True), \
              mock.patch('hostcfgd.psutil.Process', return_value=mock_process), \

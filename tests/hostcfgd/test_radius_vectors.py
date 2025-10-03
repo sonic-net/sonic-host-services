@@ -8,6 +8,17 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
         "RADIUS",
         {
             "config_db": {
+               "MGMT_INTERFACE": {
+                    "eth0|1.1.1.15/23": {
+                        "gwaddr": "1.1.1.10"
+                    },
+                    "eth0|2404::2/64": {
+                        "gwaddr": "2404::1"
+                    }
+                },
+                "PORTCHANNEL_INTERFACE": {
+                    "PortChannel0001|10.10.11.10/32": {}
+                 },
                 "DEVICE_METADATA": {
                     "localhost": {
                         "hostname": "radius",
@@ -59,6 +70,27 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "retransmit": "2",
                         "timeout": "2",
                         "passkey": "pass2",
+                    },
+                    "10.10.10.3": {
+                        "auth_type": "chap",
+                        "retransmit": "3",
+                        "timeout": "3",
+                        "passkey": "pass3",
+                        "src_intf": "PortChannel0001",
+                    },
+                    "10.10.10.4": {
+                        "auth_type": "pap",
+                        "retransmit": "4",
+                        "timeout": "4",
+                        "passkey": "pass4",
+                        "src_intf": "eth0",
+                    },
+                    "10.10.10.5": {
+                        "auth_type": "pap",
+                        "retransmit": "1",
+                        "timeout": "1",
+                        "passkey": "pass1",
+                        "skip_msg_auth": "true",
                     }
                 },
             },
@@ -107,6 +139,27 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "retransmit": "2",
                         "timeout": "2",
                         "passkey": "pass2",
+                    },
+                    "10.10.10.3": {
+                        "auth_type": "chap",
+                        "retransmit": "3",
+                        "timeout": "3",
+                        "passkey": "pass3",
+                        "src_intf": "PortChannel0001",
+                    },
+                    "10.10.10.4": {
+                        "auth_type": "pap",
+                        "retransmit": "4",
+                        "timeout": "4",
+                        "passkey": "pass4",
+                        "src_intf": "eth0",
+                    },
+                    "10.10.10.5": {
+                        "auth_type": "pap",
+                        "retransmit": "1",
+                        "timeout": "1",
+                        "passkey": "pass1",
+                        "skip_msg_auth": "true",
                     }
                 },
             },

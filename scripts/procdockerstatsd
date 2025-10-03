@@ -229,7 +229,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
 
         while True:
             self.update_dockerstats_command()
-            datetimeobj = datetime.now()
+            datetimeobj = datetime.utcnow()
             # Adding key to store latest update time.
             self.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
             self.update_processstats_command()
