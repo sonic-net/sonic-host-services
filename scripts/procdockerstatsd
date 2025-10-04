@@ -52,22 +52,6 @@ class ProcDockerStats(daemon_base.DaemonBase):
         formatted_dict = self.create_docker_dict(docker_data_list)
         return formatted_dict
 
-    def format_process_cmd_output(self, cmdout):
-        lines = cmdout.splitlines()
-        keys = re.split(" +", lines[0])
-        key_list = [key for key in keys if key]
-        process_data = dict()
-        process_data_list = []
-        for line in lines[1:]:
-            values = re.split(" +", line)
-            # To remove extra space before UID
-            val_list = [val for val in values if val]
-            # Merging extra columns created due to space in cmd ouput
-            val_list[8:] = [' '.join(val_list[8:])]
-            process_data = {key: value for key, value in zip(key_list, val_list)}
-            process_data_list.append(process_data)
-        return process_data_list
-
     def convert_to_bytes(self, value):
         UNITS_B = 'B'
         UNITS_KB = 'KB'
