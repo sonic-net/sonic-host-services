@@ -1,4 +1,4 @@
-sonic-host-services (1.0-1) unstable; urgency=medium
+sonic-host-services (1.0.0) unstable; urgency=medium
 
   * Initial release of procdockerstatsd-rs
 

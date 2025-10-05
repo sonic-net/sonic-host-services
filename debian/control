@@ -5,7 +5,7 @@ Priority: optional
 Build-Depends: dh-exec (>=0.3), debhelper (>= 12), autotools-dev
 Standards-Version: 1.0.0
 
-Package: procdockerstatsd-rs
+Package: sonic-host-services-rs
 Architecture: any
 Depends: ${shlibs:Depends}
 Description: Process and Docker statistics daemon in Rust
