@@ -302,8 +302,8 @@ impl ProcDockerStats {
 
         // Check FIPS runtime status - simplified to match Python logic: not any(exitcode)
         let enabled = {
-            match Command::new("sudo")
-                .args(&["openssl", "engine", "-vv"])
+            match Command::new("openssl")
+                .args(&["engine", "-vv"])
                 .output()
             {
                 Ok(output) => {
