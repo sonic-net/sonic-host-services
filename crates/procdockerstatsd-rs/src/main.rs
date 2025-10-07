@@ -15,7 +15,6 @@ use tracing_subscriber::prelude::*;
 use syslog_tracing;
 use std::ffi::CString;
 
-
 const UPDATE_INTERVAL: u64 = 120; // 2 minutes
 
 struct ProcDockerStats {
