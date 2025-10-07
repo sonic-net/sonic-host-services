@@ -23,7 +23,6 @@ struct ProcDockerStats {
     process_cache: HashMap<u32, std::time::Instant>,
 }
 
-
 fn run_command(cmd: &[&str]) -> Option<String> {
     let output = Command::new(cmd[0]).args(&cmd[1..]).output().ok()?;
     if output.status.success() {
