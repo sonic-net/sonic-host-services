@@ -29,11 +29,12 @@ setup(
     url = 'https://github.com/Azure/sonic-buildimage',
     maintainer = 'Joe LeVeque',
     maintainer_email = 'jolevequ@microsoft.com',
-    packages = [
-        'host_modules',
-	'utils',
-    ],
-    scripts = [
+    packages = ['host_modules', 'utils'],
+    # Map packages to their actual dirs, and map top-level modules to 'scripts/'
+    package_dir={'host_modules': 'host_modules', 'utils': 'utils', '': 'scripts'},
+    # install the module that the console script imports (located at scripts/gnoi_shutdown_daemon.py)
+    py_modules=['gnoi_shutdown_daemon'],
+    scripts=[
         'scripts/caclmgrd',
         'scripts/hostcfgd',
         'scripts/featured',
@@ -41,9 +42,16 @@ setup(
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
+        'scripts/check_platform.sh',
+        'scripts/wait-for-sonic-core.sh',
         'scripts/sonic-host-server',
         'scripts/ldap.py'
     ],
+    entry_points={
+        'console_scripts': [
+            'gnoi-shutdown-daemon = gnoi_shutdown_daemon:main'
+        ]
+    },
     install_requires = [
         'dbus-python',
         'systemd-python',
