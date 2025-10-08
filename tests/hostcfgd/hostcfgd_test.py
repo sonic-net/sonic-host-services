@@ -857,8 +857,8 @@ class TestDeviceMetaCfgLoad(TestCase):
     def test_load_initial_timezone_different_from_current(self, mock_syslog, mock_run_cmd, mock_realpath):
         """ Test initial timezone setting when desired timezone differs from current. """
         mock_realpath.side_effect = [
-            '/usr/share/zoneinfo/America/New_York',
-            '/usr/share/zoneinfo/UTC'
+            '/usr/share/zoneinfo/UTC',
+            '/usr/share/zoneinfo/America/New_York'
         ]
         dev_meta = {
             'localhost': {
@@ -871,12 +871,12 @@ class TestDeviceMetaCfgLoad(TestCase):
         
         expected_calls = [
             call(['timedatectl', 'set-timezone', 'America/New_York']),
-            call(['systemctl', 'restart', 'rsyslog'])
+            call(['systemctl', 'restart', 'rsyslog'], True, False)
         ]
         mock_run_cmd.assert_has_calls(expected_calls, any_order=False)
         
         expected_syslog_calls = [
-            call(mock.ANY, 'Applied initial timezone: America/New_York'),
-            call(mock.ANY, 'DeviceMetaCfg: Restart rsyslog after changing timezone')
+            call(mock.ANY, 'DeviceMetaCfg: Applied timezone America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Restarted rsyslog after timezone change')
         ]
         mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
