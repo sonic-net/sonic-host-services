@@ -209,8 +209,12 @@ impl ProcDockerStats {
                 }
             }
         }
-        valid_processes.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-        let top_processes = valid_processes.iter().take(1024).map(|(_, p)| *p);
+        // Partial sort: only need top 1024, so use select_nth_unstable for O(n) instead of O(n log n)
+        let limit = 1024.min(valid_processes.len());
+        if limit > 0 {
+            valid_processes.select_nth_unstable_by(limit - 1, |a, b| b.0.partial_cmp(&a.0).unwrap());
+        }
+        let top_processes = valid_processes.iter().take(limit).map(|(_, p)| *p);
 
         let total_memory = self.system.total_memory() as f64;
         let mut pid_set = std::collections::HashSet::new();
