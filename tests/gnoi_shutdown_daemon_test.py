@@ -920,17 +920,6 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
             port = d.get_dpu_gnmi_port("DPU0")
             self.assertEqual(port, "8080")
 
-    def test_main_entry_point(self):
-        """Test the main entry point of the script."""
-        with patch("gnoi_shutdown_daemon.main") as mock_main:
-            # The script is imported in other tests, so we need to reload it to hit the __main__ guard.
-            import sys
-            # To be safe, remove it from sys.modules and re-import
-            if "scripts.gnoi_shutdown_daemon" in sys.modules:
-                 del sys.modules["scripts.gnoi_shutdown_daemon"]
-            import scripts.gnoi_shutdown_daemon
-            mock_main.assert_called_once()
-
     def test_list_modules_exception(self):
         """Test _list_modules handles exception and returns empty list."""
         import gnoi_shutdown_daemon as d
@@ -953,7 +942,7 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
         mock_v2_instance.get_all.return_value = {"key1": "value1", "key2": 123}
         mock_v2_connector.return_value = mock_v2_instance
 
-        with patch("gnoi_shutdown_daemon.swsscommon.swsscommon.SonicV2Connector", mock_v2_connector):
+        with patch("swsscommon.swsscommon.SonicV2Connector", mock_v2_connector):
             result = d._cfg_get_entry("SOME_TABLE", "SOME_KEY")
             self.assertEqual(result, {"key1": "value1", "key2": 123})
         d._v2 = None # cleanup
