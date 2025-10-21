@@ -793,3 +793,17 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
             # Check for timeout warning
             all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
             self.assertIn("Status polling of halting the services on DPU timed out for DPU0", all_logs)
+
+    @patch("gnoi_shutdown_daemon.SonicV2Connector")
+    @patch("gnoi_shutdown_daemon.ModuleBase")
+    @patch("gnoi_shutdown_daemon.logger")
+    @patch("gnoi_shutdown_daemon.execute_gnoi_command")
+    @patch("gnoi_shutdown_daemon.is_tcp_open")
+    def test_handle_transition_unreachable(self, mock_is_tcp_open, mock_execute, mock_logger, mock_mb, mock_db):
+        """Verify transition is skipped if DPU is unreachable."""
+        mock_is_tcp_open.return_value = False
+        handler = GnoiRebootHandler(mock_db, mock_mb)
+        result = handler.handle_transition("DPU0", "shutdown")
+        self.assertFalse(result)
+        mock_logger.log_info.assert_called_with("Skipping DPU0: 10.0.0.1:8080 unreachable (offline/down)")
+        mock_execute.assert_not_called()
