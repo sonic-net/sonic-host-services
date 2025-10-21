@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import subprocess
 import types
+from gnoi_shutdown_daemon import GnoiRebootHandler
 
 # Common fixtures
 mock_message = {
