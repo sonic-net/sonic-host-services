@@ -8,7 +8,6 @@ if systemctl is-active --quiet swss.service; then
   log "Service swss.service is active"
 else
   log "Waiting for swss.service to become active…"
-  systemctl is-active -q swss.service || true
   systemctl --no-pager --full status swss.service || true
   exit 0  # let systemd retry; ExecStartPre must be quick
 fi
