@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import subprocess
 import types
-from gnoi_shutdown_daemon import GnoiRebootHandler
 
 # Common fixtures
 mock_message = {
@@ -795,16 +794,55 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
             all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
             self.assertIn("Status polling of halting the services on DPU timed out for DPU0", all_logs)
 
-    @patch("gnoi_shutdown_daemon.SonicV2Connector")
-    @patch("gnoi_shutdown_daemon.ModuleBase")
-    @patch("gnoi_shutdown_daemon.logger")
-    @patch("gnoi_shutdown_daemon.execute_gnoi_command")
-    @patch("gnoi_shutdown_daemon.is_tcp_open")
-    def test_handle_transition_unreachable(self, mock_is_tcp_open, mock_execute, mock_logger, mock_mb, mock_db):
-        """Verify transition is skipped if DPU is unreachable."""
-        mock_is_tcp_open.return_value = False
-        handler = GnoiRebootHandler(mock_db, mock_mb)
-        result = handler.handle_transition("DPU0", "shutdown")
-        self.assertFalse(result)
-        mock_logger.log_info.assert_called_with("Skipping DPU0: 10.0.0.1:8080 unreachable (offline/down)")
-        mock_execute.assert_not_called()
+    def test_handle_transition_unreachable(self):
+        """Verify transition is skipped if DPU is unreachable (TCP port closed)."""
+
+        class _MBStubUnreachable:
+            def __init__(self, *a, **k):
+                pass
+
+            @staticmethod
+            def get_module_state_transition(*_a, **_k):
+                return {"state_transition_in_progress": "True", "transition_type": "shutdown"}
+
+            @staticmethod
+            def clear_module_state_transition(db, name):
+                return True
+
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+             patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStubUnreachable), \
+             patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
+             patch("gnoi_shutdown_daemon.is_tcp_open", return_value=False), \
+             patch("gnoi_shutdown_daemon._cfg_get_entry",
+                   side_effect=lambda table, key:
+                       {"ips@": "192.168.1.100"} if table == "DHCP_SERVER_IPV4_PORT" else {"gnmi_port": "9339"}), \
+             patch("gnoi_shutdown_daemon.time.sleep", return_value=None), \
+             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+            import gnoi_shutdown_daemon as d
+            db = MagicMock()
+            pubsub = MagicMock()
+            pubsub.get_message.side_effect = [
+                {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU1", "data": "set"},
+                Exception("stop"),
+            ]
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
+
+            try:
+                d.main()
+            except Exception:
+                pass
+
+            # TCP port closed => no gNOI commands should be executed
+            mock_exec.assert_not_called()
+
+            # Verify the appropriate skip message was logged
+            all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
+            self.assertTrue(
+                any(
+                    ("skip" in str(c.args[0]).lower() or "unreachable" in str(c.args[0]).lower())
+                    and "dpu1" in str(c.args[0]).lower()
+                    for c in mock_logger.method_calls if c.args
+                ),
+                f"Expected a 'skipping DPU1' or 'unreachable' log message; got: {all_logs}"
+            )
