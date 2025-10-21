@@ -6,7 +6,7 @@ After=network-online.target database.service
 
 [Service]
 Type=simple
-ExecStartPre=/usr/local/bin/check_platform.sh
+ExecStartPre=/usr/local/bin/check_platform.py
 ExecStartPre=/usr/local/bin/wait-for-sonic-core.sh
 ExecStart=/usr/local/bin/gnoi-shutdown-daemon
 Restart=always

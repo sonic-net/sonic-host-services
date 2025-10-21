@@ -42,7 +42,7 @@ setup(
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
-        'scripts/check_platform.sh',
+        'scripts/check_platform.py',
         'scripts/wait-for-sonic-core.sh',
         'scripts/sonic-host-server',
         'scripts/ldap.py'
