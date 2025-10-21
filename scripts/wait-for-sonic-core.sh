@@ -18,7 +18,6 @@ if systemctl is-active --quiet gnmi.service; then
   log "Service gnmi.service is active"
 else
   log "Waiting for gnmi.service to become active…"
-  systemctl is-active -q gnmi.service || true
   systemctl --no-pager --full status gnmi.service || true
   exit 0  # let systemd retry; ExecStartPre must be quick
 fi
