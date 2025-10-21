@@ -567,6 +567,7 @@ def _mk_pubsub_once2():
     return pubsub
 
 
+class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
     def test_shutdown_skips_when_port_closed(self):
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
              patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \

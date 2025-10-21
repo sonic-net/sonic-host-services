@@ -99,7 +99,7 @@ def get_dpu_ip(dpu_name: str):
     entry = _cfg_get_entry("DHCP_SERVER_IPV4_PORT", f"bridge-midplane|{dpu_name.lower()}")
     return entry.get("ips@")
 
-def get_gnmi_port(dpu_name: str):
+def get_dpu_gnmi_port(dpu_name: str):
     variants = [dpu_name, dpu_name.lower(), dpu_name.upper()]
     for k in variants:
         entry = _cfg_get_entry("DPU_PORT", k)
@@ -167,6 +167,99 @@ class TimeoutEnforcer(threading.Thread):
                 logger.log_debug(f"TimeoutEnforcer loop error: {e}")
             self._stop.wait(self._interval)
 
+# ###############
+# gNOI Reboot Handler
+# ###############
+class GnoiRebootHandler:
+    """
+    Handles gNOI reboot operations for DPU modules, including sending reboot commands
+    and polling for status completion.
+    """
+    def __init__(self, db, module_base: ModuleBase):
+        self._db = db
+        self._mb = module_base
+
+    def handle_transition(self, dpu_name: str, transition_type: str) -> bool:
+        """
+        Handle a shutdown or reboot transition for a DPU module.
+        Returns True if the operation completed successfully, False otherwise.
+        """
+        try:
+            dpu_ip = get_dpu_ip(dpu_name)
+            port = get_dpu_gnmi_port(dpu_name)
+            if not dpu_ip:
+                raise RuntimeError("DPU IP not found")
+        except Exception as e:
+            logger.log_error(f"Error getting DPU IP or port for {dpu_name}: {e}")
+            return False
+
+        # skip if TCP is not reachable
+        if not is_tcp_open(dpu_ip, int(port)):
+            logger.log_info(f"Skipping {dpu_name}: {dpu_ip}:{port} unreachable (offline/down)")
+            return False
+
+        # Send Reboot HALT
+        if not self._send_reboot_command(dpu_name, dpu_ip, port):
+            return False
+
+        # Poll RebootStatus
+        reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, port)
+
+        if reboot_successful:
+            self._handle_successful_reboot(dpu_name, transition_type)
+        else:
+            logger.log_warning(f"Status polling of halting the services on DPU timed out for {dpu_name}.")
+
+        return reboot_successful
+
+    def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
+        """Send gNOI Reboot HALT command to the DPU."""
+        logger.log_notice(f"Issuing gNOI Reboot to {dpu_ip}:{port}")
+        reboot_cmd = [
+            "docker", "exec", "gnmi", "gnoi_client",
+            f"-target={dpu_ip}:{port}",
+            "-logtostderr", "-notls",
+            "-module", "System",
+            "-rpc", "Reboot",
+            "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
+        ]
+        rc, out, err = execute_gnoi_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
+        if rc != 0:
+            logger.log_error(f"gNOI Reboot command failed for {dpu_name}: {err or out}")
+            return False
+        return True
+
+    def _poll_reboot_status(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
+        """Poll RebootStatus until completion or timeout."""
+        logger.log_notice(
+            f"Polling RebootStatus for {dpu_name} at {dpu_ip}:{port} "
+            f"(timeout {STATUS_POLL_TIMEOUT_SEC}s, interval {STATUS_POLL_INTERVAL_SEC}s)"
+        )
+        deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
+        status_cmd = [
+            "docker", "exec", "gnmi", "gnoi_client",
+            f"-target={dpu_ip}:{port}",
+            "-logtostderr", "-notls",
+            "-module", "System",
+            "-rpc", "RebootStatus"
+        ]
+        while time.monotonic() < deadline:
+            rc_s, out_s, err_s = execute_gnoi_command(status_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
+            if rc_s == 0 and out_s and ("reboot complete" in out_s.lower()):
+                return True
+            time.sleep(STATUS_POLL_INTERVAL_SEC)
+        return False
+
+    def _handle_successful_reboot(self, dpu_name: str, transition_type: str):
+        """Handle successful reboot completion, including clearing transition flags if needed."""
+        if transition_type == "reboot":
+            success = self._mb.clear_module_state_transition(self._db, dpu_name)
+            if success:
+                logger.log_info(f"Cleared transition for {dpu_name}")
+            else:
+                logger.log_warning(f"Failed to clear transition for {dpu_name}")
+        logger.log_info(f"Halting the services on DPU is successful for {dpu_name}.")
+
 # #########
 # Main loop
 # #########
@@ -178,6 +271,9 @@ def main():
 
     # Centralized transition reader
     module_base = ModuleBase()
+
+    # gNOI reboot handler
+    reboot_handler = GnoiRebootHandler(db, module_base)
 
     pubsub = _get_pubsub(db)
     state_dbid = _get_dbid_state(db)
@@ -218,79 +314,17 @@ def main():
                 time.sleep(1)
                 continue
 
-            type = entry.get("transition_type")
-            if entry.get("state_transition_in_progress", "False") == "True" and (type == "shutdown" or type == "reboot"):
-                logger.log_info(f"{type} request detected for {dpu_name}. Initiating gNOI reboot.")
-                try:
-                    dpu_ip = get_dpu_ip(dpu_name)
-                    port = get_gnmi_port(dpu_name)
-                    if not dpu_ip:
-                        raise RuntimeError("DPU IP not found")
-                except Exception as e:
-                    logger.log_error(f"Error getting DPU IP or port for {dpu_name}: {e}")
-                    time.sleep(1)
-                    continue
-
-                # skip if TCP is not reachable
-                if not is_tcp_open(dpu_ip, int(port)):
-                    logger.log_info(f"Skipping {dpu_name}: {dpu_ip}:{port} unreachable (offline/down)")
-                    time.sleep(1)
-                    continue
-
-                # 1) Send Reboot HALT
-                logger.log_notice(f"Issuing gNOI Reboot to {dpu_ip}:{port}")
-                reboot_cmd = [
-                    "docker", "exec", "gnmi", "gnoi_client",
-                    f"-target={dpu_ip}:{port}",
-                    "-logtostderr", "-notls",
-                    "-module", "System",
-                    "-rpc", "Reboot",
-                    "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
-                ]
-                rc, out, err = execute_gnoi_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
-                if rc != 0:
-                    logger.log_error(f"gNOI Reboot command failed for {dpu_name}: {err or out}")
-                    # As per HLD, daemon just logs and returns.
-                    time.sleep(1)
-                    continue
-
-                # 2) Poll RebootStatus with a real deadline
-                logger.log_notice(
-                    f"Polling RebootStatus for {dpu_name} at {dpu_ip}:{port} "
-                    f"(timeout {STATUS_POLL_TIMEOUT_SEC}s, interval {STATUS_POLL_INTERVAL_SEC}s)"
-                )
-                deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
-                reboot_successful = False
-
-                status_cmd = [
-                    "docker", "exec", "gnmi", "gnoi_client",
-                    f"-target={dpu_ip}:{port}",
-                    "-logtostderr", "-notls",
-                    "-module", "System",
-                    "-rpc", "RebootStatus"
-                ]
-                while time.monotonic() < deadline:
-                    rc_s, out_s, err_s = execute_gnoi_command(status_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
-                    if rc_s == 0 and out_s and ("reboot complete" in out_s.lower()):
-                        reboot_successful = True
-                        break
-                    time.sleep(STATUS_POLL_INTERVAL_SEC)
-
-                if reboot_successful:
-                    if type == "reboot":
-                        success = module_base.clear_module_state_transition(db, dpu_name)
-                        if success:
-                            logger.log_info(f"Cleared transition for {dpu_name}")
-                        else:
-                            logger.log_warning(f"Failed to clear transition for {dpu_name}")
-                    logger.log_info(f"Halting the services on DPU is successful for {dpu_name}.")
-                else:
-                    logger.log_warning(f"Status polling of halting the services on DPU timed out for {dpu_name}.")
+            transition_type = entry.get("transition_type")
+            if entry.get("state_transition_in_progress", "False") == "True" and (transition_type == "shutdown" or transition_type == "reboot"):
+                logger.log_info(f"{transition_type} request detected for {dpu_name}. Initiating gNOI reboot.")
+                reboot_handler.handle_transition(dpu_name, transition_type)
 
                 # NOTE:
-                # The CHASSIS_MODULE_TABLE transition flag is cleared for startup/shutdown in
-                # module_base.py. The daemon does not clear it. For reboot transitions, the
-                # daemon relies on the TimeoutEnforcer thread to clear any stuck transitions.
+                # For shutdown transitions, the platform clears the transition flag.
+                # For reboot transitions, the daemon clears it upon successful completion.
+                # The TimeoutEnforcer thread clears any stuck transitions that exceed timeout.
+
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
