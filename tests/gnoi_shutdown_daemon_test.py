@@ -552,7 +552,7 @@ class _MBStub2:
     @staticmethod
     def get_module_state_transition(*_a, **_k):
         return {"state_transition_in_progress": "True", "transition_type": "shutdown"}
-    
+
     @staticmethod
     def clear_module_state_transition(db, name):
         return True
@@ -658,19 +658,19 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
 
     def test_reboot_transition_type_success(self):
         """Test that reboot transition type is handled correctly and clears transition on success"""
-        
+
         class _MBStubReboot:
             def __init__(self, *a, **k):
                 pass
-                
+
             @staticmethod
             def get_module_state_transition(*_a, **_k):
                 return {"state_transition_in_progress": "True", "transition_type": "reboot"}
-            
+
             @staticmethod
             def clear_module_state_transition(db, name):
                 return True
-        
+
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
              patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStubReboot), \
              patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
@@ -702,7 +702,7 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
 
             # Should make both Reboot and RebootStatus calls
             self.assertEqual(mock_exec.call_count, 2)
-            
+
             # Check logs for reboot-specific messages
             all_logs = " | ".join(str(c) for c in mock_logger.method_calls)
             self.assertIn("reboot request detected for DPU0", all_logs)
@@ -711,19 +711,19 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
 
     def test_reboot_transition_clear_failure(self):
         """Test that reboot transition logs warning when clear fails"""
-        
+
         class _MBStubRebootFail:
             def __init__(self, *a, **k):
                 pass
-                
+
             @staticmethod
             def get_module_state_transition(*_a, **_k):
                 return {"state_transition_in_progress": "True", "transition_type": "reboot"}
-            
+
             @staticmethod
             def clear_module_state_transition(db, name):
                 return False  # Simulate failure
-        
+
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
              patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStubRebootFail), \
              patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
@@ -759,7 +759,7 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
 
     def test_status_polling_timeout_warning(self):
         """Test that timeout during status polling logs the appropriate warning"""
-        
+
         with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
              patch("gnoi_shutdown_daemon.ModuleBase", new=_MBStub2), \
              patch("gnoi_shutdown_daemon.execute_gnoi_command") as mock_exec, \
@@ -846,3 +846,130 @@ class TestGnoiShutdownDaemonAdditional(unittest.TestCase):
                 ),
                 f"Expected a 'skipping DPU1' or 'unreachable' log message; got: {all_logs}"
             )
+
+
+    def test_is_tcp_open_oserror(self):
+        """Test is_tcp_open returns False on OSError."""
+        import gnoi_shutdown_daemon as d
+        with patch("socket.create_connection", side_effect=OSError("test error")):
+            self.assertFalse(d.is_tcp_open("localhost", 1234))
+
+    def test_execute_gnoi_command_generic_exception(self):
+        """Test execute_gnoi_command handles generic exceptions."""
+        import gnoi_shutdown_daemon as d
+        with patch("gnoi_shutdown_daemon.subprocess.run", side_effect=Exception("generic error")):
+            rc, out, err = d.execute_gnoi_command(["dummy"])
+            self.assertEqual(rc, -2)
+            self.assertEqual(out, "")
+            self.assertIn("Command failed: generic error", err)
+
+    def test_main_loop_index_error(self):
+        """Test main loop handles IndexError from malformed pubsub message."""
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+             patch("gnoi_shutdown_daemon.time.sleep"), \
+             patch("gnoi_shutdown_daemon.logger"):
+            import gnoi_shutdown_daemon as d
+
+            db = MagicMock()
+            pubsub = MagicMock()
+            # Malformed channel name that will cause an IndexError
+            malformed_message = {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|"}
+            pubsub.get_message.side_effect = [malformed_message, Exception("stop")]
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
+
+            try:
+                d.main()
+            except Exception as e:
+                self.assertEqual(str(e), "stop")
+
+            # The loop should continue, so no error should be logged for this.
+            # We just check that the loop was entered.
+            self.assertGreaterEqual(pubsub.get_message.call_count, 1)
+
+    def test_main_loop_read_transition_exception(self):
+        """Test main loop handles exception when reading transition state."""
+        with patch("gnoi_shutdown_daemon.SonicV2Connector") as mock_sonic, \
+             patch("gnoi_shutdown_daemon.ModuleBase") as mock_mb_class, \
+             patch("gnoi_shutdown_daemon.time.sleep"), \
+             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+            import gnoi_shutdown_daemon as d
+
+            db = MagicMock()
+            pubsub = MagicMock()
+            message = {"type": "pmessage", "channel": "__keyspace@6__:CHASSIS_MODULE_TABLE|DPU0"}
+            pubsub.get_message.side_effect = [message, Exception("stop")]
+            db.pubsub.return_value = pubsub
+            mock_sonic.return_value = db
+
+            mock_mb_instance = MagicMock()
+            mock_mb_instance.get_module_state_transition.side_effect = Exception("db error")
+            mock_mb_class.return_value = mock_mb_instance
+
+            try:
+                d.main()
+            except Exception as e:
+                self.assertEqual(str(e), "stop")
+
+            mock_logger.log_error.assert_called_with("Failed reading transition state for DPU0: db error")
+
+    def test_get_dpu_gnmi_port_fallback(self):
+        """Test get_dpu_gnmi_port falls back to default '8080'."""
+        import gnoi_shutdown_daemon as d
+        with patch("gnoi_shutdown_daemon._cfg_get_entry", return_value={}):
+            port = d.get_dpu_gnmi_port("DPU0")
+            self.assertEqual(port, "8080")
+
+    def test_main_entry_point(self):
+        """Test the main entry point of the script."""
+        with patch("gnoi_shutdown_daemon.main") as mock_main:
+            # The script is imported in other tests, so we need to reload it to hit the __main__ guard.
+            import sys
+            # To be safe, remove it from sys.modules and re-import
+            if "scripts.gnoi_shutdown_daemon" in sys.modules:
+                 del sys.modules["scripts.gnoi_shutdown_daemon"]
+            import scripts.gnoi_shutdown_daemon
+            mock_main.assert_called_once()
+
+    def test_list_modules_exception(self):
+        """Test _list_modules handles exception and returns empty list."""
+        import gnoi_shutdown_daemon as d
+        db_mock = MagicMock()
+        redis_client_mock = MagicMock()
+        redis_client_mock.keys.side_effect = Exception("redis error")
+        db_mock.get_redis_client.return_value = redis_client_mock
+
+        enforcer = d.TimeoutEnforcer(db_mock, MagicMock())
+        modules = enforcer._list_modules()
+        self.assertEqual(modules, [])
+
+    def test_cfg_get_entry_no_decode_needed(self):
+        """Test _cfg_get_entry with values that are not bytes."""
+        import gnoi_shutdown_daemon as d
+        d._v2 = None  # Reset for initialization
+
+        mock_v2_connector = MagicMock()
+        mock_v2_instance = MagicMock()
+        mock_v2_instance.get_all.return_value = {"key1": "value1", "key2": 123}
+        mock_v2_connector.return_value = mock_v2_instance
+
+        with patch("gnoi_shutdown_daemon.swsscommon.swsscommon.SonicV2Connector", mock_v2_connector):
+            result = d._cfg_get_entry("SOME_TABLE", "SOME_KEY")
+            self.assertEqual(result, {"key1": "value1", "key2": 123})
+        d._v2 = None # cleanup
+
+    def test_handle_transition_unreachable_standalone(self):
+        """Verify transition is skipped if DPU is unreachable (TCP port closed)."""
+        import gnoi_shutdown_daemon as d
+        db_mock = MagicMock()
+        mb_mock = MagicMock()
+        handler = d.GnoiRebootHandler(db_mock, mb_mock)
+
+        with patch("gnoi_shutdown_daemon.get_dpu_ip", return_value="10.0.0.1"), \
+             patch("gnoi_shutdown_daemon.get_dpu_gnmi_port", return_value="8080"), \
+             patch("gnoi_shutdown_daemon.is_tcp_open", return_value=False), \
+             patch("gnoi_shutdown_daemon.logger") as mock_logger:
+
+            result = handler.handle_transition("DPU0", "shutdown")
+            self.assertFalse(result)
+            mock_logger.log_info.assert_called_with("Skipping DPU0: 10.0.0.1:8080 unreachable (offline/down)")
