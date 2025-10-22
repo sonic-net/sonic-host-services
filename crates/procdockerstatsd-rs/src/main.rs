@@ -12,8 +12,29 @@ use procfs;
 use tracing::{error, info};
 use syslog_tracing;
 use std::ffi::CString;
+use serde::Deserialize;
 
 const UPDATE_INTERVAL: u64 = 120; // 2 minutes
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerStats {
+    #[serde(rename = "ID")]
+    id: String,
+    name: String,
+    #[serde(rename = "CPUPerc")]
+    cpu_perc: String,
+    #[serde(rename = "MemPerc")]
+    mem_perc: String,
+    #[serde(rename = "MemUsage")]
+    mem_usage: String,
+    #[serde(rename = "NetIO")]
+    net_io: String,
+    #[serde(rename = "BlockIO")]
+    block_io: String,
+    #[serde(rename = "PIDs")]
+    pids: String,
+}
 
 struct ProcDockerStats {
     state_db: SonicV2Connector,
@@ -66,83 +87,60 @@ fn convert_to_bytes(value: &str) -> u64 {
     }
 }
 
-fn format_docker_cmd_output(cmdout: &str) -> HashMap<String, HashMap<String, String>> {
-    static MULTI_SPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"   +").unwrap());
-
-    let lines: Vec<&str> = cmdout.lines().collect();
-    if lines.len() < 2 { return HashMap::new(); }
-
-    let keys: Vec<&str> = MULTI_SPACE_RE.split(lines[0]).collect();
-    let mut docker_data_list = Vec::new();
-
-    for line in &lines[1..] {
-        let values: Vec<&str> = MULTI_SPACE_RE.split(line).collect();
-        if values.len() >= keys.len() {
-            let mut docker_data = HashMap::new();
-
-            // Map values to keys just like Python
-            for (key, value) in keys.iter().zip(values.iter()) {
-                docker_data.insert(key.to_string(), value.to_string());
-            }
-            docker_data_list.push(docker_data);
-        }
-    }
-    create_docker_dict(docker_data_list)
-}
-
-fn create_docker_dict(dict_list: Vec<HashMap<String, String>>) -> HashMap<String, HashMap<String, String>> {
+fn parse_docker_json_output(json_output: &str) -> HashMap<String, HashMap<String, String>> {
     let mut dockerdict = HashMap::new();
 
-    for row in dict_list {
-        if let Some(cid) = row.get("CONTAINER ID") {
-            let key = format!("DOCKER_STATS|{}", cid);
-            let mut container_data = HashMap::new();
-
-            if let Some(name) = row.get("NAME") {
-                container_data.insert("NAME".to_string(), name.clone());
-            }
-
-            if let Some(cpu) = row.get("CPU %") {
-                let cpu_clean = cpu.trim_end_matches('%');
-                container_data.insert("CPU%".to_string(), cpu_clean.to_string());
-            }
-
-            if let Some(mem_usage) = row.get("MEM USAGE / LIMIT") {
-                let memuse: Vec<&str> = mem_usage.split(" / ").collect();
-                if memuse.len() >= 2 {
-                    container_data.insert("MEM_BYTES".to_string(), convert_to_bytes(memuse[0]).to_string());
-                    container_data.insert("MEM_LIMIT_BYTES".to_string(), convert_to_bytes(memuse[1]).to_string());
-                }
-            }
-
-            if let Some(mem_pct) = row.get("MEM %") {
-                let mem_clean = mem_pct.trim_end_matches('%');
-                container_data.insert("MEM%".to_string(), mem_clean.to_string());
-            }
-
-            if let Some(net_io) = row.get("NET I/O") {
-                let netio: Vec<&str> = net_io.split(" / ").collect();
-                if netio.len() >= 2 {
-                    container_data.insert("NET_IN_BYTES".to_string(), convert_to_bytes(netio[0]).to_string());
-                    container_data.insert("NET_OUT_BYTES".to_string(), convert_to_bytes(netio[1]).to_string());
-                }
-            }
-
-            if let Some(block_io) = row.get("BLOCK I/O") {
-                let blockio: Vec<&str> = block_io.split(" / ").collect();
-                if blockio.len() >= 2 {
-                    container_data.insert("BLOCK_IN_BYTES".to_string(), convert_to_bytes(blockio[0]).to_string());
-                    container_data.insert("BLOCK_OUT_BYTES".to_string(), convert_to_bytes(blockio[1]).to_string());
-                }
-            }
-
-            if let Some(pids) = row.get("PIDS") {
-                container_data.insert("PIDS".to_string(), pids.clone());
-            }
-
-            dockerdict.insert(key, container_data);
+    for line in json_output.lines() {
+        if line.trim().is_empty() {
+            continue;
         }
+
+        let stats: DockerStats = match serde_json::from_str(line) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to parse docker stats JSON: {}", e);
+                continue;
+            }
+        };
+
+        let key = format!("DOCKER_STATS|{}", stats.id);
+        let mut container_data = HashMap::new();
+
+        container_data.insert("NAME".to_string(), stats.name);
+
+        // Remove % suffix from CPU and Mem percentages
+        let cpu_clean = stats.cpu_perc.trim_end_matches('%');
+        container_data.insert("CPU%".to_string(), cpu_clean.to_string());
+
+        let mem_clean = stats.mem_perc.trim_end_matches('%');
+        container_data.insert("MEM%".to_string(), mem_clean.to_string());
+
+        // Parse memory usage (format: "1.5GiB / 2GiB")
+        let memuse: Vec<&str> = stats.mem_usage.split(" / ").collect();
+        if memuse.len() >= 2 {
+            container_data.insert("MEM_BYTES".to_string(), convert_to_bytes(memuse[0]).to_string());
+            container_data.insert("MEM_LIMIT_BYTES".to_string(), convert_to_bytes(memuse[1]).to_string());
+        }
+
+        // Parse network I/O (format: "1.5kB / 2kB")
+        let netio: Vec<&str> = stats.net_io.split(" / ").collect();
+        if netio.len() >= 2 {
+            container_data.insert("NET_IN_BYTES".to_string(), convert_to_bytes(netio[0]).to_string());
+            container_data.insert("NET_OUT_BYTES".to_string(), convert_to_bytes(netio[1]).to_string());
+        }
+
+        // Parse block I/O (format: "1.5MB / 2MB")
+        let blockio: Vec<&str> = stats.block_io.split(" / ").collect();
+        if blockio.len() >= 2 {
+            container_data.insert("BLOCK_IN_BYTES".to_string(), convert_to_bytes(blockio[0]).to_string());
+            container_data.insert("BLOCK_OUT_BYTES".to_string(), convert_to_bytes(blockio[1]).to_string());
+        }
+
+        container_data.insert("PIDS".to_string(), stats.pids);
+
+        dockerdict.insert(key, container_data);
     }
+
     dockerdict
 }
 
@@ -159,11 +157,11 @@ impl ProcDockerStats {
     }
 
     fn update_dockerstats_command(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
-        let cmd = ["docker", "stats", "--no-stream", "-a"];
+        let cmd = ["docker", "stats", "--no-stream", "-a", "--format", "json"];
         if let Some(output) = run_command(&cmd) {
-            let stats_dict = format_docker_cmd_output(&output);
+            let stats_dict = parse_docker_json_output(&output);
             if stats_dict.is_empty() {
-                error!("formatting for docker output failed");
+                error!("parsing docker JSON output failed");
                 return Ok(false);
             }
             self.state_db.delete_all_by_pattern("STATE_DB", "DOCKER_STATS|*")?;
