@@ -214,12 +214,6 @@ impl ProcDockerStats {
             let pid = process_obj.pid().as_u32();
             pid_set.insert(pid);
 
-            // Skip processes similar to Python exception handling: NoSuchProcess, AccessDenied, ZombieProcess
-            match process_obj.status() {
-                ProcessStatus::Unknown(_) | ProcessStatus::Zombie => continue,
-                _ => {}
-            }
-
             let value = format!("PROCESS_STATS|{}", pid);
 
             // Format STIME like Python: datetime.utcfromtimestamp(stime).strftime("%b%d")
