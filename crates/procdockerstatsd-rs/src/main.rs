@@ -8,10 +8,8 @@ use chrono::Utc;
 use std::fs;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use psutil;
 use procfs;
 use tracing::{error, info};
-use tracing_subscriber::prelude::*;
 use syslog_tracing;
 use std::ffi::CString;
 
@@ -30,16 +28,6 @@ fn run_command(cmd: &[&str]) -> Option<String> {
     } else {
         error!("Error running command: {:?}", cmd);
         None
-    }
-}
-
-fn get_memory_percent(pid: u32) -> String {
-    match psutil::process::Process::new(pid) {
-        Ok(proc) => match proc.memory_percent() {
-            Ok(mem_pct) => format!("{:.1}", mem_pct),
-            Err(_) => String::new()
-        },
-        Err(_) => String::new()
     }
 }
 
@@ -267,7 +255,7 @@ impl ProcDockerStats {
                 ("PID".to_string(), pid.to_string()),
                 ("UID".to_string(), process_obj.user_id().map(|uid| uid.to_string()).unwrap_or_else(|| "".to_string())),
                 ("PPID".to_string(), process_obj.parent().map(|p| p.to_string()).unwrap_or_else(|| "".to_string())),
-                ("%CPU".to_string(), format!("{:.2}", process_obj.cpu_usage() as f64)),
+                ("%CPU".to_string(), format!("{:.2}", process_obj.cpu_usage())),
                 ("%MEM".to_string(), format!("{:.1}", process_obj.memory() as f64 * 100.0 / total_memory)),
                 ("STIME".to_string(), stime_formatted),
                 ("TT".to_string(), get_terminal_name(pid)),
@@ -358,15 +346,15 @@ impl ProcDockerStats {
         info!("Started procdockerstatsd daemon");
 
         loop {
-            self.update_dockerstats_command();
+            let _ = self.update_dockerstats_command();
             let datetimeobj = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string(); // Match Python str(datetime)
-            self.update_state_db("DOCKER_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
+            let _ = self.update_state_db("DOCKER_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
 
-            self.update_processstats_command();
-            self.update_state_db("PROCESS_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
+            let _ = self.update_processstats_command();
+            let _ = self.update_state_db("PROCESS_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
 
-            self.update_fipsstats_command();
-            self.update_state_db("FIPS_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
+            let _ = self.update_fipsstats_command();
+            let _ = self.update_state_db("FIPS_STATS|LastUpdateTime", "lastupdate", &datetimeobj);
 
             sleep(Duration::from_secs(UPDATE_INTERVAL));
         }
