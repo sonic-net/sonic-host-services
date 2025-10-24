@@ -378,7 +378,7 @@ HOSTCFGD_TEST_SSH_SERVER_VECTOR = [
                         "ports": "22,222",
                         "inactivity_timeout": "15",
                         "max_sessions": "0",
-                        "permit_root_login": "false",
+                        "permit_root_login": "no",
                         "password_authentication": "false",
                         "ciphers": [ "chacha20-poly1305@openssh.com", "aes256-gcm@openssh.com" ],
                         "kex_algorithms": [ "sntrup761x25519-sha512", "curve25519-sha256", "ecdh-sha2-nistp521" ],
