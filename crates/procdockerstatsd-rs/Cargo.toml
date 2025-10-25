@@ -1,0 +1,26 @@
+[package]
+name = "procdockerstatsd_rs"
+version.workspace = true
+edition.workspace = true
+description = "Daemon to collect process and Docker stats and push them to Redis"
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+swss-common.workspace = true
+sysinfo.workspace = true
+regex.workspace = true
+daemonize.workspace = true
+chrono.workspace = true
+libc.workspace = true
+psutil.workspace = true
+procfs.workspace = true
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+syslog-tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "procdockerstatsd-rs"
+path = "src/main.rs"
