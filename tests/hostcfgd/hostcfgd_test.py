@@ -384,6 +384,17 @@ class TestHostcfgdDaemon(TestCase):
                 pass
             mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
+    def test_dns_options_events(self):
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        MockConfigDb.event_queue = [('DNS_OPTIONS', 'ndots')]
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.register_callbacks()
+        with mock.patch('hostcfgd.run_cmd') as mocked_run_cmd:
+            try:
+                daemon.start()
+            except TimeoutError:
+                pass
+            mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
 
 class TestDnsHandler:
 
