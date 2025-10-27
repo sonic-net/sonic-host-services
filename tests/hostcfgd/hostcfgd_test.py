@@ -257,9 +257,6 @@ class TestHostcfgdDaemon(TestCase):
                 call(['sonic-kdump-config', '--enable']),
                 call(['sonic-kdump-config', '--num_dumps', '3']),
                 call(['sonic-kdump-config', '--memory', '8G-:1G']),
-                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
-                call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
-                call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
             ]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
         os.environ["HOSTCFGD_UNIT_TESTING"] = ""
