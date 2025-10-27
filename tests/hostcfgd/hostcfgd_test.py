@@ -256,7 +256,7 @@ class TestHostcfgdDaemon(TestCase):
             expected = [
                 call(['sonic-kdump-config', '--enable']),
                 call(['sonic-kdump-config', '--num_dumps', '3']),
-                call(['sonic-kdump-config', '--memory', '8G-:1G']),
+                call(['sonic-kdump-config', '--memory', '8G-:1G'])
             ]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
         os.environ["HOSTCFGD_UNIT_TESTING"] = ""
