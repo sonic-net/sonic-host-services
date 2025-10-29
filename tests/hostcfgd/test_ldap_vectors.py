@@ -28,7 +28,10 @@ HOSTCFGD_TEST_LDAP_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M",
+                        "remote": "disabled",
+                        "ssh_string": "admin@127.0.0.1",
+                        "ssh_path": "/home/admin/.ssh"
                         }
                 },
                 "AAA": {
@@ -39,7 +42,7 @@ HOSTCFGD_TEST_LDAP_VECTOR = [
                             "fail-delay": 0,
                             "lockout-reattempt": 15,
                             "lockout-attempts": 5
-                        },                        
+                        },
                         "failthrough": "True",
                         "debug": "True",
                     }
@@ -94,7 +97,7 @@ HOSTCFGD_TEST_LDAP_VECTOR = [
                             "fail-delay": 0,
                             "lockout-reattempt": 15,
                             "lockout-attempts": 5
-                        },   
+                        },
                         "debug": "True",
                     }
                 },
