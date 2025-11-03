@@ -132,6 +132,7 @@ class FeatureHandler(object):
     FEATURE_STATE_ENABLED = "enabled"
     FEATURE_STATE_DISABLED = "disabled"
     FEATURE_STATE_FAILED = "failed"
+    FEATURE_WHITELIST = {"telemetry", "frr_bmp"}
 
     def __init__(self, config_db, feature_state_table, device_config, is_advanced_boot):
         self._config_db = config_db
@@ -408,7 +409,15 @@ class FeatureHandler(object):
         props = dict([line.split("=") for line in stdout.decode().strip().splitlines()])
         return props["UnitFileState"]
 
+    def is_whitelisted(self, feature_name):
+        """Return True if the feature is in the whitelist."""
+        return str(feature_name).lower() in self.FEATURE_WHITELIST
+
     def enable_feature(self, feature):
+        if self.is_whitelisted(feature.name):
+            syslog.syslog(syslog.LOG_INFO, f"Whitelist: skip enabling '{feature.name}'")
+            return
+
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
             # Check if it is already enabled, if yes skip the system call
@@ -438,6 +447,10 @@ class FeatureHandler(object):
         self.set_feature_state(feature, self.FEATURE_STATE_ENABLED)
 
     def disable_feature(self, feature):
+        if self.is_whitelisted(feature.name):
+            syslog.syslog(syslog.LOG_INFO, f"Whitelist: skip disabling '{feature.name}'")
+            return
+
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
             # Check if it is already disabled, if yes skip the system call
