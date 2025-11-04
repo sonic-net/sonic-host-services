@@ -19,7 +19,7 @@ stages:
 
   jobs:
   - job:
-    displayName: "Python3"
+    displayName: "Build job"
     variables:
       DIFF_COVER_CHECK_THRESHOLD: 80
       DIFF_COVER_ENABLE: 'true'
@@ -117,6 +117,12 @@ stages:
       artifact: wheels
       displayName: "Publish Python wheels"
 
-    - publish: '$(System.DefaultWorkingDirectory)/../'
+    - task: CopyFiles@2
+      inputs:
+        contents: '../*.deb'
+        targetFolder: $(Build.ArtifactStagingDirectory)
+      displayName: 'Copy deb files'
+
+    - publish: '$(Build.ArtifactStagingDirectory)'
       artifact: debs
       displayName: "Publish deb packages"
