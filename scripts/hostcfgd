@@ -1538,6 +1538,10 @@ class DeviceMetaCfg(object):
             run_cmd(['systemctl', 'restart', 'rsyslog'], True, False)
             syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restarted rsyslog after timezone change')
 
+        except OSError as e:
+            syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Invalid timezone files for {ETC_LOCALTIME} {new_tz}: {e}')
+        except subprocess.CalledProcessError as e:
+            syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Failed to set-timezone {new_tz} and restart rsyslog: {e}')
         except Exception as e:
             syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Failed to apply timezone {new_tz}: {e}')
 
