@@ -85,6 +85,7 @@ class ControlPlaneAclManager(logger.Logger):
 
     BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
     VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL"
+    MID_PLANE_BRIDGE_TABLE = "MID_PLANE_BRIDGE"
 
     # To specify a port range instead of a single port, use iptables format:
     # separate start and end ports with a colon, e.g., "1000:2000"
@@ -114,6 +115,7 @@ class ControlPlaneAclManager(logger.Logger):
             "multi_asic_ns_to_host_fwd":False
         }
     }
+    smartswitch_midplane_bridge_ip = "169.254.200.254"
 
     UPDATE_DELAY_SECS = 0.5
 
@@ -321,7 +323,30 @@ class ControlPlaneAclManager(logger.Logger):
 
         return midplane_dev_name, midplane_ip
 
-    def generate_allow_internal_chasis_midplane_traffic(self, namespace):
+    def get_midplane_bridge_ip_from_configdb(self, config_db_connector):
+        """
+        Method to get the IP prefix from ConfigDB using the path:
+        MID_PLANE_BRIDGE/GLOBAL/ip_prefix
+        
+        Usage example:
+            caclmgr = ControlPlaneAclManager("test")
+            ip_prefix = caclmgr.get_midplane_bridge_ip_from_configdb()
+            if ip_prefix:
+                print("Midplane bridge IP prefix:", ip_prefix)
+        """
+        try:
+            midplane_bridge_table = config_db_connector.get_table(self.MID_PLANE_BRIDGE_TABLE)
+            if midplane_bridge_table and "GLOBAL" in midplane_bridge_table:
+                global_config = midplane_bridge_table["GLOBAL"]
+                if "ip_prefix" in global_config:
+                    self.log_info("Retrieved midplane bridge IP prefix from ConfigDB: {}".format(global_config["ip_prefix"]))
+                    return global_config["ip_prefix"].split("/")[0]
+        except RuntimeError as e:
+            self.log_error("Failed to get midplane bridge IP from ConfigDB: {}".format(str(e)))
+            raise e
+        return self.smartswitch_midplane_bridge_ip
+
+    def generate_allow_internal_chasis_midplane_traffic(self, namespace, config_db_connector):
         allow_internal_chassis_midplane_traffic = []
         if device_info.is_chassis() and not namespace:
             chassis_midplane_dev_name, chassis_midplane_ip = self.get_chassis_midplane_interface_ip()
@@ -329,6 +354,11 @@ class ControlPlaneAclManager(logger.Logger):
                 return allow_internal_chassis_midplane_traffic
             allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-s', chassis_midplane_ip, '-d', chassis_midplane_ip, '-j', 'ACCEPT'])
             allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-i', chassis_midplane_dev_name, '-j', 'ACCEPT'])
+
+        if device_info.is_smartswitch():
+            # Allow traffic to the chassis midplane IP
+            midplane_bridge_ip = self.get_midplane_bridge_ip_from_configdb(config_db_connector)
+            allow_internal_chassis_midplane_traffic.append(['iptables', '-A', 'INPUT', '-d', midplane_bridge_ip, '-j', 'ACCEPT'])
 
         return allow_internal_chassis_midplane_traffic
 
@@ -632,7 +662,7 @@ class ControlPlaneAclManager(logger.Logger):
         iptables_cmds += self.generate_allow_internal_docker_ip_traffic_commands(namespace)
 
         # Add iptables commands to allow internal chasiss midplane traffic
-        iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace)
+        iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace, config_db_connector)
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections
