@@ -248,6 +248,8 @@ def main():
             # Extract module name
             try:
                 dpu_name = key.split("|", 1)[1]
+                if not dpu_name:
+                    raise IndexError
             except IndexError:
                 time.sleep(1)
                 continue
