@@ -1,0 +1,53 @@
+[workspace]
+resolver = '2'
+members = [
+    "crates/procdockerstatsd-rs",
+]
+exclude = []
+
+[workspace.package]
+version = "1.0.0"
+authors = ["SONiC"]
+license = "Apache-2.0"
+repository = "https://github.com/sonic-net/sonic-buildimage"
+documentation = "https://github.com/sonic-net/sonic-buildimage/blob/master/README.md"
+keywords = ["sonic"]
+edition = "2021"
+
+[workspace.lints.rust]
+unused_extern_crates = 'warn'
+trivial_numeric_casts = 'warn'
+unstable_features = 'warn'
+unused_import_braces = 'warn'
+
+[workspace.dependencies]
+# System info and SONiC database
+sysinfo = "0.35.0"
+swss-common = { git = "https://github.com/sonic-net/sonic-swss-common", branch = "master" }
+
+# Regex and pattern matching
+regex = "1.10"
+
+# Time and date handling
+chrono = "0.4"
+
+# Process management
+daemonize = "0.5"
+
+# System calls
+libc = "0.2"
+
+# Python psutil equivalent
+psutil = "3.2.2"
+
+# Process filesystem access
+procfs = "0.17"
+
+# Logging
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+syslog-tracing = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

@@ -1,0 +1,11 @@
+Source: sonic-host-services
+Maintainer: SONiC Team <sonic-dev@lists.sonicfoundation.dev>
+Section: net
+Priority: optional
+Build-Depends: dh-exec (>=0.3), debhelper (>= 12), autotools-dev
+Standards-Version: 1.0.0
+
+Package: sonic-host-services-rs
+Architecture: any
+Depends: ${shlibs:Depends}
+Description: Process and Docker statistics daemon in Rust

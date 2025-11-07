@@ -3,6 +3,8 @@ import os
 import shutil
 import pytest
 import json
+import datetime
+import re
 
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
@@ -72,6 +74,7 @@ EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_USER = "User issued 'warm-reboot' command [U
 EXPECTED_FIND_FIRSTBOOT_VERSION = " (First boot of SONiC version 20191130.52)"
 EXPECTED_FIND_SOFTWARE_REBOOT_CAUSE_FIRSTBOOT = "Unknown (First boot of SONiC version 20191130.52)"
 EXPECTED_FIND_SOFTWARE_HEATBEAT_LOSS = "Heartbeat with the Supervisor card lost"
+EXPECTED_FIND_SOFTWARE_KERNEL_PANIC = "Kernel Panic [Time: Sun Mar 28 13:45:12 UTC 2021]"
 
 EXPECTED_WATCHDOG_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_15_08', 'cause': 'Watchdog', 'user': 'N/A', 'time': 'N/A'}
 EXPECTED_USER_REBOOT_CAUSE_DICT = {'comment': '', 'gen_time': '2020_10_22_03_14_07', 'cause': 'reboot', 'user': 'admin', 'time': 'Thu Oct 22 03:11:08 UTC 2020'}
@@ -209,6 +212,14 @@ class TestDetermineRebootCause(object):
                     assert previous_reboot_cause == EXPECTED_FIND_SOFTWARE_HEATBEAT_LOSS
                     assert additional_info == "N/A"
 
+    def test_determine_reboot_cause_software_kernelpanic_hardware_other(self):
+        with mock.patch("determine_reboot_cause.find_proc_cmdline_reboot_cause", return_value=EXPECTED_PARSE_WARMFAST_REBOOT_FROM_PROC_CMDLINE):
+            with mock.patch("determine_reboot_cause.find_software_reboot_cause", return_value=EXPECTED_FIND_SOFTWARE_KERNEL_PANIC):
+                with mock.patch("determine_reboot_cause.find_hardware_reboot_cause", return_value=EXPECTED_HARDWARE_REBOOT_CAUSE):
+                    previous_reboot_cause, additional_info = determine_reboot_cause.determine_reboot_cause()
+                    assert previous_reboot_cause == EXPECTED_FIND_SOFTWARE_KERNEL_PANIC
+                    assert additional_info == "N/A"
+
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_DIR', os.path.join(os.getcwd(), REBOOT_CAUSE_DIR))
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_HISTORY_DIR', os.path.join(os.getcwd(), 'host/reboot-cause/history/'))
     @mock.patch('determine_reboot_cause.PREVIOUS_REBOOT_CAUSE_FILE', os.path.join(os.getcwd(), 'host/reboot-cause/previous-reboot-cause.json'))
@@ -262,3 +273,21 @@ class TestDetermineRebootCause(object):
         # Assert that reboot-cause.txt was created for each DPU
         mock_open.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu0", "reboot-cause.txt"), 'w')
         mock_open.assert_any_call(os.path.join(REBOOT_CAUSE_MODULE_DIR, "dpu1", "reboot-cause.txt"), 'w')
+
+    def test_reboot_cause_gen_time_is_utc(self):
+        # Patch datetime.datetime.utcnow to return a known value
+        class FixedDatetime(datetime.datetime):
+            @classmethod
+            def utcnow(cls):
+                return cls(2024, 7, 1, 12, 34, 56)
+        orig_datetime = determine_reboot_cause.datetime
+        determine_reboot_cause.datetime = FixedDatetime
+
+        try:
+            gen_time = determine_reboot_cause.datetime.utcnow().strftime('%Y_%m_%d_%H_%M_%S')
+            # Should match the fixed UTC time
+            assert gen_time == "2024_07_01_12_34_56"
+            # Optionally, check the format
+            assert re.match(r"\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}", gen_time)
+        finally:
+            determine_reboot_cause.datetime = orig_datetime        

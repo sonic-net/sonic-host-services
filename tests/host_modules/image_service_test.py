@@ -658,3 +658,34 @@ class TestImageService(object):
             stderr=subprocess.PIPE,
         )
 
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_gnoi_install_os_valid_json(self, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that gnoi_install_os handles valid JSON input and returns ERROR_UNIMPLEMENTED.
+        """
+        image_service = ImageService(mod_name="image_service")
+        options = ['{', '"version": "1.0.0"', '}']  # Valid JSON when joined
+
+        rc, response = image_service.gnoi_install_os(options)
+
+        assert rc == 1
+        assert "ERROR_UNIMPLEMENTED" in response
+
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    def test_gnoi_install_os_invalid_json(self, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that gnoi_install_os returns error for invalid JSON input.
+        """
+        image_service = ImageService(mod_name="image_service")
+        options = ['{', '"version": "1.0.0"', 'invalid']  # Invalid JSON
+
+        rc, response = image_service.gnoi_install_os(options)
+
+        assert rc == 1
+        assert "Invalid InstallRequest JSON" in response
+

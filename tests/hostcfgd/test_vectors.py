@@ -29,7 +29,8 @@ HOSTCFG_DAEMON_INIT_CFG_DB = {
     "MGMT_VRF_CONFIG": {},
     "SYSLOG_CONFIG": {},
     "SYSLOG_SERVER": {},
-    "DNS_NAMESERVER": {}
+    "DNS_NAMESERVER": {},
+    "DNS_OPTIONS": {}
 }
 
 
@@ -98,4 +99,7 @@ HOSTCFG_DAEMON_CFG_DB = {
     "DNS_NAMESERVER": {
         "1.1.1.1": {}
     },
+    "DNS_OPTIONS": {
+        "ndots": "4"
+    }
 }

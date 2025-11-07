@@ -45,6 +45,7 @@ REBOOT_CAUSE_UNKNOWN = "Unknown"
 REBOOT_CAUSE_NON_HARDWARE = "Non-Hardware"
 REBOOT_CAUSE_HARDWARE_OTHER = "Hardware - Other"
 REBOOT_CAUSE_HEARTBEAT_LOSS = "Heartbeat with the Supervisor card lost"
+REBOOT_CAUSE_KERNEL_PANIC = "Kernel Panic"
 
 # Global logger class instance
 sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
@@ -188,7 +189,7 @@ def determine_reboot_cause():
     software_reboot_cause = find_software_reboot_cause()
 
     # The main decision logic of the reboot cause:
-    # If software reboot cause is not heartbeat loss and there is a valid hardware reboot cause indicated by platform API,
+    # If software reboot cause is not Kernel Panic or heartbeat loss and there is a valid hardware reboot cause indicated by platform API,
     #    check the software reboot cause to add additional reboot cause.
     # If there is a reboot cause indicated by /proc/cmdline, and/or warmreboot/fastreboot/softreboot
     #   the software_reboot_cause which is the content of /hosts/reboot-cause/reboot-cause.txt
@@ -197,7 +198,9 @@ def determine_reboot_cause():
     #   the software_reboot_cause will be treated as the reboot cause if it's not unknown
     #   otherwise, the cmdline_reboot_cause will be treated as the reboot cause if it's not none
     # Else the software_reboot_cause will be treated as the reboot cause
-    if REBOOT_CAUSE_HEARTBEAT_LOSS not in software_reboot_cause and REBOOT_CAUSE_NON_HARDWARE not in hardware_reboot_cause:
+    if (REBOOT_CAUSE_KERNEL_PANIC not in software_reboot_cause and
+        REBOOT_CAUSE_HEARTBEAT_LOSS not in software_reboot_cause and
+        REBOOT_CAUSE_NON_HARDWARE not in hardware_reboot_cause):
         previous_reboot_cause = hardware_reboot_cause
         # Check if any software reboot was issued before this hardware reboot happened
         if software_reboot_cause is not REBOOT_CAUSE_UNKNOWN:
@@ -254,7 +257,7 @@ def main():
     previous_reboot_cause, additional_reboot_info = determine_reboot_cause()
 
     # Current time
-    reboot_cause_gen_time = str(datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S'))
+    reboot_cause_gen_time = str(datetime.datetime.utcnow().strftime('%Y_%m_%d_%H_%M_%S'))
 
     # Save the previous cause info into its history file as json format
     reboot_cause_dict = get_reboot_cause_dict(previous_reboot_cause, additional_reboot_info, reboot_cause_gen_time)

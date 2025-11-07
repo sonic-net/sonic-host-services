@@ -61,7 +61,11 @@ class Reboot(host_service.HostModule):
         self.reboot_status_flag["reason"] = reason
         self.reboot_status_flag["count"] = self.reboot_count
         self.reboot_status_flag["method"] = method
-        self.reboot_status_flag["status"] = status.value
+        # status value should be of type RebootStatus
+        self.reboot_status_flag["status"] = {
+            "status": status.value,
+            "message": ""
+        }
         self.lock.release()
         return
 
