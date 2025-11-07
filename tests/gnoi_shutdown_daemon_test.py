@@ -161,5 +161,72 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config_db, "DPU0")
         self.assertEqual(port, "8080")
 
+    def test_get_pubsub_fallback(self):
+        """Test _get_pubsub fallback to raw redis client."""
+        mock_db = MagicMock()
+        # Simulate connector without a direct pubsub() method
+        del mock_db.pubsub
+        mock_redis_client = MagicMock()
+        mock_db.get_redis_client.return_value = mock_redis_client
+
+        pubsub = gnoi_shutdown_daemon._get_pubsub(mock_db)
+
+        mock_db.get_redis_client.assert_called_with(mock_db.STATE_DB)
+        self.assertEqual(pubsub, mock_redis_client.pubsub.return_value)
+
+    @patch('gnoi_shutdown_daemon.is_tcp_open', return_value=False)
+    def test_handle_transition_unreachable(self, mock_is_tcp_open):
+        """Test handle_transition when DPU is unreachable."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_mb = MagicMock()
+        mock_get_dpu_ip = patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1").start()
+        mock_get_dpu_gnmi_port = patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080").start()
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_mb)
+        result = handler.handle_transition("DPU0", "shutdown")
+
+        self.assertFalse(result)
+        mock_is_tcp_open.assert_called_with("10.0.0.1", 8080)
+        # Called twice: once at the start, once on this failure path
+        self.assertEqual(mock_db.hset.call_count, 2)
+        mock_db.hset.assert_called_with(mock_db.STATE_DB, "CHASSIS_MODULE_TABLE|DPU0", "gnoi_shutdown_complete", "False")
+
+        patch.stopall()
+
+    @patch('gnoi_shutdown_daemon.is_tcp_open', return_value=True)
+    @patch('gnoi_shutdown_daemon.get_dpu_ip', side_effect=RuntimeError("IP not found"))
+    def test_handle_transition_ip_failure(self, mock_get_dpu_ip, mock_is_tcp_open):
+        """Test handle_transition failure on DPU IP retrieval."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_mb = MagicMock()
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_mb)
+        result = handler.handle_transition("DPU0", "shutdown")
+
+        self.assertFalse(result)
+        self.assertEqual(mock_db.hset.call_count, 2)
+        mock_db.hset.assert_called_with(mock_db.STATE_DB, "CHASSIS_MODULE_TABLE|DPU0", "gnoi_shutdown_complete", "False")
+
+    @patch('gnoi_shutdown_daemon.is_tcp_open', return_value=True)
+    @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
+    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080")
+    @patch('gnoi_shutdown_daemon.execute_gnoi_command', return_value=(-1, "", "error"))
+    def test_send_reboot_command_failure(self, mock_execute, mock_get_port, mock_get_ip, mock_is_tcp_open):
+        """Test failure of _send_reboot_command."""
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
+        result = handler._send_reboot_command("DPU0", "10.0.0.1", "8080")
+        self.assertFalse(result)
+
+    def test_set_gnoi_shutdown_flag_exception(self):
+        """Test exception handling in _set_gnoi_shutdown_complete_flag."""
+        mock_db = MagicMock()
+        mock_db.hset.side_effect = Exception("Redis error")
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, MagicMock(), MagicMock())
+        # We don't expect an exception to be raised, just logged.
+        handler._set_gnoi_shutdown_complete_flag("DPU0", True)
+        mock_db.hset.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()

@@ -131,7 +131,7 @@ class GnoiRebootHandler:
         reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, port)
 
         if reboot_successful:
-            self._handle_successful_reboot(dpu_name, transition_type)
+            logger.log_info(f"Halting the services on DPU is successful for {dpu_name}.")
         else:
             logger.log_warning(f"Status polling of halting the services on DPU timed out for {dpu_name}.")
 
@@ -192,16 +192,6 @@ class GnoiRebootHandler:
                 return True
             time.sleep(STATUS_POLL_INTERVAL_SEC)
         return False
-
-    def _handle_successful_reboot(self, dpu_name: str, transition_type: str):
-        """Handle successful reboot completion, including clearing transition flags if needed."""
-        if transition_type == "reboot":
-            success = self._mb.clear_module_state_transition(dpu_name)
-            if success:
-                logger.log_info(f"Cleared transition for {dpu_name}")
-            else:
-                logger.log_warning(f"Failed to clear transition for {dpu_name}")
-        logger.log_info(f"Halting the services on DPU is successful for {dpu_name}.")
 
     def _set_gnoi_shutdown_complete_flag(self, dpu_name: str, value: bool):
         """
