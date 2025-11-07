@@ -1,6 +1,11 @@
 import unittest
 from unittest.mock import patch, MagicMock, call
 import subprocess
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
+
 import gnoi_shutdown_daemon
 
 # Common fixtures
