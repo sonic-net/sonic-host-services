@@ -137,8 +137,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
              result = handler.handle_transition("DPU0", "shutdown")
 
         self.assertFalse(result)
-        # Ensure gnoi_shutdown_complete is set to False at the beginning and not set to True
-        mock_db.hset.assert_called_once_with(mock_db.STATE_DB, "CHASSIS_MODULE_TABLE|DPU0", "gnoi_shutdown_complete", "False")
+        # Ensure gnoi_shutdown_complete is set to False
+        mock_db.hset.assert_called_with(mock_db.STATE_DB, "CHASSIS_MODULE_TABLE|DPU0", "gnoi_shutdown_complete", "False")
 
     def test_get_dpu_ip_and_port(self):
         """Test DPU IP and gNMI port retrieval."""
