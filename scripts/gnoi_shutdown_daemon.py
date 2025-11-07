@@ -16,25 +16,24 @@ import time
 import subprocess
 import socket
 import os
-import threading
+import sonic_py_common.daemon_base as daemon_base
 
 REBOOT_RPC_TIMEOUT_SEC   = 60   # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC  = 60   # overall time - polling RebootStatus
 STATUS_POLL_INTERVAL_SEC = 5    # delay between polls
 STATUS_RPC_TIMEOUT_SEC   = 10   # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3          # gNOI System.Reboot method: HALT
+STATE_DB_INDEX = 6
 
-from swsscommon.swsscommon import SonicV2Connector
 from sonic_py_common import syslogger
 # Centralized transition API on ModuleBase
 from sonic_platform_base.module_base import ModuleBase
 
-_v2 = None
 SYSLOG_IDENTIFIER = "gnoi-shutdown-daemon"
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
 # ##########
-# helper
+# Helpers
 # ##########
 def is_tcp_open(host: str, port: int, timeout: float = None) -> bool:
     """Fast reachability test for <host,port>. No side effects."""
@@ -45,18 +44,6 @@ def is_tcp_open(host: str, port: int, timeout: float = None) -> bool:
             return True
     except OSError:
         return False
-
-# ##########
-# DB helpers
-# ##########
-
-def _get_dbid_state(db) -> int:
-    """Resolve STATE_DB numeric ID across connector implementations."""
-    try:
-        return db.get_dbid(db.STATE_DB)
-    except Exception:
-        # Default STATE_DB index in SONiC redis instances
-        return 6
 
 def _get_pubsub(db):
     """Return a pubsub object for keyspace notifications.
@@ -70,21 +57,6 @@ def _get_pubsub(db):
         client = db.get_redis_client(db.STATE_DB)
         return client.pubsub()
 
-def _cfg_get_entry(table, key):
-    """Read CONFIG_DB row via unix-socket V2 API and normalize to str."""
-    global _v2
-    if _v2 is None:
-        from swsscommon import swsscommon
-        _v2 = swsscommon.SonicV2Connector(use_unix_socket_path=True)
-        _v2.connect(_v2.CONFIG_DB)
-    raw = _v2.get_all(_v2.CONFIG_DB, f"{table}|{key}") or {}
-    def _s(x): return x.decode("utf-8", "ignore") if isinstance(x, (bytes, bytearray)) else x
-    return {_s(k): _s(v) for k, v in raw.items()}
-
-# ############
-# gNOI helpers
-# ############
-
 def execute_gnoi_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC):
     """Run gnoi_client with a timeout; return (rc, stdout, stderr)."""
     try:
@@ -95,77 +67,18 @@ def execute_gnoi_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC):
     except Exception as e:
         return -2, "", f"Command failed: {e}"
 
-def get_dpu_ip(dpu_name: str):
-    entry = _cfg_get_entry("DHCP_SERVER_IPV4_PORT", f"bridge-midplane|{dpu_name.lower()}")
-    return entry.get("ips@")
+def get_dpu_ip(config_db, dpu_name: str) -> str:
+    key = f"bridge-midplane|{dpu_name.lower()}"
+    entry = config_db.get_entry("DHCP_SERVER_IPV4_PORT", key)
+    return entry.get("ips@") if entry else None
 
-def get_dpu_gnmi_port(dpu_name: str):
+def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
     variants = [dpu_name, dpu_name.lower(), dpu_name.upper()]
     for k in variants:
-        entry = _cfg_get_entry("DPU_PORT", k)
+        entry = config_db.get_entry("DPU_PORT", k)
         if entry and entry.get("gnmi_port"):
             return str(entry.get("gnmi_port"))
     return "8080"
-
-# ###############
-# Timeout Enforcer
-# ###############
-class TimeoutEnforcer(threading.Thread):
-    """
-    Periodically enforces CHASSIS_MODULE_TABLE transition timeouts for all modules.
-    Uses ModuleBase’s common helpers so all code paths benefit (CLI, chassisd, platform, gNOI).
-    """
-    def __init__(self, db, module_base: ModuleBase, interval_sec: int = 5):
-        super().__init__(daemon=True, name="timeout-enforcer")
-        self._db = db
-        self._mb = module_base
-        self._interval = max(1, int(interval_sec))
-        self._stop = threading.Event()
-
-    def stop(self):
-        self._stop.set()
-
-    def _list_modules(self):
-        """Discover module names by scanning CHASSIS_MODULE_TABLE keys."""
-        try:
-            client = self._db.get_redis_client(self._db.STATE_DB)
-            keys = client.keys("CHASSIS_MODULE_TABLE|*")
-            out = []
-            for k in keys or []:
-                if isinstance(k, (bytes, bytearray)):
-                    k = k.decode("utf-8", "ignore")
-                _, _, name = k.partition("|")
-                if name:
-                    out.append(name)
-            return sorted(out)
-        except Exception:
-            return []
-
-    def run(self):
-        while not self._stop.is_set():
-            try:
-                for name in self._list_modules():
-                    try:
-                        entry = self._mb.get_module_state_transition(self._db, name) or {}
-                        inprog = str(entry.get("state_transition_in_progress", "")).lower() in ("1", "true", "yes", "on")
-                        if not inprog:
-                            continue
-                        op = entry.get("transition_type", "startup")
-                        timeouts = self._mb._load_transition_timeouts()
-                        # Fallback safely to defaults if key missing/unknown
-                        timeout_sec = int(timeouts.get(op, ModuleBase._TRANSITION_TIMEOUT_DEFAULTS.get(op, 300)))
-                        if self._mb.is_module_state_transition_timed_out(self._db, name, timeout_sec):
-                            success = self._mb.clear_module_state_transition(self._db, name)
-                            if success:
-                                logger.log_info(f"Cleared transition after timeout for {name}")
-                            else:
-                                logger.log_warning(f"Failed to clear transition timeout for {name}")
-                    except Exception as e:
-                        # Keep loop resilient; log at debug noise level
-                        logger.log_debug(f"Timeout enforce error for {name}: {e}")
-            except Exception as e:
-                logger.log_debug(f"TimeoutEnforcer loop error: {e}")
-            self._stop.wait(self._interval)
 
 # ###############
 # gNOI Reboot Handler
@@ -175,8 +88,9 @@ class GnoiRebootHandler:
     Handles gNOI reboot operations for DPU modules, including sending reboot commands
     and polling for status completion.
     """
-    def __init__(self, db, module_base: ModuleBase):
+    def __init__(self, db, config_db, module_base: ModuleBase):
         self._db = db
+        self._config_db = config_db
         self._mb = module_base
 
     def handle_transition(self, dpu_name: str, transition_type: str) -> bool:
@@ -184,22 +98,33 @@ class GnoiRebootHandler:
         Handle a shutdown or reboot transition for a DPU module.
         Returns True if the operation completed successfully, False otherwise.
         """
+        # Set gnoi_shutdown_complete flag to False at the beginning
+        self._set_gnoi_shutdown_complete_flag(dpu_name, False)
+
         try:
-            dpu_ip = get_dpu_ip(dpu_name)
-            port = get_dpu_gnmi_port(dpu_name)
+            dpu_ip = get_dpu_ip(self._config_db, dpu_name)
+            port = get_dpu_gnmi_port(self._config_db, dpu_name)
             if not dpu_ip:
                 raise RuntimeError("DPU IP not found")
         except Exception as e:
             logger.log_error(f"Error getting DPU IP or port for {dpu_name}: {e}")
+            self._set_gnoi_shutdown_complete_flag(dpu_name, False)
             return False
 
         # skip if TCP is not reachable
         if not is_tcp_open(dpu_ip, int(port)):
             logger.log_info(f"Skipping {dpu_name}: {dpu_ip}:{port} unreachable (offline/down)")
+            self._set_gnoi_shutdown_complete_flag(dpu_name, False)
+            return False
+
+        # Wait for gnoi halt in progress to be set by module_base
+        if not self._wait_for_gnoi_halt_in_progress(dpu_name):
+            self._set_gnoi_shutdown_complete_flag(dpu_name, False)
             return False
 
         # Send Reboot HALT
         if not self._send_reboot_command(dpu_name, dpu_ip, port):
+            self._set_gnoi_shutdown_complete_flag(dpu_name, False)
             return False
 
         # Poll RebootStatus
@@ -210,7 +135,25 @@ class GnoiRebootHandler:
         else:
             logger.log_warning(f"Status polling of halting the services on DPU timed out for {dpu_name}.")
 
+        # clear gnoi halt in progress
+        self._mb._clear_module_gnoi_halt_in_progress(dpu_name)
+
+        # Set gnoi_shutdown_complete flag based on the outcome
+        self._set_gnoi_shutdown_complete_flag(dpu_name, reboot_successful)
+
         return reboot_successful
+
+    def _wait_for_gnoi_halt_in_progress(self, dpu_name: str) -> bool:
+        """Poll for gnoi_halt_in_progress flag."""
+        logger.log_notice(f"Waiting for gnoi halt in progress for {dpu_name}")
+        deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            if self._mb._get_module_gnoi_halt_in_progress(dpu_name):
+                logger.log_info(f"gNOI halt in progress for {dpu_name}")
+                return True
+            time.sleep(STATUS_POLL_INTERVAL_SEC)
+        logger.log_warning(f"Timed out waiting for gnoi halt in progress for {dpu_name}")
+        return False
 
     def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
         """Send gNOI Reboot HALT command to the DPU."""
@@ -253,40 +196,53 @@ class GnoiRebootHandler:
     def _handle_successful_reboot(self, dpu_name: str, transition_type: str):
         """Handle successful reboot completion, including clearing transition flags if needed."""
         if transition_type == "reboot":
-            success = self._mb.clear_module_state_transition(self._db, dpu_name)
+            success = self._mb.clear_module_state_transition(dpu_name)
             if success:
                 logger.log_info(f"Cleared transition for {dpu_name}")
             else:
                 logger.log_warning(f"Failed to clear transition for {dpu_name}")
         logger.log_info(f"Halting the services on DPU is successful for {dpu_name}.")
 
+    def _set_gnoi_shutdown_complete_flag(self, dpu_name: str, value: bool):
+        """
+        Set the gnoi_shutdown_complete flag in CHASSIS_MODULE_TABLE.
+
+        This flag is used by the platform's graceful_shutdown_handler to determine
+        if the gNOI shutdown has completed successfully, instead of checking oper status.
+
+        Args:
+            dpu_name: The name of the DPU module (e.g., 'DPU0')
+            value: True if gNOI shutdown completed successfully, False otherwise
+        """
+        try:
+            key = f"CHASSIS_MODULE_TABLE|{dpu_name}"
+            self._db.hset(self._db.STATE_DB, key, "gnoi_shutdown_complete", "True" if value else "False")
+            logger.log_info(f"Set gnoi_shutdown_complete={value} for {dpu_name}")
+        except Exception as e:
+            logger.log_error(f"Failed to set gnoi_shutdown_complete flag for {dpu_name}: {e}")
+
 # #########
 # Main loop
 # #########
 
 def main():
-    # Connect for STATE_DB pubsub + reads
-    db = SonicV2Connector()
-    db.connect(db.STATE_DB)
+    # Connect for STATE_DB pubsub + reads and CONFIG_DB for lookups
+    db = daemon_base.db_connect("STATE_DB")
+    config_db = daemon_base.db_connect("CONFIG_DB")
 
     # Centralized transition reader
     module_base = ModuleBase()
 
     # gNOI reboot handler
-    reboot_handler = GnoiRebootHandler(db, module_base)
+    reboot_handler = GnoiRebootHandler(db, config_db, module_base)
 
     pubsub = _get_pubsub(db)
-    state_dbid = _get_dbid_state(db)
 
     # Listen to keyspace notifications for CHASSIS_MODULE_TABLE keys
-    topic = f"__keyspace@{state_dbid}__:CHASSIS_MODULE_TABLE|*"
+    topic = f"__keyspace@{STATE_DB_INDEX}__:CHASSIS_MODULE_TABLE|*"
     pubsub.psubscribe(topic)
 
     logger.log_info("gnoi-shutdown-daemon started and listening for shutdown events.")
-
-    # Start background timeout enforcement so stuck transitions auto-clear
-    enforcer = TimeoutEnforcer(db, module_base, interval_sec=5)
-    enforcer.start()
 
     while True:
         message = pubsub.get_message()
@@ -308,24 +264,23 @@ def main():
 
             # Read state via centralized API
             try:
-                entry = module_base.get_module_state_transition(db, dpu_name) or {}
+                entry = module_base.get_module_state_transition(dpu_name) or {}
             except Exception as e:
                 logger.log_error(f"Failed reading transition state for {dpu_name}: {e}")
                 time.sleep(1)
                 continue
 
             transition_type = entry.get("transition_type")
-            if entry.get("state_transition_in_progress", "False") == "True" and (transition_type == "shutdown" or transition_type == "reboot"):
+            if entry.get("state_transition_in_progress", "False") == "True" and (transition_type == "shutdown"):
                 logger.log_info(f"{transition_type} request detected for {dpu_name}. Initiating gNOI reboot.")
                 reboot_handler.handle_transition(dpu_name, transition_type)
 
                 # NOTE:
-                # For shutdown transitions, the platform clears the transition flag.
-                # For reboot transitions, the daemon clears it upon successful completion.
-                # The TimeoutEnforcer thread clears any stuck transitions that exceed timeout.
+                # For startup/shutdown transitions, the platform's graceful_shutdown_handler
+                # is responsible for clearing the transition flag as a final step.
+                # For reboot transitions, the reboot code is responsible for clearing the flag.
 
         time.sleep(1)
 
 if __name__ == "__main__":
     main()
-
