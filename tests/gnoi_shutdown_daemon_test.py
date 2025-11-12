@@ -56,7 +56,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon._get_pubsub')
     @patch('gnoi_shutdown_daemon.platform.Platform')
-    def test_main_loop_flow(self, mock_platform, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
+    @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
+    @patch('threading.Thread')
+    def test_main_loop_flow(self, mock_thread, mock_config_connector, mock_platform, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
         """Test the main loop processing of a shutdown event."""
         # Mock DB connections
         mock_state_db = MagicMock()
@@ -67,13 +69,18 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_chassis = MagicMock()
         mock_platform.return_value.get_chassis.return_value = mock_chassis
 
-        # Mock pubsub
+        # Mock pubsub to yield one message then stop
         mock_pubsub = MagicMock()
         mock_pubsub.get_message.side_effect = [mock_message, KeyboardInterrupt]
         mock_get_pubsub.return_value = mock_pubsub
 
+        # Mock ConfigDB to return a valid entry
+        mock_config = MagicMock()
+        mock_config_connector.return_value = mock_config
+        mock_config.get_entry.return_value = mock_config_entry
+
         # Mock Redis client for keyspace notification config
-        with patch('gnoi_shutdown_daemon.redis.Redis') as mock_redis:
+        with patch('gnoi_shutdown_daemon.redis.Redis'):
             with self.assertRaises(KeyboardInterrupt):
                 gnoi_shutdown_daemon.main()
 
@@ -81,8 +88,10 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_db_connect.assert_has_calls([call("STATE_DB"), call("CONFIG_DB")])
         mock_gnoi_reboot_handler.assert_called_with(mock_state_db, mock_config_db, mock_chassis)
 
-        # Note: In the actual implementation, the handler is called in a background thread,
-        # so we can't easily verify the call here without more complex mocking
+        # Verify that a thread was created to handle the transition
+        mock_thread.assert_called_once()
+        # Verify the thread was started
+        mock_thread.return_value.start.assert_called_once()
 
     @patch('gnoi_shutdown_daemon.get_dpu_ip')
     @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port')
