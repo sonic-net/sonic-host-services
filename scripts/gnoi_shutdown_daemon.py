@@ -326,7 +326,6 @@ def main():
 
                 # Read admin_status from CONFIG_DB
                 try:
-                    from swsscommon import swsscommon
                     config = swsscommon.ConfigDBConnector()
                     config.connect()
                     
