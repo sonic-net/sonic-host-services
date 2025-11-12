@@ -23,7 +23,7 @@ from swsscommon import swsscommon
 
 REBOOT_RPC_TIMEOUT_SEC   = 60   # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC  = 60   # overall time - polling RebootStatus
-STATUS_POLL_INTERVAL_SEC = 5    # delay between polls
+STATUS_POLL_INTERVAL_SEC = 1    # delay between polls
 STATUS_RPC_TIMEOUT_SEC   = 10   # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3          # gNOI System.Reboot method: HALT
 STATE_DB_INDEX = 6
@@ -73,12 +73,8 @@ def get_dpu_ip(config_db, dpu_name: str) -> str:
     dpu_name_lower = dpu_name.lower()
     
     try:
-        from swsscommon import swsscommon
-        config = swsscommon.ConfigDBConnector()
-        config.connect()
-        
         key = f"bridge-midplane|{dpu_name_lower}"
-        entry = config.get_entry("DHCP_SERVER_IPV4_PORT", key)
+        entry = config_db.get_entry("DHCP_SERVER_IPV4_PORT", key)
         
         if entry:
             ips = entry.get("ips")
@@ -96,17 +92,14 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
     dpu_name_lower = dpu_name.lower()
     
     try:
-        from swsscommon import swsscommon
-        config = swsscommon.ConfigDBConnector()
-        config.connect()
-        
         for k in [dpu_name_lower, dpu_name.upper(), dpu_name]:
-            entry = config.get_entry("DPU", k)
+            entry = config_db.get_entry("DPU", k)
             if entry and entry.get("gnmi_port"):
                 return str(entry.get("gnmi_port"))
     except Exception as e:
         logger.log_warning(f"{dpu_name}: Error getting gNMI port, using default: {e}")
     
+    logger.log_info(f"{dpu_name}: gNMI port not found, using default 8080")
     return "8080"
 
 # ###############
@@ -122,7 +115,7 @@ class GnoiRebootHandler:
         self._config_db = config_db
         self._chassis = chassis
 
-    def handle_transition(self, dpu_name: str, transition_type: str) -> bool:
+    def _handle_transition(self, dpu_name: str, transition_type: str) -> bool:
         """
         Handle a shutdown or reboot transition for a DPU module.
         Returns True if the operation completed successfully, False otherwise.
@@ -190,7 +183,7 @@ class GnoiRebootHandler:
                     halt_in_progress = entry.get("gnoi_halt_in_progress", "False")
                     
                     if halt_in_progress == "True":
-                        logger.log_notice(f"{dpu_name}: PCI detach complete, proceeding with gNOI")
+                        logger.log_notice(f"{dpu_name}: PCI detach complete, proceeding for halting services via gNOI")
                         return True
                     
             except Exception as e:
@@ -325,10 +318,7 @@ def main():
 
                 # Read admin_status from CONFIG_DB
                 try:
-                    config = swsscommon.ConfigDBConnector()
-                    config.connect()
-                    
-                    entry = config.get_entry("CHASSIS_MODULE", dpu_name)
+                    entry = config_db.get_entry("CHASSIS_MODULE", dpu_name)
                     if not entry:
                         continue
                     
@@ -350,7 +340,7 @@ def main():
                     # Wrapper to clean up after transition
                     def handle_and_cleanup(dpu):
                         try:
-                            reboot_handler.handle_transition(dpu, "shutdown")
+                            reboot_handler._handle_transition(dpu, "shutdown")
                         finally:
                             with active_transitions_lock:
                                 active_transitions.discard(dpu)
