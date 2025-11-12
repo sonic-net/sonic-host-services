@@ -106,7 +106,7 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
             if entry and entry.get("gnmi_port"):
                 return str(entry.get("gnmi_port"))
     except Exception as e:
-        pass
+        logger.log_warning(f"{dpu_name}: Error getting gNMI port, using default: {e}")
     
     return "8080"
 
