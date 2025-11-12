@@ -214,7 +214,7 @@ class TestHostcfgdDaemon(TestCase):
                 call(['sonic-kdump-config', '--disable']),
                 call(['sonic-kdump-config', '--num_dumps', '3']),
                 call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G']),
-                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--remote']),  # Covering remote
                 call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
                 call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
             ]
@@ -235,7 +235,7 @@ class TestHostcfgdDaemon(TestCase):
                 call(['sonic-kdump-config', '--enable']),
                 call(['sonic-kdump-config', '--num_dumps', '3']),
                 call(['sonic-kdump-config', '--memory', '0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G']),
-                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--remote']),  # Covering remote
                 call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
                 call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
             ]
@@ -263,7 +263,7 @@ class TestHostcfgdDaemon(TestCase):
                 call(['sonic-kdump-config', '--enable']),
                 call(['sonic-kdump-config', '--num_dumps', '3']),
                 call(['sonic-kdump-config', '--memory', '8G-:1G']),
-                call(['sonic-kdump-config', '--remote', 'false']),  # Covering remote
+                call(['sonic-kdump-config', '--remote']),  # Covering remote
                 call(['sonic-kdump-config', '--ssh_string', 'user@localhost']),  # Covering ssh_string
                 call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
             ]
