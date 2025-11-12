@@ -29,11 +29,20 @@ setup(
     url = 'https://github.com/Azure/sonic-buildimage',
     maintainer = 'Joe LeVeque',
     maintainer_email = 'jolevequ@microsoft.com',
-    packages = ['host_modules', 'utils'],
+    packages = [
+        'host_modules',
+        'utils'
+    ],
     # Map packages to their actual dirs, and map top-level modules to 'scripts/'
-    package_dir={'host_modules': 'host_modules', 'utils': 'utils', '': 'scripts'},
+    package_dir = {
+        'host_modules': 'host_modules',
+        'utils': 'utils',
+        '': 'scripts'
+    },
     # install the module that the console script imports (located at scripts/gnoi_shutdown_daemon.py)
-    py_modules=['gnoi_shutdown_daemon'],
+    py_modules = [
+        'gnoi_shutdown_daemon'
+    ],
     scripts=[
         'scripts/caclmgrd',
         'scripts/hostcfgd',
