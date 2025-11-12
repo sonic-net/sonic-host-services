@@ -31,7 +31,6 @@ CONFIG_DB_INDEX = 4
 
 from sonic_py_common import syslogger
 # Centralized transition API on ModuleBase
-from sonic_platform_base.module_base import ModuleBase
 
 SYSLOG_IDENTIFIER = "gnoi-shutdown-daemon"
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
