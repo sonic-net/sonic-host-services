@@ -160,12 +160,14 @@ class GnoiRebootHandler:
         
         # Clear halt_in_progress to signal platform
         try:
-            module_index = int(dpu_name.replace("DPU", ""))
+            if not dpu_name.startswith("DPU") or not dpu_name[3:].isdigit():
+                logger.log_error(f"{dpu_name}: Invalid DPU name format, cannot clear halt flag")
+                return reboot_successful
+            module_index = int(dpu_name[3:])
             self._chassis.get_module(module_index).clear_module_gnoi_halt_in_progress()
             logger.log_notice(f"{dpu_name}: gNOI sequence {'completed' if reboot_successful else 'failed'}")
         except Exception as e:
             logger.log_error(f"{dpu_name}: Failed to clear halt flag: {e}")
-
         return reboot_successful
 
     def _wait_for_gnoi_halt_in_progress(self, dpu_name: str) -> bool:
