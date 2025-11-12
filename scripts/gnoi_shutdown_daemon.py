@@ -137,7 +137,7 @@ class GnoiRebootHandler:
             dpu_ip = get_dpu_ip(self._config_db, dpu_name)
             port = get_dpu_gnmi_port(self._config_db, dpu_name)
             if not dpu_ip:
-                logger.log_error(f"{dpu_name}: IP not found, cannot proceed")
+                logger.log_error(f"{dpu_name}: IP not found in DHCP_SERVER_IPV4_PORT table (key: bridge-midplane|{dpu_name.lower()}), cannot proceed")
                 self._set_gnoi_shutdown_complete_flag(dpu_name, False)
                 return False
         except Exception as e:
