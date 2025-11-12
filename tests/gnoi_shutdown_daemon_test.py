@@ -216,7 +216,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_config.get_entry.return_value = {}
             
             port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
-            self.assertEqual(port, "8080")    def test_get_pubsub_fallback(self):
+            self.assertEqual(port, "8080")
+
+    def test_get_pubsub_fallback(self):
         """Test _get_pubsub with redis client."""
         with patch('gnoi_shutdown_daemon.redis.Redis') as mock_redis:
             mock_redis_instance = MagicMock()
