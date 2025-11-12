@@ -132,7 +132,6 @@ class GnoiRebootHandler:
         
         # Get DPU configuration
         dpu_ip = None
-        port = "8080"
         try:
             dpu_ip = get_dpu_ip(self._config_db, dpu_name)
             port = get_dpu_gnmi_port(self._config_db, dpu_name)
