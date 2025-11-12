@@ -38,15 +38,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled"
-                    },
                     "pmon": {
                         "state": "enabled",
                         "delayed": "{% if 'type' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['type'] == 'SpineRouter' %}False{% else %}True{% endif %}",
@@ -77,15 +68,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "enabled"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled"
-                    },
                     "pmon": {
                         "auto_restart": "enabled",
                         "has_global_scope": "False",
@@ -103,9 +85,6 @@ FEATURED_TEST_VECTOR = [
                 call(["sudo", "systemctl", "unmask", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "enable", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "start", "mux.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
@@ -148,16 +127,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
-                    },
                     "sflow": {
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
@@ -189,16 +158,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "always_disabled"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
-                    },
                     "sflow": {
                         "auto_restart": "enabled",
                         "has_global_scope": "True",
@@ -214,9 +173,6 @@ FEATURED_TEST_VECTOR = [
                 call(["sudo", "systemctl", "stop", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "disable", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "mask", "mux.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "unmask", "sflow.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "enable", "sflow.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "start", "sflow.service"], capture_output=True, check=True, text=True),
@@ -262,16 +218,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
-                    },
                 },
             },
             "expected_config_db": {
@@ -294,25 +240,12 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "always_disabled"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
-                    },
                 },
             },
             "enable_feature_subprocess_calls": [
                 call(["sudo", "systemctl", "stop", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "disable", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "mask", "mux.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
@@ -355,16 +288,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
-                    },
                 },
             },
             "expected_config_db": {
@@ -387,16 +310,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "always_disabled"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
-                    },
                 },
             },
             "enable_feature_subprocess_calls": [
@@ -406,9 +319,6 @@ FEATURED_TEST_VECTOR = [
                 call(["sudo", "systemctl", "stop", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "disable", "mux.service"], capture_output=True, check=True, text=True),
                 call(["sudo", "systemctl", "mask", "mux.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "unmask", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "enable", "telemetry.service"], capture_output=True, check=True, text=True),
-                call(["sudo", "systemctl", "start", "telemetry.service"], capture_output=True, check=True, text=True),
             ],
             "daemon_reload_subprocess_call": [
                 call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
@@ -452,16 +362,6 @@ FEATURED_TEST_VECTOR = [
                         "set_owner": "local",
                         "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
                     },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
-                    },
                 },
             },
             "expected_config_db": {
@@ -483,16 +383,6 @@ FEATURED_TEST_VECTOR = [
                         "high_mem_alert": "disabled",
                         "set_owner": "local",
                         "state": "enabled"
-                    },
-                    "telemetry": {
-                        "auto_restart": "enabled",
-                        "has_global_scope": "True",
-                        "has_per_asic_scope": "False",
-                        "delayed": "True",
-                        "high_mem_alert": "disabled",
-                        "set_owner": "kube",
-                        "state": "enabled",
-                        "status": "enabled"
                     },
                 },
             },
@@ -1224,16 +1114,6 @@ FEATURE_DAEMON_CFG_DB = {
             "high_mem_alert": "disabled",
             "set_owner": "local",
             "state": "{% if 'subtype' in DEVICE_METADATA['localhost'] and DEVICE_METADATA['localhost']['subtype'] == 'DualToR' %}enabled{% else %}always_disabled{% endif %}"
-        },
-        "telemetry": {
-            "auto_restart": "enabled",
-            "has_global_scope": "True",
-            "has_per_asic_scope": "False",
-            "delayed": "True",
-            "high_mem_alert": "disabled",
-            "set_owner": "kube",
-            "state": "enabled",
-            "status": "enabled"
         },
     },
     "DEVICE_METADATA": {
