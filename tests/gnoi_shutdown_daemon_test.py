@@ -6,6 +6,12 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
+# Mock sonic_platform before it's imported by other modules
+sys.modules['sonic_platform'] = MagicMock()
+# Global mock for swsscommon
+swsscommon = MagicMock()
+sys.modules['swsscommon'] = swsscommon
+
 import gnoi_shutdown_daemon
 
 # Common fixtures
@@ -130,7 +136,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         with patch('gnoi_shutdown_daemon.swsscommon.Table', return_value=mock_table):
             handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
-            result = handler.handle_transition("DPU0", "shutdown")
+            result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertTrue(result)
         mock_chassis.get_module.assert_called_with(0)
@@ -175,7 +181,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         with patch('gnoi_shutdown_daemon.swsscommon.Table', return_value=mock_table):
             handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
-            result = handler.handle_transition("DPU0", "shutdown")
+            result = handler._handle_transition("DPU0", "shutdown")
 
         # Should still succeed - code proceeds anyway after timeout warning
         self.assertTrue(result)
@@ -190,7 +196,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_config_connector.return_value = mock_config
             mock_config.get_entry.return_value = mock_ip_entry
             
-            ip = gnoi_shutdown_daemon.get_dpu_ip(None, "DPU0")
+            ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU0")
             self.assertEqual(ip, "10.0.0.1")
             mock_config.get_entry.assert_called_with("DHCP_SERVER_IPV4_PORT", "bridge-midplane|dpu0")
 
@@ -200,7 +206,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_config_connector.return_value = mock_config
             mock_config.get_entry.return_value = mock_port_entry
             
-            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(None, "DPU0")
+            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
             self.assertEqual(port, "12345")
 
         # Test port fallback
@@ -209,10 +215,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_config_connector.return_value = mock_config
             mock_config.get_entry.return_value = {}
             
-            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(None, "DPU0")
-            self.assertEqual(port, "8080")
-
-    def test_get_pubsub_fallback(self):
+            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
+            self.assertEqual(port, "8080")    def test_get_pubsub_fallback(self):
         """Test _get_pubsub with redis client."""
         with patch('gnoi_shutdown_daemon.redis.Redis') as mock_redis:
             mock_redis_instance = MagicMock()
@@ -233,7 +237,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_chassis = MagicMock()
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
-        result = handler.handle_transition("DPU0", "shutdown")
+        result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertFalse(result)
         # Verify that the completion flag was set to False
@@ -271,7 +275,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 mock_port_entry  # DPU0 succeeds
             ]
             
-            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(None, "DPU0")
+            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
             self.assertEqual(port, "12345")
             self.assertEqual(mock_config.get_entry.call_count, 3)
 
