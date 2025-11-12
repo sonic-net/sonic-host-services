@@ -303,10 +303,9 @@ def main():
             
             if msg_type == "pmessage":
                 channel = message.get("channel", b"")
-                data = message.get("data", b"")
-                
                 if isinstance(channel, bytes):
                     channel = channel.decode('utf-8')
+                data = message.get("data", b"")
                 if isinstance(data, bytes):
                     data = data.decode('utf-8')
                 
