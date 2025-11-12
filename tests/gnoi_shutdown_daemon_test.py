@@ -55,7 +55,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('gnoi_shutdown_daemon.platform.Platform')
+    @patch('sonic_platform.platform', create=True)
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
     def test_main_loop_flow(self, mock_thread, mock_config_connector, mock_platform, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
@@ -113,7 +113,10 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_table.get.return_value = (True, [("gnoi_halt_in_progress", "True")])
         
         # Mock time for polling
-        mock_monotonic.side_effect = [0, 1]  # First check succeeds
+        mock_monotonic.side_effect = [
+            0, 1,  # For _wait_for_gnoi_halt_in_progress
+            2, 3   # For _poll_reboot_status
+        ]
         
         # Reboot command success, RebootStatus success
         mock_execute_gnoi.side_effect = [
@@ -274,7 +277,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('gnoi_shutdown_daemon.platform.Platform')
+    @patch('sonic_platform.platform', create=True)
     def test_main_loop_no_dpu_name(self, mock_platform, mock_get_pubsub, mock_db_connect):
         """Test main loop with a malformed key."""
         mock_chassis = MagicMock()
@@ -293,7 +296,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('gnoi_shutdown_daemon.platform.Platform')
+    @patch('sonic_platform.platform', create=True)
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     def test_main_loop_get_transition_exception(self, mock_config_connector, mock_platform, mock_get_pubsub, mock_db_connect):
         """Test main loop when get_entry raises an exception."""
