@@ -220,21 +220,21 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_redis.assert_called_with(unix_socket_path='/var/run/redis/redis.sock', db=gnoi_shutdown_daemon.CONFIG_DB_INDEX)
             self.assertEqual(pubsub, mock_redis_instance.pubsub.return_value)
 
-    @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
+    @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value=None)
     @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080")
-    def test_handle_transition_ip_failure(self, mock_get_gnmi_port, mock_get_dpu_ip):
+    @patch('gnoi_shutdown_daemon.GnoiRebootHandler._set_gnoi_shutdown_complete_flag')
+    def test_handle_transition_ip_failure(self, mock_set_flag, mock_get_gnmi_port, mock_get_dpu_ip):
         """Test handle_transition failure on DPU IP retrieval."""
         mock_db = MagicMock()
         mock_config_db = MagicMock()
         mock_chassis = MagicMock()
-        
-        # Override to return None (IP not found)
-        mock_get_dpu_ip.return_value = None
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
         result = handler.handle_transition("DPU0", "shutdown")
 
         self.assertFalse(result)
+        # Verify that the completion flag was set to False
+        mock_set_flag.assert_called_once_with("DPU0", False)
 
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
     @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080")
