@@ -74,7 +74,6 @@ def get_dpu_ip(config_db, dpu_name: str) -> str:
     dpu_name_lower = dpu_name.lower()
     
     try:
-        # Use swsscommon.ConfigDBConnector for CONFIG_DB access
         from swsscommon import swsscommon
         config = swsscommon.ConfigDBConnector()
         config.connect()
@@ -83,19 +82,13 @@ def get_dpu_ip(config_db, dpu_name: str) -> str:
         entry = config.get_entry("DHCP_SERVER_IPV4_PORT", key)
         
         if entry:
-            # The field is 'ips' (a list), not 'ips@'
             ips = entry.get("ips")
             if ips:
-                # ips is a list, get the first IP
                 ip = ips[0] if isinstance(ips, list) else ips
-                logger.log_notice(f"Found DPU IP for {dpu_name}: {ip}")
                 return ip
         
-        logger.log_warning(f"DPU IP not found for {dpu_name}")
     except Exception as e:
-        import traceback
-        logger.log_error(f"Error getting DPU IP for {dpu_name}: {e}")
-        logger.log_error(f"Traceback: {traceback.format_exc()}")
+        logger.log_error(f"{dpu_name}: Error getting IP: {e}")
     
     return None
 
@@ -108,17 +101,13 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
         config = swsscommon.ConfigDBConnector()
         config.connect()
         
-        # Try different key patterns for DPU table
         for k in [dpu_name_lower, dpu_name.upper(), dpu_name]:
             entry = config.get_entry("DPU", k)
             if entry and entry.get("gnmi_port"):
-                port = str(entry.get("gnmi_port"))
-                logger.log_notice(f"Found GNMI port for {dpu_name}: {port}")
-                return port
+                return str(entry.get("gnmi_port"))
     except Exception as e:
-        logger.log_info(f"Error getting GNMI port for {dpu_name}: {e}")
+        pass
     
-    logger.log_info(f"GNMI port not found for {dpu_name}, using default 8080")
     return "8080"
 
 # ###############
@@ -138,91 +127,54 @@ class GnoiRebootHandler:
         """
         Handle a shutdown or reboot transition for a DPU module.
         Returns True if the operation completed successfully, False otherwise.
-        
-        This method is resilient - it logs errors but continues the gNOI sequence
-        to ensure best-effort shutdown coordination.
         """
-        logger.log_notice(f"=== Starting handle_transition for {dpu_name}, type={transition_type} ===")
+        logger.log_notice(f"{dpu_name}: Starting gNOI shutdown sequence")
         
-        # NOTE: Do NOT set gnoi_shutdown_complete to False at the start!
-        # The platform code may interpret False as "gNOI failed" and proceed with forced shutdown.
-        # Only set this flag at the end of the gNOI sequence with the actual result.
-
-        # Get DPU configuration - log error but continue with defaults if needed
+        # Get DPU configuration
         dpu_ip = None
-        port = "8080"  # default
+        port = "8080"
         try:
             dpu_ip = get_dpu_ip(self._config_db, dpu_name)
             port = get_dpu_gnmi_port(self._config_db, dpu_name)
             if not dpu_ip:
-                logger.log_error(f"DPU IP not found for {dpu_name} - cannot proceed with gNOI")
+                logger.log_error(f"{dpu_name}: IP not found, cannot proceed")
                 self._set_gnoi_shutdown_complete_flag(dpu_name, False)
                 return False
-            logger.log_notice(f"DPU {dpu_name} config: IP={dpu_ip}, port={port}")
         except Exception as e:
-            logger.log_error(f"Error getting DPU IP or port for {dpu_name}: {e} - cannot proceed")
+            logger.log_error(f"{dpu_name}: Failed to get configuration: {e}")
             self._set_gnoi_shutdown_complete_flag(dpu_name, False)
             return False
 
-        """
-        # skip if TCP is not reachable
-        logger.log_notice(f"Checking TCP reachability for {dpu_name} at {dpu_ip}:{port}")
-        if not is_tcp_open(dpu_ip, int(port)):
-            logger.log_warning(f"Skipping {dpu_name}: {dpu_ip}:{port} unreachable (offline/down)")
-            self._set_gnoi_shutdown_complete_flag(dpu_name, False)
-            return False
-        logger.log_notice(f"TCP port {dpu_ip}:{port} is reachable")
-        """
-
-        # NOTE: Platform code should set gnoi_halt_in_progress when ready for gNOI coordination
-        # Wait for platform to complete PCI detach and set halt_in_progress flag
-        logger.log_notice(f"Waiting for platform PCI detach (gnoi_halt_in_progress) for {dpu_name}")
+        # Wait for platform PCI detach completion
         if not self._wait_for_gnoi_halt_in_progress(dpu_name):
-            logger.log_error(f"Timeout waiting for gnoi_halt_in_progress for {dpu_name} - proceeding anyway")
-        else:
-            logger.log_notice(f"Platform PCI detach complete for {dpu_name}, proceeding with gNOI")
+            logger.log_warning(f"{dpu_name}: Timeout waiting for PCI detach, proceeding anyway")
 
-        # Send Reboot HALT (request command)
-        logger.log_notice(f"Sending gNOI Reboot HALT request to {dpu_name}")
+        # Send gNOI Reboot HALT command
         reboot_sent = self._send_reboot_command(dpu_name, dpu_ip, port)
         if not reboot_sent:
-            logger.log_error(f"Failed to send gNOI Reboot request to {dpu_name} - will still poll for status")
+            logger.log_error(f"{dpu_name}: Failed to send Reboot command")
 
-        # Poll RebootStatus (response command) - this completes the gNOI transaction
-        logger.log_notice(f"Polling gNOI RebootStatus response for {dpu_name}")
+        # Poll for RebootStatus completion
         reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, port)
 
-        # Set gnoi_shutdown_complete flag based on the response command result
-        if reboot_successful:
-            logger.log_info(f"gNOI shutdown sequence completed successfully for {dpu_name}")
-            self._set_gnoi_shutdown_complete_flag(dpu_name, True)
-        else:
-            logger.log_error(f"gNOI shutdown sequence failed or timed out for {dpu_name}")
-            self._set_gnoi_shutdown_complete_flag(dpu_name, False)
-
-        # Clear gnoi_halt_in_progress to signal platform that daemon is done
-        # Platform's _graceful_shutdown_handler waits for this flag to be cleared
-        # Use the ModuleBase API via chassis.get_module() just like chassisd does
+        # Set completion flag
+        self._set_gnoi_shutdown_complete_flag(dpu_name, reboot_successful)
+        
+        # Clear halt_in_progress to signal platform
         try:
-            # Get module index from DPU name (e.g., "DPU5" -> 5)
             module_index = int(dpu_name.replace("DPU", ""))
-            module = self._chassis.get_module(module_index)
-            module.clear_module_gnoi_halt_in_progress()
-            logger.log_notice(f"Cleared gnoi_halt_in_progress flag for {dpu_name} using ModuleBase API")
+            self._chassis.get_module(module_index).clear_module_gnoi_halt_in_progress()
+            logger.log_notice(f"{dpu_name}: gNOI sequence {'completed' if reboot_successful else 'failed'}")
         except Exception as e:
-            logger.log_error(f"Failed to clear gnoi_halt_in_progress for {dpu_name}: {e}")
+            logger.log_error(f"{dpu_name}: Failed to clear halt flag: {e}")
 
-        logger.log_notice(f"=== Completed handle_transition for {dpu_name}, result={reboot_successful} ===")
         return reboot_successful
 
     def _wait_for_gnoi_halt_in_progress(self, dpu_name: str) -> bool:
         """
         Poll for gnoi_halt_in_progress flag in STATE_DB CHASSIS_MODULE_TABLE.
-        
-        This flag is set by the platform after completing PCI detach, signaling
-        that it's safe to proceed with gNOI halt commands.
+        This flag is set by the platform after completing PCI detach.
         """
-        logger.log_notice(f"Polling for gnoi_halt_in_progress flag for {dpu_name} (timeout: {STATUS_POLL_TIMEOUT_SEC}s)")
         deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
         poll_count = 0
         
@@ -230,7 +182,6 @@ class GnoiRebootHandler:
             poll_count += 1
             
             try:
-                # Read directly from STATE_DB using Table API (same as in main loop)
                 table = swsscommon.Table(self._db, "CHASSIS_MODULE_TABLE")
                 (status, fvs) = table.get(dpu_name)
                 
@@ -238,26 +189,19 @@ class GnoiRebootHandler:
                     entry = dict(fvs)
                     halt_in_progress = entry.get("gnoi_halt_in_progress", "False")
                     
-                    if poll_count % 3 == 1:  # Log every 3rd poll
-                        logger.log_notice(f"Poll #{poll_count} for {dpu_name}: gnoi_halt_in_progress={halt_in_progress}")
-                    
                     if halt_in_progress == "True":
-                        logger.log_notice(f"gnoi_halt_in_progress confirmed for {dpu_name} after {poll_count} polls")
+                        logger.log_notice(f"{dpu_name}: PCI detach complete, proceeding with gNOI")
                         return True
-                else:
-                    logger.log_warning(f"Failed to read CHASSIS_MODULE_TABLE entry for {dpu_name}")
                     
             except Exception as e:
-                logger.log_error(f"Exception reading gnoi_halt_in_progress for {dpu_name}: {e}")
+                logger.log_error(f"{dpu_name}: Error reading halt flag: {e}")
             
             time.sleep(STATUS_POLL_INTERVAL_SEC)
         
-        logger.log_warning(f"Timed out waiting for gnoi_halt_in_progress for {dpu_name} after {poll_count} polls ({STATUS_POLL_TIMEOUT_SEC}s)")
         return False
 
     def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
         """Send gNOI Reboot HALT command to the DPU."""
-        logger.log_notice(f"Issuing gNOI Reboot to {dpu_ip}:{port}")
         reboot_cmd = [
             "docker", "exec", "gnmi", "gnoi_client",
             f"-target={dpu_ip}:{port}",
@@ -268,16 +212,12 @@ class GnoiRebootHandler:
         ]
         rc, out, err = execute_gnoi_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
         if rc != 0:
-            logger.log_error(f"gNOI Reboot command failed for {dpu_name}: {err or out}")
+            logger.log_error(f"{dpu_name}: Reboot command failed - {err or out}")
             return False
         return True
 
     def _poll_reboot_status(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
         """Poll RebootStatus until completion or timeout."""
-        logger.log_notice(
-            f"Polling RebootStatus for {dpu_name} at {dpu_ip}:{port} "
-            f"(timeout {STATUS_POLL_TIMEOUT_SEC}s, interval {STATUS_POLL_INTERVAL_SEC}s)"
-        )
         deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
         status_cmd = [
             "docker", "exec", "gnmi", "gnoi_client",
@@ -352,40 +292,28 @@ def main():
     topic = f"__keyspace@{CONFIG_DB_INDEX}__:CHASSIS_MODULE|*"
     pubsub.psubscribe(topic)
 
-    logger.log_warning("gnoi-shutdown-daemon started and listening for CHASSIS_MODULE admin_status changes in CONFIG_DB.")
+    logger.log_notice("gnoi-shutdown-daemon started, monitoring CHASSIS_MODULE admin_status changes")
 
-    loop_counter = 0
     while True:
-        loop_counter += 1
-        if loop_counter % 10 == 0:  # Log heartbeat every ~10 seconds for testing
-            logger.log_warning(f"Main loop active (iteration {loop_counter})")
-        
         message = pubsub.get_message(timeout=1.0)
         if message:
             msg_type = message.get("type")
-            # Decode bytes to string if needed
             if isinstance(msg_type, bytes):
                 msg_type = msg_type.decode('utf-8')
-            
-            logger.log_warning(f"Received message type: {msg_type}")
             
             if msg_type == "pmessage":
                 channel = message.get("channel", b"")
                 data = message.get("data", b"")
                 
-                # Decode bytes to string if needed
                 if isinstance(channel, bytes):
                     channel = channel.decode('utf-8')
                 if isinstance(data, bytes):
                     data = data.decode('utf-8')
                 
-                logger.log_warning(f"Keyspace event: channel={channel}, data={data}")
-                
-                # channel format: "__keyspace@4__:CHASSIS_MODULE|DPU0"
+                # Extract key from channel: "__keyspace@4__:CHASSIS_MODULE|DPU0"
                 key = channel.split(":", 1)[-1] if ":" in channel else channel
 
                 if not key.startswith("CHASSIS_MODULE|"):
-                    logger.log_warning(f"Ignoring non-CHASSIS_MODULE key: {key}")
                     continue
 
                 # Extract module name
@@ -394,12 +322,9 @@ def main():
                     if not dpu_name:
                         raise IndexError
                 except IndexError:
-                    logger.log_warning(f"Failed to extract DPU name from key: {key}")
                     continue
 
-                logger.log_warning(f"CHASSIS_MODULE change detected for {dpu_name}")
-
-                # Read admin_status from CONFIG_DB using ConfigDBConnector
+                # Read admin_status from CONFIG_DB
                 try:
                     from swsscommon import swsscommon
                     config = swsscommon.ConfigDBConnector()
@@ -407,42 +332,32 @@ def main():
                     
                     entry = config.get_entry("CHASSIS_MODULE", dpu_name)
                     if not entry:
-                        logger.log_warning(f"No CHASSIS_MODULE entry found for {dpu_name}")
                         continue
                     
-                    logger.log_warning(f"Module config for {dpu_name}: {entry}")
                 except Exception as e:
-                    import traceback
-                    logger.log_error(f"Failed reading CHASSIS_MODULE config for {dpu_name}: {e}")
-                    logger.log_error(f"Traceback: {traceback.format_exc()}")
+                    logger.log_error(f"{dpu_name}: Failed to read CONFIG_DB: {e}")
                     continue
 
                 admin_status = entry.get("admin_status", "")
                 
-                logger.log_warning(f"{dpu_name}: admin_status={admin_status}")
-                
                 if admin_status == "down":
-                    # Check if we already have an active thread for this DPU
+                    # Check if already processing this DPU
                     with active_transitions_lock:
                         if dpu_name in active_transitions:
-                            logger.log_warning(f"Shutdown already in progress for {dpu_name}, skipping duplicate event")
                             continue
-                        # Mark this DPU as having an active shutdown immediately to prevent race conditions
                         active_transitions.add(dpu_name)
-                        logger.log_notice(f"Added {dpu_name} to active transitions set")
                     
-                    logger.log_warning(f"Admin shutdown request detected for {dpu_name}. Initiating gNOI HALT.")
+                    logger.log_notice(f"{dpu_name}: Admin shutdown detected, initiating gNOI HALT")
                     
-                    # Wrapper function to clean up after transition completes
+                    # Wrapper to clean up after transition
                     def handle_and_cleanup(dpu):
                         try:
                             reboot_handler.handle_transition(dpu, "shutdown")
                         finally:
                             with active_transitions_lock:
                                 active_transitions.discard(dpu)
-                                logger.log_info(f"Removed {dpu} from active transitions")
                     
-                    # Run handle_transition in a background thread to avoid blocking the main loop
+                    # Run in background thread
                     thread = threading.Thread(
                         target=handle_and_cleanup,
                         args=(dpu_name,),
@@ -450,9 +365,6 @@ def main():
                         daemon=True
                     )
                     thread.start()
-                    logger.log_info(f"Started background thread for {dpu_name} gNOI shutdown handling")
-                else:
-                    logger.log_warning(f"Admin status not 'down' for {dpu_name}: admin_status={admin_status}")
 
 if __name__ == "__main__":
     main()
