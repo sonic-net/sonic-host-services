@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -euo pipefail
 
 log() { echo "[wait-for-sonic-core] $*"; }
