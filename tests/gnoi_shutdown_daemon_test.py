@@ -64,6 +64,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_config_db = MagicMock()
         mock_db_connect.side_effect = [mock_state_db, mock_config_db]
 
+        # Mock config_db.get_entry to return admin_status=down to trigger thread creation
+        mock_config_db.get_entry.return_value = mock_config_entry
+
         # Mock chassis
         mock_chassis = MagicMock()
         mock_platform_instance = MagicMock()
@@ -82,10 +85,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_pubsub.get_message.side_effect = [mock_message, KeyboardInterrupt]
         mock_get_pubsub.return_value = mock_pubsub
 
-        # Mock ConfigDB to return a valid entry
-        mock_config = MagicMock()
-        mock_config_connector.return_value = mock_config
-        mock_config.get_entry.return_value = mock_config_entry
+        # Mock the reboot handler's _handle_transition to avoid actual execution
+        mock_handler_instance = MagicMock()
+        mock_gnoi_reboot_handler.return_value = mock_handler_instance
 
         # Temporarily add mocks to sys.modules for the duration of this test
         with patch.dict('sys.modules', {
