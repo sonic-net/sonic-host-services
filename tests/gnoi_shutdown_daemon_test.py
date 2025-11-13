@@ -387,7 +387,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             from sonic_platform import platform
             chassis = platform.Platform().get_chassis()
 
-            # Verify
+            # Verify it worked
             self.assertEqual(chassis, mock_chassis)
             self.assertEqual(chassis.get_name(), "test_chassis")
             mock_platform_class.assert_called_once()
@@ -468,6 +468,14 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_table.set.assert_called_once()
             call_args = mock_table.set.call_args
             self.assertEqual(call_args[0][0], "DPU0")
+
+    def test_get_dpu_ip_empty_list(self):
+        """Test get_dpu_ip when ips is an empty list."""
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = {"ips": []}
+
+        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU3")
+        self.assertIsNone(ip)
 
 if __name__ == '__main__':
     unittest.main()
