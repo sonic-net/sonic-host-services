@@ -34,7 +34,7 @@ INTERVAL=2
 ELAPSED=0
 
 has_chassis_table() {
-  redis-cli -n 6 KEYS 'CHASSIS_MODULE_TABLE|*' | grep -q .
+  redis-cli -n 4 KEYS 'CHASSIS_MODULE_TABLE|*' | grep -q .
 }
 
 log "Waiting for CHASSIS_MODULE_TABLE keys…"
