@@ -55,7 +55,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('sonic_platform.platform')
+    @patch('sonic_platform.platform', create=True)
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
     def test_main_loop_flow(self, mock_thread, mock_config_connector, mock_platform, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
@@ -270,7 +270,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('sonic_platform.platform')
+    @patch('sonic_platform.platform', create=True)
     def test_main_loop_no_dpu_name(self, mock_platform, mock_get_pubsub, mock_db_connect):
         """Test main loop with a malformed key."""
         mock_chassis = MagicMock()
@@ -289,7 +289,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('sonic_platform.platform')
+    @patch('sonic_platform.platform', create=True)
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     def test_main_loop_get_transition_exception(self, mock_config_connector, mock_platform, mock_get_pubsub, mock_db_connect):
         """Test main loop when get_entry raises an exception."""
