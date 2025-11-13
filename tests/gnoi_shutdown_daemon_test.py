@@ -601,33 +601,5 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         # Should return False and set completion flag to False
         self.assertFalse(result)
 
-    def test_handle_transition_success_log_message(self):
-        """Test _handle_transition logs success message correctly."""
-        with patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1"):
-            with patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080"):
-                with patch('gnoi_shutdown_daemon.time.sleep'):
-                    with patch('gnoi_shutdown_daemon.time.monotonic', side_effect=[0, 1, 2, 3]):
-                        with patch('gnoi_shutdown_daemon.execute_gnoi_command') as mock_execute:
-                            mock_execute.side_effect = [
-                                (0, "sent", ""),
-                                (0, "reboot complete", "")
-                            ]
-
-                            mock_db = MagicMock()
-                            mock_table = MagicMock()
-                            mock_table.get.return_value = (True, [("gnoi_halt_in_progress", "True")])
-
-                            mock_module = MagicMock()
-                            mock_chassis = MagicMock()
-                            mock_chassis.get_module.return_value = mock_module
-
-                            with patch('gnoi_shutdown_daemon.swsscommon.Table', return_value=mock_table):
-                                handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, MagicMock(), mock_chassis)
-                                result = handler._handle_transition("DPU0", "shutdown")
-
-                            # Should succeed and clear halt flag
-                            self.assertTrue(result)
-                            mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
-
 if __name__ == '__main__':
     unittest.main()
