@@ -469,13 +469,22 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             call_args = mock_table.set.call_args
             self.assertEqual(call_args[0][0], "DPU0")
 
-    def test_get_dpu_ip_empty_list(self):
-        """Test get_dpu_ip when ips is an empty list."""
-        mock_config = MagicMock()
-        mock_config.get_entry.return_value = {"ips": []}
+    @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
+    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', side_effect=Exception("Port lookup failed"))
+    @patch('gnoi_shutdown_daemon.GnoiRebootHandler._set_gnoi_shutdown_complete_flag')
+    def test_handle_transition_config_exception(self, mock_set_flag, mock_get_port, mock_get_ip):
+        """Test handle_transition when configuration lookup raises exception."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_chassis = MagicMock()
 
-        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU3")
-        self.assertIsNone(ip)
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
+        result = handler._handle_transition("DPU0", "shutdown")
+
+        self.assertFalse(result)
+        # Verify that the completion flag was set to False
+        mock_set_flag.assert_called_once_with("DPU0", False)
+
 
 if __name__ == '__main__':
     unittest.main()
