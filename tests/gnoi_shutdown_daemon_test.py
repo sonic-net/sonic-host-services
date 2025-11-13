@@ -6,12 +6,6 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
-# Mock sonic_platform before it's imported by other modules
-sys.modules['sonic_platform'] = MagicMock()
-# Global mock for swsscommon
-swsscommon = MagicMock()
-sys.modules['swsscommon'] = swsscommon
-
 import gnoi_shutdown_daemon
 
 # Common fixtures
@@ -61,7 +55,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('sonic_platform.platform', create=True)
+    @patch('gnoi_shutdown_daemon.sonic_platform.platform')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
     def test_main_loop_flow(self, mock_thread, mock_config_connector, mock_platform, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
@@ -73,7 +67,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock chassis
         mock_chassis = MagicMock()
-        mock_platform.return_value.get_chassis.return_value = mock_chassis
+        mock_platform_instance = mock_platform.return_value
+        mock_platform_instance.get_chassis.return_value = mock_chassis
 
         # Mock pubsub to yield one message then stop
         mock_pubsub = MagicMock()
@@ -191,32 +186,26 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_get_dpu_ip_and_port(self):
         """Test DPU IP and gNMI port retrieval."""
         # Test IP retrieval
-        with patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector') as mock_config_connector:
-            mock_config = MagicMock()
-            mock_config_connector.return_value = mock_config
-            mock_config.get_entry.return_value = mock_ip_entry
-            
-            ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU0")
-            self.assertEqual(ip, "10.0.0.1")
-            mock_config.get_entry.assert_called_with("DHCP_SERVER_IPV4_PORT", "bridge-midplane|dpu0")
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = mock_ip_entry
+
+        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU0")
+        self.assertEqual(ip, "10.0.0.1")
+        mock_config.get_entry.assert_called_with("DHCP_SERVER_IPV4_PORT", "bridge-midplane|dpu0")
 
         # Test port retrieval
-        with patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector') as mock_config_connector:
-            mock_config = MagicMock()
-            mock_config_connector.return_value = mock_config
-            mock_config.get_entry.return_value = mock_port_entry
-            
-            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
-            self.assertEqual(port, "12345")
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = mock_port_entry
+
+        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
+        self.assertEqual(port, "12345")
 
         # Test port fallback
-        with patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector') as mock_config_connector:
-            mock_config = MagicMock()
-            mock_config_connector.return_value = mock_config
-            mock_config.get_entry.return_value = {}
-            
-            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
-            self.assertEqual(port, "8080")
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = {}
+
+        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
+        self.assertEqual(port, "8080")
 
     def test_get_pubsub_fallback(self):
         """Test _get_pubsub with redis client."""
@@ -268,22 +257,20 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     def test_get_dpu_gnmi_port_variants(self):
         """Test DPU gNMI port retrieval with name variants."""
-        with patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector') as mock_config_connector:
-            mock_config = MagicMock()
-            mock_config_connector.return_value = mock_config
-            mock_config.get_entry.side_effect = [
-                {},  # dpu0 fails
-                {},  # DPU0 fails
-                mock_port_entry  # DPU0 succeeds
-            ]
-            
-            port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
-            self.assertEqual(port, "12345")
-            self.assertEqual(mock_config.get_entry.call_count, 3)
+        mock_config = MagicMock()
+        mock_config.get_entry.side_effect = [
+            {},  # dpu0 fails
+            {},  # DPU0 fails
+            mock_port_entry  # DPU0 succeeds
+        ]
+
+        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
+        self.assertEqual(port, "12345")
+        self.assertEqual(mock_config.get_entry.call_count, 3)
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('sonic_platform.platform', create=True)
+    @patch('gnoi_shutdown_daemon.sonic_platform.platform')
     def test_main_loop_no_dpu_name(self, mock_platform, mock_get_pubsub, mock_db_connect):
         """Test main loop with a malformed key."""
         mock_chassis = MagicMock()
@@ -302,7 +289,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('sonic_platform.platform', create=True)
+    @patch('gnoi_shutdown_daemon.sonic_platform.platform')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     def test_main_loop_get_transition_exception(self, mock_config_connector, mock_platform, mock_get_pubsub, mock_db_connect):
         """Test main loop when get_entry raises an exception."""
