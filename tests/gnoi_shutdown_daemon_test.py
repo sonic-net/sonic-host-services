@@ -400,7 +400,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_socket.return_value.__exit__ = MagicMock()
             result = gnoi_shutdown_daemon.is_tcp_open("10.0.0.1", 8080, timeout=1.0)
             self.assertTrue(result)
-            mock_socket.assert_called_once_with(("10.0.0.1", 8080), 1.0)
+            mock_socket.assert_called_once_with(("10.0.0.1", 8080), timeout=1.0)
 
     def test_is_tcp_open_failure(self):
         """Test is_tcp_open when connection fails."""
@@ -468,6 +468,48 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_table.set.assert_called_once()
             call_args = mock_table.set.call_args
             self.assertEqual(call_args[0][0], "DPU0")
+
+    def test_is_tcp_open_default_timeout(self):
+        """Test is_tcp_open uses environment variable for default timeout."""
+        with patch.dict(os.environ, {"GNOI_DIAL_TIMEOUT": "2.5"}):
+            with patch('gnoi_shutdown_daemon.socket.create_connection') as mock_socket:
+                mock_socket.return_value.__enter__ = MagicMock()
+                mock_socket.return_value.__exit__ = MagicMock()
+                result = gnoi_shutdown_daemon.is_tcp_open("10.0.0.1", 8080)
+                self.assertTrue(result)
+                mock_socket.assert_called_once_with(("10.0.0.1", 8080), timeout=2.5)
+
+    def test_get_dpu_ip_list_ips(self):
+        """Test get_dpu_ip when ips is a list (normal case)."""
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = {"ips": ["10.0.0.10", "10.0.0.11"]}
+
+        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU2")
+        self.assertEqual(ip, "10.0.0.10")  # Should return first IP
+
+    def test_get_dpu_gnmi_port_found_first_try(self):
+        """Test get_dpu_gnmi_port when port is found on first lookup."""
+        mock_config = MagicMock()
+        # Return port on first call (lowercase)
+        mock_config.get_entry.return_value = {"gnmi_port": "9090"}
+
+        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU3")
+        self.assertEqual(port, "9090")
+        # Should only call once if found on first try
+        self.assertEqual(mock_config.get_entry.call_count, 1)
+
+    def test_poll_reboot_status_success(self):
+        """Test _poll_reboot_status when reboot completes successfully."""
+        with patch('gnoi_shutdown_daemon.execute_gnoi_command') as mock_execute:
+            with patch('gnoi_shutdown_daemon.time.monotonic', side_effect=[0, 1]):
+                with patch('gnoi_shutdown_daemon.time.sleep'):
+                    # Return "Reboot Complete" message
+                    mock_execute.return_value = (0, "System Reboot Complete", "")
+
+                    handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
+                    result = handler._poll_reboot_status("DPU0", "10.0.0.1", "8080")
+
+                    self.assertTrue(result)
 
 if __name__ == '__main__':
     unittest.main()
