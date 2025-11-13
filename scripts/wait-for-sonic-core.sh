@@ -27,26 +27,26 @@ else
   log "pmon.service not active yet (advisory)"
 fi
 
-# Wait for CHASSIS_MODULE_TABLE to exist (best-effort, bounded time)
+# Wait for CHASSIS_MODULE to exist (best-effort, bounded time)
 DEFAULT_MAX_WAIT_SECONDS=60
 MAX_WAIT=${WAIT_CORE_MAX_SECONDS:-$DEFAULT_MAX_WAIT_SECONDS}
 INTERVAL=2
 ELAPSED=0
 
 has_chassis_table() {
-  redis-cli -n 4 KEYS 'CHASSIS_MODULE_TABLE|*' | grep -q .
+  redis-cli -n 4 KEYS 'CHASSIS_MODULE|*' | grep -q .
 }
 
-log "Waiting for CHASSIS_MODULE_TABLE keys…"
+log "Waiting for CHASSIS_MODULE keys…"
 while ! has_chassis_table; do
   if (( ELAPSED >= MAX_WAIT )); then
-    log "Timed out waiting for CHASSIS_MODULE_TABLE; proceeding anyway."
+    log "Timed out waiting for CHASSIS_MODULE; proceeding anyway."
     exit 0
   fi
   sleep "$INTERVAL"
   ELAPSED=$((ELAPSED + INTERVAL))
 done
 
-log "CHASSIS_MODULE_TABLE present."
+log "CHASSIS_MODULE present."
 log "SONiC core is ready."
 exit 0

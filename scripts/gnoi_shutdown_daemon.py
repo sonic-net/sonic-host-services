@@ -5,10 +5,6 @@ gnoi-shutdown-daemon
 Listens for CHASSIS_MODULE_TABLE state changes in STATE_DB and, when a
 SmartSwitch DPU module enters a "shutdown" transition, issues a gNOI Reboot
 (method HALT) toward that DPU and polls RebootStatus until complete or timeout.
-
-Additionally, a lightweight background thread periodically enforces timeout
-clearing of stuck transitions (startup/shutdown/reboot) using ModuleBase’s
-common APIs, so all code paths (CLI, chassisd, platform, gNOI) benefit.
 """
 
 import json
@@ -341,6 +337,9 @@ def main():
                     def handle_and_cleanup(dpu):
                         try:
                             reboot_handler._handle_transition(dpu, "shutdown")
+                            logger.log_info(f"{dpu}: Transition thread completed successfully")
+                        except Exception as e:
+                            logger.log_error(f"{dpu}: Transition thread failed with exception: {e}")
                         finally:
                             with active_transitions_lock:
                                 active_transitions.discard(dpu)
