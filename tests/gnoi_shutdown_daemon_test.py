@@ -91,7 +91,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     def test_get_halt_timeout_exception(self):
         """Test _get_halt_timeout returns default on exception."""
-        with patch('gnoi_shutdown_daemon.platform', side_effect=Exception("Import error")):
+        # Mock os.path.exists to raise an exception to trigger the except block
+        with patch('gnoi_shutdown_daemon.os.path.exists', side_effect=Exception("File system error")):
             timeout = gnoi_shutdown_daemon._get_halt_timeout()
             self.assertEqual(timeout, gnoi_shutdown_daemon.STATUS_POLL_TIMEOUT_SEC)
 

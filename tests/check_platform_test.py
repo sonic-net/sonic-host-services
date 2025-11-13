@@ -14,7 +14,7 @@ class TestCheckPlatform(unittest.TestCase):
     @patch('check_platform.subprocess.run')
     def test_smart_switch_npu(self, mock_subprocess_run, mock_is_dpu):
         """Test case for SmartSwitch NPU platform."""
-        mock_subprocess_run.return_value = MagicMock(stdout="SmartSwitch")
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="SmartSwitch", stderr="")
         with self.assertRaises(SystemExit) as cm:
             check_platform.main()
         self.assertEqual(cm.exception.code, 0)
@@ -23,7 +23,7 @@ class TestCheckPlatform(unittest.TestCase):
     @patch('check_platform.subprocess.run')
     def test_dpu_platform(self, mock_subprocess_run, mock_is_dpu):
         """Test case for DPU platform."""
-        mock_subprocess_run.return_value = MagicMock(stdout="SmartSwitch")
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="SmartSwitch", stderr="")
         with self.assertRaises(SystemExit) as cm:
             check_platform.main()
         self.assertEqual(cm.exception.code, 1)
@@ -32,7 +32,7 @@ class TestCheckPlatform(unittest.TestCase):
     @patch('check_platform.subprocess.run')
     def test_other_platform(self, mock_subprocess_run, mock_is_dpu):
         """Test case for other platforms."""
-        mock_subprocess_run.return_value = MagicMock(stdout="Other")
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="Other", stderr="")
         with self.assertRaises(SystemExit) as cm:
             check_platform.main()
         self.assertEqual(cm.exception.code, 1)
@@ -47,7 +47,7 @@ class TestCheckPlatform(unittest.TestCase):
     @patch('check_platform.subprocess.run')
     def test_is_dpu_import_error(self, mock_subprocess_run):
         """Test case when is_dpu import fails."""
-        mock_subprocess_run.return_value = MagicMock(stdout="SmartSwitch")
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="SmartSwitch", stderr="")
         # Mock the import to raise an exception
         with patch('builtins.__import__', side_effect=ImportError("Module not found")):
             with self.assertRaises(SystemExit) as cm:
@@ -60,7 +60,7 @@ class TestCheckPlatform(unittest.TestCase):
     @patch('check_platform.subprocess.run')
     def test_is_dpu_exception(self, mock_subprocess_run, mock_is_dpu):
         """Test case when is_dpu() raises an exception."""
-        mock_subprocess_run.return_value = MagicMock(stdout="SmartSwitch")
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="SmartSwitch", stderr="")
         with self.assertRaises(SystemExit) as cm:
             check_platform.main()
         # is_dpu_platform will be False due to exception, so SmartSwitch + not DPU = exit 0
@@ -70,7 +70,7 @@ class TestCheckPlatform(unittest.TestCase):
     @patch('check_platform.subprocess.run')
     def test_empty_subtype(self, mock_subprocess_run, mock_is_dpu):
         """Test case when subtype is empty."""
-        mock_subprocess_run.return_value = MagicMock(stdout="")
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         with self.assertRaises(SystemExit) as cm:
             check_platform.main()
         self.assertEqual(cm.exception.code, 1)
@@ -79,7 +79,7 @@ class TestCheckPlatform(unittest.TestCase):
     @patch('check_platform.subprocess.run')
     def test_subtype_with_whitespace(self, mock_subprocess_run, mock_is_dpu):
         """Test case when subtype has leading/trailing whitespace."""
-        mock_subprocess_run.return_value = MagicMock(stdout="  SmartSwitch  \n")
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="  SmartSwitch  \n", stderr="")
         with self.assertRaises(SystemExit) as cm:
             check_platform.main()
         self.assertEqual(cm.exception.code, 0)
