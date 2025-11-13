@@ -4,6 +4,9 @@ import subprocess
 import sys
 import os
 
+# Mock redis module (available in SONiC runtime, not in test environment)
+sys.modules['redis'] = MagicMock()
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
 import gnoi_shutdown_daemon
@@ -389,6 +392,82 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             self.assertEqual(chassis.get_name(), "test_chassis")
             mock_platform_class.assert_called_once()
             mock_platform_instance.get_chassis.assert_called_once()
+
+    def test_is_tcp_open_success(self):
+        """Test is_tcp_open when connection succeeds."""
+        with patch('gnoi_shutdown_daemon.socket.create_connection') as mock_socket:
+            mock_socket.return_value.__enter__ = MagicMock()
+            mock_socket.return_value.__exit__ = MagicMock()
+            result = gnoi_shutdown_daemon.is_tcp_open("10.0.0.1", 8080, timeout=1.0)
+            self.assertTrue(result)
+            mock_socket.assert_called_once_with(("10.0.0.1", 8080), 1.0)
+
+    def test_is_tcp_open_failure(self):
+        """Test is_tcp_open when connection fails."""
+        with patch('gnoi_shutdown_daemon.socket.create_connection', side_effect=OSError("Connection refused")):
+            result = gnoi_shutdown_daemon.is_tcp_open("10.0.0.1", 8080, timeout=1.0)
+            self.assertFalse(result)
+
+    def test_get_dpu_ip_with_string_ips(self):
+        """Test get_dpu_ip when ips is a string instead of list."""
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = {"ips": "10.0.0.5"}
+        
+        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
+        self.assertEqual(ip, "10.0.0.5")
+
+    def test_get_dpu_ip_empty_entry(self):
+        """Test get_dpu_ip when entry is empty."""
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = {}
+        
+        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
+        self.assertIsNone(ip)
+
+    def test_get_dpu_ip_no_ips_field(self):
+        """Test get_dpu_ip when entry has no ips field."""
+        mock_config = MagicMock()
+        mock_config.get_entry.return_value = {"other_field": "value"}
+        
+        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
+        self.assertIsNone(ip)
+
+    def test_get_dpu_ip_exception(self):
+        """Test get_dpu_ip when exception occurs."""
+        mock_config = MagicMock()
+        mock_config.get_entry.side_effect = Exception("Database error")
+        
+        ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
+        self.assertIsNone(ip)
+
+    def test_get_dpu_gnmi_port_exception(self):
+        """Test get_dpu_gnmi_port when exception occurs."""
+        mock_config = MagicMock()
+        mock_config.get_entry.side_effect = Exception("Database error")
+        
+        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU1")
+        self.assertEqual(port, "8080")
+
+    def test_send_reboot_command_success(self):
+        """Test successful _send_reboot_command."""
+        with patch('gnoi_shutdown_daemon.execute_gnoi_command', return_value=(0, "success", "")):
+            handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
+            result = handler._send_reboot_command("DPU0", "10.0.0.1", "8080")
+            self.assertTrue(result)
+
+    def test_set_gnoi_shutdown_complete_flag_success(self):
+        """Test successful setting of gnoi_shutdown_complete flag."""
+        mock_db = MagicMock()
+        mock_table = MagicMock()
+        
+        with patch('gnoi_shutdown_daemon.swsscommon.Table', return_value=mock_table):
+            handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, MagicMock(), MagicMock())
+            handler._set_gnoi_shutdown_complete_flag("DPU0", True)
+            
+            # Verify the flag was set correctly
+            mock_table.set.assert_called_once()
+            call_args = mock_table.set.call_args
+            self.assertEqual(call_args[0][0], "DPU0")
 
 if __name__ == '__main__':
     unittest.main()
