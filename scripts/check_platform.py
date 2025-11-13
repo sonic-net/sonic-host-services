@@ -15,6 +15,11 @@ def main():
             text=True,
             timeout=5
         )
+        if result.returncode != 0:
+            # Optionally print error for debugging
+            print(f"Error: sonic-cfggen failed with return code {result.returncode}", file=sys.stderr)
+            print(result.stderr, file=sys.stderr)
+            sys.exit(1)
         subtype = result.stdout.strip()
         
         # Check if DPU
