@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock, call
 import subprocess
 import sys
 import os
+import json
 
 # Mock redis module (available in SONiC runtime, not in test environment)
 sys.modules['redis'] = MagicMock()
@@ -54,6 +55,45 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             self.assertEqual(rc, -2)
             self.assertEqual(stdout, "")
             self.assertIn("Command failed: Test error", stderr)
+
+    def test_get_halt_timeout_from_platform_json(self):
+        """Test _get_halt_timeout with platform.json containing timeout."""
+        from unittest.mock import mock_open
+
+        mock_platform_instance = MagicMock()
+        mock_platform_instance.get_name.return_value = "test_platform"
+
+        mock_platform_class = MagicMock(return_value=mock_platform_instance)
+        mock_platform_module = MagicMock()
+        mock_platform_module.Platform = mock_platform_class
+
+        platform_json_content = {"dpu_halt_services_timeout": 120}
+
+        with patch.dict('sys.modules', {'sonic_platform': MagicMock(), 'sonic_platform.platform': mock_platform_module}):
+            with patch("gnoi_shutdown_daemon.os.path.exists", return_value=True):
+                with patch("builtins.open", mock_open(read_data=json.dumps(platform_json_content))):
+                    timeout = gnoi_shutdown_daemon._get_halt_timeout()
+                    self.assertEqual(timeout, 120)
+
+    def test_get_halt_timeout_default(self):
+        """Test _get_halt_timeout returns default when platform.json not found."""
+        mock_platform_instance = MagicMock()
+        mock_platform_instance.get_name.return_value = "test_platform"
+
+        mock_platform_class = MagicMock(return_value=mock_platform_instance)
+        mock_platform_module = MagicMock()
+        mock_platform_module.Platform = mock_platform_class
+
+        with patch.dict('sys.modules', {'sonic_platform': MagicMock(), 'sonic_platform.platform': mock_platform_module}):
+            with patch("gnoi_shutdown_daemon.os.path.exists", return_value=False):
+                timeout = gnoi_shutdown_daemon._get_halt_timeout()
+                self.assertEqual(timeout, gnoi_shutdown_daemon.STATUS_POLL_TIMEOUT_SEC)
+
+    def test_get_halt_timeout_exception(self):
+        """Test _get_halt_timeout returns default on exception."""
+        with patch('gnoi_shutdown_daemon.platform', side_effect=Exception("Import error")):
+            timeout = gnoi_shutdown_daemon._get_halt_timeout()
+            self.assertEqual(timeout, gnoi_shutdown_daemon.STATUS_POLL_TIMEOUT_SEC)
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
@@ -124,23 +164,23 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         # Mock return values
         mock_get_dpu_ip.return_value = "10.0.0.1"
         mock_get_gnmi_port.return_value = "8080"
-        
+
         # Mock table.get() for gnoi_halt_in_progress check
         mock_table = MagicMock()
         mock_table.get.return_value = (True, [("gnoi_halt_in_progress", "True")])
-        
+
         # Mock time for polling
         mock_monotonic.side_effect = [
             0, 1,  # For _wait_for_gnoi_halt_in_progress
             2, 3   # For _poll_reboot_status
         ]
-        
+
         # Reboot command success, RebootStatus success
         mock_execute_gnoi.side_effect = [
             (0, "reboot sent", ""),
             (0, "reboot complete", "")
         ]
-        
+
         # Mock module for clear operation
         mock_module = MagicMock()
         mock_chassis.get_module.return_value = mock_module
@@ -167,11 +207,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         mock_get_dpu_ip.return_value = "10.0.0.1"
         mock_get_gnmi_port.return_value = "8080"
-        
+
         # Mock table.get() to never return True (simulates timeout in wait)
         mock_table = MagicMock()
         mock_table.get.return_value = (True, [("gnoi_halt_in_progress", "False")])
-        
+
         # Simulate timeout in _wait_for_gnoi_halt_in_progress, then success in _poll_reboot_status
         mock_monotonic.side_effect = [
             # _wait_for_gnoi_halt_in_progress times out
@@ -179,13 +219,13 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             # _poll_reboot_status succeeds
             0, 1
         ]
-        
+
         # Reboot command and status succeed
         mock_execute_gnoi.side_effect = [
             (0, "reboot sent", ""),
             (0, "reboot complete", "")
         ]
-        
+
         # Mock module for clear operation
         mock_module = MagicMock()
         mock_chassis.get_module.return_value = mock_module
@@ -228,9 +268,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         with patch('gnoi_shutdown_daemon.redis.Redis') as mock_redis:
             mock_redis_instance = MagicMock()
             mock_redis.return_value = mock_redis_instance
-            
+
             pubsub = gnoi_shutdown_daemon._get_pubsub(gnoi_shutdown_daemon.CONFIG_DB_INDEX)
-            
+
             mock_redis.assert_called_with(unix_socket_path='/var/run/redis/redis.sock', db=gnoi_shutdown_daemon.CONFIG_DB_INDEX)
             self.assertEqual(pubsub, mock_redis_instance.pubsub.return_value)
 
@@ -264,7 +304,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_db = MagicMock()
         mock_table = MagicMock()
         mock_table.set.side_effect = Exception("Redis error")
-        
+
         with patch('gnoi_shutdown_daemon.swsscommon.Table', return_value=mock_table):
             handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, MagicMock(), MagicMock())
             # Should not raise an exception, just log
@@ -393,26 +433,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             mock_platform_class.assert_called_once()
             mock_platform_instance.get_chassis.assert_called_once()
 
-    def test_is_tcp_open_success(self):
-        """Test is_tcp_open when connection succeeds."""
-        with patch('gnoi_shutdown_daemon.socket.create_connection') as mock_socket:
-            mock_socket.return_value.__enter__ = MagicMock()
-            mock_socket.return_value.__exit__ = MagicMock()
-            result = gnoi_shutdown_daemon.is_tcp_open("10.0.0.1", 8080, timeout=1.0)
-            self.assertTrue(result)
-            mock_socket.assert_called_once_with(("10.0.0.1", 8080), timeout=1.0)
-
-    def test_is_tcp_open_failure(self):
-        """Test is_tcp_open when connection fails."""
-        with patch('gnoi_shutdown_daemon.socket.create_connection', side_effect=OSError("Connection refused")):
-            result = gnoi_shutdown_daemon.is_tcp_open("10.0.0.1", 8080, timeout=1.0)
-            self.assertFalse(result)
-
     def test_get_dpu_ip_with_string_ips(self):
         """Test get_dpu_ip when ips is a string instead of list."""
         mock_config = MagicMock()
         mock_config.get_entry.return_value = {"ips": "10.0.0.5"}
-        
+
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertEqual(ip, "10.0.0.5")
 
@@ -420,7 +445,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         """Test get_dpu_ip when entry is empty."""
         mock_config = MagicMock()
         mock_config.get_entry.return_value = {}
-        
+
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertIsNone(ip)
 
@@ -428,7 +453,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         """Test get_dpu_ip when entry has no ips field."""
         mock_config = MagicMock()
         mock_config.get_entry.return_value = {"other_field": "value"}
-        
+
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertIsNone(ip)
 
@@ -436,7 +461,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         """Test get_dpu_ip when exception occurs."""
         mock_config = MagicMock()
         mock_config.get_entry.side_effect = Exception("Database error")
-        
+
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertIsNone(ip)
 
@@ -444,7 +469,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         """Test get_dpu_gnmi_port when exception occurs."""
         mock_config = MagicMock()
         mock_config.get_entry.side_effect = Exception("Database error")
-        
+
         port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU1")
         self.assertEqual(port, "8080")
 
@@ -459,11 +484,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         """Test successful setting of gnoi_shutdown_complete flag."""
         mock_db = MagicMock()
         mock_table = MagicMock()
-        
+
         with patch('gnoi_shutdown_daemon.swsscommon.Table', return_value=mock_table):
             handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, MagicMock(), MagicMock())
             handler._set_gnoi_shutdown_complete_flag("DPU0", True)
-            
+
             # Verify the flag was set correctly
             mock_table.set.assert_called_once()
             call_args = mock_table.set.call_args

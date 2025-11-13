@@ -10,42 +10,48 @@ SmartSwitch DPU module enters a "shutdown" transition, issues a gNOI Reboot
 import json
 import time
 import subprocess
-import socket
 import os
 import redis
 import threading
 import sonic_py_common.daemon_base as daemon_base
+from sonic_py_common import syslogger
 from swsscommon import swsscommon
 
-REBOOT_RPC_TIMEOUT_SEC   = 60   # gNOI System.Reboot call timeout
-STATUS_POLL_TIMEOUT_SEC  = 60   # overall time - polling RebootStatus
-STATUS_POLL_INTERVAL_SEC = 1    # delay between polls
-STATUS_RPC_TIMEOUT_SEC   = 10   # per RebootStatus RPC timeout
-REBOOT_METHOD_HALT = 3          # gNOI System.Reboot method: HALT
+REBOOT_RPC_TIMEOUT_SEC = 60  # gNOI System.Reboot call timeout
+STATUS_POLL_TIMEOUT_SEC = 60  # overall time - polling RebootStatus
+STATUS_POLL_INTERVAL_SEC = 1  # delay between polls
+STATUS_RPC_TIMEOUT_SEC = 10  # per RebootStatus RPC timeout
+REBOOT_METHOD_HALT = 3  # gNOI System.Reboot method: HALT
 STATE_DB_INDEX = 6
 CONFIG_DB_INDEX = 4
-
-from sonic_py_common import syslogger
 
 SYSLOG_IDENTIFIER = "gnoi-shutdown-daemon"
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 
+
 # ##########
 # Helpers
 # ##########
-def is_tcp_open(host: str, port: int, timeout: float = None) -> bool:
-    """Fast reachability test for <host,port>. No side effects."""
-    if timeout is None:
-        timeout = float(os.getenv("GNOI_DIAL_TIMEOUT", "1.0"))
+
+
+def _get_halt_timeout() -> int:
+    """Get halt_services timeout from platform.json, or default to STATUS_POLL_TIMEOUT_SEC."""
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+        from sonic_platform import platform
+        platform_name = platform.Platform().get_name()
+        platform_json_path = f"/usr/share/sonic/platform/{platform_name}/platform.json"
+
+        if os.path.exists(platform_json_path):
+            with open(platform_json_path, 'r') as f:
+                return int(json.load(f).get("dpu_halt_services_timeout", STATUS_POLL_TIMEOUT_SEC))
+    except Exception as e:
+        logger.log_warning(f"Failed to load timeout from platform.json: {e}, using default {STATUS_POLL_TIMEOUT_SEC}s")
+    return STATUS_POLL_TIMEOUT_SEC
+
 
 def _get_pubsub(db_index):
     """Return a pubsub object for keyspace notifications.
-    
+
     Args:
         db_index: The Redis database index (e.g., 4 for CONFIG_DB, 6 for STATE_DB)
     """
@@ -63,29 +69,31 @@ def execute_gnoi_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC):
     except Exception as e:
         return -2, "", f"Command failed: {e}"
 
+
 def get_dpu_ip(config_db, dpu_name: str) -> str:
     """Retrieve DPU IP from CONFIG_DB DHCP_SERVER_IPV4_PORT table."""
     dpu_name_lower = dpu_name.lower()
-    
+
     try:
         key = f"bridge-midplane|{dpu_name_lower}"
         entry = config_db.get_entry("DHCP_SERVER_IPV4_PORT", key)
-        
+
         if entry:
             ips = entry.get("ips")
             if ips:
                 ip = ips[0] if isinstance(ips, list) else ips
                 return ip
-        
+
     except Exception as e:
         logger.log_error(f"{dpu_name}: Error getting IP: {e}")
-    
+
     return None
+
 
 def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
     """Retrieve GNMI port from CONFIG_DB DPU table, default to 8080."""
     dpu_name_lower = dpu_name.lower()
-    
+
     try:
         for k in [dpu_name_lower, dpu_name.upper(), dpu_name]:
             entry = config_db.get_entry("DPU", k)
@@ -93,7 +101,7 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
                 return str(entry.get("gnmi_port"))
     except Exception as e:
         logger.log_warning(f"{dpu_name}: Error getting gNMI port, using default: {e}")
-    
+
     logger.log_info(f"{dpu_name}: gNMI port not found, using default 8080")
     return "8080"
 
@@ -110,13 +118,13 @@ class GnoiRebootHandler:
         self._config_db = config_db
         self._chassis = chassis
 
-    def _handle_transition(self, dpu_name: str) -> bool:
+    def _handle_transition(self, dpu_name: str, transition_type: str) -> bool:
         """
-        Handle a shutdown transition for a DPU module.
+        Handle a shutdown or reboot transition for a DPU module.
         Returns True if the operation completed successfully, False otherwise.
         """
         logger.log_notice(f"{dpu_name}: Starting gNOI shutdown sequence")
-        
+
         # Get DPU configuration
         dpu_ip = None
         try:
@@ -145,7 +153,7 @@ class GnoiRebootHandler:
 
         # Set completion flag
         self._set_gnoi_shutdown_complete_flag(dpu_name, reboot_successful)
-        
+
         # Clear halt_in_progress to signal platform
         try:
             if not dpu_name.startswith("DPU") or not dpu_name[3:].isdigit():
@@ -163,29 +171,27 @@ class GnoiRebootHandler:
         Poll for gnoi_halt_in_progress flag in STATE_DB CHASSIS_MODULE_TABLE.
         This flag is set by the platform after completing PCI detach.
         """
-        deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
-        poll_count = 0
-        
+        deadline = time.monotonic() + _get_halt_timeout()
+
         while time.monotonic() < deadline:
-            poll_count += 1
-            
+
             try:
                 table = swsscommon.Table(self._db, "CHASSIS_MODULE_TABLE")
                 (status, fvs) = table.get(dpu_name)
-                
+
                 if status:
                     entry = dict(fvs)
                     halt_in_progress = entry.get("gnoi_halt_in_progress", "False")
-                    
+
                     if halt_in_progress == "True":
                         logger.log_notice(f"{dpu_name}: PCI detach complete, proceeding for halting services via gNOI")
                         return True
-                    
+
             except Exception as e:
                 logger.log_error(f"{dpu_name}: Error reading halt flag: {e}")
-            
+
             time.sleep(STATUS_POLL_INTERVAL_SEC)
-        
+
         return False
 
     def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
@@ -206,7 +212,7 @@ class GnoiRebootHandler:
 
     def _poll_reboot_status(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
         """Poll RebootStatus until completion or timeout."""
-        deadline = time.monotonic() + STATUS_POLL_TIMEOUT_SEC
+        deadline = time.monotonic() + _get_halt_timeout()
         status_cmd = [
             "docker", "exec", "gnmi", "gnoi_client",
             f"-target={dpu_ip}:{port}",
@@ -260,7 +266,7 @@ def main():
 
     # gNOI reboot handler
     reboot_handler = GnoiRebootHandler(state_db, config_db, chassis)
-    
+
     # Track active transitions to prevent duplicate threads for the same DPU
     active_transitions = set()
     active_transitions_lock = threading.Lock()
@@ -288,15 +294,12 @@ def main():
             msg_type = message.get("type")
             if isinstance(msg_type, bytes):
                 msg_type = msg_type.decode('utf-8')
-            
+
             if msg_type == "pmessage":
                 channel = message.get("channel", b"")
                 if isinstance(channel, bytes):
                     channel = channel.decode('utf-8')
-                data = message.get("data", b"")
-                if isinstance(data, bytes):
-                    data = data.decode('utf-8')
-                
+
                 # Extract key from channel: "__keyspace@4__:CHASSIS_MODULE|DPU0"
                 key = channel.split(":", 1)[-1] if ":" in channel else channel
 
@@ -316,22 +319,22 @@ def main():
                     entry = config_db.get_entry("CHASSIS_MODULE", dpu_name)
                     if not entry:
                         continue
-                    
+
                 except Exception as e:
                     logger.log_error(f"{dpu_name}: Failed to read CONFIG_DB: {e}")
                     continue
 
                 admin_status = entry.get("admin_status", "")
-                
+
                 if admin_status == "down":
                     # Check if already processing this DPU
                     with active_transitions_lock:
                         if dpu_name in active_transitions:
                             continue
                         active_transitions.add(dpu_name)
-                    
+
                     logger.log_notice(f"{dpu_name}: Admin shutdown detected, initiating gNOI HALT")
-                    
+
                     # Wrapper to clean up after transition
                     def handle_and_cleanup(dpu):
                         try:
@@ -342,7 +345,7 @@ def main():
                         finally:
                             with active_transitions_lock:
                                 active_transitions.discard(dpu)
-                    
+
                     # Run in background thread
                     thread = threading.Thread(
                         target=handle_and_cleanup,
