@@ -39,7 +39,7 @@ setup(
         'utils': 'utils',
         '': 'scripts'
     },
-    # install the module that the console script imports (located at scripts/gnoi_shutdown_daemon.py)
+    # Make gnoi_shutdown_daemon.py importable as a module for the console script
     py_modules = [
         'gnoi_shutdown_daemon'
     ],
