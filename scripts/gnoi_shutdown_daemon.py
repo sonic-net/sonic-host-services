@@ -110,9 +110,9 @@ class GnoiRebootHandler:
         self._config_db = config_db
         self._chassis = chassis
 
-    def _handle_transition(self, dpu_name: str, transition_type: str) -> bool:
+    def _handle_transition(self, dpu_name: str) -> bool:
         """
-        Handle a shutdown or reboot transition for a DPU module.
+        Handle a shutdown transition for a DPU module.
         Returns True if the operation completed successfully, False otherwise.
         """
         logger.log_notice(f"{dpu_name}: Starting gNOI shutdown sequence")
