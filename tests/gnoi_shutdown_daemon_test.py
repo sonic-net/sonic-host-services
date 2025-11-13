@@ -387,7 +387,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             from sonic_platform import platform
             chassis = platform.Platform().get_chassis()
 
-            # Verify it worked
+            # Verify
             self.assertEqual(chassis, mock_chassis)
             self.assertEqual(chassis.get_name(), "test_chassis")
             mock_platform_class.assert_called_once()
