@@ -12,20 +12,7 @@ import dbus.service
 import dbus.mainloop.glib
 
 from gi.repository import GObject
-from host_modules import (
-    config_engine,
-    gcu,
-    host_service,
-    showtech,
-    systemd_service,
-    file_service,
-    image_service,
-    docker_service,
-    reboot,
-    debug_service,
-    gnoi_reset
-)
-
+from host_modules import config_engine, debug_info, debug_service, docker_service, file_service, gcu, gnoi_reset, host_service, image_service, reboot, showtech, systemd_service
 
 def register_dbus():
     """Register DBus handlers for individual modules"""
@@ -40,7 +27,8 @@ def register_dbus():
         'docker_service': docker_service.DockerService('docker_service'),
         'file_stat': file_service.FileService('file'),
         'debug_service': debug_service.DebugExecutor('DebugExecutor'),
-        'gnoi_reset': gnoi_reset.GnoiReset('gnoi_reset')
+        'gnoi_reset': gnoi_reset.GnoiReset('gnoi_reset'),
+        'debug_info': debug_info.DebugInfo('debug_info')
         }
     for mod_name, handler_class in mod_dict.items():
         handlers[mod_name] = handler_class
