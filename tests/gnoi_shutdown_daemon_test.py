@@ -60,8 +60,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         """Test _get_halt_timeout with platform.json containing timeout."""
         from unittest.mock import mock_open
 
+        mock_chassis = MagicMock()
+        mock_chassis.get_name.return_value = "test_platform"
+
         mock_platform_instance = MagicMock()
-        mock_platform_instance.get_name.return_value = "test_platform"
+        mock_platform_instance.get_chassis.return_value = mock_chassis
 
         mock_platform_class = MagicMock(return_value=mock_platform_instance)
         mock_platform_module = MagicMock()
@@ -77,8 +80,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     def test_get_halt_timeout_default(self):
         """Test _get_halt_timeout returns default when platform.json not found."""
+        mock_chassis = MagicMock()
+        mock_chassis.get_name.return_value = "test_platform"
+
         mock_platform_instance = MagicMock()
-        mock_platform_instance.get_name.return_value = "test_platform"
+        mock_platform_instance.get_chassis.return_value = mock_chassis
 
         mock_platform_class = MagicMock(return_value=mock_platform_instance)
         mock_platform_module = MagicMock()
@@ -99,17 +105,16 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
-    def test_main_loop_flow(self, mock_thread, mock_config_connector, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
+    def test_main_loop_flow(self, mock_thread, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
         """Test the main loop processing of a shutdown event."""
         # Mock DB connections
         mock_state_db = MagicMock()
         mock_config_db = MagicMock()
         mock_db_connect.side_effect = [mock_state_db, mock_config_db]
 
-        # Mock config_db.get_entry to return admin_status=down to trigger thread creation
-        mock_config_db.get_entry.return_value = mock_config_entry
+        # Mock config_db.hget to return admin_status=down to trigger thread creation
+        mock_config_db.hget.return_value = "down"
 
         # Mock chassis
         mock_chassis = MagicMock()
@@ -244,22 +249,22 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         """Test DPU IP and gNMI port retrieval."""
         # Test IP retrieval
         mock_config = MagicMock()
-        mock_config.get_entry.return_value = mock_ip_entry
+        mock_config.hget.return_value = "10.0.0.1"
 
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU0")
         self.assertEqual(ip, "10.0.0.1")
-        mock_config.get_entry.assert_called_with("DHCP_SERVER_IPV4_PORT", "bridge-midplane|dpu0")
+        mock_config.hget.assert_called_with("DHCP_SERVER_IPV4_PORT|bridge-midplane|dpu0", "ips@")
 
         # Test port retrieval
         mock_config = MagicMock()
-        mock_config.get_entry.return_value = mock_port_entry
+        mock_config.hget.return_value = "12345"
 
         port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
         self.assertEqual(port, "12345")
 
         # Test port fallback
         mock_config = MagicMock()
-        mock_config.get_entry.return_value = {}
+        mock_config.hget.return_value = None
 
         port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
         self.assertEqual(port, "8080")
@@ -315,15 +320,15 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_get_dpu_gnmi_port_variants(self):
         """Test DPU gNMI port retrieval with name variants."""
         mock_config = MagicMock()
-        mock_config.get_entry.side_effect = [
-            {},  # dpu0 fails
-            {},  # DPU0 fails
-            mock_port_entry  # DPU0 succeeds
+        mock_config.hget.side_effect = [
+            None,  # dpu0 fails
+            None,  # DPU0 fails
+            "12345"  # DPU0 succeeds
         ]
 
         port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
         self.assertEqual(port, "12345")
-        self.assertEqual(mock_config.get_entry.call_count, 3)
+        self.assertEqual(mock_config.hget.call_count, 3)
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
@@ -358,9 +363,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon._get_pubsub')
-    @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
-    def test_main_loop_get_transition_exception(self, mock_config_connector, mock_get_pubsub, mock_db_connect):
-        """Test main loop when get_entry raises an exception."""
+    def test_main_loop_get_transition_exception(self, mock_get_pubsub, mock_db_connect):
+        """Test main loop when hget raises an exception."""
         mock_chassis = MagicMock()
         mock_platform_instance = MagicMock()
         mock_platform_instance.get_chassis.return_value = mock_chassis
@@ -377,10 +381,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_pubsub.get_message.side_effect = [mock_message, KeyboardInterrupt]
         mock_get_pubsub.return_value = mock_pubsub
 
-        # Mock ConfigDBConnector to raise exception
-        mock_config = MagicMock()
-        mock_config_connector.return_value = mock_config
-        mock_config.get_entry.side_effect = Exception("DB error")
+        # Mock config_db to raise exception on hget
+        mock_config_db = MagicMock()
+        mock_state_db = MagicMock()
+        mock_db_connect.side_effect = [mock_state_db, mock_config_db]
+        mock_config_db.hget.side_effect = Exception("DB error")
 
         with patch.dict('sys.modules', {
             'sonic_platform': mock_sonic_platform,
@@ -437,7 +442,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_get_dpu_ip_with_string_ips(self):
         """Test get_dpu_ip when ips is a string instead of list."""
         mock_config = MagicMock()
-        mock_config.get_entry.return_value = {"ips": "10.0.0.5"}
+        mock_config.hget.return_value = "10.0.0.5"
 
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertEqual(ip, "10.0.0.5")
@@ -445,15 +450,15 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_get_dpu_ip_empty_entry(self):
         """Test get_dpu_ip when entry is empty."""
         mock_config = MagicMock()
-        mock_config.get_entry.return_value = {}
+        mock_config.hget.return_value = None
 
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertIsNone(ip)
 
     def test_get_dpu_ip_no_ips_field(self):
-        """Test get_dpu_ip when entry has no ips field."""
+        """Test get_dpu_ip when hget returns None (field doesn't exist)."""
         mock_config = MagicMock()
-        mock_config.get_entry.return_value = {"other_field": "value"}
+        mock_config.hget.return_value = None
 
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertIsNone(ip)
@@ -461,7 +466,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_get_dpu_ip_exception(self):
         """Test get_dpu_ip when exception occurs."""
         mock_config = MagicMock()
-        mock_config.get_entry.side_effect = Exception("Database error")
+        mock_config.hget.side_effect = Exception("Database error")
 
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertIsNone(ip)
@@ -469,7 +474,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def test_get_dpu_gnmi_port_exception(self):
         """Test get_dpu_gnmi_port when exception occurs."""
         mock_config = MagicMock()
-        mock_config.get_entry.side_effect = Exception("Database error")
+        mock_config.hget.side_effect = Exception("Database error")
 
         port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU1")
         self.assertEqual(port, "8080")

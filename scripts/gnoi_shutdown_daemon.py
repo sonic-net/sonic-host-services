@@ -38,14 +38,19 @@ def _get_halt_timeout() -> int:
     """Get halt_services timeout from platform.json, or default to STATUS_POLL_TIMEOUT_SEC."""
     try:
         from sonic_platform import platform
-        platform_name = platform.Platform().get_name()
+        chassis = platform.Platform().get_chassis()
+        platform_name = chassis.get_name() if hasattr(chassis, 'get_name') else None
+
+        if not platform_name:
+            return STATUS_POLL_TIMEOUT_SEC
+
         platform_json_path = f"/usr/share/sonic/platform/{platform_name}/platform.json"
 
         if os.path.exists(platform_json_path):
             with open(platform_json_path, 'r') as f:
                 return int(json.load(f).get("dpu_halt_services_timeout", STATUS_POLL_TIMEOUT_SEC))
     except Exception as e:
-        logger.log_warning(f"Failed to load timeout from platform.json: {e}, using default {STATUS_POLL_TIMEOUT_SEC}s")
+        logger.log_info(f"Could not load timeout from platform.json: {e}, using default {STATUS_POLL_TIMEOUT_SEC}s")
     return STATUS_POLL_TIMEOUT_SEC
 
 
@@ -75,14 +80,14 @@ def get_dpu_ip(config_db, dpu_name: str) -> str:
     dpu_name_lower = dpu_name.lower()
 
     try:
-        key = f"bridge-midplane|{dpu_name_lower}"
-        entry = config_db.get_entry("DHCP_SERVER_IPV4_PORT", key)
+        key = f"DHCP_SERVER_IPV4_PORT|bridge-midplane|{dpu_name_lower}"
+        ips = config_db.hget(key, "ips@")
 
-        if entry:
-            ips = entry.get("ips")
-            if ips:
-                ip = ips[0] if isinstance(ips, list) else ips
-                return ip
+        if ips:
+            if isinstance(ips, bytes):
+                ips = ips.decode('utf-8')
+            ip = ips[0] if isinstance(ips, list) else ips
+            return ip
 
     except Exception as e:
         logger.log_error(f"{dpu_name}: Error getting IP: {e}")
@@ -96,9 +101,12 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
 
     try:
         for k in [dpu_name_lower, dpu_name.upper(), dpu_name]:
-            entry = config_db.get_entry("DPU", k)
-            if entry and entry.get("gnmi_port"):
-                return str(entry.get("gnmi_port"))
+            key = f"DPU|{k}"
+            gnmi_port = config_db.hget(key, "gnmi_port")
+            if gnmi_port:
+                if isinstance(gnmi_port, bytes):
+                    gnmi_port = gnmi_port.decode('utf-8')
+                return str(gnmi_port)
     except Exception as e:
         logger.log_warning(f"{dpu_name}: Error getting gNMI port, using default: {e}")
 
@@ -316,15 +324,17 @@ def main():
 
                 # Read admin_status from CONFIG_DB
                 try:
-                    entry = config_db.get_entry("CHASSIS_MODULE", dpu_name)
-                    if not entry:
+                    key = f"CHASSIS_MODULE|{dpu_name}"
+                    admin_status = config_db.hget(key, "admin_status")
+                    if not admin_status:
                         continue
+
+                    if isinstance(admin_status, bytes):
+                        admin_status = admin_status.decode('utf-8')
 
                 except Exception as e:
                     logger.log_error(f"{dpu_name}: Failed to read CONFIG_DB: {e}")
                     continue
-
-                admin_status = entry.get("admin_status", "")
 
                 if admin_status == "down":
                     # Check if already processing this DPU
