@@ -19,7 +19,8 @@ from swsscommon import swsscommon
 
 REBOOT_RPC_TIMEOUT_SEC = 60  # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC = 60  # overall time - polling RebootStatus
-STATUS_POLL_INTERVAL_SEC = 1  # delay between polls
+STATUS_POLL_INTERVAL_SEC = 1  # delay between reboot status polls
+HALT_IN_PROGRESS_POLL_INTERVAL_SEC = 5  # delay between halt_in_progress checks
 STATUS_RPC_TIMEOUT_SEC = 10  # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3  # gNOI System.Reboot method: HALT
 STATE_DB_INDEX = 6
@@ -44,12 +45,12 @@ def _get_halt_timeout() -> int:
         if not platform_name:
             return STATUS_POLL_TIMEOUT_SEC
 
-        platform_json_path = f"/usr/share/sonic/platform/{platform_name}/platform.json"
+        platform_json_path = f"/usr/share/sonic/device/{platform_name}/platform.json"
 
         if os.path.exists(platform_json_path):
             with open(platform_json_path, 'r') as f:
                 return int(json.load(f).get("dpu_halt_services_timeout", STATUS_POLL_TIMEOUT_SEC))
-    except Exception as e:
+    except (OSError, IOError, ValueError, KeyError) as e:
         logger.log_info(f"Could not load timeout from platform.json: {e}, using default {STATUS_POLL_TIMEOUT_SEC}s")
     return STATUS_POLL_TIMEOUT_SEC
 
@@ -64,7 +65,7 @@ def _get_pubsub(db_index):
     redis_client = redis.Redis(unix_socket_path='/var/run/redis/redis.sock', db=db_index)
     return redis_client.pubsub()
 
-def execute_gnoi_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC):
+def execute_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC):
     """Run gnoi_client with a timeout; return (rc, stdout, stderr)."""
     try:
         result = subprocess.run(command_args, capture_output=True, text=True, timeout=timeout_sec)
@@ -89,7 +90,7 @@ def get_dpu_ip(config_db, dpu_name: str) -> str:
             ip = ips[0] if isinstance(ips, list) else ips
             return ip
 
-    except Exception as e:
+    except (AttributeError, KeyError, TypeError) as e:
         logger.log_error(f"{dpu_name}: Error getting IP: {e}")
 
     return None
@@ -107,7 +108,7 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
                 if isinstance(gnmi_port, bytes):
                     gnmi_port = gnmi_port.decode('utf-8')
                 return str(gnmi_port)
-    except Exception as e:
+    except (AttributeError, KeyError, TypeError) as e:
         logger.log_warning(f"{dpu_name}: Error getting gNMI port, using default: {e}")
 
     logger.log_info(f"{dpu_name}: gNMI port not found, using default 8080")
@@ -133,6 +134,10 @@ class GnoiRebootHandler:
         """
         logger.log_notice(f"{dpu_name}: Starting gNOI shutdown sequence")
 
+        # Wait for platform PCI detach completion
+        if not self._wait_for_gnoi_halt_in_progress(dpu_name):
+            logger.log_warning(f"{dpu_name}: Timeout waiting for PCI detach, proceeding anyway")
+
         # Get DPU configuration
         dpu_ip = None
         try:
@@ -140,16 +145,12 @@ class GnoiRebootHandler:
             port = get_dpu_gnmi_port(self._config_db, dpu_name)
             if not dpu_ip:
                 logger.log_error(f"{dpu_name}: IP not found in DHCP_SERVER_IPV4_PORT table (key: bridge-midplane|{dpu_name.lower()}), cannot proceed")
-                self._set_gnoi_shutdown_complete_flag(dpu_name, False)
+                self._clear_halt_flag(dpu_name)
                 return False
         except Exception as e:
             logger.log_error(f"{dpu_name}: Failed to get configuration: {e}")
-            self._set_gnoi_shutdown_complete_flag(dpu_name, False)
+            self._clear_halt_flag(dpu_name)
             return False
-
-        # Wait for platform PCI detach completion
-        if not self._wait_for_gnoi_halt_in_progress(dpu_name):
-            logger.log_warning(f"{dpu_name}: Timeout waiting for PCI detach, proceeding anyway")
 
         # Send gNOI Reboot HALT command
         reboot_sent = self._send_reboot_command(dpu_name, dpu_ip, port)
@@ -159,19 +160,10 @@ class GnoiRebootHandler:
         # Poll for RebootStatus completion
         reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, port)
 
-        # Set completion flag
-        self._set_gnoi_shutdown_complete_flag(dpu_name, reboot_successful)
+        # Clear halt_in_progress to signal platform (replaces _set_gnoi_shutdown_complete_flag)
+        if self._clear_halt_flag(dpu_name):
+            logger.log_notice(f"{dpu_name}: Halting the services on DPU is successful for {dpu_name}")
 
-        # Clear halt_in_progress to signal platform
-        try:
-            if not dpu_name.startswith("DPU") or not dpu_name[3:].isdigit():
-                logger.log_error(f"{dpu_name}: Invalid DPU name format, cannot clear halt flag")
-                return reboot_successful
-            module_index = int(dpu_name[3:])
-            self._chassis.get_module(module_index).clear_module_gnoi_halt_in_progress()
-            logger.log_notice(f"{dpu_name}: gNOI sequence {'completed' if reboot_successful else 'failed'}")
-        except Exception as e:
-            logger.log_error(f"{dpu_name}: Failed to clear halt flag: {e}")
         return reboot_successful
 
     def _wait_for_gnoi_halt_in_progress(self, dpu_name: str) -> bool:
@@ -198,7 +190,7 @@ class GnoiRebootHandler:
             except Exception as e:
                 logger.log_error(f"{dpu_name}: Error reading halt flag: {e}")
 
-            time.sleep(STATUS_POLL_INTERVAL_SEC)
+            time.sleep(HALT_IN_PROGRESS_POLL_INTERVAL_SEC)
 
         return False
 
@@ -212,7 +204,7 @@ class GnoiRebootHandler:
             "-rpc", "Reboot",
             "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
         ]
-        rc, out, err = execute_gnoi_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
+        rc, out, err = execute_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
         if rc != 0:
             logger.log_error(f"{dpu_name}: Reboot command failed - {err or out}")
             return False
@@ -229,30 +221,32 @@ class GnoiRebootHandler:
             "-rpc", "RebootStatus"
         ]
         while time.monotonic() < deadline:
-            rc_s, out_s, err_s = execute_gnoi_command(status_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
+            rc_s, out_s, err_s = execute_command(status_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
             if rc_s == 0 and out_s and ("reboot complete" in out_s.lower()):
                 return True
             time.sleep(STATUS_POLL_INTERVAL_SEC)
         return False
 
-    def _set_gnoi_shutdown_complete_flag(self, dpu_name: str, value: bool):
-        """
-        Set the gnoi_shutdown_complete flag in CHASSIS_MODULE_TABLE.
-
-        This flag is used by the platform's graceful_shutdown_handler to determine
-        if the gNOI shutdown has completed successfully, instead of checking oper status.
-
-        Args:
-            dpu_name: The name of the DPU module (e.g., 'DPU0')
-            value: True if gNOI shutdown completed successfully, False otherwise
-        """
+    def _clear_halt_flag(self, dpu_name: str) -> bool:
+        """Clear halt_in_progress flag via platform API."""
         try:
-            table = swsscommon.Table(self._db, "CHASSIS_MODULE_TABLE")
-            fvs = swsscommon.FieldValuePairs([("gnoi_shutdown_complete", "True" if value else "False")])
-            table.set(dpu_name, fvs)
-            logger.log_info(f"Set gnoi_shutdown_complete={value} for {dpu_name}")
+            # Use chassis.get_module_index() to get the correct platform index for the named module
+            module_index = self._chassis.get_module_index(dpu_name)
+            if module_index < 0:
+                logger.log_error(f"{dpu_name}: Unable to get module index from chassis")
+                return False
+            
+            module = self._chassis.get_module(module_index)
+            if module is None:
+                logger.log_error(f"{dpu_name}: Module at index {module_index} not found in chassis")
+                return False
+            
+            module.clear_module_gnoi_halt_in_progress()
+            logger.log_info(f"{dpu_name}: Successfully cleared halt_in_progress flag (module index: {module_index})")
+            return True
         except Exception as e:
-            logger.log_error(f"Failed to set gnoi_shutdown_complete flag for {dpu_name}: {e}")
+            logger.log_error(f"{dpu_name}: Failed to clear halt flag: {e}")
+            return False
 
 # #########
 # Main loop
@@ -285,7 +279,7 @@ def main():
         redis_client = redis.Redis(unix_socket_path='/var/run/redis/redis.sock', db=CONFIG_DB_INDEX)
         redis_client.config_set('notify-keyspace-events', 'KEA')
         logger.log_info("Keyspace notifications enabled successfully for CONFIG_DB")
-    except Exception as e:
+    except (redis.RedisError, OSError) as e:
         logger.log_warning(f"Failed to enable keyspace notifications: {e}")
 
     pubsub = _get_pubsub(CONFIG_DB_INDEX)
@@ -332,7 +326,7 @@ def main():
                     if isinstance(admin_status, bytes):
                         admin_status = admin_status.decode('utf-8')
 
-                except Exception as e:
+                except (AttributeError, KeyError, TypeError) as e:
                     logger.log_error(f"{dpu_name}: Failed to read CONFIG_DB: {e}")
                     continue
 

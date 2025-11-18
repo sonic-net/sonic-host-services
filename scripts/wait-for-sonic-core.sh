@@ -3,27 +3,21 @@ set -euo pipefail
 log() { echo "[wait-for-sonic-core] $*"; }
 
 # Hard dep we expect to be up before we start: swss
-if systemctl is-active --quiet swss.service; then
-  log "Service swss.service is active"
-else
+if ! systemctl is-active --quiet swss.service; then
   log "Waiting for swss.service to become active…"
   systemctl --no-pager --full status swss.service || true
   exit 0  # let systemd retry; ExecStartPre must be quick
 fi
 
 # Hard dep we expect to be up before we start: gnmi
-if systemctl is-active --quiet gnmi.service; then
-  log "Service gnmi.service is active"
-else
+if ! systemctl is-active --quiet gnmi.service; then
   log "Waiting for gnmi.service to become active…"
   systemctl --no-pager --full status gnmi.service || true
   exit 0  # let systemd retry; ExecStartPre must be quick
 fi
 
 # pmon is advisory: proceed even if it's not active yet
-if systemctl is-active --quiet pmon.service; then
-  log "Service pmon.service is active"
-else
+if ! systemctl is-active --quiet pmon.service; then
   log "pmon.service not active yet (advisory)"
 fi
 
@@ -47,6 +41,5 @@ while ! has_chassis_table; do
   ELAPSED=$((ELAPSED + INTERVAL))
 done
 
-log "CHASSIS_MODULE present."
 log "SONiC core is ready."
 exit 0

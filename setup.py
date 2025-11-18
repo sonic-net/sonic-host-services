@@ -33,16 +33,11 @@ setup(
         'host_modules',
         'utils'
     ],
-    # Map packages to their actual dirs, and map top-level modules to 'scripts/'
+    # Map packages to their actual dirs
     package_dir = {
         'host_modules': 'host_modules',
-        'utils': 'utils',
-        '': 'scripts'
+        'utils': 'utils'
     },
-    # Make gnoi_shutdown_daemon.py importable as a module for the console script
-    py_modules = [
-        'gnoi_shutdown_daemon'
-    ],
     scripts=[
         'scripts/caclmgrd',
         'scripts/hostcfgd',
@@ -57,11 +52,6 @@ setup(
         'scripts/sonic-host-server',
         'scripts/ldap.py'
     ],
-    entry_points={
-        'console_scripts': [
-            'gnoi-shutdown-daemon = gnoi_shutdown_daemon:main'
-        ]
-    },
     install_requires = [
         'dbus-python',
         'systemd-python',

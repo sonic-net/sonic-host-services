@@ -9,7 +9,7 @@ def main():
     try:
         from sonic_py_common import device_info
         from utilities_common.chassis import is_dpu
-        
+
         # Check if SmartSwitch NPU (not DPU)
         if device_info.is_smartswitch() and not is_dpu():
             sys.exit(0)
