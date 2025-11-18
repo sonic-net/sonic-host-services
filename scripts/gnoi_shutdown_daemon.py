@@ -174,7 +174,6 @@ class GnoiRebootHandler:
         deadline = time.monotonic() + _get_halt_timeout()
 
         while time.monotonic() < deadline:
-
             try:
                 table = swsscommon.Table(self._db, "CHASSIS_MODULE_TABLE")
                 (status, fvs) = table.get(dpu_name)
@@ -225,6 +224,7 @@ class GnoiRebootHandler:
             if rc_s == 0 and out_s and ("reboot complete" in out_s.lower()):
                 return True
             time.sleep(STATUS_POLL_INTERVAL_SEC)
+        logger.log_notice(f"{dpu_name}: Timeout waiting for RebootStatus completion, proceeding with halt flag clear")
         return False
 
     def _clear_halt_flag(self, dpu_name: str) -> bool:
