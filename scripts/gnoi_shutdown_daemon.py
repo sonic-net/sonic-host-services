@@ -157,6 +157,8 @@ class GnoiRebootHandler:
         reboot_sent = self._send_reboot_command(dpu_name, dpu_ip, port)
         if not reboot_sent:
             logger.log_error(f"{dpu_name}: Failed to send Reboot command")
+            self._clear_halt_flag(dpu_name)
+            return False
 
         # Poll for RebootStatus completion
         reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, port)
