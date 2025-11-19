@@ -65,11 +65,12 @@ def _get_pubsub(db_index):
     redis_client = redis.Redis(unix_socket_path='/var/run/redis/redis.sock', db=db_index)
     return redis_client.pubsub()
 
-def execute_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC):
+def execute_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC, suppress_stderr=False):
     """Run gnoi_client with a timeout; return (rc, stdout, stderr)."""
     try:
-        result = subprocess.run(command_args, capture_output=True, text=True, timeout=timeout_sec)
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+        stderr_dest = subprocess.DEVNULL if suppress_stderr else subprocess.PIPE
+        result = subprocess.run(command_args, stdout=subprocess.PIPE, stderr=stderr_dest, text=True, timeout=timeout_sec)
+        return result.returncode, result.stdout.strip(), result.stderr.strip() if not suppress_stderr else ""
     except subprocess.TimeoutExpired as e:
         return -1, "", f"Command timed out after {int(e.timeout)}s."
     except Exception as e:
@@ -160,7 +161,6 @@ class GnoiRebootHandler:
         # Poll for RebootStatus completion
         reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, port)
 
-        # Clear halt_in_progress to signal platform (replaces _set_gnoi_shutdown_complete_flag)
         if self._clear_halt_flag(dpu_name):
             logger.log_notice(f"{dpu_name}: Halting the services on DPU is successful for {dpu_name}")
 
@@ -203,9 +203,9 @@ class GnoiRebootHandler:
             "-rpc", "Reboot",
             "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
         ]
-        rc, out, err = execute_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
+        rc, out, err = execute_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC, suppress_stderr=True)
         if rc != 0:
-            logger.log_error(f"{dpu_name}: Reboot command failed - {err or out}")
+            logger.log_error(f"{dpu_name}: Reboot command failed")
             return False
         return True
 
