@@ -282,7 +282,7 @@ def main():
         redis_client.config_set('notify-keyspace-events', 'KEA')
         logger.log_info("Keyspace notifications enabled successfully for CONFIG_DB")
     except (redis.RedisError, OSError) as e:
-        logger.log_warning(f"Failed to enable keyspace notifications: {e}")
+        logger.log_error(f"Failed to enable keyspace notifications: {e}")
 
     pubsub = _get_pubsub(CONFIG_DB_INDEX)
 

@@ -33,14 +33,14 @@ class TestCheckPlatform(unittest.TestCase):
             check_platform.main()
         self.assertEqual(cm.exception.code, 1)
 
-    @patch('sonic_py_common.device_info.is_smartswitch', side_effect=Exception("Test error"))
+    @patch('sonic_py_common.device_info.is_smartswitch', side_effect=ImportError("Test error"))
     def test_exception(self, mock_is_smartswitch):
         """Test case for exception during is_smartswitch check."""
         with self.assertRaises(SystemExit) as cm:
             check_platform.main()
         self.assertEqual(cm.exception.code, 1)
 
-    @patch('utilities_common.chassis.is_dpu', side_effect=Exception("DPU check failed"))
+    @patch('utilities_common.chassis.is_dpu', side_effect=AttributeError("DPU check failed"))
     @patch('sonic_py_common.device_info.is_smartswitch', return_value=True)
     def test_is_dpu_exception(self, mock_is_smartswitch, mock_is_dpu):
         """Test case when is_dpu() raises an exception."""
