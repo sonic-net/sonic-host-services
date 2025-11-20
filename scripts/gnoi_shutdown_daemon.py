@@ -25,6 +25,7 @@ STATUS_RPC_TIMEOUT_SEC = 10  # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3  # gNOI System.Reboot method: HALT
 STATE_DB_INDEX = 6
 CONFIG_DB_INDEX = 4
+DEFAULT_GNMI_PORT = "8080"  # Default GNMI port for DPU
 
 SYSLOG_IDENTIFIER = "gnoi-shutdown-daemon"
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
@@ -112,8 +113,8 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
     except (AttributeError, KeyError, TypeError) as e:
         logger.log_warning(f"{dpu_name}: Error getting gNMI port, using default: {e}")
 
-    logger.log_info(f"{dpu_name}: gNMI port not found, using default 8080")
-    return "8080"
+    logger.log_info(f"{dpu_name}: gNMI port not found, using default {DEFAULT_GNMI_PORT}")
+    return DEFAULT_GNMI_PORT
 
 # ###############
 # gNOI Reboot Handler
