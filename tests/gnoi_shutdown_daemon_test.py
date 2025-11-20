@@ -110,9 +110,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
-    @patch('gnoi_shutdown_daemon._get_pubsub')
+    @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
-    def test_main_loop_flow(self, mock_thread, mock_get_pubsub, mock_gnoi_reboot_handler, mock_db_connect):
+    def test_main_loop_flow(self, mock_thread, mock_config_db_connector_class, mock_gnoi_reboot_handler, mock_db_connect):
         """Test the main loop processing of a shutdown event."""
         # Mock DB connections
         mock_state_db = MagicMock()
@@ -121,6 +121,16 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock config_db.hget to return admin_status=down to trigger thread creation
         mock_config_db.hget.return_value = "down"
+
+        # Mock ConfigDBConnector for pubsub
+        mock_config_db_connector = MagicMock()
+        mock_config_db_connector.db_name = "CONFIG_DB"
+        mock_pubsub = MagicMock()
+        mock_pubsub.get_message.side_effect = [mock_message, KeyboardInterrupt]
+        mock_redis_client = MagicMock()
+        mock_redis_client.pubsub.return_value = mock_pubsub
+        mock_config_db_connector.get_redis_client.return_value = mock_redis_client
+        mock_config_db_connector_class.return_value = mock_config_db_connector
 
         # Mock chassis
         mock_chassis = MagicMock()
@@ -135,11 +145,6 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_sonic_platform = MagicMock()
         mock_sonic_platform.platform = mock_platform_submodule
 
-        # Mock pubsub to yield one message then stop
-        mock_pubsub = MagicMock()
-        mock_pubsub.get_message.side_effect = [mock_message, KeyboardInterrupt]
-        mock_get_pubsub.return_value = mock_pubsub
-
         # Mock the reboot handler's _handle_transition to avoid actual execution
         mock_handler_instance = MagicMock()
         mock_gnoi_reboot_handler.return_value = mock_handler_instance
@@ -149,9 +154,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             'sonic_platform': mock_sonic_platform,
             'sonic_platform.platform': mock_platform_submodule
         }):
-            with patch('gnoi_shutdown_daemon.redis.Redis'):
-                with self.assertRaises(KeyboardInterrupt):
-                    gnoi_shutdown_daemon.main()
+            with self.assertRaises(KeyboardInterrupt):
+                gnoi_shutdown_daemon.main()
 
         # Verify initialization
         mock_db_connect.assert_has_calls([call("STATE_DB"), call("CONFIG_DB")])
@@ -281,17 +285,6 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
         self.assertEqual(port, "8080")
 
-    def test_get_pubsub_fallback(self):
-        """Test _get_pubsub with redis client."""
-        with patch('gnoi_shutdown_daemon.redis.Redis') as mock_redis:
-            mock_redis_instance = MagicMock()
-            mock_redis.return_value = mock_redis_instance
-
-            pubsub = gnoi_shutdown_daemon._get_pubsub(gnoi_shutdown_daemon.CONFIG_DB_INDEX)
-
-            mock_redis.assert_called_with(unix_socket_path='/var/run/redis/redis.sock', db=gnoi_shutdown_daemon.CONFIG_DB_INDEX)
-            self.assertEqual(pubsub, mock_redis_instance.pubsub.return_value)
-
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value=None)
     @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080")
@@ -342,8 +335,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         self.assertEqual(mock_config.hget.call_count, 3)
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
-    @patch('gnoi_shutdown_daemon._get_pubsub')
-    def test_main_loop_no_dpu_name(self, mock_get_pubsub, mock_db_connect):
+    @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
+    def test_main_loop_no_dpu_name(self, mock_config_db_connector_class, mock_db_connect):
         """Test main loop with a malformed key."""
         mock_chassis = MagicMock()
         mock_platform_instance = MagicMock()
@@ -362,19 +355,30 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         malformed_message = mock_message.copy()
         malformed_message["channel"] = f"__keyspace@{gnoi_shutdown_daemon.CONFIG_DB_INDEX}__:CHASSIS_MODULE|"
         mock_pubsub.get_message.side_effect = [malformed_message, KeyboardInterrupt]
-        mock_get_pubsub.return_value = mock_pubsub
+
+        # Mock DB connections
+        mock_state_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_db_connect.side_effect = [mock_state_db, mock_config_db]
+
+        # Mock ConfigDBConnector for pubsub
+        mock_config_db_connector = MagicMock()
+        mock_config_db_connector.db_name = "CONFIG_DB"
+        mock_redis_client = MagicMock()
+        mock_redis_client.pubsub.return_value = mock_pubsub
+        mock_config_db_connector.get_redis_client.return_value = mock_redis_client
+        mock_config_db_connector_class.return_value = mock_config_db_connector
 
         with patch.dict('sys.modules', {
             'sonic_platform': mock_sonic_platform,
             'sonic_platform.platform': mock_platform_submodule
         }):
-            with patch('gnoi_shutdown_daemon.redis.Redis'):
-                with self.assertRaises(KeyboardInterrupt):
-                    gnoi_shutdown_daemon.main()
+            with self.assertRaises(KeyboardInterrupt):
+                gnoi_shutdown_daemon.main()
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
-    @patch('gnoi_shutdown_daemon._get_pubsub')
-    def test_main_loop_get_transition_exception(self, mock_get_pubsub, mock_db_connect):
+    @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
+    def test_main_loop_get_transition_exception(self, mock_config_db_connector_class, mock_db_connect):
         """Test main loop when hget raises an exception."""
         mock_chassis = MagicMock()
         mock_platform_instance = MagicMock()
@@ -390,7 +394,6 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         mock_pubsub = MagicMock()
         mock_pubsub.get_message.side_effect = [mock_message, KeyboardInterrupt]
-        mock_get_pubsub.return_value = mock_pubsub
 
         # Mock config_db to raise exception on hget
         mock_config_db = MagicMock()
@@ -398,13 +401,20 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_db_connect.side_effect = [mock_state_db, mock_config_db]
         mock_config_db.hget.side_effect = AttributeError("DB error")
 
+        # Mock ConfigDBConnector for pubsub
+        mock_config_db_connector = MagicMock()
+        mock_config_db_connector.db_name = "CONFIG_DB"
+        mock_redis_client = MagicMock()
+        mock_redis_client.pubsub.return_value = mock_pubsub
+        mock_config_db_connector.get_redis_client.return_value = mock_redis_client
+        mock_config_db_connector_class.return_value = mock_config_db_connector
+
         with patch.dict('sys.modules', {
             'sonic_platform': mock_sonic_platform,
             'sonic_platform.platform': mock_platform_submodule
         }):
-            with patch('gnoi_shutdown_daemon.redis.Redis'):
-                with self.assertRaises(KeyboardInterrupt):
-                    gnoi_shutdown_daemon.main()
+            with self.assertRaises(KeyboardInterrupt):
+                gnoi_shutdown_daemon.main()
 
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.execute_command', return_value=(-1, "", "RPC error"))

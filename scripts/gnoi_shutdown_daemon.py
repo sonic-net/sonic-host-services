@@ -56,16 +56,6 @@ def _get_halt_timeout() -> int:
     return STATUS_POLL_TIMEOUT_SEC
 
 
-def _get_pubsub(db_index):
-    """Return a pubsub object for keyspace notifications.
-
-    Args:
-        db_index: The Redis database index (e.g., 4 for CONFIG_DB, 6 for STATE_DB)
-    """
-    # Connect directly to Redis using redis-py
-    redis_client = redis.Redis(unix_socket_path='/var/run/redis/redis.sock', db=db_index)
-    return redis_client.pubsub()
-
 def execute_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC, suppress_stderr=False):
     """Run gnoi_client with a timeout; return (rc, stdout, stderr)."""
     try:
@@ -260,6 +250,10 @@ def main():
     state_db = daemon_base.db_connect("STATE_DB")
     config_db = daemon_base.db_connect("CONFIG_DB")
 
+    # Also connect ConfigDBConnector for pubsub support (has get_redis_client method)
+    config_db_connector = swsscommon.ConfigDBConnector()
+    config_db_connector.connect(wait_for_init=False)
+
     # Get chassis instance for accessing ModuleBase APIs
     try:
         from sonic_platform import platform
@@ -276,16 +270,8 @@ def main():
     active_transitions = set()
     active_transitions_lock = threading.Lock()
 
-    # Enable keyspace notifications for CONFIG_DB
-    try:
-        # Connect directly to Redis using redis-py to enable keyspace notifications
-        redis_client = redis.Redis(unix_socket_path='/var/run/redis/redis.sock', db=CONFIG_DB_INDEX)
-        redis_client.config_set('notify-keyspace-events', 'KEA')
-        logger.log_info("Keyspace notifications enabled successfully for CONFIG_DB")
-    except (redis.RedisError, OSError) as e:
-        logger.log_error(f"Failed to enable keyspace notifications: {e}")
-
-    pubsub = _get_pubsub(CONFIG_DB_INDEX)
+    # Keyspace notifications are globally enabled in docker-database
+    pubsub = config_db_connector.get_redis_client(config_db_connector.db_name).pubsub()
 
     # Listen to keyspace notifications for CHASSIS_MODULE table keys in CONFIG_DB
     topic = f"__keyspace@{CONFIG_DB_INDEX}__:CHASSIS_MODULE|*"

@@ -15,7 +15,8 @@ def main():
             sys.exit(0)
         else:
             sys.exit(1)
-    except (ImportError, AttributeError, RuntimeError):
+    except (ImportError, AttributeError, RuntimeError) as e:
+        sys.stderr.write("check_platform failed: {}\n".format(str(e)))
         sys.exit(1)
 
 if __name__ == "__main__":
