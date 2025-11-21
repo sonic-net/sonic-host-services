@@ -31,9 +31,14 @@ setup(
     maintainer_email = 'jolevequ@microsoft.com',
     packages = [
         'host_modules',
-	'utils',
+        'utils'
     ],
-    scripts = [
+    # Map packages to their actual dirs
+    package_dir = {
+        'host_modules': 'host_modules',
+        'utils': 'utils'
+    },
+    scripts=[
         'scripts/caclmgrd',
         'scripts/hostcfgd',
         'scripts/featured',
@@ -41,6 +46,9 @@ setup(
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
+        'scripts/check_platform.py',
+        'scripts/wait-for-sonic-core.sh',
+        'scripts/gnoi_shutdown_daemon.py',
         'scripts/sonic-host-server',
         'scripts/ldap.py'
     ],
