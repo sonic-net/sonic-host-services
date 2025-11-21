@@ -437,7 +437,21 @@ class FeatureHandler(object):
             for cmd in cmds:
                 syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
                 try:
-                    run_cmd(cmd, raise_exception=True)
+                    if "enable" in cmd:
+                        # If we are running an enable command, then ignore any errors that might come
+                        # from the service file being defined only in the /run folder. This is because
+                        # it doesn't make sense to enable generated services. In Trixie, because of
+                        # restrictions from systemd and limitations around resetting fields relating
+                        # to dependencies, we are basically copying the service files from the /usr/lib
+                        # folder to /run, except for any dependency-related fields.
+                        #
+                        # We need a better solution to this, maybe something like custom fields in
+                        # the service files for specifying SONiC dependencies. That way, our service
+                        # generator can just look for that and translate that to either non-instanced
+                        # units or to instanced units and add those as dependencies.
+                        run_cmd(cmd, raise_exception=False)
+                    else:
+                        run_cmd(cmd, raise_exception=True)
                 except Exception as err:
                     syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be enabled and started"
                                   .format(feature.name, feature_suffixes[-1]))
