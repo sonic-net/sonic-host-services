@@ -70,7 +70,7 @@ fn get_terminal_name(pid: u32) -> String {
 }
 
 fn convert_to_bytes(value: &str) -> u64 {
-    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+\.?\d*)([a-zA-Z]+)").unwrap());
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+\.?\d*)([a-zA-Z]+)").expect("valid regex pattern"));
     if let Some(caps) = RE.captures(value) {
         let num: f64 = caps[1].parse().unwrap_or(0.0);
         let unit = &caps[2];
@@ -191,14 +191,17 @@ impl ProcDockerStats {
                 ProcessStatus::Unknown(_) | ProcessStatus::Zombie => continue,
                 _ => {
                     let cpu = process_obj.cpu_usage();
-                    valid_processes.push((cpu, process_obj));
+                    // Treat NaN as 0.0 for sorting purposes
+                    let cpu_safe = if cpu.is_nan() { 0.0 } else { cpu };
+                    valid_processes.push((cpu_safe, process_obj));
                 }
             }
         }
         // Partial sort: only need top 1024, so use select_nth_unstable for O(n) instead of O(n log n)
         let limit = 1024.min(valid_processes.len());
         if limit > 0 {
-            valid_processes.select_nth_unstable_by(limit - 1, |a, b| b.0.partial_cmp(&a.0).unwrap());
+            // Safe to use total_cmp now since we've already handled NaN above
+            valid_processes.select_nth_unstable_by(limit - 1, |a, b| b.0.total_cmp(&a.0));
         }
         let top_processes = valid_processes.iter().take(limit).map(|(_, p)| *p);
 
@@ -353,14 +356,15 @@ impl ProcDockerStats {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with syslog like sonic-ctrmgrd-rs example
-    let identity = CString::new("procdockerstatsd").unwrap();
+    let identity = CString::new("procdockerstatsd")
+        .map_err(|e| format!("invalid identity string: {}", e))?;
     let syslog = syslog_tracing::Syslog::new(
         identity,
         syslog_tracing::Options::LOG_PID,
         syslog_tracing::Facility::Daemon
-    ).unwrap();
+    ).ok_or("failed to initialize syslog")?;
     tracing_subscriber::fmt()
         .with_writer(syslog)
         .with_ansi(false)
@@ -371,6 +375,7 @@ fn main() {
 
     info!("Starting up procdockerstatsd daemon");
 
-    let mut daemon = ProcDockerStats::new().expect("Failed to initialize daemon");
+    let mut daemon = ProcDockerStats::new()?;
     daemon.run();
+    Ok(())
 }
