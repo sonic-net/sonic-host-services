@@ -9,6 +9,7 @@
 try:
     import datetime
     import json
+    import logging
     import os
     import pwd
     import re
@@ -242,7 +243,7 @@ def check_and_create_dpu_dirs():
 
 def main():
     # Configure logger to log all messages INFO level and higher
-    sonic_logger.set_min_log_priority(sonic_logger.DEFAULT_LOG_LEVEL)
+    sonic_logger.set_min_log_priority(logging.INFO)
 
     sonic_logger.log_info("Starting up...")
 
