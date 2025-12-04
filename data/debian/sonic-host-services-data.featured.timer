@@ -3,7 +3,7 @@ Description=Delays feature daemon until SONiC has started
 PartOf=featured.service
 
 [Timer]
-OnUnitActiveSec=0 sec
+OnUnitActiveSec=1 sec
 OnBootSec=1min 30 sec
 Unit=featured.service
 

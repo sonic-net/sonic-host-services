@@ -19,7 +19,7 @@ stages:
 
   jobs:
   - job:
-    displayName: "Python3"
+    displayName: "Build job"
     variables:
       DIFF_COVER_CHECK_THRESHOLD: 80
       DIFF_COVER_ENABLE: 'true'
@@ -57,6 +57,7 @@ stages:
         sudo dpkg -i libnl-nf-3-200_*.deb
         sudo dpkg -i libyang_1.0.73_*.deb
         sudo dpkg -i libswsscommon_1.0.0_amd64.deb
+        sudo dpkg -i libswsscommon-dev_1.0.0_amd64.deb
         sudo dpkg -i python3-swsscommon_1.0.0_amd64.deb
       workingDirectory: $(Pipeline.Workspace)/target/debs/bookworm/
       displayName: 'Install Debian dependencies'
@@ -108,7 +109,20 @@ stages:
         python3 -m build -n
       displayName: 'Build Python 3 wheel'
 
+    - script: |
+        dpkg-buildpackage -rfakeroot -b -us -uc -j4 -Pnopython2
+      displayName: 'Build deb package'
+
     - publish: '$(System.DefaultWorkingDirectory)/dist/'
       artifact: wheels
       displayName: "Publish Python wheels"
 
+    - task: CopyFiles@2
+      inputs:
+        contents: '../*.deb'
+        targetFolder: $(Build.ArtifactStagingDirectory)
+      displayName: 'Copy deb files'
+
+    - publish: '$(Build.ArtifactStagingDirectory)'
+      artifact: debs
+      displayName: "Publish deb packages"

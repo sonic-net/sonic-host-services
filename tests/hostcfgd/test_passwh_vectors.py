@@ -40,7 +40,7 @@ HOSTCFGD_TEST_PASSWH_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G"
                     }
                 }
             },
@@ -79,7 +79,7 @@ HOSTCFGD_TEST_PASSWH_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G"
                     }
                 }
             },
@@ -118,7 +118,7 @@ HOSTCFGD_TEST_PASSWH_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G"
                     }
                 }
             },
@@ -157,7 +157,7 @@ HOSTCFGD_TEST_PASSWH_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G"
                     }
                 },
             },
@@ -196,7 +196,7 @@ HOSTCFGD_TEST_PASSWH_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G"
                     }
                 }
             },
@@ -235,7 +235,7 @@ HOSTCFGD_TEST_PASSWH_VECTOR = [
                     "config": {
                         "enabled": "false",
                         "num_dumps": "3",
-                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-:448M"
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G"
                     }
                 }
             }
