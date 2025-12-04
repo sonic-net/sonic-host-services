@@ -7,7 +7,7 @@ After=sonic.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/procdockerstatsd
+ExecStart=/usr/bin/procdockerstatsd-rs
 Restart=always
 
 [Install]
