@@ -853,3 +853,127 @@ class TestMemoryStatisticsCfgd(TestCase):
             pid = self.mem_stat_cfg.get_memory_statistics_pid()
             self.assertIsNone(pid)
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: PID 123 does not correspond to memory_statistics_service.py.")
+
+
+class TestDeviceMetaCfgLoad(TestCase):
+    """Test suite for DeviceMetaCfg load method with timezone functionality."""
+
+    def setUp(self):
+        """Set up test environment before each test case."""
+        self.devmeta_cfg = hostcfgd.DeviceMetaCfg()
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_load_initial_timezone_different_from_current(self, mock_syslog, mock_run_cmd, mock_realpath):
+        """ Test initial timezone setting when desired timezone differs from current. """
+        mock_realpath.side_effect = [
+            '/usr/share/zoneinfo/UTC',
+            '/usr/share/zoneinfo/America/New_York'
+        ]
+        dev_meta = {
+            'localhost': {
+                'hostname': 'test-host', 
+                'timezone': 'America/New_York'
+            }
+        }
+        
+        self.devmeta_cfg.load(dev_meta)
+        
+        expected_calls = [
+            call(['timedatectl', 'set-timezone', 'America/New_York']),
+            call(['systemctl', 'restart', 'rsyslog'], True, False)
+        ]
+        mock_run_cmd.assert_has_calls(expected_calls, any_order=False)
+        
+        expected_syslog_calls = [
+            call(mock.ANY, 'DeviceMetaCfg: Applied timezone America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Restarted rsyslog after timezone change')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_apply_timezone_oserror_exception(self, mock_syslog, mock_run_cmd, mock_realpath):
+        """ Test OSError exception handling in apply_timezone_if_needed. """
+        mock_realpath.side_effect = [
+            '/usr/share/zoneinfo/UTC',
+            OSError("Permission denied accessing timezone file")
+        ]
+        self.devmeta_cfg.apply_timezone_if_needed('America/New_York')
+        expected_syslog_calls = [
+            call(mock.ANY, 'DeviceMetaCfg: timezone update to America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Invalid timezone files for /etc/localtime America/New_York: Permission denied accessing timezone file')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
+        mock_run_cmd.assert_not_called()
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_apply_timezone_subprocess_exception(self, mock_syslog, mock_run_cmd, mock_realpath):
+        """ Test subprocess.CalledProcessError exception handling in apply_timezone_if_needed. """
+        mock_realpath.side_effect = [
+            '/usr/share/zoneinfo/UTC',
+            '/usr/share/zoneinfo/America/New_York'
+        ]
+        mock_run_cmd.side_effect = [
+            CalledProcessError(returncode=1, cmd=['timedatectl', 'set-timezone', 'America/New_York'], output="Invalid timezone"),
+            None
+        ]
+        self.devmeta_cfg.apply_timezone_if_needed('America/New_York')
+        expected_syslog_calls = [
+            call(mock.ANY, 'DeviceMetaCfg: timezone update to America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Failed to set-timezone America/New_York and restart rsyslog: Command \'[\'timedatectl\', \'set-timezone\', \'America/New_York\']\' returned non-zero exit status 1.')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_apply_timezone_general_exception(self, mock_syslog, mock_run_cmd, mock_realpath):
+        """ Test general Exception handling in apply_timezone_if_needed. """
+        mock_realpath.side_effect = [
+            '/usr/share/zoneinfo/UTC',
+            '/usr/share/zoneinfo/America/New_York'
+        ]
+        mock_run_cmd.side_effect = RuntimeError("Unexpected system error")
+        self.devmeta_cfg.apply_timezone_if_needed('America/New_York')
+        expected_syslog_calls = [
+            call(mock.ANY, 'DeviceMetaCfg: timezone update to America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Failed to apply timezone America/New_York: Unexpected system error')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_apply_timezone_no_change_needed(self, mock_syslog, mock_run_cmd, mock_realpath):
+        """ Test apply_timezone_if_needed when no change is needed. """
+        mock_realpath.side_effect = [
+            '/usr/share/zoneinfo/America/New_York',
+            '/usr/share/zoneinfo/America/New_York'
+        ]
+        self.devmeta_cfg.timezone = 'America/New_York'
+        self.devmeta_cfg.apply_timezone_if_needed('America/New_York')
+        expected_syslog_calls = [
+            call(mock.ANY, 'DeviceMetaCfg: timezone update to America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: No change in timezone')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
+        mock_run_cmd.assert_not_called()
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_apply_timezone_empty_timezone(self, mock_syslog, mock_run_cmd, mock_realpath):
+        """ Test apply_timezone_if_needed with None/empty timezone. """
+        self.devmeta_cfg.apply_timezone_if_needed(None)  
+        expected_syslog_calls = [
+            call(mock.ANY, 'DeviceMetaCfg: timezone update to None'),
+            call(mock.ANY, 'DeviceMetaCfg: Recieved empty timezone')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
+        mock_realpath.assert_not_called()
+        mock_run_cmd.assert_not_called()
