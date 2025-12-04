@@ -25,7 +25,6 @@ ALLOWED_CONTAINERS = {
     "swss",
     "syncd",
     "teamd",
-    "telemetry",
 }
 
 # The set of allowed images that can be managed by this service.
@@ -42,7 +41,6 @@ ALLOWED_IMAGES = {
     "docker-sonic-bmp",
     "docker-sonic-gnmi",
     "docker-sonic-restapi",
-    "docker-sonic-telemetry",
     "docker-syncd-brcm",
     "docker-syncd-cisco",
     "docker-teamd",
