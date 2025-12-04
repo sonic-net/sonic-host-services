@@ -50,6 +50,8 @@ MKHOME_DIR_LIB_REG = r'.*pam_mkhomedir'
 ETC_PAMD_SSHD = "/etc/pam.d/sshd"
 ETC_PAMD_LOGIN = "/etc/pam.d/login"
 ETC_LOGIN_DEF = "/etc/login.defs"
+ETC_LOCALTIME = "/etc/localtime"
+ZONEINFO_DIR = "/usr/share/zoneinfo"
 
 # Linux login.def default values (password hardening disable)
 LINUX_DEFAULT_PASS_MAX_DAYS = 99999
@@ -1495,6 +1497,7 @@ class DeviceMetaCfg(object):
 
         # Load appropriate config
         self.timezone = dev_meta.get('localhost', {}).get('timezone')
+        self.apply_timezone_if_needed(self.timezone)
         self.syslog_with_osversion = dev_meta.get('localhost', {}).get('syslog_with_osversion')
 
     def hostname_update(self, data):
@@ -1527,34 +1530,50 @@ class DeviceMetaCfg(object):
                 return
             run_cmd(['sudo', 'monit', 'reload'])
 
+    def apply_timezone_if_needed(self, new_tz):
+        """
+        Apply timezone if it differs from either:
+        - the cached DB value (self.timezone)
+        - the actual system timezone (/etc/localtime)
+        Run the following command in Linux: timedatectl set-timezone <timezone>
+
+        Args:
+            new_tz: New timezone value from DB
+        """
+        try:
+            syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: timezone update to {new_tz}')
+            if new_tz is None:
+                syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: Recieved empty timezone')
+                return
+            
+            system_timezone_realpath = os.path.realpath(ETC_LOCALTIME)
+            new_timezone_realpath = os.path.realpath(f'{ZONEINFO_DIR}/{new_tz}')
+            if new_tz == self.timezone and new_timezone_realpath == system_timezone_realpath:
+                syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: No change in timezone')
+                return
+
+            run_cmd(['timedatectl', 'set-timezone', new_tz])
+            self.timezone = new_tz
+            syslog.syslog(syslog.LOG_INFO, f'DeviceMetaCfg: Applied timezone {self.timezone}')
+
+            run_cmd(['systemctl', 'restart', 'rsyslog'], True, False)
+            syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restarted rsyslog after timezone change')
+
+        except OSError as e:
+            syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Invalid timezone files for {ETC_LOCALTIME} {new_tz}: {e}')
+        except subprocess.CalledProcessError as e:
+            syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Failed to set-timezone {new_tz} and restart rsyslog: {e}')
+        except Exception as e:
+            syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Failed to apply timezone {new_tz}: {e}')
+
     def timezone_update(self, data):
         """
-        Apply timezone handler.
-        Run the following command in Linux: timedatectl set-timezone <timezone>
+        Call apply timezone handler.
+
         Args:
             data: Read table's key's data.
         """
-        new_timezone = data.get('timezone')
-        syslog.syslog(syslog.LOG_DEBUG,
-                      f'DeviceMetaCfg: timezone update to {new_timezone}')
-
-        if new_timezone is None:
-            syslog.syslog(syslog.LOG_DEBUG,
-                          f'DeviceMetaCfg: Recieved empty timezone')
-            return
-
-        if new_timezone == self.timezone:
-            syslog.syslog(syslog.LOG_DEBUG,
-                          f'DeviceMetaCfg: No change in timezone')
-            return
-
-        # run command will print out log error in case of error
-        run_cmd(['timedatectl', 'set-timezone', new_timezone])
-        self.timezone = new_timezone
-
-        run_cmd(['systemctl', 'restart', 'rsyslog'], True, False)
-        syslog.syslog(syslog.LOG_INFO, 'DeviceMetaCfg: Restart rsyslog after '
-                      'changing timezone')
+        self.apply_timezone_if_needed(data.get('timezone'))
 
     def rsyslog_config(self, data):
         """
