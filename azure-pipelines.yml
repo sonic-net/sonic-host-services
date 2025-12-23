@@ -27,7 +27,7 @@ stages:
       vmImage: ubuntu-24.04
 
     container:
-      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bookworm:$(BUILD_BRANCH)
+      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bookworm-amd64:$(BUILD_BRANCH)
 
     steps:
     - checkout: self
