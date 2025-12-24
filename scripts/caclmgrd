@@ -949,6 +949,9 @@ class ControlPlaneAclManager(logger.Logger):
 
         self.run_commands(iptables_cmds)
 
+        #Init midplane_ip to None
+        midplane_ip = None
+
         # Chassis: NAT rules for case when SUP is upgraded to new chassis_db address schema and LC running OLD version.
         if device_info.is_chassis() and device_info.is_supervisor():
             # Get the supervisor midplane ip address
@@ -963,11 +966,12 @@ class ControlPlaneAclManager(logger.Logger):
             if not midplane_ip:
                 return
 
-        # Get the iptables commands and run
-        sup_iptables_cmds = self.generate_chassis_db_fwd_commands(midplane_ip)
-        for cmd in sup_iptables_cmds:
-            self.log_info("  " + ' '.join(cmd))
-        self.run_commands(sup_iptables_cmds)
+        if midplane_ip is not None:
+            # Get the iptables commands and run
+            sup_iptables_cmds = self.generate_chassis_db_fwd_commands(midplane_ip)
+            for cmd in sup_iptables_cmds:
+                self.log_info("  " + ' '.join(cmd))
+            self.run_commands(sup_iptables_cmds)
 
         if self.DualToR:
             dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace, config_db_connector)
