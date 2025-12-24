@@ -31,6 +31,7 @@ SYSLOG_IDENTIFIER = "caclmgrd"
 
 DEFAULT_NAMESPACE = ''
 
+REDIS_CHASSIS_SERVER_PORT = '6380'
 
 # ========================== Helper Functions =========================
 
@@ -515,6 +516,25 @@ class ControlPlaneAclManager(logger.Logger):
 
         return fwd_traffic_from_namespace_to_host_cmds
 
+    def generate_chassis_db_fwd_commands(self, midplane_ip):
+        """
+        To unify the chassis_db address used across all chassis and smart switch platforms, a new ip address and subnet was introduced
+        for chassis_db_address. so this NAT rule is to handle a case where the SUP/NPU got upgraded first and has the new chassis_db
+        address/subnet while LC/DPU still tries to talk to SUP/NPU midplane IP which used to be the chassis db ip address earlier
+        """
+        chassis_db_fwd_commands_on_sup_cmds = []
+
+        # Get the chassis_db_address from the file /etc/chassis_cb_address
+        chassis_db_address = device_info.get_chassis_db_address()
+        if chassis_db_address is None:
+            return chassis_db_fwd_commands_on_sup_cmds
+
+
+        chassis_db_fwd_commands_on_sup_cmds.append(['iptables', '-t', 'nat', '-A', 'PREROUTING', '-p', 'tcp', '-d', midplane_ip, '--dport', REDIS_CHASSIS_SERVER_PORT, '-j', 'DNAT', '--to-destination', chassis_db_address])
+        chassis_db_fwd_commands_on_sup_cmds.append(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-p', 'tcp', '-s', chassis_db_address, '-j', 'SNAT', '--to-source', midplane_ip])
+
+        return chassis_db_fwd_commands_on_sup_cmds
+
     def is_rule_ipv4(self, rule_props):
         if (("SRC_IP" in rule_props and rule_props["SRC_IP"]) or
            ("DST_IP" in rule_props and rule_props["DST_IP"])):
@@ -928,6 +948,26 @@ class ControlPlaneAclManager(logger.Logger):
             self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
+
+        # Chassis: NAT rules for case when SUP is upgraded to new chassis_db address schema and LC running OLD version.
+        if device_info.is_chassis() and device_info.is_supervisor():
+            # Get the supervisor midplane ip address
+            midplane_dev_name, midplane_ip = self.get_chassis_midplane_interface_ip()
+            if not midplane_ip:
+                return
+
+        # Smartswitch: NAT rules for case when NPU is upgraded to new chassis_db address schema and DPU running OLD version.
+        if device_info.is_smartswitch() and not device_info.is_dpu():
+            # Get the midplane IP
+            midplane_ip = self.get_midplane_bridge_ip_from_configdb(config_db_connector)
+            if not midplane_ip:
+                return
+
+        # Get the iptables commands and run
+        sup_iptables_cmds = self.generate_chassis_db_fwd_commands(midplane_ip)
+        for cmd in sup_iptables_cmds:
+            self.log_info("  " + ' '.join(cmd))
+        self.run_commands(sup_iptables_cmds)
 
         if self.DualToR:
             dualtor_iptables_cmds = self.generate_fwd_traffic_from_host_to_soc(namespace, config_db_connector)
