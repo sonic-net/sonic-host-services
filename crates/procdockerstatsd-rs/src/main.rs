@@ -9,12 +9,13 @@ use std::fs;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use procfs;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use syslog_tracing;
 use std::ffi::CString;
 use serde::Deserialize;
 
 const UPDATE_INTERVAL: u64 = 120; // 2 minutes
+const INVALID_CONTAINER_NAME: &str = "—-"; // invalid container name returned by docker stats command
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -98,10 +99,17 @@ fn parse_docker_json_output(json_output: &str) -> HashMap<String, HashMap<String
         let stats: DockerStats = match serde_json::from_str(line) {
             Ok(s) => s,
             Err(e) => {
-                error!("Failed to parse docker stats JSON: {}", e);
+                error!("Failed to parse docker stats JSON for output {} with error {}", line, e);
                 continue;
             }
         };
+
+        if stats.name.is_empty() || stats.name == INVALID_CONTAINER_NAME {
+            // If a container stops suddenly after we send the docker stats command,
+            // it might return with a container name "—-". We should ignore such output.
+            warn!("Skipping docker stats JSON for container {} with output: {}", stats.id, line);
+            continue;
+        }
 
         let key = format!("DOCKER_STATS|{}", stats.id);
         let mut container_data = HashMap::new();
