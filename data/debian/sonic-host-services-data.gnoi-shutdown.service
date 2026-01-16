@@ -1,13 +1,11 @@
 [Unit]
 Description=gNOI based DPU Graceful Shutdown Daemon
-Requires=database.service
-Wants=network-online.target
-After=network-online.target database.service
+Requires=database.service gnmi.service
+Wants=network-online.target pmon.service
+After=network-online.target database.service gnmi.service pmon.service
 
 [Service]
-Type=simple
-ExecCondition=/usr/bin/python3 /usr/local/bin/check_platform.py
-ExecStartPre=/bin/bash /usr/local/bin/wait-for-sonic-core.sh
+Type=oneshot
 ExecStart=/usr/bin/python3 /usr/local/bin/gnoi_shutdown_daemon.py
 Restart=on-failure
 RestartSec=5
