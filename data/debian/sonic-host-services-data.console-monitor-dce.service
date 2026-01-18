@@ -1,0 +1,20 @@
+[Unit]
+Description=Console Monitor DCE Service - Proxy and Heartbeat Detection
+Documentation=https://github.com/wiperi/consoled
+After=config-setup.service database.service
+Requires=config-setup.service database.service
+BindsTo=sonic.target
+After=sonic.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/console-monitor dce
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=sonic.target
