@@ -17,21 +17,33 @@ import sys
 import time
 import copy
 import termios
-import importlib.util
-import importlib.machinery
 from unittest import TestCase, mock
 from parameterized import parameterized
 
 try:
     from sonic_py_common.general import load_module_from_source
 except ImportError:
-    def load_module_from_source(module_name, source_path):
-        """Manually load a module from source file when sonic_py_common is not available."""
-        loader = importlib.machinery.SourceFileLoader(module_name, source_path)
-        spec = importlib.util.spec_from_loader(module_name, loader)
-        module = importlib.util.module_from_spec(spec)
+    def load_module_from_source(module_name, file_path):
+        """
+        This function will load the Python source file specified by <file_path>
+        as a module named <module_name> and return an instance of the module
+        """
+        module = None
+
+        # TODO: Remove this check once we no longer support Python 2
+        if sys.version_info.major == 3:
+            import importlib.machinery
+            import importlib.util
+            loader = importlib.machinery.SourceFileLoader(module_name, file_path)
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+        else:
+            import imp
+            module = imp.load_source(module_name, file_path)
+
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+
         return module
 
 from .test_vectors import (
@@ -58,15 +70,6 @@ test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
 scripts_path = os.path.join(modules_path, 'scripts')
 sys.path.insert(0, modules_path)
-
-# Mock swsscommon before loading console-monitor module
-mock_swsscommon = mock.MagicMock()
-mock_swsscommon.swsscommon = mock.MagicMock()
-mock_swsscommon.swsscommon.DBConnector = MockDBConnector
-mock_swsscommon.swsscommon.Table = mock.MagicMock()
-mock_swsscommon.swsscommon.ConfigDBConnector = MockConfigDb
-sys.modules['swsscommon'] = mock_swsscommon
-sys.modules['swsscommon.swsscommon'] = mock_swsscommon.swsscommon
 
 # Load console-monitor module from scripts directory
 console_monitor_path = os.path.join(scripts_path, 'console-monitor')
