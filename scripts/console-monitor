@@ -288,7 +288,8 @@ class FrameFilter:
             elif byte == SpecialChar.DLE:
 
                 self._buffer.append(byte)
-                self._escape_next = True
+                if self.in_frame:
+                    self._escape_next = True
 
             elif byte == SpecialChar.SOF:
 

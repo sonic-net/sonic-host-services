@@ -1732,7 +1732,7 @@ class TestMainEntryPoint(TestCase):
             with self.assertRaises(SystemExit) as context:
                 console_monitor.main()
             
-            self.assertEqual(context.exception.code, 1)
+            self.assertEqual(context.exception.code, 3)  # EXIT_INVALID_MODE
     
     def test_main_rejects_unknown_mode(self):
         """Test main rejects unknown mode."""
@@ -1740,7 +1740,7 @@ class TestMainEntryPoint(TestCase):
             with self.assertRaises(SystemExit) as context:
                 console_monitor.main()
             
-            self.assertEqual(context.exception.code, 1)
+            self.assertEqual(context.exception.code, 3)  # EXIT_INVALID_MODE
     
     def test_run_dce_calls_service_methods(self):
         """Test run_dce properly initializes and runs DCE service."""
@@ -1754,12 +1754,12 @@ class TestMainEntryPoint(TestCase):
                             self.assertEqual(result, 0)
     
     def test_run_dce_returns_error_on_start_failure(self):
-        """Test run_dce returns 1 when start fails."""
+        """Test run_dce returns EXIT_SERVICE_START_FAILED when start fails."""
         with mock.patch.object(console_monitor.DCEService, 'start', return_value=False):
             with mock.patch('signal.signal'):
                 result = console_monitor.run_dce()
                 
-                self.assertEqual(result, 1)
+                self.assertEqual(result, 1)  # EXIT_SERVICE_START_FAILED
     
     def test_run_dte_with_cmdline_args(self):
         """Test run_dte uses command line arguments when provided."""
@@ -1787,14 +1787,14 @@ class TestMainEntryPoint(TestCase):
                                     self.assertEqual(result, 0)
     
     def test_run_dte_returns_error_on_parse_failure(self):
-        """Test run_dte returns 1 when parse_proc_cmdline fails."""
+        """Test run_dte returns EXIT_SERIAL_CONFIG_ERROR when parse_proc_cmdline fails."""
         with mock.patch.object(sys, 'argv', ['dte']):
             with mock.patch.object(console_monitor, 'parse_proc_cmdline', 
                                     side_effect=ValueError("No console")):
                 with mock.patch('signal.signal'):
                     result = console_monitor.run_dte()
                     
-                    self.assertEqual(result, 1)
+                    self.assertEqual(result, 2)  # EXIT_SERIAL_CONFIG_ERROR
 
 
 # ============================================================
