@@ -56,8 +56,8 @@ log = logging.getLogger("console-monitor")
 # ============================================================
 
 # Timeout configuration
-HEARTBEAT_INTERVAL = 2.0      # DTE heartbeat send interval (seconds)
-HEARTBEAT_TIMEOUT = 6.0      # DCE heartbeat timeout (seconds)
+HEARTBEAT_INTERVAL = 5.0      # DTE heartbeat send interval (seconds)
+HEARTBEAT_TIMEOUT = 15.0      # DCE heartbeat timeout (seconds)
 
 # Baud rate mapping
 BAUD_MAP = {
@@ -115,6 +115,13 @@ MAX_FRAME_BUFFER_SIZE = 64
 # SOF/EOF sequences
 SOF_SEQUENCE = bytes([SpecialChar.SOF] * SOF_LEN)
 EOF_SEQUENCE = bytes([SpecialChar.EOF] * EOF_LEN)
+
+# Exit codes
+EXIT_SUCCESS = 0
+EXIT_SERVICE_START_FAILED = 1
+EXIT_SERIAL_CONFIG_ERROR = 2
+EXIT_INVALID_MODE = 3
+
 
 def log_binary_data(data: bytes, direction: str) -> None:
     """
@@ -1167,7 +1174,7 @@ def run_dce() -> int:
     service = DCEService()
     
     if not service.start():
-        return 1
+        return EXIT_SERVICE_START_FAILED
     
     try:
         service.register_callbacks()
@@ -1177,7 +1184,7 @@ def run_dce() -> int:
     finally:
         service.stop()
     
-    return 0
+    return EXIT_SUCCESS
 
 
 def run_dte() -> int:
@@ -1201,12 +1208,12 @@ def run_dte() -> int:
             tty_name, baud = parse_proc_cmdline()
         except ValueError as e:
             log.error(f"Failed to get serial config: {e}")
-            return 1
+            return EXIT_SERIAL_CONFIG_ERROR
     
     service = DTEService(tty_name, baud)
     
     if not service.start():
-        return 1
+        return EXIT_SERVICE_START_FAILED
     
     try:
         service.register_callbacks()
@@ -1216,7 +1223,7 @@ def run_dte() -> int:
     finally:
         service.stop()
     
-    return 0
+    return EXIT_SUCCESS
 
 
 def main():
@@ -1231,7 +1238,7 @@ def main():
         print("Usage: console-monitor <dce|dte> [args...]")
         print("  dce: Run DCE (Console Server) service")
         print("  dte: Run DTE (SONiC Switch) service")
-        sys.exit(1)
+        sys.exit(EXIT_INVALID_MODE)
     
     mode = sys.argv[1].lower()
     sys.argv = sys.argv[1:]  # Remove mode argument for subsequent argparse processing
@@ -1243,7 +1250,7 @@ def main():
     else:
         print(f"Unknown mode: {mode}")
         print("Use 'dce' or 'dte'")
-        sys.exit(1)
+        sys.exit(EXIT_INVALID_MODE)
 
 
 if __name__ == "__main__":
