@@ -1114,8 +1114,8 @@ class TestSerialProxyRuntime(TestCase):
                 with mock.patch('os.symlink') as mock_symlink:
                     proxy._create_symlink()
                     
-                    mock_symlink.assert_called_once_with("/dev/pts/99", "/tmp/test-VC0-1")
-                    self.assertEqual(proxy.pty_symlink, "/tmp/test-VC0-1")
+                    mock_symlink.assert_called_once_with("/dev/pts/99", "/tmp/test-VC0-1-PTS")
+                    self.assertEqual(proxy.pty_symlink, "/tmp/test-VC0-1-PTS")
     
     def test_serial_proxy_remove_symlink(self):
         """Test _remove_symlink removes symbolic link."""
@@ -1640,51 +1640,51 @@ class TestDTEServiceExtended(TestCase):
         service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
         service.seq = 0
         
-        # Mock os.write to avoid actual I/O
-        with mock.patch('os.write') as mock_write:
-            service.ser_fd = 10  # Valid fd
-            service._send_heartbeat()
+        # Mock os.open, os.write, os.close for the new open-write-close pattern
+        with mock.patch('os.open', return_value=10):
+            with mock.patch('os.write') as mock_write:
+                with mock.patch('os.close'):
+                    service._send_heartbeat()
             
-            self.assertEqual(service.seq, 1)
-            mock_write.assert_called_once()
+                    self.assertEqual(service.seq, 1)
+                    mock_write.assert_called_once()
     
     def test_dte_send_heartbeat_wraps_seq(self):
         """Test _send_heartbeat wraps sequence at 256."""
         service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
         service.seq = 255
         
-        with mock.patch('os.write'):
-            service.ser_fd = 10
-            service._send_heartbeat()
+        with mock.patch('os.open', return_value=10):
+            with mock.patch('os.write'):
+                with mock.patch('os.close'):
+                    service._send_heartbeat()
             
-            self.assertEqual(service.seq, 0)
+                    self.assertEqual(service.seq, 0)
     
     def test_dte_send_heartbeat_skips_invalid_fd(self):
-        """Test _send_heartbeat does nothing with invalid fd."""
+        """Test _send_heartbeat handles open failure gracefully."""
         service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
-        service.ser_fd = -1  # Invalid fd
         service.seq = 0
         
-        with mock.patch('os.write') as mock_write:
-            service._send_heartbeat()
+        # Simulate os.open failure
+        with mock.patch('os.open', side_effect=OSError("Permission denied")):
+            with mock.patch('os.write') as mock_write:
+                service._send_heartbeat()
             
-            mock_write.assert_not_called()
-            # Seq should not change
-            self.assertEqual(service.seq, 0)
+                mock_write.assert_not_called()
+                # Seq should not change on failure
+                self.assertEqual(service.seq, 0)
     
     def test_dte_stop_closes_serial_fd(self):
-        """Test stop() closes the serial file descriptor."""
+        """Test stop() stops running and heartbeat."""
         service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
-        service.ser_fd = 10  # Pretend we have a valid fd
         service.running = True
         
-        with mock.patch('os.close') as mock_close:
-            with mock.patch.object(service, '_stop_heartbeat'):
-                service.stop()
-                
-                mock_close.assert_called_with(10)
-                self.assertEqual(service.ser_fd, -1)
-                self.assertFalse(service.running)
+        with mock.patch.object(service, '_stop_heartbeat') as mock_stop_hb:
+            service.stop()
+            
+            mock_stop_hb.assert_called_once()
+            self.assertFalse(service.running)
     
     def test_dte_start_heartbeat_is_idempotent(self):
         """Test _start_heartbeat doesn't create duplicate threads."""
@@ -1873,19 +1873,17 @@ class TestDTEServiceStartStop(TestCase):
         MockConfigDb.CONFIG_DB = None
     
     def test_dte_start_opens_serial_port(self):
-        """Test DTE start opens serial port."""
+        """Test DTE start connects to ConfigDB."""
         MockConfigDb.set_config_db(DTE_ENABLED_CONFIG_DB)
         
         service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
         
-        with mock.patch('os.open', return_value=10) as mock_open:
-            with mock.patch.object(console_monitor, 'configure_serial'):
-                with mock.patch.object(MockConfigDb, 'connect'):
-                    service.config_db = MockConfigDb()
-                    result = service.start()
-                    
-                    mock_open.assert_called_once()
-                    self.assertEqual(service.ser_fd, 10)
+        with mock.patch.object(MockConfigDb, 'connect'):
+            service.config_db = MockConfigDb()
+            result = service.start()
+            
+            self.assertTrue(result)
+            self.assertTrue(service.running)
     
     def test_dte_register_callbacks_subscribes_to_console_switch(self):
         """Test register_callbacks subscribes to CONSOLE_SWITCH."""
@@ -1944,7 +1942,25 @@ class TestDTEServiceStartStop(TestCase):
 class TestSerialProxyStart(TestCase):
     """Tests for SerialProxy start behavior."""
     
-    def test_serial_proxy_start_creates_pty(self):
+    @mock.patch('threading.Thread')
+    @mock.patch('os.symlink')
+    @mock.patch('os.path.exists', return_value=False)
+    @mock.patch('os.path.islink', return_value=False)
+    @mock.patch.object(console_monitor, 'set_nonblocking')
+    @mock.patch.object(console_monitor, 'configure_pty')
+    @mock.patch.object(console_monitor, 'configure_serial')
+    @mock.patch('os.pipe', return_value=(20, 21))
+    @mock.patch('os.open', return_value=12)
+    @mock.patch('os.chmod')
+    @mock.patch('os.ttyname', return_value="/dev/pts/99")
+    @mock.patch('os.openpty', return_value=(10, 11))
+    @mock.patch.object(console_monitor, 'Table', return_value=mock.Mock())
+    @mock.patch.object(console_monitor, 'DBConnector', return_value=mock.Mock())
+    def test_serial_proxy_start_creates_pty(
+        self, mock_db, mock_table, mock_openpty, mock_ttyname, mock_chmod,
+        mock_open, mock_pipe, mock_cfg_ser, mock_cfg_pty, mock_nonblock,
+        mock_islink, mock_exists, mock_symlink, mock_thread
+    ):
         """Test start() creates PTY pair."""
         proxy = console_monitor.SerialProxy(
             link_id="1",
@@ -1953,28 +1969,18 @@ class TestSerialProxyStart(TestCase):
             pty_symlink_prefix="/dev/VC0-"
         )
         
-        with mock.patch.object(console_monitor, 'DBConnector', return_value=mock.Mock()):
-            with mock.patch.object(console_monitor, 'Table', return_value=mock.Mock()):
-                with mock.patch('os.openpty', return_value=(10, 11)) as mock_openpty:
-                    with mock.patch('os.ttyname', return_value="/dev/pts/99"):
-                        with mock.patch('os.open', return_value=12):
-                            with mock.patch('os.pipe', return_value=(20, 21)):
-                                with mock.patch.object(console_monitor, 'configure_serial'):
-                                    with mock.patch.object(console_monitor, 'configure_pty'):
-                                        with mock.patch.object(console_monitor, 'set_nonblocking'):
-                                            with mock.patch.object(proxy, '_create_symlink'):
-                                                with mock.patch('threading.Thread') as mock_thread:
-                                                    mock_thread_instance = mock.Mock()
-                                                    mock_thread.return_value = mock_thread_instance
-                                                    
-                                                    result = proxy.start()
-                                                    
-                                                    self.assertTrue(result)
-                                                    mock_openpty.assert_called_once()
-                                                    self.assertEqual(proxy.pty_master, 10)
-                                                    self.assertEqual(proxy.pty_slave, 11)
+        mock_thread.return_value = mock.Mock()
+        result = proxy.start()
+        
+        self.assertTrue(result)
+        mock_openpty.assert_called_once()
+        self.assertEqual(proxy.pty_master, 10)
+        self.assertEqual(proxy.pty_slave, 11)
     
-    def test_serial_proxy_start_failure_returns_false(self):
+    @mock.patch('os.pipe', side_effect=OSError("Pipe failed"))
+    @mock.patch.object(console_monitor, 'Table', return_value=mock.Mock())
+    @mock.patch.object(console_monitor, 'DBConnector', return_value=mock.Mock())
+    def test_serial_proxy_start_failure_returns_false(self, mock_db, mock_table, mock_pipe):
         """Test start() returns False on failure."""
         proxy = console_monitor.SerialProxy(
             link_id="1",
@@ -1983,13 +1989,10 @@ class TestSerialProxyStart(TestCase):
             pty_symlink_prefix="/dev/VC0-"
         )
         
-        with mock.patch.object(console_monitor, 'DBConnector', return_value=mock.Mock()):
-            with mock.patch.object(console_monitor, 'Table', return_value=mock.Mock()):
-                with mock.patch('os.pipe', side_effect=OSError("Pipe failed")):
-                    result = proxy.start()
-                    
-                    self.assertFalse(result)
-                    self.assertFalse(proxy.running)
+        result = proxy.start()
+        
+        self.assertFalse(result)
+        self.assertFalse(proxy.running)
 
 
 # ============================================================
