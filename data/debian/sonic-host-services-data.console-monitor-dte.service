@@ -1,16 +1,14 @@
 [Unit]
 Description=Console Monitor DTE Service - Heartbeat Sender
-Documentation=https://github.com/wiperi/consoled
+Documentation=https://github.com/sonic-net/SONiC/blob/master/doc/console/Console-Monitor-High-Level-Design.md
 After=config-setup.service database.service
 Requires=config-setup.service database.service
-BindsTo=sonic.target
-After=sonic.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/console-monitor dte
+ExecStart=/usr/bin/console-monitor dte
 Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=sonic.target
+WantedBy=multi-user.target

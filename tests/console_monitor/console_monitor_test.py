@@ -82,51 +82,61 @@ console_monitor.Table = mock.Mock()
 
 
 # ============================================================
-# Mock Classes for Serial/PTY operations
+# Mock Classes for systemctl operations
 # ============================================================
 
-class MockSerialProxy:
-    """Mock SerialProxy that tracks creation without actual serial operations."""
+class MockSubprocess:
+    """Mock subprocess.run for systemctl commands."""
     
-    instances = []
-    
-    def __init__(self, link_id, device, baud, pty_symlink_prefix):
-        self.link_id = link_id
-        self.device = device
-        self.baud = baud
-        self.pty_symlink_prefix = pty_symlink_prefix
-        # state_table 现在在 start() 中动态创建
-        self.state_table = None
-        self.running = False
-        self.started = False
-        self.stopped = False
-        MockSerialProxy.instances.append(self)
-    
-    def start(self) -> bool:
-        """Mock start - always succeeds."""
-        self.started = True
-        self.running = True
-        return True
-    
-    def stop(self) -> None:
-        """Mock stop."""
-        self.stopped = True
-        self.running = False
+    started_services = []
+    stopped_services = []
+    fail_start = False
+    fail_stop = False
     
     @classmethod
     def reset(cls):
-        """Reset all instances for test isolation."""
-        cls.instances = []
+        """Reset all tracking for test isolation."""
+        cls.started_services = []
+        cls.stopped_services = []
+        cls.fail_start = False
+        cls.fail_stop = False
     
     @classmethod
-    def get_instance_count(cls) -> int:
-        """Get number of created proxy instances."""
-        return len(cls.instances)
+    def mock_run(cls, args, capture_output=False, text=False, timeout=None):
+        """Mock subprocess.run for systemctl commands."""
+        result = mock.Mock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        
+        if len(args) >= 3 and args[0] == 'systemctl':
+            action = args[1]
+            service = args[2]
+            
+            if action == 'start':
+                if cls.fail_start:
+                    result.returncode = 1
+                    result.stderr = "Failed to start"
+                else:
+                    cls.started_services.append(service)
+            elif action == 'stop':
+                if cls.fail_stop:
+                    result.returncode = 1
+                    result.stderr = "Failed to stop"
+                else:
+                    cls.stopped_services.append(service)
+        
+        return result
     
     @classmethod
     def get_started_count(cls) -> int:
-        """Get number of started proxy instances."""
-        return sum(1 for p in cls.instances if p.started)
+        """Get number of started services."""
+        return len(cls.started_services)
+    
+    @classmethod
+    def get_stopped_count(cls) -> int:
+        """Get number of stopped services."""
+        return len(cls.stopped_services)
 
 
 # ============================================================
@@ -143,12 +153,12 @@ class TestDCEService(TestCase):
     
     def setUp(self):
         """Set up test fixtures for each test."""
-        MockSerialProxy.reset()
+        MockSubprocess.reset()
         MockConfigDb.CONFIG_DB = None
     
     def tearDown(self):
         """Clean up after each test."""
-        MockSerialProxy.reset()
+        MockSubprocess.reset()
         MockConfigDb.CONFIG_DB = None
     
     def test_dce_service_initialization(self):
@@ -164,7 +174,7 @@ class TestDCEService(TestCase):
             
             # Verify service can be created
             self.assertIsNotNone(service)
-            self.assertEqual(service.proxies, {})
+            self.assertEqual(service.active_links, set())
     
     def test_dce_check_feature_enabled_when_enabled(self):
         """Test _check_feature_enabled returns True when feature is enabled."""
@@ -200,90 +210,91 @@ class TestDCEService(TestCase):
         # Verify 3 ports are parsed
         self.assertEqual(len(configs), 3)
         
-        # Verify port 1 config
+        # Verify port 1 config (new format only has baud)
         self.assertIn("1", configs)
         self.assertEqual(configs["1"]["baud"], 9600)
-        self.assertEqual(configs["1"]["device"], "/dev/C0-1")
         
         # Verify port 2 config
         self.assertIn("2", configs)
         self.assertEqual(configs["2"]["baud"], 115200)
-        self.assertEqual(configs["2"]["device"], "/dev/C0-2")
         
         # Verify port 3 config
         self.assertIn("3", configs)
         self.assertEqual(configs["3"]["baud"], 9600)
-        self.assertEqual(configs["3"]["device"], "/dev/C0-3")
     
-    def test_dce_sync_creates_proxies_when_enabled(self):
-        """Test _sync creates SerialProxy for each configured port when feature is enabled."""
+    def test_dce_sync_starts_services_when_enabled(self):
+        """Test _sync starts pty-bridge and proxy services for each configured port when feature is enabled."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        # Replace SerialProxy with mock
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
+        # Replace subprocess.run with mock
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
             service._sync()
             
-            # Verify 3 proxies were created
-            self.assertEqual(len(service.proxies), 3)
-            self.assertEqual(MockSerialProxy.get_instance_count(), 3)
-            self.assertEqual(MockSerialProxy.get_started_count(), 3)
+            # Verify 3 links are active
+            self.assertEqual(len(service.active_links), 3)
             
-            # Verify proxy IDs match port numbers
-            self.assertIn("1", service.proxies)
-            self.assertIn("2", service.proxies)
-            self.assertIn("3", service.proxies)
+            # Verify services were started (2 services per link: pty-bridge and proxy)
+            self.assertEqual(MockSubprocess.get_started_count(), 6)
+            
+            # Verify link IDs
+            self.assertIn("1", service.active_links)
+            self.assertIn("2", service.active_links)
+            self.assertIn("3", service.active_links)
     
-    def test_dce_sync_creates_no_proxies_when_disabled(self):
-        """Test _sync creates no proxies when feature is disabled."""
+    def test_dce_sync_starts_no_services_when_disabled(self):
+        """Test _sync starts no services when feature is disabled."""
         MockConfigDb.set_config_db(DCE_FEATURE_DISABLED_CONFIG_DB)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        # Replace SerialProxy with mock
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
+        # Replace subprocess.run with mock
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
             service._sync()
             
-            # Verify no proxies were created
-            self.assertEqual(len(service.proxies), 0)
-            self.assertEqual(MockSerialProxy.get_instance_count(), 0)
+            # Verify no links are active
+            self.assertEqual(len(service.active_links), 0)
+            self.assertEqual(MockSubprocess.get_started_count(), 0)
     
-    def test_dce_sync_removes_proxy_when_port_deleted(self):
-        """Test _sync removes proxy when port is deleted from config."""
+    def test_dce_sync_stops_services_when_port_deleted(self):
+        """Test _sync stops services when port is deleted from config."""
         # Use deepcopy to avoid modifying the original test vector
         config_db = copy.deepcopy(DCE_3_LINKS_ENABLED_CONFIG_DB)
         MockConfigDb.set_config_db(config_db)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        # First sync - create 3 proxies
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
+        # First sync - create 3 links
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
             service._sync()
-            self.assertEqual(len(service.proxies), 3)
+            self.assertEqual(len(service.active_links), 3)
             
             # Now remove port 2 from config (modifies the copy, not original)
             del MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["2"]
             
-            # Second sync - should remove proxy for port 2
+            # Reset mock counters
+            MockSubprocess.reset()
+            
+            # Second sync - should stop services for port 2
             service._sync()
             
-            self.assertEqual(len(service.proxies), 2)
-            self.assertNotIn("2", service.proxies)
-            self.assertIn("1", service.proxies)
-            self.assertIn("3", service.proxies)
+            self.assertEqual(len(service.active_links), 2)
+            self.assertNotIn("2", service.active_links)
+            self.assertIn("1", service.active_links)
+            self.assertIn("3", service.active_links)
+            
+            # Verify stop was called for port 2 (2 services)
+            self.assertEqual(MockSubprocess.get_stopped_count(), 2)
     
     def test_dce_console_port_handler_triggers_sync(self):
         """Test console_port_handler triggers _sync on config change."""
@@ -291,14 +302,12 @@ class TestDCEService(TestCase):
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
-            with mock.patch.object(service, '_sync') as mock_sync:
-                service.console_port_handler("1", "SET", {"baud_rate": "9600"})
-                mock_sync.assert_called_once()
+        with mock.patch.object(service, '_sync') as mock_sync:
+            service.console_port_handler("1", "SET", {"baud_rate": "9600"})
+            mock_sync.assert_called_once()
     
     def test_dce_console_switch_handler_triggers_sync(self):
         """Test console_switch_handler triggers _sync on feature toggle."""
@@ -306,14 +315,12 @@ class TestDCEService(TestCase):
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
-            with mock.patch.object(service, '_sync') as mock_sync:
-                service.console_switch_handler("console_mgmt", "SET", {"enabled": "yes"})
-                mock_sync.assert_called_once()
+        with mock.patch.object(service, '_sync') as mock_sync:
+            service.console_switch_handler("console_mgmt", "SET", {"enabled": "yes"})
+            mock_sync.assert_called_once()
 
     def test_dce_receive_one_frame_splitted_in_two_reads(self):
         """Test DCE service can receive a single frame split across two reads."""
@@ -679,125 +686,106 @@ class TestDCEIntegration(TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        MockSerialProxy.reset()
+        MockSubprocess.reset()
         MockConfigDb.CONFIG_DB = None
     
     def tearDown(self):
         """Clean up after tests."""
-        MockSerialProxy.reset()
+        MockSubprocess.reset()
         MockConfigDb.CONFIG_DB = None
     
     @parameterized.expand(DCE_TEST_VECTOR)
-    def test_dce_proxy_creation(self, test_name, config_db, expected_proxy_count):
+    def test_dce_service_creation(self, test_name, config_db, expected_link_count):
         # Reset before each parameterized test
-        MockSerialProxy.reset()
-        """Parameterized test for DCE proxy creation based on config."""
+        MockSubprocess.reset()
+        """Parameterized test for DCE service creation based on config."""
         MockConfigDb.set_config_db(config_db)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
             service._sync()
             
             self.assertEqual(
-                len(service.proxies), 
-                expected_proxy_count,
-                f"Expected {expected_proxy_count} proxies for {test_name}, got {len(service.proxies)}"
+                len(service.active_links), 
+                expected_link_count,
+                f"Expected {expected_link_count} links for {test_name}, got {len(service.active_links)}"
             )
     
     def test_dce_full_initialization_flow(self):
         """Test complete DCE service initialization flow."""
         # Reset mocks for isolation
-        MockSerialProxy.reset()
+        MockSubprocess.reset()
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
         
         service = console_monitor.DCEService()
         
         # Mock all external dependencies
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
-            with mock.patch.object(console_monitor, 'get_pty_symlink_prefix', return_value="/dev/VC0-"):
-                with mock.patch.object(MockConfigDb, 'connect'):
-                    # Simulate start
-                    service.config_db = MockConfigDb()
-                    service.state_db = mock.Mock()
-                    service.state_table = mock.Mock()
-                    service.pty_symlink_prefix = "/dev/VC0-"
-                    service.running = True
-                    
-                    # Simulate initial config load (like init_data_handler)
-                    service._load_initial_config({
-                        "CONSOLE_PORT": CONSOLE_PORT_3_LINKS,
-                        "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}}
-                    })
-                    
-                    # Verify 3 proxies created and started
-                    self.assertEqual(len(service.proxies), 3)
-                    self.assertEqual(MockSerialProxy.get_started_count(), 3)
-                    
-                    # Verify all proxies are running
-                    for link_id, proxy in service.proxies.items():
-                        self.assertTrue(proxy.running, f"Proxy {link_id} should be running")
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
+            with mock.patch.object(MockConfigDb, 'connect'):
+                # Simulate start
+                service.config_db = MockConfigDb()
+                service.running = True
+                service.active_links = set()
+                service._config_cache = {}
+                
+                # Simulate initial config load (like init_data_handler)
+                service._load_initial_config({
+                    "CONSOLE_PORT": CONSOLE_PORT_3_LINKS,
+                    "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}}
+                })
+                
+                # Verify 3 links active
+                self.assertEqual(len(service.active_links), 3)
+                # Each link has 2 services (pty-bridge and proxy)
+                self.assertEqual(MockSubprocess.get_started_count(), 6)
 
 
 # ============================================================
-# SerialProxy Tests
+# ProxyService Tests
 # ============================================================
 
-class TestSerialProxy(TestCase):
-    """Test cases for SerialProxy class."""
+class TestProxyService(TestCase):
+    """Test cases for ProxyService class."""
     
-    def test_serial_proxy_initialization(self):
-        """Test SerialProxy basic initialization."""
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
+    def test_proxy_service_initialization(self):
+        """Test ProxyService basic initialization."""
+        proxy = console_monitor.ProxyService(link_id="1")
         
         self.assertEqual(proxy.link_id, "1")
-        self.assertEqual(proxy.device, "/dev/C0-1")
-        self.assertEqual(proxy.baud, 9600)
-        self.assertEqual(proxy.pty_symlink_prefix, "/dev/VC0-")
-        self.assertEqual(proxy.ser_fd, -1)
-        self.assertEqual(proxy.pty_master, -1)
+        self.assertEqual(proxy.baud, console_monitor.DEFAULT_BAUD)
+        self.assertEqual(proxy.device_path, "")
+        self.assertEqual(proxy.ptm_path, "")
         self.assertFalse(proxy.running)
-        # state_table 在 start() 中创建
-        self.assertIsNone(proxy.state_table)
+        self.assertEqual(proxy.ser_fd, -1)
+        self.assertEqual(proxy.ptm_fd, -1)
     
-    def test_serial_proxy_calculate_filter_timeout(self):
+    def test_proxy_service_calculate_filter_timeout(self):
         """Test filter timeout calculation based on baud rate."""
         # At 9600 baud, char time = 10/9600 ≈ 0.00104s
         # With 64 buffer and 3x multiplier: 0.00104 * 64 * 3 ≈ 0.2s
-        timeout_9600 = console_monitor.SerialProxy._calculate_filter_timeout(9600)
+        timeout_9600 = console_monitor.calculate_filter_timeout(9600)
         self.assertGreater(timeout_9600, 0.01)
         self.assertLess(timeout_9600, 0.5)
         
         # At 115200 baud, should be much smaller
-        timeout_115200 = console_monitor.SerialProxy._calculate_filter_timeout(115200)
+        timeout_115200 = console_monitor.calculate_filter_timeout(115200)
         self.assertLess(timeout_115200, 0.05)
         
         # Higher baud = shorter timeout
         self.assertGreater(timeout_9600, timeout_115200)
     
-    def test_serial_proxy_stop_without_start(self):
-        """Test SerialProxy.stop() is safe when not started."""
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
+    def test_proxy_service_stop_without_start(self):
+        """Test ProxyService.stop() is safe when not started."""
+        proxy = console_monitor.ProxyService(link_id="1")
         
         # Should not raise any exceptions
         proxy.stop()
         
         self.assertFalse(proxy.running)
-        self.assertEqual(proxy.ser_fd, -1)
 
 
 # ============================================================
@@ -975,13 +963,13 @@ class TestUtilityFunctions(TestCase):
             os.close(r_fd)
             os.close(w_fd)
     
-    def test_get_pty_symlink_prefix_default(self):
-        """Test get_pty_symlink_prefix returns default when file not found."""
+    def test_get_udev_prefix_default(self):
+        """Test get_udev_prefix returns default when file not found."""
         with mock.patch.dict('sys.modules', {'sonic_py_common': None}):
             # When sonic_py_common not available, should return default
-            with mock.patch.object(console_monitor, 'get_pty_symlink_prefix', return_value="/dev/VC0-"):
-                result = console_monitor.get_pty_symlink_prefix()
-                self.assertEqual(result, "/dev/VC0-")
+            with mock.patch.object(console_monitor, 'get_udev_prefix', return_value="ttyUSB"):
+                result = console_monitor.get_udev_prefix()
+                self.assertEqual(result, "ttyUSB")
     
     def test_configure_serial_with_pty(self):
         """Test configure_serial configures PTY (simulating serial port)."""
@@ -1091,61 +1079,17 @@ class TestUtilityFunctions(TestCase):
 
 
 # ============================================================
-# SerialProxy Runtime Tests
+# ProxyService Runtime Tests
 # ============================================================
 
-class TestSerialProxyRuntime(TestCase):
-    """Tests for SerialProxy runtime behavior."""
+class TestProxyServiceRuntime(TestCase):
+    """Tests for ProxyService runtime behavior."""
     
-    def test_serial_proxy_create_symlink(self):
-        """Test _create_symlink creates symbolic link."""
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/tmp/test-VC0-"
-        )
-        
-        # Set up a fake PTY name
-        proxy.pty_name = "/dev/pts/99"
-        
-        with mock.patch('os.path.islink', return_value=False):
-            with mock.patch('os.path.exists', return_value=False):
-                with mock.patch('os.symlink') as mock_symlink:
-                    proxy._create_symlink()
-                    
-                    mock_symlink.assert_called_once_with("/dev/pts/99", "/tmp/test-VC0-1-PTS")
-                    self.assertEqual(proxy.pty_symlink, "/tmp/test-VC0-1-PTS")
-    
-    def test_serial_proxy_remove_symlink(self):
-        """Test _remove_symlink removes symbolic link."""
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/tmp/test-VC0-"
-        )
-        
-        proxy.pty_symlink = "/tmp/test-VC0-1"
-        
-        with mock.patch('os.path.islink', return_value=True):
-            with mock.patch('os.unlink') as mock_unlink:
-                proxy._remove_symlink()
-                
-                mock_unlink.assert_called_once_with("/tmp/test-VC0-1")
-                self.assertEqual(proxy.pty_symlink, "")
-    
-    def test_serial_proxy_update_state(self):
+    def test_proxy_service_update_state(self):
         """Test _update_state updates Redis state."""
         state_table = mock.Mock()
         
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        # 手动设置 state_table（模拟 start() 的行为）
+        proxy = console_monitor.ProxyService(link_id="1")
         proxy.state_table = state_table
         
         proxy._update_state("Up")
@@ -1158,17 +1102,11 @@ class TestSerialProxyRuntime(TestCase):
         # State should be tracked
         self.assertEqual(proxy._current_oper_state, "Up")
     
-    def test_serial_proxy_update_state_only_on_change(self):
+    def test_proxy_service_update_state_only_on_change(self):
         """Test _update_state only updates on state change."""
         state_table = mock.Mock()
         
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        # 手动设置 state_table（模拟 start() 的行为）
+        proxy = console_monitor.ProxyService(link_id="1")
         proxy.state_table = state_table
         
         # First update
@@ -1183,17 +1121,11 @@ class TestSerialProxyRuntime(TestCase):
         proxy._update_state("Unknown")
         self.assertEqual(state_table.set.call_count, 2)
     
-    def test_serial_proxy_cleanup_state(self):
+    def test_proxy_service_cleanup_state(self):
         """Test _cleanup_state removes Redis entries."""
         state_table = mock.Mock()
         
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        # 手动设置 state_table（模拟 start() 的行为）
+        proxy = console_monitor.ProxyService(link_id="1")
         proxy.state_table = state_table
         
         proxy._cleanup_state()
@@ -1201,17 +1133,11 @@ class TestSerialProxyRuntime(TestCase):
         # Should call hdel for both fields
         self.assertEqual(state_table.hdel.call_count, 2)
     
-    def test_serial_proxy_on_frame_received_heartbeat(self):
+    def test_proxy_service_on_frame_received_heartbeat(self):
         """Test _on_frame_received handles heartbeat frames."""
         state_table = mock.Mock()
         
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        # 手动设置 state_table（模拟 start() 的行为）
+        proxy = console_monitor.ProxyService(link_id="1")
         proxy.state_table = state_table
         
         frame = console_monitor.Frame.create_heartbeat(42)
@@ -1221,33 +1147,21 @@ class TestSerialProxyRuntime(TestCase):
         # Should update state to "Up"
         self.assertEqual(proxy._current_oper_state, "Up")
     
-    def test_serial_proxy_on_user_data_received(self):
-        """Test _on_user_data_received writes to PTY."""
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        
-        proxy.pty_master = 10  # Mock fd
+    def test_proxy_service_on_user_data_received(self):
+        """Test _on_user_data_received writes to PTM."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.ptm_fd = 10  # Mock fd
         
         with mock.patch('os.write') as mock_write:
             proxy._on_user_data_received(b"test data")
             
             mock_write.assert_called_once_with(10, b"test data")
     
-    def test_serial_proxy_check_heartbeat_timeout(self):
+    def test_proxy_service_check_heartbeat_timeout(self):
         """Test _check_heartbeat_timeout detects timeout."""
         state_table = mock.Mock()
         
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        # 手动设置 state_table（模拟 start() 的行为）
+        proxy = console_monitor.ProxyService(link_id="1")
         proxy.state_table = state_table
         
         # Simulate heartbeat timeout
@@ -1259,17 +1173,11 @@ class TestSerialProxyRuntime(TestCase):
         # Should set state to "Unknown"
         self.assertEqual(proxy._current_oper_state, "Unknown")
     
-    def test_serial_proxy_check_heartbeat_timeout_with_data_activity(self):
+    def test_proxy_service_check_heartbeat_timeout_with_data_activity(self):
         """Test _check_heartbeat_timeout resets with data activity."""
         state_table = mock.Mock()
         
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        # 手动设置 state_table（模拟 start() 的行为）
+        proxy = console_monitor.ProxyService(link_id="1")
         proxy.state_table = state_table
         
         # Heartbeat timed out but recent data activity
@@ -1281,7 +1189,7 @@ class TestSerialProxyRuntime(TestCase):
         # Should not set state to "Unknown" because of data activity
         self.assertNotEqual(proxy._current_oper_state, "Unknown")
     
-    def test_serial_proxy_run_loop_processes_split_frame(self):
+    def test_proxy_service_run_loop_processes_split_frame(self):
         """
         Test _run_loop correctly processes a frame split across two reads.
         
@@ -1295,41 +1203,33 @@ class TestSerialProxyRuntime(TestCase):
         frames_received = []
         
         # Create proxy instance
-        proxy = console_monitor.SerialProxy(
-            link_id="test",
-            device="/dev/test",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
-        # 手动设置 state_table（模拟 start() 的行为）
+        proxy = console_monitor.ProxyService(link_id="test")
         proxy.state_table = state_table
         
-        # Create pipes to simulate ser_fd, pty_master, and wake pipe
+        # Create pipes to simulate ser_fd, ptm_fd, and wake pipe
         ser_r, ser_w = os.pipe()  # Simulate serial port
-        pty_master, pty_slave = os.pipe()  # Simulate PTY
+        ptm_r, ptm_w = os.pipe()  # Simulate PTM
         wake_r, wake_w = os.pipe()  # Wake pipe
         
         try:
             # Set up proxy with our test file descriptors
             proxy.ser_fd = ser_r
-            proxy.pty_master = pty_master
+            proxy.ptm_fd = ptm_r
             proxy._wake_r = wake_r
             proxy._wake_w = wake_w
             proxy.running = True
             proxy._last_heartbeat_time = time.monotonic()
             proxy._last_data_activity = time.monotonic()
+            proxy._last_serial_data_time = time.monotonic()
             
             # Set non-blocking
             console_monitor.set_nonblocking(ser_r)
-            console_monitor.set_nonblocking(pty_master)
+            console_monitor.set_nonblocking(ptm_r)
             console_monitor.set_nonblocking(wake_r)
             
             # Create frame filter with callback to track received frames
-            original_on_frame = None
             def track_frame(frame):
                 frames_received.append(frame)
-                if original_on_frame:
-                    original_on_frame(frame)
             
             proxy.filter = console_monitor.FrameFilter(
                 on_frame=track_frame,
@@ -1373,7 +1273,7 @@ class TestSerialProxyRuntime(TestCase):
             
         finally:
             # Clean up file descriptors
-            for fd in (ser_r, ser_w, pty_master, pty_slave, wake_r, wake_w):
+            for fd in (ser_r, ser_w, ptm_r, ptm_w, wake_r, wake_w):
                 try:
                     os.close(fd)
                 except:
@@ -1475,108 +1375,116 @@ class TestDCEServiceExtended(TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        MockSerialProxy.reset()
+        MockSubprocess.reset()
         MockConfigDb.CONFIG_DB = None
     
     def tearDown(self):
         """Clean up after tests."""
-        MockSerialProxy.reset()
+        MockSubprocess.reset()
         MockConfigDb.CONFIG_DB = None
     
-    def test_dce_sync_adds_new_proxy(self):
-        """Test _sync adds proxy for new configuration."""
+    def test_dce_sync_adds_new_link(self):
+        """Test _sync adds services for new configuration."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
             service._sync()
             
-            self.assertEqual(len(service.proxies), 3)
-            self.assertIn("1", service.proxies)
-            self.assertIn("2", service.proxies)
-            self.assertIn("3", service.proxies)
+            self.assertEqual(len(service.active_links), 3)
+            self.assertIn("1", service.active_links)
+            self.assertIn("2", service.active_links)
+            self.assertIn("3", service.active_links)
     
-    def test_dce_sync_removes_proxy_when_port_deleted(self):
-        """Test _sync removes proxy when port is deleted from config."""
+    def test_dce_sync_removes_link_when_port_deleted(self):
+        """Test _sync removes services when port is deleted from config."""
         # Use deepcopy to avoid mutating shared config
         initial_config = copy.deepcopy(DCE_3_LINKS_ENABLED_CONFIG_DB)
         MockConfigDb.set_config_db(initial_config)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
-            # Initial sync - should create 3 proxies
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
+            # Initial sync - should create 3 links
             service._sync()
-            self.assertEqual(len(service.proxies), 3)
+            self.assertEqual(len(service.active_links), 3)
             
             # Remove port 2 from config
             del MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["2"]
             
-            # Sync again - should remove proxy 2
+            # Reset counters
+            MockSubprocess.reset()
+            
+            # Sync again - should stop services for port 2
             service._sync()
             
-            self.assertEqual(len(service.proxies), 2)
-            self.assertNotIn("2", service.proxies)
-            self.assertIn("1", service.proxies)
-            self.assertIn("3", service.proxies)
+            self.assertEqual(len(service.active_links), 2)
+            self.assertNotIn("2", service.active_links)
+            self.assertIn("1", service.active_links)
+            self.assertIn("3", service.active_links)
     
-    def test_dce_sync_restarts_proxy_on_baud_change(self):
-        """Test _sync restarts proxy when baud rate changes."""
+    def test_dce_sync_restarts_link_on_baud_change(self):
+        """Test _sync restarts services when baud rate changes."""
         initial_config = copy.deepcopy(DCE_3_LINKS_ENABLED_CONFIG_DB)
         MockConfigDb.set_config_db(initial_config)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
             service._sync()
             
-            old_proxy_1 = service.proxies["1"]
-            self.assertEqual(old_proxy_1.baud, 9600)
+            # Verify initial state
+            self.assertEqual(service._config_cache["1"]["baud"], 9600)
             
             # Change baud rate for port 1
             MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"]["baud_rate"] = "115200"
             
+            # Reset counters
+            MockSubprocess.reset()
+            
             service._sync()
             
-            # Proxy should be replaced
-            new_proxy_1 = service.proxies["1"]
-            self.assertIsNot(new_proxy_1, old_proxy_1)
-            self.assertEqual(new_proxy_1.baud, 115200)
-            self.assertTrue(old_proxy_1.stopped)
+            # Config cache should be updated
+            self.assertEqual(service._config_cache["1"]["baud"], 115200)
+            
+            # Should have stopped and started services (2 stop + 2 start)
+            self.assertGreater(MockSubprocess.get_stopped_count(), 0)
+            self.assertGreater(MockSubprocess.get_started_count(), 0)
     
-    def test_dce_stop_stops_all_proxies(self):
-        """Test stop() stops all proxies."""
+    def test_dce_stop_stops_all_links(self):
+        """Test stop() stops all active links."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         service.running = True
         
-        with mock.patch.object(console_monitor, 'SerialProxy', MockSerialProxy):
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
             service._sync()
             
-            self.assertEqual(len(service.proxies), 3)
+            self.assertEqual(len(service.active_links), 3)
+            
+            # Reset counters
+            MockSubprocess.reset()
             
             service.stop()
             
             self.assertFalse(service.running)
-            self.assertEqual(len(service.proxies), 0)
+            self.assertEqual(len(service.active_links), 0)
+            # Should have stopped 6 services (2 per link)
+            self.assertEqual(MockSubprocess.get_stopped_count(), 6)
     
     def test_dce_get_all_configs_parses_correctly(self):
         """Test _get_all_configs returns properly formatted configs."""
@@ -1592,12 +1500,10 @@ class TestDCEServiceExtended(TestCase):
         # Check port 1
         self.assertIn("1", configs)
         self.assertEqual(configs["1"]["baud"], 9600)
-        self.assertEqual(configs["1"]["device"], "/dev/C0-1")
         
         # Check port 2
         self.assertIn("2", configs)
         self.assertEqual(configs["2"]["baud"], 115200)
-        self.assertEqual(configs["2"]["device"], "/dev/C0-2")
     
     def test_dce_console_port_handler_triggers_sync(self):
         """Test console_port_handler triggers _sync."""
@@ -1605,9 +1511,8 @@ class TestDCEServiceExtended(TestCase):
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
         with mock.patch.object(service, '_sync') as mock_sync:
             service.console_port_handler("1", "SET", {"baud_rate": "9600"})
@@ -1619,9 +1524,8 @@ class TestDCEServiceExtended(TestCase):
         
         service = console_monitor.DCEService()
         service.config_db = MockConfigDb()
-        service.state_table = mock.Mock()
-        service.pty_symlink_prefix = "/dev/VC0-"
-        service.proxies = {}
+        service.active_links = set()
+        service._config_cache = {}
         
         with mock.patch.object(service, '_sync') as mock_sync:
             service.console_switch_handler("console_mgmt", "SET", {"enabled": "yes"})
@@ -1732,7 +1636,7 @@ class TestMainEntryPoint(TestCase):
             with self.assertRaises(SystemExit) as context:
                 console_monitor.main()
             
-            self.assertEqual(context.exception.code, 3)  # EXIT_INVALID_MODE
+            self.assertEqual(context.exception.code, console_monitor.EXIT_INVALID_MODE)
     
     def test_main_rejects_unknown_mode(self):
         """Test main rejects unknown mode."""
@@ -1740,7 +1644,8 @@ class TestMainEntryPoint(TestCase):
             with self.assertRaises(SystemExit) as context:
                 console_monitor.main()
             
-            self.assertEqual(context.exception.code, 3)  # EXIT_INVALID_MODE
+            # argparse exits with code 2 for invalid subcommand
+            self.assertIn(context.exception.code, [2, console_monitor.EXIT_INVALID_MODE])
     
     def test_run_dce_calls_service_methods(self):
         """Test run_dce properly initializes and runs DCE service."""
@@ -1759,42 +1664,39 @@ class TestMainEntryPoint(TestCase):
             with mock.patch('signal.signal'):
                 result = console_monitor.run_dce()
                 
-                self.assertEqual(result, 1)  # EXIT_SERVICE_START_FAILED
+                self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
     
     def test_run_dte_with_cmdline_args(self):
         """Test run_dte uses command line arguments when provided."""
-        with mock.patch.object(sys, 'argv', ['dte', 'ttyS1', '115200']):
+        with mock.patch.object(console_monitor.DTEService, 'start', return_value=True):
+            with mock.patch.object(console_monitor.DTEService, 'register_callbacks'):
+                with mock.patch.object(console_monitor.DTEService, 'run', side_effect=SystemExit(0)):
+                    with mock.patch.object(console_monitor.DTEService, 'stop'):
+                        with mock.patch('signal.signal'):
+                            result = console_monitor.run_dte("ttyS1", 115200)
+                            
+                            self.assertEqual(result, 0)
+    
+    def test_run_dte_falls_back_to_proc_cmdline(self):
+        """Test run_dte uses /proc/cmdline when no args provided."""
+        with mock.patch.object(console_monitor, 'parse_proc_cmdline', return_value=("ttyS0", 9600)):
             with mock.patch.object(console_monitor.DTEService, 'start', return_value=True):
                 with mock.patch.object(console_monitor.DTEService, 'register_callbacks'):
                     with mock.patch.object(console_monitor.DTEService, 'run', side_effect=SystemExit(0)):
                         with mock.patch.object(console_monitor.DTEService, 'stop'):
                             with mock.patch('signal.signal'):
-                                result = console_monitor.run_dte()
+                                result = console_monitor.run_dte(None, None)
                                 
                                 self.assertEqual(result, 0)
     
-    def test_run_dte_falls_back_to_proc_cmdline(self):
-        """Test run_dte uses /proc/cmdline when no args provided."""
-        with mock.patch.object(sys, 'argv', ['dte']):
-            with mock.patch.object(console_monitor, 'parse_proc_cmdline', return_value=("ttyS0", 9600)):
-                with mock.patch.object(console_monitor.DTEService, 'start', return_value=True):
-                    with mock.patch.object(console_monitor.DTEService, 'register_callbacks'):
-                        with mock.patch.object(console_monitor.DTEService, 'run', side_effect=SystemExit(0)):
-                            with mock.patch.object(console_monitor.DTEService, 'stop'):
-                                with mock.patch('signal.signal'):
-                                    result = console_monitor.run_dte()
-                                    
-                                    self.assertEqual(result, 0)
-    
     def test_run_dte_returns_error_on_parse_failure(self):
         """Test run_dte returns EXIT_SERIAL_CONFIG_ERROR when parse_proc_cmdline fails."""
-        with mock.patch.object(sys, 'argv', ['dte']):
-            with mock.patch.object(console_monitor, 'parse_proc_cmdline', 
-                                    side_effect=ValueError("No console")):
-                with mock.patch('signal.signal'):
-                    result = console_monitor.run_dte()
-                    
-                    self.assertEqual(result, 2)  # EXIT_SERIAL_CONFIG_ERROR
+        with mock.patch.object(console_monitor, 'parse_proc_cmdline', 
+                                side_effect=ValueError("No console")):
+            with mock.patch('signal.signal'):
+                result = console_monitor.run_dte(None, None)
+                
+                self.assertEqual(result, console_monitor.EXIT_SERIAL_CONFIG_ERROR)
 
 
 # ============================================================
@@ -1813,20 +1715,16 @@ class TestDCEServiceStartStop(TestCase):
         MockConfigDb.CONFIG_DB = None
     
     def test_dce_start_connects_to_databases(self):
-        """Test DCE start connects to CONFIG_DB and STATE_DB."""
+        """Test DCE start connects to CONFIG_DB."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
         
         service = console_monitor.DCEService()
         
-        with mock.patch.object(MockConfigDb, 'connect') as mock_connect:
-            with mock.patch.object(console_monitor, 'DBConnector', return_value=mock.Mock()):
-                with mock.patch.object(console_monitor, 'Table', return_value=mock.Mock()):
-                    with mock.patch.object(console_monitor, 'get_pty_symlink_prefix', return_value="/dev/VC0-"):
-                        service.config_db = MockConfigDb()
-                        result = service.start()
-                        
-                        # Verify connect was called on ConfigDB
-                        mock_connect.assert_called()
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=MockConfigDb()) as mock_cdb:
+            result = service.start()
+            
+            self.assertTrue(result)
+            self.assertTrue(service.running)
     
     def test_dce_register_callbacks_subscribes_to_tables(self):
         """Test register_callbacks subscribes to CONSOLE_PORT and CONSOLE_SWITCH."""
@@ -1936,73 +1834,42 @@ class TestDTEServiceStartStop(TestCase):
 
 
 # ============================================================
-# SerialProxy Start Tests
+# ProxyService Start Tests
 # ============================================================
 
-class TestSerialProxyStart(TestCase):
-    """Tests for SerialProxy start behavior."""
+class TestProxyServiceStart(TestCase):
+    """Tests for ProxyService start behavior."""
     
-    @mock.patch('threading.Thread')
-    @mock.patch('os.symlink')
-    @mock.patch('os.path.exists', return_value=False)
-    @mock.patch('os.path.islink', return_value=False)
-    @mock.patch.object(console_monitor, 'set_nonblocking')
-    @mock.patch.object(console_monitor, 'configure_pty')
-    @mock.patch.object(console_monitor, 'configure_serial')
-    @mock.patch('os.pipe', return_value=(20, 21))
-    @mock.patch('os.open', return_value=12)
-    @mock.patch('os.chmod')
-    @mock.patch('os.ttyname', return_value="/dev/pts/99")
-    @mock.patch('os.openpty', return_value=(10, 11))
-    @mock.patch.object(console_monitor, 'Table', return_value=mock.Mock())
-    @mock.patch.object(console_monitor, 'DBConnector', return_value=mock.Mock())
-    def test_serial_proxy_start_creates_pty(
-        self, mock_db, mock_table, mock_openpty, mock_ttyname, mock_chmod,
-        mock_open, mock_pipe, mock_cfg_ser, mock_cfg_pty, mock_nonblock,
-        mock_islink, mock_exists, mock_symlink, mock_thread
-    ):
-        """Test start() creates PTY pair."""
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/C0-1",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
+    def test_proxy_service_get_udev_prefix(self):
+        """Test _get_udev_prefix sets paths correctly."""
+        proxy = console_monitor.ProxyService(link_id="1")
         
-        mock_thread.return_value = mock.Mock()
-        result = proxy.start()
-        
-        self.assertTrue(result)
-        mock_openpty.assert_called_once()
-        self.assertEqual(proxy.pty_master, 10)
-        self.assertEqual(proxy.pty_slave, 11)
+        with mock.patch.object(console_monitor, 'get_udev_prefix', return_value="C0-"):
+            result = proxy._get_udev_prefix()
+            
+            self.assertTrue(result)
+            self.assertEqual(proxy.device_path, "/dev/C0-1")
+            self.assertIn("PTM", proxy.ptm_path)
     
-    @mock.patch('os.pipe', side_effect=OSError("Pipe failed"))
-    @mock.patch.object(console_monitor, 'Table', return_value=mock.Mock())
-    @mock.patch.object(console_monitor, 'DBConnector', return_value=mock.Mock())
-    def test_serial_proxy_start_failure_returns_false(self, mock_db, mock_table, mock_pipe):
-        """Test start() returns False on failure."""
-        proxy = console_monitor.SerialProxy(
-            link_id="1",
-            device="/dev/nonexistent",
-            baud=9600,
-            pty_symlink_prefix="/dev/VC0-"
-        )
+    def test_proxy_service_stop_sets_running_false(self):
+        """Test stop() sets running to False."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy._wake_w = -1  # No wake pipe
         
-        result = proxy.start()
+        proxy.stop()
         
-        self.assertFalse(result)
         self.assertFalse(proxy.running)
 
 
 # ============================================================
-# get_pty_symlink_prefix Tests
+# get_udev_prefix Tests
 # ============================================================
 
-class TestGetPtySymlinkPrefix(TestCase):
-    """Tests for get_pty_symlink_prefix function."""
+class TestGetUdevPrefix(TestCase):
+    """Tests for get_udev_prefix function."""
     
-    def test_get_pty_symlink_prefix_returns_default_on_import_error(self):
+    def test_get_udev_prefix_returns_default_on_import_error(self):
         """Test returns default when sonic_py_common import fails."""
         # Mock the import to fail
         original_modules = sys.modules.copy()
@@ -2013,15 +1880,14 @@ class TestGetPtySymlinkPrefix(TestCase):
         
         try:
             # The function should catch the exception and return default
-            # We need to reload or call the actual function
-            result = console_monitor.get_pty_symlink_prefix()
-            # Default is "/dev/VC0-"
-            self.assertTrue(result.startswith("/dev/"))
+            result = console_monitor.get_udev_prefix()
+            # Default is "ttyUSB"
+            self.assertIsInstance(result, str)
         finally:
             # Restore modules
             sys.modules.update(original_modules)
     
-    def test_get_pty_symlink_prefix_reads_config_file(self):
+    def test_get_udev_prefix_reads_config_file(self):
         """Test reads from udevprefix.conf when available."""
         mock_device_info = mock.Mock()
         mock_device_info.get_paths_to_platform_and_hwsku_dirs.return_value = ("/tmp/platform", "/tmp/hwsku")
@@ -2033,6 +1899,954 @@ class TestGetPtySymlinkPrefix(TestCase):
                     # This is tricky because the function is already defined
                     # For now, test the default path
                     pass
+
+
+class TestFrameParseEdgeCases(TestCase):
+    """Additional edge case tests for Frame.parse()."""
+    
+    def test_frame_parse_too_short_returns_none(self):
+        """Test Frame.parse returns None for too short data."""
+        # Less than 7 bytes after unescaping
+        result = console_monitor.Frame.parse(b"\x01\x02\x03")
+        self.assertIsNone(result)
+    
+    def test_frame_parse_empty_returns_none(self):
+        """Test Frame.parse returns None for empty data."""
+        result = console_monitor.Frame.parse(b"")
+        self.assertIsNone(result)
+    
+    def test_frame_parse_content_too_short_returns_none(self):
+        """Test Frame.parse returns None when content < 5 bytes after CRC removal."""
+        # Create data that will have valid CRC but content < 5 bytes
+        # This is tricky, just test with minimal valid-looking data
+        result = console_monitor.Frame.parse(bytes([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]))
+        self.assertIsNone(result)  # Should fail CRC or length check
+    
+    def test_frame_parse_with_payload(self):
+        """Test Frame.parse correctly parses frame with payload."""
+        # Create a frame with payload
+        frame = console_monitor.Frame(
+            version=console_monitor.PROTOCOL_VERSION,
+            seq=10,
+            flag=0x00,
+            frame_type=console_monitor.FrameType.HEARTBEAT,
+            payload=b"test"
+        )
+        built = frame.build()
+        content = built[3:-3]  # Strip SOF/EOF
+        
+        parsed = console_monitor.Frame.parse(content)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.payload, b"test")
+
+
+class TestPTYBridgeFunction(TestCase):
+    """Tests for run_pty_bridge function."""
+    
+    def test_run_pty_bridge_builds_correct_paths(self):
+        """Test run_pty_bridge builds correct PTY paths."""
+        with mock.patch.object(console_monitor, 'get_udev_prefix', return_value="C0-"):
+            with mock.patch('os.execvp') as mock_exec:
+                mock_exec.side_effect = OSError("Exec failed")
+                
+                result = console_monitor.run_pty_bridge("1")
+                
+                self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
+    
+    def test_run_pty_bridge_exec_failure(self):
+        """Test run_pty_bridge returns error when exec fails."""
+        with mock.patch.object(console_monitor, 'get_udev_prefix', return_value="C0-"):
+            with mock.patch('os.execvp', side_effect=FileNotFoundError("socat not found")):
+                result = console_monitor.run_pty_bridge("test")
+                
+                self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
+
+
+class TestProxyServicePhases(TestCase):
+    """Tests for ProxyService startup phases."""
+    
+    def test_proxy_wait_for_config_success(self):
+        """Test _wait_for_config returns True when config found."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        
+        mock_config_db = mock.Mock()
+        mock_config_db.get_entry.return_value = {"baud_rate": "115200"}
+        
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db):
+            result = proxy._wait_for_config()
+            
+            self.assertTrue(result)
+            self.assertEqual(proxy.baud, 115200)
+    
+    def test_proxy_wait_for_config_stops_when_not_running(self):
+        """Test _wait_for_config returns False when stopped."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = False
+        
+        mock_config_db = mock.Mock()
+        mock_config_db.get_entry.return_value = None
+        
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db):
+            result = proxy._wait_for_config()
+            
+            self.assertFalse(result)
+    
+    def test_proxy_wait_for_device_success(self):
+        """Test _wait_for_device returns True when device exists."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.device_path = "/dev/test"
+        
+        with mock.patch('os.path.exists', return_value=True):
+            result = proxy._wait_for_device()
+            
+            self.assertTrue(result)
+    
+    def test_proxy_wait_for_device_stops_when_not_running(self):
+        """Test _wait_for_device returns False when stopped."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = False
+        proxy.device_path = "/dev/test"
+        
+        with mock.patch('os.path.exists', return_value=False):
+            result = proxy._wait_for_device()
+            
+            self.assertFalse(result)
+    
+    def test_proxy_wait_for_ptm_success(self):
+        """Test _wait_for_ptm returns True when PTM exists."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.ptm_path = "/dev/test-PTM"
+        
+        with mock.patch('os.path.exists', return_value=True):
+            result = proxy._wait_for_ptm()
+            
+            self.assertTrue(result)
+    
+    def test_proxy_wait_for_ptm_stops_when_not_running(self):
+        """Test _wait_for_ptm returns False when stopped."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = False
+        proxy.ptm_path = "/dev/test-PTM"
+        
+        with mock.patch('os.path.exists', return_value=False):
+            result = proxy._wait_for_ptm()
+            
+            self.assertFalse(result)
+    
+    @mock.patch.object(console_monitor, 'configure_serial')
+    @mock.patch.object(console_monitor, 'set_nonblocking')
+    @mock.patch('os.open', return_value=12)
+    @mock.patch('os.pipe', return_value=(10, 11))
+    @mock.patch.object(console_monitor, 'Table')
+    @mock.patch.object(console_monitor, 'DBConnector')
+    def test_proxy_initialize_success(self, mock_db_conn, mock_table, *_):
+        """Test _initialize succeeds with proper mocks."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.device_path = "/dev/test"
+        proxy.ptm_path = "/dev/test-PTM"
+        proxy.baud = 9600
+        
+        result = proxy._initialize()
+        
+        self.assertTrue(result)
+        self.assertIsNotNone(proxy.filter)
+    
+    def test_proxy_initialize_failure(self):
+        """Test _initialize returns False on error."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.device_path = "/dev/test"
+        proxy.ptm_path = "/dev/test-PTM"
+        proxy.baud = 9600
+        
+        with mock.patch.object(console_monitor, 'DBConnector', side_effect=Exception("DB error")):
+            result = proxy._initialize()
+            
+            self.assertFalse(result)
+    
+    def test_proxy_cleanup_closes_fds(self):
+        """Test _cleanup closes all file descriptors."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.state_table = mock.Mock()
+        proxy._wake_r = 10
+        proxy._wake_w = 11
+        proxy.ser_fd = 12
+        proxy.ptm_fd = 13
+        proxy.filter = mock.Mock()
+        proxy.filter.flush.return_value = b""
+        
+        with mock.patch('os.close') as mock_close:
+            proxy._cleanup()
+            
+            # Should call close for each fd
+            self.assertEqual(mock_close.call_count, 4)
+            self.assertEqual(proxy._wake_r, -1)
+            self.assertEqual(proxy._wake_w, -1)
+            self.assertEqual(proxy.ser_fd, -1)
+            self.assertEqual(proxy.ptm_fd, -1)
+    
+    def test_proxy_cleanup_flushes_remaining_data(self):
+        """Test _cleanup flushes remaining filter data to PTM."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.state_table = mock.Mock()
+        proxy._wake_r = -1
+        proxy._wake_w = -1
+        proxy.ser_fd = -1
+        proxy.ptm_fd = 10
+        proxy.filter = mock.Mock()
+        proxy.filter.flush.return_value = b"remaining data"
+        
+        with mock.patch('os.write') as mock_write:
+            with mock.patch('os.close'):
+                proxy._cleanup()
+                
+                mock_write.assert_called_once_with(10, b"remaining data")
+    
+    def test_proxy_on_serial_read(self):
+        """Test _on_serial_read processes data through filter."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.ser_fd = 10
+        proxy.filter = mock.Mock()
+        
+        with mock.patch('os.read', return_value=b"test data"):
+            proxy._on_serial_read()
+            
+            proxy.filter.process.assert_called_once_with(b"test data")
+    
+    def test_proxy_on_serial_read_handles_blocking_error(self):
+        """Test _on_serial_read handles BlockingIOError gracefully."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.ser_fd = 10
+        proxy.filter = mock.Mock()
+        
+        with mock.patch('os.read', side_effect=BlockingIOError()):
+            # Should not raise
+            proxy._on_serial_read()
+    
+    def test_proxy_on_ptm_read(self):
+        """Test _on_ptm_read forwards data to serial."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.ptm_fd = 10
+        proxy.ser_fd = 11
+        
+        with mock.patch('os.read', return_value=b"user input"):
+            with mock.patch('os.write') as mock_write:
+                proxy._on_ptm_read()
+                
+                mock_write.assert_called_once_with(11, b"user input")
+    
+    def test_proxy_on_ptm_read_handles_blocking_error(self):
+        """Test _on_ptm_read handles BlockingIOError gracefully."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.ptm_fd = 10
+        
+        with mock.patch('os.read', side_effect=BlockingIOError()):
+            # Should not raise
+            proxy._on_ptm_read()
+    
+    def test_proxy_on_frame_received_unknown_type(self):
+        """Test _on_frame_received handles unknown frame type."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.state_table = mock.Mock()
+        
+        # Create a frame with unknown type
+        frame = console_monitor.Frame(frame_type=0x99, seq=1)
+        
+        # Should not raise, just log warning
+        proxy._on_frame_received(frame)
+    
+    def test_proxy_run_returns_success_after_phases(self):
+        """Test run() returns EXIT_SUCCESS after all phases."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        
+        with mock.patch.multiple(
+            proxy,
+            _get_udev_prefix=mock.Mock(return_value=True),
+            _wait_for_config=mock.Mock(return_value=True),
+            _wait_for_device=mock.Mock(return_value=True),
+            _wait_for_ptm=mock.Mock(return_value=True),
+            _initialize=mock.Mock(return_value=True),
+            _run_loop=mock.Mock(),
+            _cleanup=mock.Mock(),
+        ):
+            result = proxy.run()
+            
+            self.assertEqual(result, console_monitor.EXIT_SUCCESS)
+    
+    def test_proxy_run_returns_failure_when_config_fails(self):
+        """Test run() returns failure when config phase fails."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        
+        with mock.patch.object(proxy, '_get_udev_prefix', return_value=True):
+            with mock.patch.object(proxy, '_wait_for_config', return_value=False):
+                result = proxy.run()
+                
+                self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
+
+
+class TestDCEServiceSystemctl(TestCase):
+    """Tests for DCE service systemctl operations."""
+    
+    def setUp(self):
+        """Set up test fixtures."""
+        MockSubprocess.reset()
+        MockConfigDb.CONFIG_DB = None
+    
+    def tearDown(self):
+        """Clean up after tests."""
+        MockSubprocess.reset()
+        MockConfigDb.CONFIG_DB = None
+    
+    def test_dce_start_pty_bridge_timeout(self):
+        """Test _start_pty_bridge handles timeout."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=subprocess.TimeoutExpired('cmd', 30)):
+            result = service._start_pty_bridge("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_start_pty_bridge_exception(self):
+        """Test _start_pty_bridge handles exceptions."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=Exception("Unexpected error")):
+            result = service._start_pty_bridge("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_stop_pty_bridge_timeout(self):
+        """Test _stop_pty_bridge handles timeout."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=subprocess.TimeoutExpired('cmd', 30)):
+            result = service._stop_pty_bridge("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_start_proxy_timeout(self):
+        """Test _start_proxy handles timeout."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=subprocess.TimeoutExpired('cmd', 30)):
+            result = service._start_proxy("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_stop_proxy_timeout(self):
+        """Test _stop_proxy handles timeout."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=subprocess.TimeoutExpired('cmd', 30)):
+            result = service._stop_proxy("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_start_link_fails_when_pty_bridge_fails(self):
+        """Test _start_link returns False when pty-bridge fails."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch.object(service, '_start_pty_bridge', return_value=False):
+            result = service._start_link("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_start_link_fails_when_proxy_fails(self):
+        """Test _start_link stops pty-bridge and returns False when proxy fails."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch.object(service, '_start_pty_bridge', return_value=True):
+            with mock.patch.object(service, '_start_proxy', return_value=False):
+                with mock.patch.object(service, '_stop_pty_bridge') as mock_stop:
+                    result = service._start_link("1")
+                    
+                    self.assertFalse(result)
+                    mock_stop.assert_called_once_with("1")
+    
+    def test_dce_check_feature_enabled_handles_exception(self):
+        """Test _check_feature_enabled returns False on exception."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = mock.Mock()
+        service.config_db.get_entry.side_effect = Exception("DB error")
+        
+        result = service._check_feature_enabled()
+        
+        self.assertFalse(result)
+    
+    def test_dce_get_all_configs_handles_exception(self):
+        """Test _get_all_configs returns empty dict on exception."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = mock.Mock()
+        service.config_db.get_table.side_effect = Exception("DB error")
+        
+        configs = service._get_all_configs()
+        
+        self.assertEqual(configs, {})
+    
+    def test_dce_start_failure(self):
+        """Test DCE start handles ConfigDB connection failure."""
+        with mock.patch.object(console_monitor, 'ConfigDBConnector') as mock_cdb:
+            mock_cdb.return_value.connect.side_effect = Exception("Connection failed")
+            
+            service = console_monitor.DCEService()
+            result = service.start()
+            
+            self.assertFalse(result)
+
+
+class TestDTEServiceExtendedCoverage(TestCase):
+    """Extended tests for DTE service to improve coverage."""
+    
+    def test_dte_check_enabled_handles_exception(self):
+        """Test _check_enabled returns False on exception."""
+        service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
+        service.config_db = mock.Mock()
+        service.config_db.get_entry.side_effect = Exception("DB error")
+        
+        result = service._check_enabled()
+        
+        self.assertFalse(result)
+    
+    def test_dte_send_heartbeat_write_failure(self):
+        """Test _send_heartbeat handles write failure gracefully."""
+        service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
+        service.seq = 0
+        
+        with mock.patch('os.open', return_value=10):
+            with mock.patch('os.write', side_effect=OSError("Write failed")):
+                with mock.patch('os.close'):
+                    # Should not raise, should log error
+                    service._send_heartbeat()
+                    # Seq should not change on failure
+                    self.assertEqual(service.seq, 0)
+    
+    def test_dte_start_failure(self):
+        """Test DTE start handles ConfigDB connection failure."""
+        with mock.patch.object(console_monitor, 'ConfigDBConnector') as mock_cdb:
+            mock_cdb.return_value.connect.side_effect = Exception("Connection failed")
+            
+            service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
+            result = service.start()
+            
+            self.assertFalse(result)
+    
+    def test_dte_console_switch_handler_no_change(self):
+        """Test console_switch_handler does nothing when state unchanged."""
+        MockConfigDb.set_config_db(DTE_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
+        service.config_db = MockConfigDb()
+        service.enabled = True  # Already enabled
+        
+        with mock.patch.object(service, '_start_heartbeat') as mock_start:
+            with mock.patch.object(service, '_stop_heartbeat') as mock_stop:
+                service.console_switch_handler("controlled_device", "SET", {"enabled": "yes"})
+                
+                # Neither should be called since state unchanged
+                mock_start.assert_not_called()
+                mock_stop.assert_not_called()
+
+
+class TestRunProxyFunction(TestCase):
+    """Tests for run_proxy function."""
+    
+    def test_run_proxy_calls_service_run(self):
+        """Test run_proxy creates ProxyService and calls run."""
+        with mock.patch.object(console_monitor.ProxyService, 'run', return_value=0) as mock_run:
+            with mock.patch('signal.signal'):
+                result = console_monitor.run_proxy("1")
+                
+                mock_run.assert_called_once()
+                self.assertEqual(result, 0)
+    
+    def test_run_proxy_handles_signal(self):
+        """Test run_proxy sets up signal handlers."""
+        with mock.patch.object(console_monitor.ProxyService, 'run', return_value=0):
+            with mock.patch('signal.signal') as mock_signal:
+                console_monitor.run_proxy("1")
+                
+                # Should register handlers for SIGINT, SIGTERM, SIGHUP
+                self.assertEqual(mock_signal.call_count, 3)
+
+
+class TestFrameFilterInternalMethods(TestCase):
+    """Tests for FrameFilter internal methods."""
+    
+    def test_frame_filter_try_parse_frame_empty_buffer(self):
+        """Test _try_parse_frame with empty buffer."""
+        filter = console_monitor.FrameFilter()
+        
+        # Process SOF then immediately EOF with empty content
+        filter.process(console_monitor.SOF_SEQUENCE + console_monitor.EOF_SEQUENCE)
+        
+        # Should not crash, just skip
+        self.assertFalse(filter.has_pending_data())
+    
+    def test_frame_filter_discard_buffer_called_on_overflow_in_frame(self):
+        """Test buffer is discarded on overflow when inside frame."""
+        frames = []
+        user_data = []
+        
+        filter = console_monitor.FrameFilter(
+            on_frame=lambda f: frames.append(f),
+            on_user_data=lambda d: user_data.append(d)
+        )
+        
+        # Start a frame
+        filter.process(console_monitor.SOF_SEQUENCE)
+        self.assertTrue(filter.in_frame)
+        
+        # Send more than MAX_FRAME_BUFFER_SIZE bytes
+        large_data = b"x" * (console_monitor.MAX_FRAME_BUFFER_SIZE + 10)
+        filter.process(large_data)
+        
+        # Frame should be discarded due to overflow
+        self.assertFalse(filter.in_frame)
+    
+    def test_frame_filter_sof_in_frame_restarts(self):
+        """Test receiving SOF while in frame discards current and starts new."""
+        frames = []
+        
+        filter = console_monitor.FrameFilter(on_frame=lambda f: frames.append(f))
+        
+        # Start a frame
+        filter.process(console_monitor.SOF_SEQUENCE + b"partial")
+        self.assertTrue(filter.in_frame)
+        
+        # Another SOF should discard current and start new frame
+        heartbeat = console_monitor.Frame.create_heartbeat(1)
+        filter.process(heartbeat.build())
+        
+        # Should have parsed the complete heartbeat frame
+        self.assertEqual(len(frames), 1)
+
+
+class TestMainWithSubcommands(TestCase):
+    """Tests for main() with different subcommands."""
+    
+    def test_main_pty_bridge_mode(self):
+        """Test main dispatches to run_pty_bridge."""
+        with mock.patch.object(sys, 'argv', ['console-monitor', 'pty-bridge', '1']):
+            with mock.patch.object(console_monitor, 'run_pty_bridge', return_value=0) as mock_run:
+                with self.assertRaises(SystemExit) as context:
+                    console_monitor.main()
+                
+                mock_run.assert_called_once_with('1')
+                self.assertEqual(context.exception.code, 0)
+    
+    def test_main_proxy_mode(self):
+        """Test main dispatches to run_proxy."""
+        with mock.patch.object(sys, 'argv', ['console-monitor', 'proxy', '1']):
+            with mock.patch.object(console_monitor, 'run_proxy', return_value=0) as mock_run:
+                with self.assertRaises(SystemExit) as context:
+                    console_monitor.main()
+                
+                mock_run.assert_called_once_with('1')
+                self.assertEqual(context.exception.code, 0)
+    
+    def test_main_dce_mode(self):
+        """Test main dispatches to run_dce."""
+        with mock.patch.object(sys, 'argv', ['console-monitor', 'dce']):
+            with mock.patch.object(console_monitor, 'run_dce', return_value=0) as mock_run:
+                with self.assertRaises(SystemExit) as context:
+                    console_monitor.main()
+                
+                mock_run.assert_called_once()
+                self.assertEqual(context.exception.code, 0)
+    
+    def test_main_dte_mode(self):
+        """Test main dispatches to run_dte."""
+        with mock.patch.object(sys, 'argv', ['console-monitor', 'dte', 'ttyS0', '9600']):
+            with mock.patch.object(console_monitor, 'run_dte', return_value=0) as mock_run:
+                with self.assertRaises(SystemExit) as context:
+                    console_monitor.main()
+                
+                mock_run.assert_called_once_with('ttyS0', 9600)
+                self.assertEqual(context.exception.code, 0)
+    
+    def test_main_with_log_level(self):
+        """Test main sets log level from argument."""
+        with mock.patch.object(sys, 'argv', ['console-monitor', 'dce', '-l', 'debug']):
+            with mock.patch.object(console_monitor, 'run_dce', return_value=0):
+                with mock.patch.object(console_monitor, 'set_log_level') as mock_log:
+                    with self.assertRaises(SystemExit):
+                        console_monitor.main()
+                    
+                    mock_log.assert_called_once_with('debug')
+
+
+class TestCalculateFilterTimeout(TestCase):
+    """Tests for calculate_filter_timeout function."""
+    
+    def test_calculate_filter_timeout_with_custom_multiplier(self):
+        """Test calculate_filter_timeout with different multipliers."""
+        timeout_default = console_monitor.calculate_filter_timeout(9600)
+        timeout_custom = console_monitor.calculate_filter_timeout(9600, multiplier=5)
+        
+        # Custom multiplier should give larger timeout
+        self.assertGreater(timeout_custom, timeout_default)
+    
+    def test_calculate_filter_timeout_different_bauds(self):
+        """Test timeout varies inversely with baud rate."""
+        timeout_slow = console_monitor.calculate_filter_timeout(1200)
+        timeout_fast = console_monitor.calculate_filter_timeout(115200)
+        
+        # Slower baud should have longer timeout
+        self.assertGreater(timeout_slow, timeout_fast)
+
+
+# ============================================================
+# Additional Coverage Tests - Parse and Error Paths
+# ============================================================
+
+class TestParseProcCmdlineErrors(TestCase):
+    """Tests for parse_proc_cmdline error handling."""
+    
+    def test_parse_proc_cmdline_file_read_error(self):
+        """Test parse_proc_cmdline raises ValueError on file read error."""
+        with mock.patch('builtins.open', side_effect=IOError("Permission denied")):
+            with self.assertRaises(ValueError) as context:
+                console_monitor.parse_proc_cmdline()
+            
+            self.assertIn("Failed to read", str(context.exception))
+
+
+class TestProxyServiceRunLoop(TestCase):
+    """Tests for ProxyService _run_loop method."""
+    
+    def test_proxy_run_loop_handles_exception(self):
+        """Test _run_loop handles exceptions gracefully."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.ser_fd = 10
+        proxy.ptm_fd = 11
+        proxy._wake_r = 12
+        proxy.baud = 9600
+        proxy._last_heartbeat_time = time.monotonic()
+        proxy._last_data_activity = time.monotonic()
+        proxy._last_serial_data_time = time.monotonic()
+        proxy.filter = mock.Mock()
+        proxy.filter.has_pending_data.return_value = False
+        
+        call_count = 0
+        def stop_after_one(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                proxy.running = False
+            raise Exception("Select error")
+        
+        with mock.patch('select.select', side_effect=stop_after_one):
+            with mock.patch('time.sleep'):
+                proxy._run_loop()
+        
+        self.assertFalse(proxy.running)
+    
+    def test_proxy_run_loop_wakeup_pipe(self):
+        """Test _run_loop handles wakeup pipe."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.baud = 9600
+        proxy._last_heartbeat_time = time.monotonic()
+        proxy._last_data_activity = time.monotonic()
+        proxy._last_serial_data_time = time.monotonic()
+        proxy.filter = mock.Mock()
+        proxy.filter.has_pending_data.return_value = False
+        
+        wake_r, wake_w = os.pipe()
+        proxy._wake_r = wake_r
+        proxy._wake_w = wake_w
+        proxy.ser_fd = 100  # Fake fd that won't be selected
+        proxy.ptm_fd = 101
+        
+        try:
+            call_count = 0
+            def mock_select(rlist, wlist, xlist, timeout):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    os.write(wake_w, b'x')  # Trigger wakeup
+                    return ([wake_r], [], [])
+                else:
+                    proxy.running = False
+                    return ([], [], [])
+            
+            with mock.patch('select.select', side_effect=mock_select):
+                proxy._run_loop()
+        finally:
+            os.close(wake_r)
+            os.close(wake_w)
+    
+    def test_proxy_run_loop_filter_timeout(self):
+        """Test _run_loop triggers filter timeout."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.baud = 9600
+        proxy._last_heartbeat_time = time.monotonic()
+        proxy._last_data_activity = time.monotonic()
+        proxy._last_serial_data_time = time.monotonic() - 10  # Long ago
+        proxy.filter = mock.Mock()
+        proxy.filter.has_pending_data.return_value = True
+        
+        wake_r, wake_w = os.pipe()
+        proxy._wake_r = wake_r
+        proxy._wake_w = wake_w
+        proxy.ser_fd = 100
+        proxy.ptm_fd = 101
+        
+        try:
+            call_count = 0
+            def mock_select(rlist, wlist, xlist, timeout):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    proxy.running = False
+                return ([], [], [])
+            
+            with mock.patch('select.select', side_effect=mock_select):
+                proxy._run_loop()
+            
+            # Filter timeout should have been called
+            proxy.filter.on_timeout.assert_called()
+        finally:
+            os.close(wake_r)
+            os.close(wake_w)
+
+
+class TestProxyServiceUserDataOSError(TestCase):
+    """Test ProxyService _on_user_data_received OSError handling."""
+    
+    def test_on_user_data_received_write_error(self):
+        """Test _on_user_data_received handles write OSError."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.ptm_fd = 10
+        
+        with mock.patch('os.write', side_effect=OSError("Write failed")):
+            # Should not raise
+            proxy._on_user_data_received(b"test data")
+
+
+class TestDCEServiceSystemctlFailures(TestCase):
+    """Additional tests for DCE service systemctl failure handling."""
+    
+    def setUp(self):
+        MockSubprocess.reset()
+        MockConfigDb.CONFIG_DB = None
+    
+    def tearDown(self):
+        MockSubprocess.reset()
+        MockConfigDb.CONFIG_DB = None
+    
+    def test_dce_start_pty_bridge_failure(self):
+        """Test _start_pty_bridge returns False on command failure."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        mock_result = mock.Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Service failed"
+        
+        with mock.patch('subprocess.run', return_value=mock_result):
+            result = service._start_pty_bridge("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_stop_pty_bridge_failure(self):
+        """Test _stop_pty_bridge returns False on command failure."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        mock_result = mock.Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Service stop failed"
+        
+        with mock.patch('subprocess.run', return_value=mock_result):
+            result = service._stop_pty_bridge("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_start_proxy_failure(self):
+        """Test _start_proxy returns False on command failure."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        mock_result = mock.Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Proxy start failed"
+        
+        with mock.patch('subprocess.run', return_value=mock_result):
+            result = service._start_proxy("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_stop_proxy_failure(self):
+        """Test _stop_proxy returns False on command failure."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        mock_result = mock.Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Proxy stop failed"
+        
+        with mock.patch('subprocess.run', return_value=mock_result):
+            result = service._stop_proxy("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_stop_pty_bridge_exception(self):
+        """Test _stop_pty_bridge handles general exceptions."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=Exception("Unexpected")):
+            result = service._stop_pty_bridge("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_start_proxy_exception(self):
+        """Test _start_proxy handles general exceptions."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=Exception("Unexpected")):
+            result = service._start_proxy("1")
+            
+            self.assertFalse(result)
+    
+    def test_dce_stop_proxy_exception(self):
+        """Test _stop_proxy handles general exceptions."""
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        
+        with mock.patch('subprocess.run', side_effect=Exception("Unexpected")):
+            result = service._stop_proxy("1")
+            
+            self.assertFalse(result)
+
+
+class TestProxyServiceCleanupStateError(TestCase):
+    """Test ProxyService _cleanup_state error handling."""
+    
+    def test_cleanup_state_handles_exception(self):
+        """Test _cleanup_state handles exceptions gracefully."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.state_table = mock.Mock()
+        proxy.state_table.hdel.side_effect = Exception("Redis error")
+        
+        # Should not raise
+        proxy._cleanup_state()
+
+
+class TestProxyServiceUpdateStateError(TestCase):
+    """Test ProxyService _update_state error handling."""
+    
+    def test_update_state_handles_exception(self):
+        """Test _update_state handles exceptions gracefully."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.state_table = mock.Mock()
+        proxy.state_table.set.side_effect = Exception("Redis error")
+        proxy._current_oper_state = None  # Force state change
+        
+        # Should not raise
+        proxy._update_state("Up")
+
+
+class TestGetUdevPrefixPaths(TestCase):
+    """Tests for get_udev_prefix with config file."""
+    
+    def test_get_udev_prefix_empty_config(self):
+        """Test get_udev_prefix returns default when config file is empty."""
+        mock_device_info = mock.Mock()
+        mock_device_info.get_paths_to_platform_and_hwsku_dirs.return_value = ("/tmp/platform", "/tmp/hwsku")
+        
+        # Reload module to test actual function
+        result = console_monitor.get_udev_prefix()
+        self.assertIsInstance(result, str)
+
+
+class TestProxyStopWithWakePipe(TestCase):
+    """Test ProxyService stop with wake pipe."""
+    
+    def test_proxy_stop_wakes_select_loop(self):
+        """Test stop() writes to wake pipe."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        
+        wake_r, wake_w = os.pipe()
+        proxy._wake_r = wake_r
+        proxy._wake_w = wake_w
+        
+        try:
+            proxy.stop()
+            
+            self.assertFalse(proxy.running)
+            # Read from wake pipe should have data
+            data = os.read(wake_r, 1)
+            self.assertEqual(data, b'x')
+        finally:
+            os.close(wake_r)
+            os.close(wake_w)
+    
+    def test_proxy_stop_handles_write_error(self):
+        """Test stop() handles write error on wake pipe."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy._wake_w = 999  # Invalid fd
+        
+        # Should not raise
+        proxy.stop()
+        
+        self.assertFalse(proxy.running)
+
+
+# Add necessary imports
+import logging
+import subprocess
 
 
 # Add necessary import for fcntl

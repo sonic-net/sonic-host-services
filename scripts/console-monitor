@@ -2,19 +2,17 @@
 """
 Console Monitor Service
 
-Unified Console Monitor service that automatically runs in DCE or DTE mode based on CONFIG_DB configuration.
-
-DCE (Console Server side):
-- Creates PTY proxy for each serial port
-- Filters heartbeat frames, updates link state to STATE_DB
-
-DTE (SONiC Switch side):
-- Periodically sends heartbeat frames
-- Listens for CONFIG_DB configuration changes
+Unified Console Monitor service with four modes:
+- pty-bridge: PTY Bridge service that creates a PTY pair using socat
+- dce: DCE service that manages pty-bridge and proxy processes via systemctl
+- proxy: Proxy service for a single serial port (runs as independent process)
+- dte: DTE service that sends heartbeat frames
 
 Usage:
-    console-monitor-dce              # Start DCE service
-    console-monitor-dte [tty] [baud] # Start DTE service
+    console-monitor pty-bridge <link_id>  # Start PTY bridge for a specific port
+    console-monitor dce                   # Start DCE service
+    console-monitor proxy <link_id>       # Start proxy for a specific port
+    console-monitor dte [tty] [baud]      # Start DTE service
 """
 
 import os
@@ -28,10 +26,11 @@ import signal
 import argparse
 import logging
 import threading
+import subprocess
 import select
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable, Dict, Set
 
 from swsscommon.swsscommon import (
     DBConnector,
@@ -43,12 +42,29 @@ from swsscommon.swsscommon import (
 # Logging Configuration
 # ============================================================
 
+# Log level mapping
+LOG_LEVEL_MAP = {
+    'debug': logging.DEBUG,
+    'info': logging.INFO,
+    'warning': logging.WARNING,
+    'error': logging.ERROR,
+    'critical': logging.CRITICAL,
+}
+
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 log = logging.getLogger("console-monitor")
+
+
+def set_log_level(level_str: str) -> None:
+    """Set logging level from string"""
+    level = LOG_LEVEL_MAP.get(level_str.lower(), logging.INFO)
+    logging.getLogger().setLevel(level)
+    log.setLevel(level)
+    log.info(f"Log level set to {level_str.upper()}")
 
 
 # ============================================================
@@ -58,6 +74,7 @@ log = logging.getLogger("console-monitor")
 # Timeout configuration
 HEARTBEAT_INTERVAL = 5.0      # DTE heartbeat send interval (seconds)
 HEARTBEAT_TIMEOUT = 15.0      # DCE heartbeat timeout (seconds)
+RETRY_INTERVAL = 3.0          # Retry interval for waiting phases (seconds)
 
 # Baud rate mapping
 BAUD_MAP = {
@@ -81,8 +98,22 @@ DEFAULT_BAUD = 9600
 # Kernel command line path
 PROC_CMDLINE = "/proc/cmdline"
 
-# PTY symlink suffix
-PTY_SYMLINK_SUFFIX = "-PTS"
+# PTY symlink suffixes
+PTY_SYMLINK_SUFFIX_PTS = "-PTS"  # For user applications (picocom)
+PTY_SYMLINK_SUFFIX_PTM = "-PTM"  # For SerialProxy
+
+# Exit codes
+EXIT_SUCCESS = 0
+EXIT_SERVICE_START_FAILED = 1
+EXIT_SERIAL_CONFIG_ERROR = 2
+EXIT_INVALID_MODE = 3
+
+# Systemd service template names
+PROXY_SERVICE_TEMPLATE = "console-monitor-proxy@{}.service"
+PTY_BRIDGE_SERVICE_TEMPLATE = "console-monitor-pty-bridge@{}.service"
+
+# Default udev prefix (used when udevprefix.conf is not available)
+DEFAULT_UDEV_PREFIX = "ttyUSB"
 
 
 # ============================================================
@@ -119,26 +150,18 @@ MAX_FRAME_BUFFER_SIZE = 64
 SOF_SEQUENCE = bytes([SpecialChar.SOF] * SOF_LEN)
 EOF_SEQUENCE = bytes([SpecialChar.EOF] * EOF_LEN)
 
-# Exit codes
-EXIT_SUCCESS = 0
-EXIT_SERVICE_START_FAILED = 1
-EXIT_SERIAL_CONFIG_ERROR = 2
-EXIT_INVALID_MODE = 3
-
 
 def log_binary_data(data: bytes, direction: str) -> None:
     """
     Output data in binary and readable form to terminal
-    
+
     Args:
         data: Byte data to output
         direction: Data flow direction (e.g., "Serial→PTY", "PTY→Serial")
-    """ 
-    hex_str = data.hex(' ', 1)  # Space-separated bytes
-    # Replace non-printable characters with <HEX>
+    """
+    hex_str = data.hex(' ', 1)
     readable = ''.join(chr(b) if 32 <= b < 127 else f"<0x{b:02x}>" for b in data)
-    log.debug(f"[{direction} ({len(data)} bytes):\n  HEX: {hex_str}\n  ASCII: {readable}\n")
-
+    log.debug(f"[{direction}] ({len(data)} bytes):\n  HEX: {hex_str}\n  ASCII: {readable}\n")
 
 
 def crc16_modbus(data: bytes) -> int:
@@ -186,7 +209,7 @@ class Frame:
     flag: int = 0x00
     frame_type: int = FrameType.HEARTBEAT
     payload: bytes = b""
-    
+
     def build(self) -> bytes:
         """Build complete frame binary sequence"""
         content = bytes([
@@ -196,42 +219,42 @@ class Frame:
             self.frame_type,
             len(self.payload),
         ]) + self.payload
-        
+
         crc = crc16_modbus(content)
         crc_bytes = bytes([crc >> 8, crc & 0xFF])
-        
+
         content_with_crc = content + crc_bytes
         escaped_content = escape_data(content_with_crc)
-        
+
         return SOF_SEQUENCE + escaped_content + EOF_SEQUENCE
-    
+
     @classmethod
     def parse(cls, buffer: bytes) -> Optional['Frame']:
         """Parse frame from buffer"""
         unescaped = unescape_data(buffer)
-        
+
         if len(unescaped) < 7:
             return None
-        
+
         content = unescaped[:-2]
         crc_bytes = unescaped[-2:]
-        
+
         expected_crc = crc16_modbus(content)
         received_crc = (crc_bytes[0] << 8) | crc_bytes[1]
-        
+
         if expected_crc != received_crc:
             return None
-        
+
         if len(content) < 5:
             return None
-        
+
         version = content[0]
         seq = content[1]
         flag = content[2]
         frame_type = content[3]
         length = content[4]
         payload = content[5:5 + length] if length > 0 else b""
-        
+
         return cls(
             version=version,
             seq=seq,
@@ -239,7 +262,7 @@ class Frame:
             frame_type=frame_type,
             payload=payload,
         )
-    
+
     @classmethod
     def create_heartbeat(cls, seq: int = 0) -> 'Frame':
         """Create heartbeat frame"""
@@ -250,7 +273,7 @@ class Frame:
             frame_type=FrameType.HEARTBEAT,
             payload=b"",
         )
-    
+
     def is_heartbeat(self) -> bool:
         """Check if this is a heartbeat frame"""
         return self.frame_type == FrameType.HEARTBEAT
@@ -263,7 +286,7 @@ UserDataCallback = Callable[[bytes], None]
 
 class FrameFilter:
     """Frame filter: identifies frames and user data from byte stream"""
-    
+
     def __init__(
         self,
         on_frame: Optional[FrameCallback] = None,
@@ -274,28 +297,24 @@ class FrameFilter:
         self._buffer = bytearray()
         self._escape_next = False
         self._in_frame = False
-    
+
     def process(self, data: bytes) -> None:
         """Process input byte stream"""
-
         log_binary_data(data, "Received")
 
         for byte in data:
             if self._escape_next:
-
                 self._buffer.append(byte)
                 self._escape_next = False
                 if len(self._buffer) >= MAX_FRAME_BUFFER_SIZE:
                     self._flush_buffer()
 
             elif byte == SpecialChar.DLE:
-
                 self._buffer.append(byte)
                 if self.in_frame:
                     self._escape_next = True
 
             elif byte == SpecialChar.SOF:
-
                 if not self._in_frame:
                     self._flush_as_user_data()
                 else:
@@ -303,16 +322,14 @@ class FrameFilter:
                 self._in_frame = True
 
             elif byte == SpecialChar.EOF:
-
                 self._try_parse_frame()
                 self._in_frame = False
 
             else:
-                
                 self._buffer.append(byte)
                 if len(self._buffer) >= MAX_FRAME_BUFFER_SIZE:
                     self._flush_buffer()
-    
+
     def on_timeout(self) -> None:
         """Timeout callback"""
         if not self._in_frame:
@@ -320,7 +337,7 @@ class FrameFilter:
         else:
             self._discard_buffer()
         self._in_frame = False
-    
+
     def flush(self) -> bytes:
         """Flush buffer and return remaining data"""
         result = bytes(self._buffer)
@@ -328,16 +345,16 @@ class FrameFilter:
         self._escape_next = False
         self._in_frame = False
         return result
-    
+
     def has_pending_data(self) -> bool:
         """Check if there is pending data"""
         return len(self._buffer) > 0
-    
+
     @property
     def in_frame(self) -> bool:
         """Check if currently inside a frame"""
         return self._in_frame
-    
+
     def _flush_as_user_data(self) -> None:
         """Send buffer as user data"""
         if self._buffer and self._on_user_data:
@@ -345,12 +362,12 @@ class FrameFilter:
             self._on_user_data(bytes(self._buffer))
         self._buffer.clear()
         self._escape_next = False
-    
+
     def _discard_buffer(self) -> None:
         """Discard buffer"""
         self._buffer.clear()
         self._escape_next = False
-    
+
     def _flush_buffer(self) -> None:
         """Handle buffer overflow based on whether inside a frame"""
         if not self._in_frame:
@@ -358,7 +375,7 @@ class FrameFilter:
         else:
             self._discard_buffer()
         self._in_frame = False
-    
+
     def _try_parse_frame(self) -> None:
         """Try to parse buffer as frame"""
         if not self._buffer:
@@ -366,40 +383,42 @@ class FrameFilter:
             return
 
         log_binary_data(self._buffer, 'Frame Data')
-        
+
         frame = Frame.parse(bytes(self._buffer))
         self._buffer.clear()
         self._escape_next = False
-        
+
         if frame is not None and self._on_frame:
-            # Parse successful, invoke frame callback
             self._on_frame(frame)
-
-        # Parse failed, this should not happen under normal circumstances
-        # Because if data between SOF...EOF is not a valid frame,
-        # it means the data is corrupted, just discard it
-
 
 
 # ============================================================
 # Utility Functions
 # ============================================================
 
-def get_pty_symlink_prefix() -> str:
-    """Read PTY symlink prefix from udevprefix.conf"""
+def get_udev_prefix() -> str:
+    """
+    Read udev prefix from udevprefix.conf
+
+    Returns:
+        Prefix string (e.g., "C0-") or DEFAULT_UDEV_PREFIX if not available
+    """
     try:
         from sonic_py_common import device_info
         platform_path, _ = device_info.get_paths_to_platform_and_hwsku_dirs()
         config_file = os.path.join(platform_path, "udevprefix.conf")
-        
+
         if os.path.exists(config_file):
             with open(config_file, 'r') as f:
                 prefix = f.readline().rstrip()
-                return f"/dev/{prefix}"
+                if prefix:
+                    log.info(f"Udev prefix loaded from config: {prefix}")
+                    return prefix
     except Exception as e:
         log.warning(f"Failed to read udevprefix.conf: {e}")
-    
-    return "/dev/C0-"
+
+    log.info(f"Using default udev prefix: {DEFAULT_UDEV_PREFIX}")
+    return DEFAULT_UDEV_PREFIX
 
 
 def set_nonblocking(fd: int) -> None:
@@ -438,10 +457,10 @@ def configure_pty(fd: int) -> None:
 def parse_proc_cmdline() -> tuple[str, int]:
     """
     Parse serial configuration from /proc/cmdline
-    
+
     Returns:
         (tty_name, baud)
-    
+
     Raises:
         ValueError: No valid console parameter found
     """
@@ -450,162 +469,248 @@ def parse_proc_cmdline() -> tuple[str, int]:
             cmdline = f.read().strip()
     except Exception as e:
         raise ValueError(f"Failed to read {PROC_CMDLINE}: {e}")
-    
+
     pattern = r'console=([a-zA-Z0-9]+)(?:,([0-9]+))?'
     matches = re.findall(pattern, cmdline)
-    
+
     if not matches:
         raise ValueError(f"No console= parameter found in {PROC_CMDLINE}")
-    
+
     tty_name, baud_str = matches[-1]
     baud = int(baud_str) if baud_str else DEFAULT_BAUD
-    
+
     log.info(f"Parsed from /proc/cmdline: tty={tty_name}, baud={baud}")
     return (tty_name, baud)
 
 
+def calculate_filter_timeout(baud: int, multiplier: int = 3) -> float:
+    """Calculate frame filter timeout based on baud rate"""
+    char_time = 10.0 / baud
+    return char_time * MAX_FRAME_BUFFER_SIZE * multiplier
+
+
 # ============================================================
-# DCE Serial Proxy
+# PTY Bridge (runs as independent process, exec socat)
 # ============================================================
 
-class SerialProxy:
+def run_pty_bridge(link_id: str) -> int:
     """
-    Serial proxy: creates PTY and forwards serial data
-    
-    Uses select for multiplexing, runs in a separate thread.
-    Each proxy has its own Redis connection to avoid multi-thread contention.
+    PTY Bridge entry point (runs as independent process)
+
+    This function:
+    1. Gets udev prefix (uses default if not available)
+    2. Executes socat to create a PTY pair, replacing current process
+
+    The socat command creates two linked PTY devices:
+    - /dev/{prefix}{link_id}-PTS (for user applications like picocom)
+    - /dev/{prefix}{link_id}-PTM (for SerialProxy)
     """
-    
-    def __init__(self, link_id: str, device: str, baud: int, pty_symlink_prefix: str):
+    log.info(f"[PTYBridge:{link_id}] Starting...")
+
+    # Get udev prefix
+    prefix = get_udev_prefix()
+
+    # Build PTY symlink paths
+    pts_path = f"/dev/{prefix}{link_id}{PTY_SYMLINK_SUFFIX_PTS}"
+    ptm_path = f"/dev/{prefix}{link_id}{PTY_SYMLINK_SUFFIX_PTM}"
+
+    log.info(f"[PTYBridge:{link_id}] Creating PTY pair: {pts_path} <-> {ptm_path}")
+
+    # Build socat command
+    # socat creates two linked PTYs with symlinks
+    socat_args = [
+        'socat',
+        '-d', '-d',  # Debug output
+        f'PTY,raw,echo=0,link={pts_path},mode=666',
+        f'PTY,raw,echo=0,link={ptm_path},mode=666',
+    ]
+
+    log.info(f"[PTYBridge:{link_id}] Exec: {' '.join(socat_args)}")
+
+    # Replace current process with socat
+    try:
+        os.execvp('socat', socat_args)
+    except Exception as e:
+        log.error(f"[PTYBridge:{link_id}] Failed to exec socat: {e}")
+        return EXIT_SERVICE_START_FAILED
+
+    # Should never reach here
+    return EXIT_SERVICE_START_FAILED
+
+
+# ============================================================
+# Proxy Service (runs as independent process)
+# ============================================================
+
+class ProxyService:
+    """
+    Proxy service for a single serial port (runs as independent process)
+
+    Startup flow:
+    1. Wait for udev prefix to be available (determines device path)
+    2. Wait for CONFIG_DB configuration to be ready
+    3. Wait for device symlink to exist
+    4. Wait for PTM symlink to exist
+    5. Initialize and run proxy main loop
+
+    Does not listen for CONFIG_DB changes. Configuration changes are handled
+    by DCE service restarting this process via systemctl.
+    """
+
+    def __init__(self, link_id: str):
         self.link_id = link_id
-        self.device = device
-        self.baud = baud
-        self.pty_symlink_prefix = pty_symlink_prefix
-        
-        # Each proxy creates its own Redis connection to avoid multi-thread contention
+        self.running = False
+
+        # Configuration (obtained in wait phases)
+        self.baud: int = DEFAULT_BAUD
+        self.device_path: str = ""
+        self.ptm_path: str = ""
+
+        # Proxy resources
         self.state_db: Optional[DBConnector] = None
         self.state_table: Optional[Table] = None
-        
         self.ser_fd: int = -1
-        self.pty_master: int = -1
-        self.pty_slave: int = -1
-        self.pty_name: str = ""
-        self.pty_symlink: str = ""
+        self.ptm_fd: int = -1
         self.filter: Optional[FrameFilter] = None
-        self.running: bool = False
-        
+
         # State tracking
         self._current_oper_state: Optional[str] = None
         self._last_heartbeat_time: float = 0.0
         self._last_data_activity: float = 0.0
-        self._last_serial_data_time: float = 0.0  # For filter timeout detection
-        
-        # Thread
-        self._thread: Optional[threading.Thread] = None
-        
-        # Pipe for waking up select
+        self._last_serial_data_time: float = 0.0
+
+        # Wakeup pipe for signal handling
         self._wake_r: int = -1
         self._wake_w: int = -1
-    
-    def start(self) -> bool:
-        """Start proxy"""
+
+    def run(self) -> int:
+        """
+        Main entry point: execute phases in sequence
+
+        Returns:
+            Exit code
+        """
+        self.running = True
+
+        # Phase 1: Get udev prefix
+        if not self._get_udev_prefix():
+            return EXIT_SERVICE_START_FAILED
+
+        # Phase 2: Wait for configuration
+        if not self._wait_for_config():
+            return EXIT_SERVICE_START_FAILED
+
+        # Phase 3: Wait for device
+        if not self._wait_for_device():
+            return EXIT_SERVICE_START_FAILED
+
+        # Phase 4: Wait for PTM
+        if not self._wait_for_ptm():
+            return EXIT_SERVICE_START_FAILED
+
+        # Phase 5: Initialize and run proxy
+        if not self._initialize():
+            return EXIT_SERVICE_START_FAILED
+
+        self._run_loop()
+        self._cleanup()
+
+        return EXIT_SUCCESS
+
+    def _get_udev_prefix(self) -> bool:
+        """Phase 1: Get udev prefix"""
+        log.info(f"[{self.link_id}] Phase 1: Getting udev prefix...")
+
+        prefix = get_udev_prefix()
+        self.device_path = f"/dev/{prefix}{self.link_id}"
+        self.ptm_path = f"/dev/{prefix}{self.link_id}{PTY_SYMLINK_SUFFIX_PTM}"
+        log.info(f"[{self.link_id}] Udev prefix: {prefix}, device={self.device_path}")
+        return True
+
+    def _wait_for_config(self) -> bool:
+        """Phase 2: Wait for CONFIG_DB configuration"""
+        log.info(f"[{self.link_id}] Phase 2: Waiting for CONFIG_DB config...")
+
+        config_db = ConfigDBConnector()
+        config_db.connect(wait_for_init=True, retry_on=True)
+
+        while self.running:
+            entry = config_db.get_entry(CONSOLE_PORT_TABLE, self.link_id)
+            if entry:
+                self.baud = int(entry.get('baud_rate', DEFAULT_BAUD))
+                log.info(f"[{self.link_id}] Config loaded: baud={self.baud}")
+                return True
+
+            log.debug(f"[{self.link_id}] Config not found, retrying in {RETRY_INTERVAL}s...")
+            time.sleep(RETRY_INTERVAL)
+
+        return False
+
+    def _wait_for_device(self) -> bool:
+        """Phase 3: Wait for device to exist"""
+        log.info(f"[{self.link_id}] Phase 3: Waiting for device {self.device_path}...")
+
+        while self.running:
+            if os.path.exists(self.device_path):
+                log.info(f"[{self.link_id}] Device {self.device_path} is ready")
+                return True
+
+            log.debug(f"[{self.link_id}] Device not found, retrying in {RETRY_INTERVAL}s...")
+            time.sleep(RETRY_INTERVAL)
+
+        return False
+
+    def _wait_for_ptm(self) -> bool:
+        """Phase 4: Wait for PTM symlink to exist"""
+        log.info(f"[{self.link_id}] Phase 4: Waiting for PTM {self.ptm_path}...")
+
+        while self.running:
+            if os.path.exists(self.ptm_path):
+                log.info(f"[{self.link_id}] PTM {self.ptm_path} is ready")
+                return True
+
+            log.debug(f"[{self.link_id}] PTM not found, retrying in {RETRY_INTERVAL}s...")
+            time.sleep(RETRY_INTERVAL)
+
+        return False
+
+    def _initialize(self) -> bool:
+        """Phase 5 init: open serial port, PTM, connect to Redis"""
         try:
-            # Create independent Redis connection (one per proxy to avoid multi-thread contention)
+            # Connect to STATE_DB
             self.state_db = DBConnector("STATE_DB", 0)
             self.state_table = Table(self.state_db, CONSOLE_PORT_TABLE)
-            
-            # Create wake-up pipe
+
+            # Create wakeup pipe for signal handling
             self._wake_r, self._wake_w = os.pipe()
             set_nonblocking(self._wake_r)
-            
-            # Create PTY
-            self.pty_master, self.pty_slave = os.openpty()
-            self.pty_name = os.ttyname(self.pty_slave)
-            
-            # Set PTY slave permissions to allow non-root access
-            os.chmod(self.pty_name, 0o666)
-            
+
             # Open serial port
-            self.ser_fd = os.open(self.device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-            
-            # Configure serial port and PTY
+            self.ser_fd = os.open(self.device_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
             configure_serial(self.ser_fd, self.baud)
-            configure_pty(self.pty_master)
-            configure_pty(self.pty_slave)
-            set_nonblocking(self.pty_master)
-            set_nonblocking(self.ser_fd)
-            
+
+            # Open PTM
+            self.ptm_fd = os.open(self.ptm_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+
             # Create frame filter
             self.filter = FrameFilter(
                 on_frame=self._on_frame_received,
                 on_user_data=self._on_user_data_received,
             )
-            
-            # Create symlink
-            self._create_symlink()
-            
-            self.running = True
+
             self._last_heartbeat_time = time.monotonic()
             self._last_data_activity = time.monotonic()
-            
-            # Start worker thread
-            self._thread = threading.Thread(target=self._run_loop, daemon=True)
-            self._thread.start()
-            
-            log.info(f"[{self.link_id}] Started: {self.device} -> {self.pty_name} ({self.pty_symlink})")
+
+            log.info(f"[{self.link_id}] Initialized: {self.device_path} <-> {self.ptm_path}")
             return True
-            
+
         except Exception as e:
-            log.error(f"[{self.link_id}] Failed to start: {e}")
-            self.stop()
+            log.error(f"[{self.link_id}] Failed to initialize: {e}")
             return False
-    
-    def stop(self) -> None:
-        """Stop proxy"""
-        self.running = False
-        
-        # Wake up select loop
-        if self._wake_w >= 0:
-            try:
-                os.write(self._wake_w, b'x')
-            except:
-                pass
-        
-        # Wait for thread to finish
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-        
-        # Cleanup STATE_DB state
-        self._cleanup_state()
-        
-        # Remove symlink
-        self._remove_symlink()
-        
-        # Flush remaining data
-        if self.filter and self.pty_master >= 0:
-            remaining = self.filter.flush()
-            if remaining:
-                try:
-                    os.write(self.pty_master, remaining)
-                except:
-                    pass
-        
-        # Close file descriptors
-        for fd in (self._wake_r, self._wake_w, self.ser_fd, self.pty_master, self.pty_slave):
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except:
-                    pass
-        
-        self._wake_r = self._wake_w = -1
-        self.ser_fd = self.pty_master = self.pty_slave = -1
-        
-        log.info(f"[{self.link_id}] Stopped")
-    
+
     def _run_loop(self) -> None:
-        """Worker thread main loop"""
-        filter_timeout = self._calculate_filter_timeout(self.baud)
+        """Phase 5 main loop: select() to handle serial and PTM data"""
+        filter_timeout = calculate_filter_timeout(self.baud)
 
         while self.running:
             try:
@@ -621,12 +726,11 @@ class SerialProxy:
                     if remaining_filter_timeout > 0:
                         select_timeout = min(select_timeout, remaining_filter_timeout)
                     else:
-                        # Filter timeout reached, process immediately
                         select_timeout = 0
 
-                # Use select to monitor serial port, PTY, and wake-up pipe
+                # Use select to monitor serial port, PTM, and wakeup pipe
                 readable, _, _ = select.select(
-                    [self.ser_fd, self.pty_master, self._wake_r],
+                    [self.ser_fd, self.ptm_fd, self._wake_r],
                     [], [],
                     select_timeout
                 )
@@ -639,19 +743,19 @@ class SerialProxy:
                     if fd == self.ser_fd:
                         self._on_serial_read()
                         serial_data_received = True
-                    elif fd == self.pty_master:
-                        self._on_pty_read()
+                    elif fd == self.ptm_fd:
+                        self._on_ptm_read()
                     elif fd == self._wake_r:
-                        # Clear wake-up pipe
+                        # Clear wakeup pipe
                         try:
                             os.read(self._wake_r, 1024)
-                        except:
+                        except OSError:
                             pass
 
                 # Check heartbeat timeout
                 self._check_heartbeat_timeout()
 
-                # Check filter timeout: only trigger when no new serial data received and timeout reached
+                # Check filter timeout
                 if self.filter and self.filter.has_pending_data() and not serial_data_received:
                     now = time.monotonic()
                     if now - self._last_serial_data_time >= filter_timeout:
@@ -661,7 +765,7 @@ class SerialProxy:
                 if self.running:
                     log.error(f"[{self.link_id}] Loop error: {e}")
                     time.sleep(0.1)
-    
+
     def _on_serial_read(self) -> None:
         """Serial data read callback"""
         if not self.running or not self.filter:
@@ -675,18 +779,18 @@ class SerialProxy:
                 self.filter.process(data)
         except (BlockingIOError, OSError):
             pass
-    
-    def _on_pty_read(self) -> None:
-        """PTY data read callback"""
+
+    def _on_ptm_read(self) -> None:
+        """PTM data read callback"""
         if not self.running:
             return
         try:
-            data = os.read(self.pty_master, 4096)
+            data = os.read(self.ptm_fd, 4096)
             if data:
                 os.write(self.ser_fd, data)
         except (BlockingIOError, OSError):
             pass
-    
+
     def _on_frame_received(self, frame: Frame) -> None:
         """Frame received callback"""
         if frame.is_heartbeat():
@@ -695,20 +799,20 @@ class SerialProxy:
             log.debug(f"[{self.link_id}] Heartbeat received (seq={frame.seq})")
         else:
             log.warning(f"[{self.link_id}] Unknown frame type: {frame.frame_type}")
-    
+
     def _on_user_data_received(self, data: bytes) -> None:
         """User data callback"""
-        if self.pty_master >= 0:
+        if self.ptm_fd >= 0:
             try:
-                os.write(self.pty_master, data)
+                os.write(self.ptm_fd, data)
             except OSError:
                 pass
-    
+
     def _check_heartbeat_timeout(self) -> None:
         """Check heartbeat timeout"""
         now = time.monotonic()
         time_since_heartbeat = now - self._last_heartbeat_time
-        
+
         if time_since_heartbeat >= HEARTBEAT_TIMEOUT:
             # Check if there is data activity
             time_since_data = now - self._last_data_activity
@@ -717,19 +821,19 @@ class SerialProxy:
                 log.debug(f"[{self.link_id}] Heartbeat timeout but data activity detected")
                 self._last_heartbeat_time = now
                 return
-            
-            # No heartbeat and no data activity, cannot determine failure cause (link/system/software layer)
+
+            # No heartbeat and no data activity
             self._update_state("Unknown")
             self._last_heartbeat_time = now  # Reset to avoid continuous triggering
-    
+
     def _update_state(self, oper_state: str) -> None:
         """Update Redis state (only when state changes)"""
         if oper_state == self._current_oper_state:
             return
-        
+
         self._current_oper_state = oper_state
         timestamp = str(int(time.time()))
-        
+
         try:
             self.state_table.set(
                 self.link_id,
@@ -738,93 +842,98 @@ class SerialProxy:
             log.info(f"[{self.link_id}] State: {oper_state}")
         except Exception as e:
             log.error(f"[{self.link_id}] Failed to update state: {e}")
-    
+
     def _cleanup_state(self) -> None:
         """Cleanup STATE_DB state"""
         try:
-            # Only delete fields managed by console-monitor
-            self.state_table.hdel(self.link_id, "oper_state")
-            self.state_table.hdel(self.link_id, "last_state_change")
-            log.info(f"[{self.link_id}] STATE_DB cleaned up")
+            if self.state_table:
+                self.state_table.hdel(self.link_id, "oper_state")
+                self.state_table.hdel(self.link_id, "last_state_change")
+                log.info(f"[{self.link_id}] STATE_DB cleaned up")
         except Exception as e:
             log.error(f"[{self.link_id}] Failed to cleanup STATE_DB: {e}")
-    
-    def _create_symlink(self) -> None:
-        """Create PTY symlink"""
-        self.pty_symlink = f"{self.pty_symlink_prefix}{self.link_id}{PTY_SYMLINK_SUFFIX}"
-        try:
-            if os.path.islink(self.pty_symlink) or os.path.exists(self.pty_symlink):
-                os.unlink(self.pty_symlink)
-            os.symlink(self.pty_name, self.pty_symlink)
-            log.info(f"[{self.link_id}] Symlink: {self.pty_symlink} -> {self.pty_name}")
-        except Exception as e:
-            log.error(f"[{self.link_id}] Failed to create symlink: {e}")
-            self.pty_symlink = ""
-    
-    def _remove_symlink(self) -> None:
-        """Remove PTY symlink"""
-        if self.pty_symlink:
-            try:
-                if os.path.islink(self.pty_symlink):
-                    os.unlink(self.pty_symlink)
-                    log.info(f"[{self.link_id}] Symlink removed: {self.pty_symlink}")
-            except Exception as e:
-                log.error(f"[{self.link_id}] Failed to remove symlink: {e}")
-            self.pty_symlink = ""
-    
-    @staticmethod
-    def _calculate_filter_timeout(baud: int, multiplier: int = 3) -> float:
-        """Calculate frame filter timeout based on baud rate"""
-        char_time = 10.0 / baud
-        return char_time * MAX_FRAME_BUFFER_SIZE * multiplier
 
+    def _cleanup(self) -> None:
+        """Cleanup all resources"""
+        # Cleanup STATE_DB
+        self._cleanup_state()
+
+        # Flush remaining data
+        if self.filter and self.ptm_fd >= 0:
+            remaining = self.filter.flush()
+            if remaining:
+                try:
+                    os.write(self.ptm_fd, remaining)
+                except OSError:
+                    pass
+
+        # Close file descriptors
+        for fd in (self._wake_r, self._wake_w, self.ser_fd, self.ptm_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+        self._wake_r = self._wake_w = -1
+        self.ser_fd = self.ptm_fd = -1
+        log.info(f"[{self.link_id}] Cleanup complete")
+
+    def stop(self) -> None:
+        """Stop service (signal handler)"""
+        self.running = False
+
+        # Wake up select loop
+        if self._wake_w >= 0:
+            try:
+                os.write(self._wake_w, b'x')
+            except OSError:
+                pass
 
 
 # ============================================================
-# DCE Service
+# DCE Service (manages pty-bridge and proxy services via systemctl)
 # ============================================================
 
 class DCEService:
     """
-    DCE side service: manages multiple serial proxies
-    
+    DCE side main service: manages pty-bridge and proxy services via systemctl
+
     Uses ConfigDBConnector's subscribe/listen pattern to monitor CONFIG_DB changes,
     following SONiC daemon conventions.
-    Each SerialProxy has its own Redis connection to avoid multi-thread contention.
+
+    Service management order:
+    - Start: pty-bridge first, then proxy
+    - Stop: proxy first, then pty-bridge
+    - Restart: stop both, then start both
     """
-    
+
     def __init__(self):
         self.config_db: Optional[ConfigDBConnector] = None
-        
-        self.proxies: Dict[str, SerialProxy] = {}
+        self.active_links: Set[str] = set()  # Currently active link_ids
         self.running: bool = False
-        self.pty_symlink_prefix: str = ""
-    
+
+        # Cache for detecting configuration changes
+        self._config_cache: Dict[str, dict] = {}
+
     def start(self) -> bool:
         """Start service"""
         try:
-            # Connect to CONFIG_DB (using ConfigDBConnector)
             self.config_db = ConfigDBConnector()
             self.config_db.connect(wait_for_init=True, retry_on=True)
-            log.info("ConfigDB connected")
-            
-            # Read PTY symlink prefix
-            self.pty_symlink_prefix = get_pty_symlink_prefix()
-            log.info(f"PTY symlink prefix: {self.pty_symlink_prefix}")
-            
+            log.info("DCE: ConfigDB connected")
+
             self.running = True
-            log.info("DCE service initialized")
             return True
-            
+
         except Exception as e:
-            log.error(f"Failed to start DCE service: {e}")
+            log.error(f"DCE: Failed to start: {e}")
             return False
-    
+
     def register_callbacks(self) -> None:
-        """Register configuration change callbacks"""
-        
+        """Register CONFIG_DB change callbacks"""
+
         def make_callback(func):
-            """Create callback wrapper compatible with ConfigDBConnector format"""
             def callback(table, key, data):
                 if data is None:
                     op = "DEL"
@@ -833,151 +942,257 @@ class DCEService:
                     op = "SET"
                 return func(key, op, data)
             return callback
-        
-        # Subscribe to CONSOLE_PORT table changes
-        self.config_db.subscribe(CONSOLE_PORT_TABLE, 
-                                  make_callback(self.console_port_handler))
-        
-        # Subscribe to CONSOLE_SWITCH table changes (for checking feature toggle)
+
+        self.config_db.subscribe(CONSOLE_PORT_TABLE,
+                                 make_callback(self.console_port_handler))
         self.config_db.subscribe(CONSOLE_SWITCH_TABLE,
-                                  make_callback(self.console_switch_handler))
-        
-        log.info("Callbacks registered")
-    
+                                 make_callback(self.console_switch_handler))
+
+        log.info("DCE: Callbacks registered")
+
     def run(self) -> None:
-        """Main loop: use ConfigDBConnector.listen() to monitor configuration changes"""
+        """Main loop: listen for CONFIG_DB changes"""
         try:
-            # listen() blocks and invokes registered callbacks when configuration changes
-            # init_data_handler is called when listen starts, with initial data from all subscribed tables
             self.config_db.listen(init_data_handler=self._load_initial_config)
         except KeyboardInterrupt:
-            log.info("Received keyboard interrupt")
+            log.info("DCE: Received keyboard interrupt")
         except Exception as e:
             if self.running:
-                log.error(f"DCE listen error: {e}")
-    
+                log.error(f"DCE: Listen error: {e}")
+
     def stop(self) -> None:
         """Stop service"""
         self.running = False
-        
-        # Stop all proxies
-        for proxy in self.proxies.values():
-            proxy.stop()
-        self.proxies.clear()
-        
-        log.info("DCE service stopped")
-    
+
+        # Stop all services (proxy first, then pty-bridge)
+        for link_id in list(self.active_links):
+            self._stop_link(link_id)
+        self.active_links.clear()
+
+        log.info("DCE: Stopped")
+
     def _load_initial_config(self, init_data: dict) -> None:
-        """
-        Load initial configuration
-        
-        Args:
-            init_data: Dictionary containing initial data from all subscribed tables
-                       Format: {table_name: {key: {field: value, ...}, ...}, ...}
-        """
-        log.info(f"Loading initial config: {list(init_data.keys())}")
-        
-        # Perform initial sync
+        """Load initial configuration"""
+        log.info(f"DCE: Loading initial config: {list(init_data.keys())}")
         self._sync()
-    
+
     def console_port_handler(self, key: str, op: str, data: dict) -> None:
-        """
-        CONSOLE_PORT table change handler
-        
-        Args:
-            key: Table entry key (e.g., "1", "2" port numbers)
-            op: Operation type "SET" or "DEL"
-            data: Table entry data
-        """
-        log.info(f"CONSOLE_PORT change: key={key}, op={op}, data={data}")
+        """CONSOLE_PORT table change handler"""
+        log.info(f"DCE: CONSOLE_PORT change: key={key}, op={op}, data={data}")
         self._sync()
-    
+
     def console_switch_handler(self, key: str, op: str, data: dict) -> None:
-        """
-        CONSOLE_SWITCH table change handler
-        
-        Args:
-            key: Table entry key
-            op: Operation type "SET" or "DEL"
-            data: Table entry data
-        """
-        log.info(f"CONSOLE_SWITCH change: key={key}, op={op}, data={data}")
+        """CONSOLE_SWITCH table change handler"""
+        log.info(f"DCE: CONSOLE_SWITCH change: key={key}, op={op}, data={data}")
         self._sync()
-    
+
     def _check_feature_enabled(self) -> bool:
         """Check if console switch feature is enabled"""
         try:
             entry = self.config_db.get_entry(CONSOLE_SWITCH_TABLE, "console_mgmt")
             if entry:
-                enabled = entry.get("enabled", "")
-                if enabled == "yes":
+                if entry.get("enabled", "") == "yes":
                     return True
-            log.warning("Console switch feature is disabled")
+            log.warning("DCE: Console switch feature is disabled")
             return False
         except Exception as e:
-            log.error(f"Failed to check feature status: {e}")
+            log.error(f"DCE: Failed to check feature status: {e}")
             return False
-    
+
     def _get_all_configs(self) -> Dict[str, dict]:
         """Get all serial port configurations"""
         configs = {}
         try:
             table_data = self.config_db.get_table(CONSOLE_PORT_TABLE)
             for key, entry in table_data.items():
-                # Key returned by ConfigDBConnector may be a tuple
                 key_str = str(key) if not isinstance(key, str) else key
                 configs[key_str] = {
-                    "baud": int(entry.get("baud_rate", 9600)),
-                    "device": f"/dev/C0-{key_str}",
+                    "baud": int(entry.get("baud_rate", DEFAULT_BAUD)),
                 }
         except Exception as e:
-            log.error(f"Failed to get configs: {e}")
+            log.error(f"DCE: Failed to get configs: {e}")
         return configs
-    
+
     def _sync(self) -> None:
-        """Sync configuration and proxies"""
+        """Sync services with CONFIG_DB"""
         # Check if feature is enabled
         if not self._check_feature_enabled():
-            # Feature not enabled, stop all proxies
-            if self.proxies:
-                log.info("Feature disabled, stopping all proxies")
-                for proxy in self.proxies.values():
-                    proxy.stop()
-                self.proxies.clear()
+            if self.active_links:
+                log.info("DCE: Feature disabled, stopping all services")
+                for link_id in list(self.active_links):
+                    self._stop_link(link_id)
+                self.active_links.clear()
+                self._config_cache.clear()
             return
-        
+
         # Get configuration
         redis_configs = self._get_all_configs()
         redis_ids = set(redis_configs.keys())
-        current_ids = set(self.proxies.keys())
-        
-        # Remove proxies not in configuration
+        current_ids = self.active_links.copy()
+
+        # Stop links not in configuration
         for link_id in current_ids - redis_ids:
-            self.proxies[link_id].stop()
-            del self.proxies[link_id]
-        
-        # Add new proxies
+            self._stop_link(link_id)
+            self.active_links.discard(link_id)
+            self._config_cache.pop(link_id, None)
+
+        # Start new links
         for link_id in redis_ids - current_ids:
-            cfg = redis_configs[link_id]
-            proxy = SerialProxy(
-                link_id, cfg["device"], cfg["baud"], self.pty_symlink_prefix
-            )
-            if proxy.start():
-                self.proxies[link_id] = proxy
-        
-        # Update proxies with changed configuration
+            if self._start_link(link_id):
+                self.active_links.add(link_id)
+                self._config_cache[link_id] = redis_configs[link_id]
+
+        # Restart links with changed configuration (e.g., baud rate)
         for link_id in redis_ids & current_ids:
-            cfg = redis_configs[link_id]
-            proxy = self.proxies[link_id]
-            if proxy.baud != cfg["baud"]:
-                proxy.stop()
-                new_proxy = SerialProxy(
-                    link_id, cfg["device"], cfg["baud"], self.pty_symlink_prefix
-                )
-                if new_proxy.start():
-                    self.proxies[link_id] = new_proxy
-        
-        log.info(f"Sync complete: {len(self.proxies)} proxies active")
+            new_config = redis_configs[link_id]
+            old_config = self._config_cache.get(link_id, {})
+            if new_config != old_config:
+                log.info(f"DCE: [{link_id}] Config changed: {old_config} -> {new_config}")
+                self._restart_link(link_id)
+                self._config_cache[link_id] = new_config
+
+        log.info(f"DCE: Sync complete, {len(self.active_links)} links active")
+
+    def _start_link(self, link_id: str) -> bool:
+        """Start pty-bridge and proxy for a link (pty-bridge first, then proxy)"""
+        log.info(f"DCE: [{link_id}] Starting services...")
+
+        # Start pty-bridge first
+        if not self._start_pty_bridge(link_id):
+            log.error(f"DCE: [{link_id}] Failed to start pty-bridge")
+            return False
+
+        # Then start proxy
+        if not self._start_proxy(link_id):
+            log.error(f"DCE: [{link_id}] Failed to start proxy, stopping pty-bridge")
+            self._stop_pty_bridge(link_id)
+            return False
+
+        log.info(f"DCE: [{link_id}] All services started")
+        return True
+
+    def _stop_link(self, link_id: str) -> bool:
+        """Stop proxy and pty-bridge for a link (proxy first, then pty-bridge)"""
+        log.info(f"DCE: [{link_id}] Stopping services...")
+
+        # Stop proxy first
+        self._stop_proxy(link_id)
+
+        # Then stop pty-bridge
+        self._stop_pty_bridge(link_id)
+
+        log.info(f"DCE: [{link_id}] All services stopped")
+        return True
+
+    def _restart_link(self, link_id: str) -> bool:
+        """Restart all services for a link"""
+        log.info(f"DCE: [{link_id}] Restarting services...")
+
+        # Stop both (proxy first, then pty-bridge)
+        self._stop_proxy(link_id)
+        self._stop_pty_bridge(link_id)
+
+        # Start both (pty-bridge first, then proxy)
+        if not self._start_pty_bridge(link_id):
+            return False
+        if not self._start_proxy(link_id):
+            self._stop_pty_bridge(link_id)
+            return False
+
+        log.info(f"DCE: [{link_id}] All services restarted")
+        return True
+
+    def _start_pty_bridge(self, link_id: str) -> bool:
+        """Start a pty-bridge service via systemctl"""
+        service_name = PTY_BRIDGE_SERVICE_TEMPLATE.format(link_id)
+        try:
+            result = subprocess.run(
+                ['systemctl', 'start', service_name],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                log.info(f"DCE: [{link_id}] PTY bridge service started")
+                return True
+            else:
+                log.error(f"DCE: [{link_id}] Failed to start pty-bridge: {result.stderr}")
+                return False
+        except subprocess.TimeoutExpired:
+            log.error(f"DCE: [{link_id}] Timeout starting pty-bridge")
+            return False
+        except Exception as e:
+            log.error(f"DCE: [{link_id}] Error starting pty-bridge: {e}")
+            return False
+
+    def _stop_pty_bridge(self, link_id: str) -> bool:
+        """Stop a pty-bridge service via systemctl"""
+        service_name = PTY_BRIDGE_SERVICE_TEMPLATE.format(link_id)
+        try:
+            result = subprocess.run(
+                ['systemctl', 'stop', service_name],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                log.info(f"DCE: [{link_id}] PTY bridge service stopped")
+                return True
+            else:
+                log.error(f"DCE: [{link_id}] Failed to stop pty-bridge: {result.stderr}")
+                return False
+        except subprocess.TimeoutExpired:
+            log.error(f"DCE: [{link_id}] Timeout stopping pty-bridge")
+            return False
+        except Exception as e:
+            log.error(f"DCE: [{link_id}] Error stopping pty-bridge: {e}")
+            return False
+
+    def _start_proxy(self, link_id: str) -> bool:
+        """Start a proxy service via systemctl"""
+        service_name = PROXY_SERVICE_TEMPLATE.format(link_id)
+        try:
+            result = subprocess.run(
+                ['systemctl', 'start', service_name],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                log.info(f"DCE: [{link_id}] Proxy service started")
+                return True
+            else:
+                log.error(f"DCE: [{link_id}] Failed to start proxy: {result.stderr}")
+                return False
+        except subprocess.TimeoutExpired:
+            log.error(f"DCE: [{link_id}] Timeout starting proxy")
+            return False
+        except Exception as e:
+            log.error(f"DCE: [{link_id}] Error starting proxy: {e}")
+            return False
+
+    def _stop_proxy(self, link_id: str) -> bool:
+        """Stop a proxy service via systemctl"""
+        service_name = PROXY_SERVICE_TEMPLATE.format(link_id)
+        try:
+            result = subprocess.run(
+                ['systemctl', 'stop', service_name],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                log.info(f"DCE: [{link_id}] Proxy service stopped")
+                return True
+            else:
+                log.error(f"DCE: [{link_id}] Failed to stop proxy: {result.stderr}")
+                return False
+        except subprocess.TimeoutExpired:
+            log.error(f"DCE: [{link_id}] Timeout stopping proxy")
+            return False
+        except Exception as e:
+            log.error(f"DCE: [{link_id}] Error stopping proxy: {e}")
+            return False
 
 
 # ============================================================
@@ -987,46 +1202,41 @@ class DCEService:
 class DTEService:
     """
     DTE side service: sends heartbeat frames
-    
-    Uses ConfigDBConnector's subscribe/listen pattern to monitor CONFIG_DB changes,
-    following SONiC daemon conventions.
     """
-    
+
     def __init__(self, tty_name: str, baud: int):
         self.tty_name = tty_name
         self.baud = baud
         self.device_path = f"/dev/{tty_name}"
-        
+
         self.config_db: Optional[ConfigDBConnector] = None
-        
+
         self.running: bool = False
         self.enabled: bool = False
         self.seq: int = 0
-        
+
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop: threading.Event = threading.Event()
-    
+
     def start(self) -> bool:
         """Start service"""
         try:
-            # Connect to CONFIG_DB (using ConfigDBConnector)
             self.config_db = ConfigDBConnector()
             self.config_db.connect(wait_for_init=True, retry_on=True)
-            log.info("ConfigDB connected")
-            
+            log.info("DTE: ConfigDB connected")
+
             self.running = True
-            log.info(f"DTE service initialized: {self.device_path}")
+            log.info(f"DTE: Service initialized: {self.device_path}")
             return True
-            
+
         except Exception as e:
-            log.error(f"Failed to start DTE service: {e}")
+            log.error(f"DTE: Failed to start: {e}")
             return False
-    
+
     def register_callbacks(self) -> None:
-        """Register configuration change callbacks"""
-        
+        """Register CONFIG_DB change callbacks"""
+
         def make_callback(func):
-            """Create callback wrapper compatible with ConfigDBConnector format"""
             def callback(table, key, data):
                 if data is None:
                     op = "DEL"
@@ -1035,70 +1245,52 @@ class DTEService:
                     op = "SET"
                 return func(key, op, data)
             return callback
-        
-        # Subscribe to CONSOLE_SWITCH table changes
+
         self.config_db.subscribe(CONSOLE_SWITCH_TABLE,
-                                  make_callback(self.console_switch_handler))
-        
-        log.info("Callbacks registered")
-    
+                                 make_callback(self.console_switch_handler))
+
+        log.info("DTE: Callbacks registered")
+
     def run(self) -> None:
-        """Main loop: use ConfigDBConnector.listen() to monitor configuration changes"""
+        """Main loop"""
         try:
-            # listen() blocks and invokes registered callbacks when configuration changes
             self.config_db.listen(init_data_handler=self._load_initial_config)
         except KeyboardInterrupt:
-            log.info("Received keyboard interrupt")
+            log.info("DTE: Received keyboard interrupt")
         except Exception as e:
             if self.running:
-                log.error(f"DTE listen error: {e}")
-    
+                log.error(f"DTE: Listen error: {e}")
+
     def stop(self) -> None:
         """Stop service"""
         self.running = False
         self._stop_heartbeat()
-        
-        log.info("DTE service stopped")
-    
+        log.info("DTE: Stopped")
+
     def _load_initial_config(self, init_data: dict) -> None:
-        """
-        Load initial configuration
-        
-        Args:
-            init_data: Dictionary containing initial data from all subscribed tables
-        """
-        log.info(f"Loading initial config: {list(init_data.keys())}")
-        
-        # Check initial enabled state
+        """Load initial configuration"""
+        log.info(f"DTE: Loading initial config: {list(init_data.keys())}")
+
         self.enabled = self._check_enabled()
-        log.info(f"Initial enabled state: {self.enabled}")
-        
-        # If enabled, start heartbeat thread
+        log.info(f"DTE: Initial enabled state: {self.enabled}")
+
         if self.enabled:
             self._start_heartbeat()
-    
+
     def console_switch_handler(self, key: str, op: str, data: dict) -> None:
-        """
-        CONSOLE_SWITCH table change handler
-        
-        Args:
-            key: Table entry key
-            op: Operation type "SET" or "DEL"
-            data: Table entry data
-        """
-        log.info(f"CONSOLE_SWITCH change: key={key}, op={op}, data={data}")
-        
-        # Check enabled state
+        """CONSOLE_SWITCH table change handler"""
+        log.info(f"DTE: CONSOLE_SWITCH change: key={key}, op={op}")
+
         new_enabled = self._check_enabled()
         if new_enabled != self.enabled:
-            log.info(f"Enabled state changed: {self.enabled} -> {new_enabled}")
+            log.info(f"DTE: Enabled state changed: {self.enabled} -> {new_enabled}")
             self.enabled = new_enabled
-            
+
             if self.enabled:
                 self._start_heartbeat()
             else:
                 self._stop_heartbeat()
-    
+
     def _check_enabled(self) -> bool:
         """Check the enabled field of controlled_device"""
         try:
@@ -1107,50 +1299,49 @@ class DTEService:
                 return entry.get("enabled", "") == "yes"
             return False
         except Exception as e:
-            log.warning(f"Failed to check enabled status: {e}")
+            log.warning(f"DTE: Failed to check enabled status: {e}")
             return False
-    
+
     def _start_heartbeat(self) -> None:
         """Start heartbeat thread"""
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             return
-        
+
         self._heartbeat_stop.clear()
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
-        log.info("Heartbeat thread started")
-    
+        log.info("DTE: Heartbeat thread started")
+
     def _stop_heartbeat(self) -> None:
         """Stop heartbeat thread"""
         self._heartbeat_stop.set()
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=2.0)
         self._heartbeat_thread = None
-        log.info("Heartbeat thread stopped")
-    
+        log.info("DTE: Heartbeat thread stopped")
+
     def _heartbeat_loop(self) -> None:
         """Heartbeat send loop"""
         while not self._heartbeat_stop.is_set():
             self._send_heartbeat()
             self._heartbeat_stop.wait(HEARTBEAT_INTERVAL)
-    
+
     def _send_heartbeat(self) -> None:
-        """Send heartbeat frame (open, write, close like print command)"""
+        """Send heartbeat frame"""
         frame = Frame.create_heartbeat(self.seq)
         frame_bytes = frame.build()
-        
+
         try:
-            # 每次发送时打开文件，写入后立即关闭，与print命令行为一致
             fd = os.open(self.device_path, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
             try:
                 os.write(fd, frame_bytes)
-                log.debug(f"Sent heartbeat (seq={self.seq})")
+                log.debug(f"DTE: Sent heartbeat (seq={self.seq})")
                 log_binary_data(frame_bytes, "DTE→Serial")
                 self.seq = (self.seq + 1) % 256
             finally:
                 os.close(fd)
         except Exception as e:
-            log.error(f"Failed to send heartbeat: {e}")
+            log.error(f"DTE: Failed to send heartbeat: {e}")
 
 
 # ============================================================
@@ -1168,12 +1359,12 @@ def run_dce() -> int:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGHUP, signal_handler)
-    
+
     service = DCEService()
-    
+
     if not service.start():
         return EXIT_SERVICE_START_FAILED
-    
+
     try:
         service.register_callbacks()
         service.run()
@@ -1181,38 +1372,47 @@ def run_dce() -> int:
         pass
     finally:
         service.stop()
-    
+
     return EXIT_SUCCESS
 
 
-def run_dte() -> int:
+def run_proxy(link_id: str) -> int:
+    """Proxy service entry point (runs as independent process)"""
+    service = ProxyService(link_id)
+
+    # Setup signal handler to stop service gracefully
+    def stop_handler(signum, frame):
+        log.info(f"Received signal {signum}")
+        service.stop()
+
+    signal.signal(signal.SIGINT, stop_handler)
+    signal.signal(signal.SIGTERM, stop_handler)
+    signal.signal(signal.SIGHUP, stop_handler)
+
+    return service.run()
+
+
+def run_dte(tty_name: Optional[str], baud: Optional[int]) -> int:
     """DTE service entry point"""
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGHUP, signal_handler)
-    
-    parser = argparse.ArgumentParser(description='Console Monitor DTE Service')
-    parser.add_argument('tty_name', nargs='?', default=None, help='TTY device name')
-    parser.add_argument('baud', nargs='?', type=int, default=None, help='Baud rate')
-    args = parser.parse_args()
-    
-    # Determine TTY and baud rate
-    if args.tty_name:
-        tty_name = args.tty_name
-        baud = args.baud if args.baud else DEFAULT_BAUD
-        log.info(f"Using command line args: tty={tty_name}, baud={baud}")
+
+    if tty_name:
+        baud = baud if baud else DEFAULT_BAUD
+        log.info(f"DTE: Using command line args: tty={tty_name}, baud={baud}")
     else:
         try:
             tty_name, baud = parse_proc_cmdline()
         except ValueError as e:
-            log.error(f"Failed to get serial config: {e}")
+            log.error(f"DTE: Failed to get serial config: {e}")
             return EXIT_SERIAL_CONFIG_ERROR
-    
+
     service = DTEService(tty_name, baud)
-    
+
     if not service.start():
         return EXIT_SERVICE_START_FAILED
-    
+
     try:
         service.register_callbacks()
         service.run()
@@ -1220,35 +1420,83 @@ def run_dte() -> int:
         pass
     finally:
         service.stop()
-    
+
     return EXIT_SUCCESS
 
 
 def main():
     """
-    Unified entry point: determines run mode based on command line arguments
-    
+    Unified entry point
+
     Usage:
-        console-monitor dce    # Run DCE service
-        console-monitor dte    # Run DTE service
+        console-monitor pty-bridge <link>        # Run PTY bridge for a port
+        console-monitor dce [-l debug]           # Run DCE service
+        console-monitor proxy [-l debug] <link>  # Run proxy for a specific port
+        console-monitor dte [-l debug] [tty] [baud]  # Run DTE service
     """
-    if len(sys.argv) < 2:
-        print("Usage: console-monitor <dce|dte> [args...]")
-        print("  dce: Run DCE (Console Server) service")
-        print("  dte: Run DTE (SONiC Switch) service")
+    # Create main parser with subcommands
+    parser = argparse.ArgumentParser(
+        description='Console Monitor Service',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  console-monitor pty-bridge 1        # Run PTY bridge for link 1 (exec socat)
+  console-monitor dce -l debug        # Run DCE service with debug logging
+  console-monitor proxy 1             # Run proxy for link 1
+  console-monitor proxy -l debug 2    # Run proxy for link 2 with debug logging
+  console-monitor dte                 # Run DTE service (auto-detect from /proc/cmdline)
+  console-monitor dte -l debug ttyS0 9600  # Run DTE service with specified TTY
+'''
+    )
+
+    subparsers = parser.add_subparsers(dest='mode', help='Service mode')
+
+    # PTY Bridge subcommand
+    pty_bridge_parser = subparsers.add_parser('pty-bridge', help='Run PTY bridge for a port (exec socat)')
+    pty_bridge_parser.add_argument('-l', '--log-level',
+                                   choices=['debug', 'info', 'warning', 'error', 'critical'],
+                                   default='info', help='Set log level (default: info)')
+    pty_bridge_parser.add_argument('link_id', help='Link ID (console port number)')
+
+    # DCE subcommand
+    dce_parser = subparsers.add_parser('dce', help='Run DCE (Console Server) service')
+    dce_parser.add_argument('-l', '--log-level',
+                            choices=['debug', 'info', 'warning', 'error', 'critical'],
+                            default='info', help='Set log level (default: info)')
+
+    # Proxy subcommand
+    proxy_parser = subparsers.add_parser('proxy', help='Run proxy for a specific serial port')
+    proxy_parser.add_argument('-l', '--log-level',
+                              choices=['debug', 'info', 'warning', 'error', 'critical'],
+                              default='info', help='Set log level (default: info)')
+    proxy_parser.add_argument('link_id', help='Link ID (console port number)')
+
+    # DTE subcommand
+    dte_parser = subparsers.add_parser('dte', help='Run DTE (SONiC Switch) service')
+    dte_parser.add_argument('-l', '--log-level',
+                            choices=['debug', 'info', 'warning', 'error', 'critical'],
+                            default='info', help='Set log level (default: info)')
+    dte_parser.add_argument('tty_name', nargs='?', default=None, help='TTY device name')
+    dte_parser.add_argument('baud', nargs='?', type=int, default=None, help='Baud rate')
+
+    args = parser.parse_args()
+
+    if not args.mode:
+        parser.print_help()
         sys.exit(EXIT_INVALID_MODE)
-    
-    mode = sys.argv[1].lower()
-    sys.argv = sys.argv[1:]  # Remove mode argument for subsequent argparse processing
-    
-    if mode == "dce":
+
+    # Set log level
+    set_log_level(args.log_level)
+
+    # Dispatch to appropriate service
+    if args.mode == "pty-bridge":
+        sys.exit(run_pty_bridge(args.link_id))
+    elif args.mode == "dce":
         sys.exit(run_dce())
-    elif mode == "dte":
-        sys.exit(run_dte())
-    else:
-        print(f"Unknown mode: {mode}")
-        print("Use 'dce' or 'dte'")
-        sys.exit(EXIT_INVALID_MODE)
+    elif args.mode == "proxy":
+        sys.exit(run_proxy(args.link_id))
+    elif args.mode == "dte":
+        sys.exit(run_dte(args.tty_name, args.baud))
 
 
 if __name__ == "__main__":
