@@ -7,7 +7,7 @@ Wants=console-monitor-pty-bridge@%i.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/console-monitor proxy %i
+ExecStart=/usr/local/bin/console-monitor proxy %i
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -16,4 +16,4 @@ StandardError=journal
 SupplementaryGroups=dialout
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sonic.target

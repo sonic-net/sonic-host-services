@@ -6,11 +6,11 @@ Requires=config-setup.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/console-monitor pty-bridge %i
+ExecStart=/usr/local/bin/console-monitor pty-bridge %i
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sonic.target

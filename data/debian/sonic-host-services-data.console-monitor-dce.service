@@ -6,7 +6,7 @@ Requires=config-setup.service database.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/console-monitor dce
+ExecStart=/usr/local/bin/console-monitor dce
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -15,4 +15,4 @@ StandardError=journal
 SupplementaryGroups=dialout
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sonic.target

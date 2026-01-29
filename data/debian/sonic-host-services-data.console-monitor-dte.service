@@ -6,9 +6,9 @@ Requires=config-setup.service database.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/console-monitor dte
+ExecStart=/usr/local/bin/console-monitor dte
 Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sonic.target
