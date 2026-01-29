@@ -21,5 +21,9 @@ override_dh_installsystemd:
 	dh_installsystemd --no-start --name=determine-reboot-cause
 	dh_installsystemd --no-start --name=process-reboot-cause
 	dh_installsystemd --no-start --name=gnoi-shutdown
+	dh_installsystemd --no-start --name=console-monitor-dce
+	dh_installsystemd --no-start --name=console-monitor-dte
+	dh_installsystemd --no-start --name=console-monitor-proxy@
+	dh_installsystemd --no-start --name=console-monitor-pty-bridge@
 	dh_installsystemd $(HOST_SERVICE_OPTS) --name=sonic-hostservice
 
