@@ -11,11 +11,11 @@ import json
 import time
 import subprocess
 import os
-import redis
 import threading
 import sonic_py_common.daemon_base as daemon_base
-from sonic_py_common import syslogger
+from sonic_py_common import syslogger, device_info
 from swsscommon import swsscommon
+from utilities_common.chassis import is_dpu
 
 REBOOT_RPC_TIMEOUT_SEC = 60  # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC = 60  # overall time - polling RebootStatus
@@ -23,7 +23,6 @@ STATUS_POLL_INTERVAL_SEC = 1  # delay between reboot status polls
 HALT_IN_PROGRESS_POLL_INTERVAL_SEC = 5  # delay between halt_in_progress checks
 STATUS_RPC_TIMEOUT_SEC = 10  # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3  # gNOI System.Reboot method: HALT
-STATE_DB_INDEX = 6
 CONFIG_DB_INDEX = 4
 DEFAULT_GNMI_PORT = "8080"  # Default GNMI port for DPU
 
@@ -228,12 +227,12 @@ class GnoiRebootHandler:
             if module_index < 0:
                 logger.log_error(f"{dpu_name}: Unable to get module index from chassis")
                 return False
-            
+
             module = self._chassis.get_module(module_index)
             if module is None:
                 logger.log_error(f"{dpu_name}: Module at index {module_index} not found in chassis")
                 return False
-            
+
             module.clear_module_gnoi_halt_in_progress()
             logger.log_info(f"{dpu_name}: Successfully cleared halt_in_progress flag (module index: {module_index})")
             return True
@@ -246,6 +245,15 @@ class GnoiRebootHandler:
 # #########
 
 def main():
+    # Check if this is a SmartSwitch NPU platform - exit gracefully if not
+    try:
+        if not (device_info.is_smartswitch() and not is_dpu()):
+            logger.log_notice("Not a SmartSwitch NPU platform, exiting gracefully")
+            return
+    except (ImportError, AttributeError, RuntimeError) as e:
+        logger.log_notice(f"Platform check failed ({e}), exiting gracefully")
+        return
+
     # Connect for STATE_DB (for gnoi_halt_in_progress flag) and CONFIG_DB
     state_db = daemon_base.db_connect("STATE_DB")
     config_db = daemon_base.db_connect("CONFIG_DB")

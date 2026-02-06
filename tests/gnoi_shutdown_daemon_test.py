@@ -5,9 +5,6 @@ import sys
 import os
 import json
 
-# Mock redis module (available in SONiC runtime, not in test environment)
-sys.modules['redis'] = MagicMock()
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
 import gnoi_shutdown_daemon
@@ -30,6 +27,29 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
     def setUp(self):
         # Ensure a clean state for each test
         gnoi_shutdown_daemon.main = gnoi_shutdown_daemon.__dict__["main"]
+
+    @patch('gnoi_shutdown_daemon.device_info.is_smartswitch', return_value=False)
+    def test_main_exits_on_non_smartswitch(self, mock_is_smartswitch):
+        """Test main() exits gracefully on non-SmartSwitch platforms."""
+        # Should return without doing anything
+        result = gnoi_shutdown_daemon.main()
+        self.assertIsNone(result)
+        mock_is_smartswitch.assert_called_once()
+
+    @patch('gnoi_shutdown_daemon.is_dpu', return_value=True)
+    @patch('gnoi_shutdown_daemon.device_info.is_smartswitch', return_value=True)
+    def test_main_exits_on_dpu(self, mock_is_smartswitch, mock_is_dpu):
+        """Test main() exits gracefully when running on a DPU (not NPU)."""
+        result = gnoi_shutdown_daemon.main()
+        self.assertIsNone(result)
+        mock_is_smartswitch.assert_called_once()
+        mock_is_dpu.assert_called_once()
+
+    @patch('gnoi_shutdown_daemon.device_info.is_smartswitch', side_effect=ImportError("No module"))
+    def test_main_exits_on_platform_check_exception(self, mock_is_smartswitch):
+        """Test main() exits gracefully when platform check raises exception."""
+        result = gnoi_shutdown_daemon.main()
+        self.assertIsNone(result)
 
     def test_execute_command_success(self):
         """Test successful execution of a gNOI command."""
@@ -108,11 +128,13 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             timeout = gnoi_shutdown_daemon._get_halt_timeout()
             self.assertEqual(timeout, gnoi_shutdown_daemon.STATUS_POLL_TIMEOUT_SEC)
 
+    @patch('gnoi_shutdown_daemon.is_dpu', return_value=False)
+    @patch('gnoi_shutdown_daemon.device_info.is_smartswitch', return_value=True)
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
-    def test_main_loop_flow(self, mock_thread, mock_config_db_connector_class, mock_gnoi_reboot_handler, mock_db_connect):
+    def test_main_loop_flow(self, mock_thread, mock_config_db_connector_class, mock_gnoi_reboot_handler, mock_db_connect, mock_is_smartswitch, mock_is_dpu):
         """Test the main loop processing of a shutdown event."""
         # Mock DB connections
         mock_state_db = MagicMock()
@@ -300,10 +322,10 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_chassis.get_module.return_value = mock_module
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
-        
+
         # Mock _wait_for_gnoi_halt_in_progress to return immediately to prevent hanging
         handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
-        
+
         result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertFalse(result)
@@ -334,9 +356,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         self.assertEqual(port, "12345")
         self.assertEqual(mock_config.hget.call_count, 3)
 
+    @patch('gnoi_shutdown_daemon.is_dpu', return_value=False)
+    @patch('gnoi_shutdown_daemon.device_info.is_smartswitch', return_value=True)
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
-    def test_main_loop_no_dpu_name(self, mock_config_db_connector_class, mock_db_connect):
+    def test_main_loop_no_dpu_name(self, mock_config_db_connector_class, mock_db_connect, mock_is_smartswitch, mock_is_dpu):
         """Test main loop with a malformed key."""
         mock_chassis = MagicMock()
         mock_platform_instance = MagicMock()
@@ -376,9 +400,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 gnoi_shutdown_daemon.main()
 
+    @patch('gnoi_shutdown_daemon.is_dpu', return_value=False)
+    @patch('gnoi_shutdown_daemon.device_info.is_smartswitch', return_value=True)
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
-    def test_main_loop_get_transition_exception(self, mock_config_db_connector_class, mock_db_connect):
+    def test_main_loop_get_transition_exception(self, mock_config_db_connector_class, mock_db_connect, mock_is_smartswitch, mock_is_dpu):
         """Test main loop when hget raises an exception."""
         mock_chassis = MagicMock()
         mock_platform_instance = MagicMock()
@@ -523,10 +549,10 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_chassis.get_module.return_value = mock_module
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
-        
+
         # Mock _wait_for_gnoi_halt_in_progress to return immediately to prevent hanging
         handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
-        
+
         result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertFalse(result)
