@@ -9,6 +9,9 @@
 #
 # here are the per-package modules (the "Primary" block)
 
+# Include faillock configuration if present (managed by userd)
+auth	substack	common-auth-faillock
+
 # root user can only be authenticated locally. Jump to local.
 auth	[success=5 default=ignore]	pam_succeed_if.so user = root
 # For the RADIUS servers, on success jump to the cache the MPL(Privilege)
@@ -21,9 +24,12 @@ auth	[success=2 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_au
 auth	[success=done new_authtok_reqd=done default=ignore auth_err=die maxtries=die]	pam_unix.so nullok try_first_pass
 auth	requisite	pam_deny.so
 # Cache MPL(Privilege)
-auth	[success=1 default=ignore]	pam_exec.so /usr/sbin/cache_radius
+auth	[success=2 default=ignore]	pam_exec.so /usr/sbin/cache_radius
 
 #
+# Record failed login attempts for faillock (managed by userd)
+auth	substack	common-auth-faillock-authfail
+
 # here's the fallback if no module succeeds
 auth    requisite                       pam_deny.so
 # prime the stack with a positive return value if there isn't one already;

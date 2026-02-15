@@ -1,0 +1,33 @@
+[package]
+name = "userd_rs"
+version.workspace = true
+edition.workspace = true
+description = "SONiC User Management Daemon in Rust"
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+swss-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+syslog-tracing.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+nix.workspace = true
+tokio.workspace = true
+tempfile.workspace = true
+lazy_static.workspace = true
+
+[dev-dependencies]
+mockall.workspace = true
+
+[[bin]]
+name = "userd"
+path = "src/main.rs"
+
+[lib]
+name = "userd_rs"
+path = "src/lib.rs"
+
