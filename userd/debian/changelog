@@ -1,0 +1,5 @@
+sonic-host-userd (1.0-1) UNRELEASED; urgency=low
+
+  * Initial release
+
+ -- SONiC Maintainers <maintainers@sonic.net>  Mon, 11 Aug 2025 08:00:00 +0000
