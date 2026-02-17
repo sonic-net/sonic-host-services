@@ -1,8 +1,10 @@
 import os
 import sys
 
+from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
+from tests.common.mock_configdb import MockConfigDb
 
 class TestCaclmgrdNamespaceDockerIP(TestCase):
     """
@@ -15,6 +17,7 @@ class TestCaclmgrdNamespaceDockerIP(TestCase):
         sys.path.insert(0, modules_path)
         caclmgrd_path = os.path.join(scripts_path, 'caclmgrd')
         self.caclmgrd = load_module_from_source('caclmgrd', caclmgrd_path)
+        swsscommon.ConfigDBConnector = MockConfigDb
         self.maxDiff = None
 
     def test_caclmgrd_namespace_docker_ip(self):

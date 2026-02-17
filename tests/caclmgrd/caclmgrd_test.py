@@ -1,6 +1,6 @@
 import os
 import sys
-import swsscommon
+from swsscommon import swsscommon
 from unittest.mock import call, patch, MagicMock
 from unittest import TestCase, mock
 from tests.common.mock_configdb import MockConfigDb
@@ -14,7 +14,7 @@ DBCONFIG_PATH = "/var/run/redis/sonic-db/database_config.json"
 
 class TestCaclmgrd(TestCase):
     def setUp(self):
-        swsscommon.swsscommon.ConfigDBConnector = MockConfigDb
+        swsscommon.ConfigDBConnector = MockConfigDb
         test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         modules_path = os.path.dirname(test_path)
         scripts_path = os.path.join(modules_path, "scripts")
