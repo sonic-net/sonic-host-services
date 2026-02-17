@@ -65,6 +65,7 @@ setup(
         'wheel'
     ],
     tests_require = [
+        'pytest-xdist',
         'parameterized',
         'pytest',
         'pyfakefs',
@@ -74,6 +75,7 @@ setup(
     ],
     extras_require = {
         "testing": [
+            'pytest-xdist',
             'parameterized',
             'pytest',
             'pyfakefs',
