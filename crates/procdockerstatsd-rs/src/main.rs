@@ -15,7 +15,7 @@ use std::ffi::CString;
 use serde::Deserialize;
 
 const UPDATE_INTERVAL: u64 = 120; // 2 minutes
-const INVALID_CONTAINER_NAME: &str = "—-"; // invalid container name returned by docker stats command
+const INVALID_CONTAINER_NAME: &str = "--"; // invalid container name returned by docker stats command
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -106,7 +106,7 @@ fn parse_docker_json_output(json_output: &str) -> HashMap<String, HashMap<String
 
         if stats.name.is_empty() || stats.name == INVALID_CONTAINER_NAME {
             // If a container stops suddenly after we send the docker stats command,
-            // it might return with a container name "—-". We should ignore such output.
+            // it might return with a container name "--". We should ignore such output.
             warn!("Skipping docker stats JSON for container {} with output: {}", stats.id, line);
             continue;
         }
@@ -386,4 +386,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = ProcDockerStats::new()?;
     daemon.run();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Invalid container line: NAME "--", other fields "--" or "0", no ID (empty).
+    /// Matches real docker stats output that leads to "Failed to parse memory usage" when not skipped.
+    const INVALID_LINE: &str = r#"{"ID":"","Name":"--","CPUPerc":"--","MemPerc":"--","MemUsage":"--","NetIO":"--","BlockIO":"--","PIDs":"--"}"#;
+
+    /// Valid container line with proper MemUsage/NetIO/BlockIO format.
+    const VALID_LINE: &str = r#"{"ID":"abc123","Name":"valid-container","CPUPerc":"0.5%","MemPerc":"1.2%","MemUsage":"100MiB / 2GiB","NetIO":"1kB / 2kB","BlockIO":"3MB / 4MB","PIDs":"10"}"#;
+
+    #[test]
+    fn test_parse_docker_json_skips_invalid_container_name() {
+        let result = parse_docker_json_output(INVALID_LINE);
+        assert!(result.is_empty(), "lines with NAME \"--\" (invalid container) should be skipped");
+    }
+
+    #[test]
+    fn test_parse_docker_json_includes_valid_container() {
+        let result = parse_docker_json_output(VALID_LINE);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("DOCKER_STATS|abc123"));
+        assert_eq!(result["DOCKER_STATS|abc123"].get("NAME").map(String::as_str), Some("valid-container"));
+    }
 }
