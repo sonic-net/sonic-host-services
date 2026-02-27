@@ -1,6 +1,6 @@
 import os
 import sys
-import swsscommon
+from swsscommon import swsscommon
 
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source

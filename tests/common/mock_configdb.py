@@ -3,7 +3,7 @@ class MockConfigDb(object):
         Mock Config DB which responds to data tables requests and store updates to the data table
     """
     STATE_DB = None
-    CONFIG_DB = None
+    CONFIG_DB = {}
     event_queue = []
 
     def __init__(self, **kwargs):

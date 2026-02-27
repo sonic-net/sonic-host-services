@@ -1,6 +1,6 @@
 import os
 import sys
-import swsscommon
+from swsscommon import swsscommon
 
 from parameterized import parameterized
 from sonic_py_common.general import load_module_from_source
@@ -18,7 +18,7 @@ class TestFeature(TestCase):
         Test caclmgrd feature present 
     """
     def setUp(self):
-        swsscommon.swsscommon.ConfigDBConnector = MockConfigDb
+        swsscommon.ConfigDBConnector = MockConfigDb
         test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         modules_path = os.path.dirname(test_path)
         scripts_path = os.path.join(modules_path, "scripts")
