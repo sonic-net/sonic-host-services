@@ -1,0 +1,9 @@
+[otel]
+endpoint = "http://localhost:4317"
+service_name = "rust-otel-service"
+export_interval_secs = 10
+set_global = true
+
+[otel.resource]
+env = "dev"
+region = "mel"
