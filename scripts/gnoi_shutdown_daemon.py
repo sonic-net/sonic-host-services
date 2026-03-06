@@ -126,6 +126,28 @@ class GnoiRebootHandler:
         """
         logger.log_notice(f"{dpu_name}: Starting gNOI shutdown sequence")
 
+        # Check if DPU is already powered off / offline before attempting gNOI shutdown.
+        # This avoids error logs when config reload or reboot is issued while DPUs are
+        # already in the down state (e.g. admin_status was previously set to "down").
+        try:
+            module_index = self._chassis.get_module_index(dpu_name)
+            if module_index >= 0:
+                module = self._chassis.get_module(module_index)
+                if module is not None:
+                    oper_status = module.get_oper_status()
+                    if oper_status != "Online":
+                        logger.log_notice(
+                            f"{dpu_name}: DPU is already in '{oper_status}' state, "
+                            "skipping gNOI shutdown sequence"
+                        )
+                        self._clear_halt_flag(dpu_name)
+                        return True
+        except Exception as e:
+            logger.log_warning(
+                f"{dpu_name}: Could not determine operational status ({e}), "
+                "proceeding with gNOI shutdown"
+            )
+
         # Wait for platform PCI detach completion
         if not self._wait_for_gnoi_halt_in_progress(dpu_name):
             logger.log_warning(f"{dpu_name}: Timeout waiting for PCI detach, proceeding anyway")
@@ -228,12 +250,12 @@ class GnoiRebootHandler:
             if module_index < 0:
                 logger.log_error(f"{dpu_name}: Unable to get module index from chassis")
                 return False
-            
+
             module = self._chassis.get_module(module_index)
             if module is None:
                 logger.log_error(f"{dpu_name}: Module at index {module_index} not found in chassis")
                 return False
-            
+
             module.clear_module_gnoi_halt_in_progress()
             logger.log_info(f"{dpu_name}: Successfully cleared halt_in_progress flag (module index: {module_index})")
             return True
