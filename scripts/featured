@@ -420,9 +420,14 @@ class FeatureHandler(object):
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
-            # Check if it is already enabled, if yes skip the system call
+            # Check if it is already enabled or static, if yes skip the system call.
+            # "static" means the service has no [Install] section — it cannot be enabled
+            # via systemctl enable, and attempting to do so is a no-op. These services
+            # are managed by featured (start/stop) and do not need unmask/enable calls.
+            # Skipping them avoids redundant systemctl start calls that can push services
+            # past their StartLimitBurst during rapid config reloads.
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state == "enabled" or not unit_file_state:
+            if unit_file_state in ("enabled", "static") or not unit_file_state:
                 continue
             cmds = []
             for suffix in feature_suffixes:
