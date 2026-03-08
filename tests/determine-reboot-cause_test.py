@@ -9,6 +9,21 @@ import re
 from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
 
+
+# The platform-specific module `sonic_platform` may or may not be installed on the system hosting
+# the tests. In the build containers, it may coincidentally be installed, depending on the build
+# order. But, this test and the modules it tests are designed for the `sonic_platform` module to be
+# absent in the test environment. E.g., code that depends on DeviceInfo is bypassed when
+# `import sonic_platform` fails; otherwise, if it succeeds, and the environment is not set up like
+# a SONiC device host, the platform information may not be available and exceptions are thrown.
+# So remove the module if it's imported, and set to None to block a future import.
+@pytest.fixture(scope="module", autouse=True)
+def _remove_sonic_platform():
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, 'sonic_platform', None)
+        yield
+
+
 # TODO: Remove this if/else block once we no longer support Python 2
 if sys.version_info.major == 3:
     from unittest import mock
