@@ -55,11 +55,12 @@ stages:
         sudo dpkg -i libnl-genl-3-200_*.deb
         sudo dpkg -i libnl-route-3-200_*.deb
         sudo dpkg -i libnl-nf-3-200_*.deb
+        sudo dpkg -i libpcre3_*.deb
         sudo dpkg -i libyang_1.0.73_*.deb
         sudo dpkg -i libswsscommon_1.0.0_amd64.deb
         sudo dpkg -i libswsscommon-dev_1.0.0_amd64.deb
         sudo dpkg -i python3-swsscommon_1.0.0_amd64.deb
-      workingDirectory: $(Pipeline.Workspace)/target/debs/bookworm/
+      workingDirectory: $(Pipeline.Workspace)/target/debs/trixie/
       displayName: 'Install Debian dependencies'
 
     - script: |
@@ -72,7 +73,7 @@ stages:
         sudo pip3 install sonic_config_engine-1.0-py3-none-any.whl
         sudo pip3 install sonic_platform_common-1.0-py3-none-any.whl
         sudo pip3 install sonic_utilities-1.2-py3-none-any.whl
-      workingDirectory: $(Pipeline.Workspace)/target/python-wheels/bookworm/
+      workingDirectory: $(Pipeline.Workspace)/target/python-wheels/trixie/
       displayName: 'Install Python dependencies'
 
     - script: |
