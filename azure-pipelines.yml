@@ -75,6 +75,13 @@ stages:
         sudo pip3 install sonic_utilities-1.2-py3-none-any.whl
       workingDirectory: $(Pipeline.Workspace)/target/python-wheels/trixie/
       displayName: 'Install Python dependencies'
+    
+    - script: |
+        set -ex
+        cat /etc/os-release || true
+        uname -a || true
+        cat /etc/debian_version || true
+      displayName: "Debug: container OS info"
 
     - script: |
         set -ex
