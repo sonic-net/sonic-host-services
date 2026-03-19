@@ -83,12 +83,13 @@ stages:
         sudo apt-get -y install apt-transport-https ca-certificates curl gnupg lsb-release
 
         # Download and import key
-        sudo mkdir -p /etc/apt/keyrings
         curl -sLS https://packages.microsoft.com/keys/microsoft.asc | \
-          sudo tee /etc/apt/keyrings/microsoft.asc > /dev/null
-        sudo chmod go+r /etc/apt/keyrings/microsoft.asc
+          gpg --dearmor | sudo tee /usr/share/keyrings/microsoft.gpg > /dev/null
         
-        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.asc] https://packages.microsoft.com/debian/13/prod trixie main" | \
+        # Also add to trusted.gpg.d for sqv
+        sudo cp /usr/share/keyrings/microsoft.gpg /etc/apt/trusted.gpg.d/microsoft.gpg
+        
+        echo "deb [arch=amd64] https://packages.microsoft.com/debian/13/prod trixie main" | \
           sudo tee /etc/apt/sources.list.d/microsoft.list
         sudo apt-get update
         sudo apt-get install -y dotnet-sdk-8.0
