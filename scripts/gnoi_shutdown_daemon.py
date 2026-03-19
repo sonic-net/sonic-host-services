@@ -14,6 +14,7 @@ import os
 import redis
 import threading
 import sonic_py_common.daemon_base as daemon_base
+from sonic_platform_base.module_base import ModuleBase
 from sonic_py_common import syslogger
 from swsscommon import swsscommon
 
@@ -135,13 +136,18 @@ class GnoiRebootHandler:
                 module = self._chassis.get_module(module_index)
                 if module is not None:
                     oper_status = module.get_oper_status()
-                    if oper_status != "Online":
+                    if oper_status in (ModuleBase.MODULE_STATUS_OFFLINE,
+                                       ModuleBase.MODULE_STATUS_POWERED_DOWN):
                         logger.log_notice(
                             f"{dpu_name}: DPU is already in '{oper_status}' state, "
                             "skipping gNOI shutdown sequence"
                         )
-                        self._clear_halt_flag(dpu_name)
-                        return True
+                        cleared = self._clear_halt_flag(dpu_name)
+                        if not cleared:
+                            logger.log_warning(
+                                f"{dpu_name}: Failed to clear halt flag while skipping gNOI shutdown"
+                            )
+                        return cleared
         except Exception as e:
             logger.log_warning(
                 f"{dpu_name}: Could not determine operational status ({e}), "
