@@ -82,15 +82,15 @@ stages:
         sudo apt-get update
         sudo apt-get -y install apt-transport-https ca-certificates curl gnupg lsb-release
 
-        # Download and import key
-        curl -sLS https://packages.microsoft.com/keys/microsoft.asc | \
-          gpg --dearmor | sudo tee /usr/share/keyrings/microsoft.gpg > /dev/null
+        # Download Microsoft signing key
+        sudo mkdir -p /etc/apt/keyrings
+        curl -sSL https://packages.microsoft.com/keys/microsoft.asc | \
+          gpg --dearmor | sudo tee /usr/share/keyrings/microsoft-keyring.gpg > /dev/null
         
-        # Also add to trusted.gpg.d for sqv
-        sudo cp /usr/share/keyrings/microsoft.gpg /etc/apt/trusted.gpg.d/microsoft.gpg
-        
-        echo "deb [arch=amd64] https://packages.microsoft.com/debian/13/prod trixie main" | \
+        # Add repo with signed-by pointing to the keyring
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-keyring.gpg] https://packages.microsoft.com/debian/13/prod trixie main" | \
           sudo tee /etc/apt/sources.list.d/microsoft.list
+        
         sudo apt-get update
         sudo apt-get install -y dotnet-sdk-8.0
       displayName: "Install .NET CORE"
