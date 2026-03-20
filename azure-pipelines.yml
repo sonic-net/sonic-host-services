@@ -88,7 +88,7 @@ stages:
           gpg --dearmor | sudo tee /usr/share/keyrings/microsoft-keyring.gpg > /dev/null
         
         # Add repo with signed-by pointing to the keyring
-        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-keyring.gpg] https://packages.microsoft.com/debian/13/prod trixie main" | \
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-keyring.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" | \
           sudo tee /etc/apt/sources.list.d/microsoft.list
         
         sudo apt-get update
