@@ -52,7 +52,7 @@ main.main()
         /sonic/gnoi_client/gnoi_client.go:42
 ...
 ```
-The daemon captures this in `err` (stderr) but never logs or inspects it — it just logs `"Reboot command failed"` with no context. Diagnosing production failures requires SSHing into the switch, manually running the docker exec command, and reading Go stack traces.
+For the Reboot call, `_send_reboot_command()` invokes `execute_command(..., suppress_stderr=True)`, so this panic output on stderr is suppressed rather than logged or inspected — the daemon just logs `"Reboot command failed"` with no actionable context. Diagnosing production failures requires SSHing into the switch, manually running the docker exec command, and reading Go stack traces.
 
 ## 2. Goal
 
@@ -102,6 +102,8 @@ python -m grpc_tools.protoc \
   --grpc_python_out=host_modules/gnoi \
   system/system.proto types/types.proto
 ```
+
+**Packaging note:** `setup.py` currently lists packages explicitly (`['host_modules', 'utils']`). The implementation must add `'host_modules.gnoi'` to the `packages` list and corresponding `package_dir` entry, otherwise the vendored stubs won't be installed and imports will fail in deployed environments.
 
 **Why vendor instead of build-time generation?**
 - sonic-host-services has no existing proto compilation infrastructure
