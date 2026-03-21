@@ -299,7 +299,231 @@ All phases can ship as a single PR since they form one atomic change — the old
 | Proto stub drift from upstream gnoi | Pin to a specific gnoi commit; stubs are stable |
 | Insecure channel on midplane | Same trust model as today's `gnoi_client -notls`; TLS is future work |
 
-## 8. Future Work
+## 8. Reference Code
+
+This section provides the upstream source code that this design replaces and builds upon, so the document is self-contained.
+
+### 8.1 Current `gnoi_client` Entry Point
+
+**Source:** [`sonic-gnmi/gnoi_client/gnoi_client.go`](https://github.com/sonic-net/sonic-gnmi/blob/master/gnoi_client/gnoi_client.go)
+
+```go
+package main
+
+import (
+	"context"
+	"os"
+	"os/signal"
+
+	"github.com/google/gnxi/utils/credentials"
+	"github.com/sonic-net/sonic-gnmi/gnoi_client/config"
+	"github.com/sonic-net/sonic-gnmi/gnoi_client/system"
+	"google.golang.org/grpc"
+)
+
+func main() {
+	config.ParseFlag()
+	opts := credentials.ClientCredentials(*config.TargetName)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+		<-c
+		cancel()
+	}()
+	conn, err := grpc.Dial(*config.Target, opts...)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	switch *config.Module {
+	case "System":
+		switch *config.Rpc {
+		case "Reboot":
+			system.Reboot(conn, ctx)
+		case "RebootStatus":
+			system.RebootStatus(conn, ctx)
+		case "SetPackage":
+			system.SetPackage(conn, ctx)
+		// ... other RPCs omitted for brevity
+		}
+	// ... other modules omitted
+	}
+}
+```
+
+### 8.2 `gnoi_client/system/reboot.go` — Reboot & RebootStatus Implementation
+
+**Source:** [`sonic-gnmi/gnoi_client/system/reboot.go`](https://github.com/sonic-net/sonic-gnmi/blob/master/gnoi_client/system/reboot.go)
+
+```go
+package system
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	pb "github.com/openconfig/gnoi/system"
+	"github.com/sonic-net/sonic-gnmi/gnoi_client/config"
+	"github.com/sonic-net/sonic-gnmi/gnoi_client/utils"
+	"google.golang.org/grpc"
+)
+
+func Reboot(conn *grpc.ClientConn, ctx context.Context) {
+	fmt.Println("System Reboot")
+	ctx = utils.SetUserCreds(ctx)
+	sc := pb.NewSystemClient(conn)
+	req := &pb.RebootRequest{}
+	json.Unmarshal([]byte(*config.Args), req)
+	_, err := sc.Reboot(ctx, req)
+	if err != nil {
+		panic(err.Error())  // ← Error is lost in a Go panic stack trace
+	}
+}
+
+func RebootStatus(conn *grpc.ClientConn, ctx context.Context) {
+	fmt.Println("System RebootStatus")
+	ctx = utils.SetUserCreds(ctx)
+	sc := pb.NewSystemClient(conn)
+	req := &pb.RebootStatusRequest{}
+	resp, err := sc.RebootStatus(ctx, req)
+	if err != nil {
+		panic(err.Error())
+	}
+	respstr, err := json.Marshal(resp)
+	if err != nil {
+		panic(err.Error())
+	}
+	fmt.Println(string(respstr))  // ← Output that daemon tries to parse
+}
+```
+
+**Key observations:**
+- `Reboot()` prints `"System Reboot\n"` on success, panics on failure — no structured output
+- `RebootStatus()` prints JSON-serialized `RebootStatusResponse` — the daemon searches for `"reboot complete"` which never appears in this JSON
+- Errors use `panic()` which produces Go stack traces instead of parseable error output
+
+### 8.3 `gnoi_client/system/set_package.go` — SetPackage Implementation
+
+**Source:** [`sonic-gnmi/gnoi_client/system/set_package.go`](https://github.com/sonic-net/sonic-gnmi/blob/master/gnoi_client/system/set_package.go)
+
+```go
+func SetPackage(conn *grpc.ClientConn, ctx context.Context) {
+	ctx = utils.SetUserCreds(ctx)
+	sc := newSystemClient(conn)
+
+	download := &common.RemoteDownload{Path: *url}
+	pkg := &system.Package{
+		Filename:       *filename,
+		Version:        *version,
+		Activate:       *activate,
+		RemoteDownload: download,
+	}
+
+	req := &system.SetPackageRequest{
+		Request: &system.SetPackageRequest_Package{Package: pkg},
+	}
+
+	stream, err := sc.SetPackage(ctx)
+	if err != nil {
+		return fmt.Errorf("error creating stream: %v", err)
+	}
+	stream.Send(req)
+	stream.CloseSend()
+	resp, err := stream.CloseAndRecv()
+	// ...
+}
+```
+
+This is the RPC path that triggered the `too_many_pings` issue fixed in PR #620 — the streaming `SetPackage` call is long-lived and sensitive to keepalive misconfiguration.
+
+### 8.4 OpenConfig gNOI System Proto Definition
+
+**Source:** [`openconfig/gnoi/system/system.proto`](https://github.com/openconfig/gnoi/blob/main/system/system.proto) (vendored at `sonic-gnmi/vendor/github.com/openconfig/gnoi/system/system.proto`)
+
+```protobuf
+syntax = "proto3";
+package gnoi.system;
+
+service System {
+  rpc Reboot(RebootRequest) returns (RebootResponse) {}
+  rpc RebootStatus(RebootStatusRequest) returns (RebootStatusResponse) {}
+  rpc CancelReboot(CancelRebootRequest) returns (CancelRebootResponse) {}
+  rpc SetPackage(stream SetPackageRequest) returns (SetPackageResponse) {}
+  rpc KillProcess(KillProcessRequest) returns (KillProcessResponse) {}
+  rpc Time(TimeRequest) returns (TimeResponse) {}
+  // ... Ping, Traceroute, SwitchControlProcessor omitted
+}
+
+message RebootRequest {
+  RebootMethod method = 1;
+  uint64 delay = 2;            // Delay in nanoseconds
+  string message = 3;          // Informational reason
+  repeated types.Path subcomponents = 4;
+  bool force = 5;
+}
+
+message RebootResponse {}
+
+enum RebootMethod {
+  UNKNOWN = 0;
+  COLD = 1;        // Shutdown and restart OS and all hardware
+  POWERDOWN = 2;   // Halt and power down
+  HALT = 3;        // Halt (used for DPU shutdown)
+  WARM = 4;        // Reload configuration only
+  NSF = 5;         // Non-stop-forwarding reboot
+  POWERUP = 7;     // Apply power
+}
+
+message RebootStatusRequest {
+  repeated types.Path subcomponents = 1;
+}
+
+message RebootStatusResponse {
+  bool active = 1;             // If reboot is active
+  uint64 wait = 2;             // Time left until reboot (ns)
+  uint64 when = 3;             // Reboot time (ns since epoch)
+  string reason = 4;
+  uint32 count = 5;
+  RebootMethod method = 6;
+  RebootStatus status = 7;    // Only meaningful when active = false
+}
+
+message RebootStatus {
+  enum Status {
+    STATUS_UNKNOWN = 0;
+    STATUS_SUCCESS = 1;
+    STATUS_RETRIABLE_FAILURE = 2;
+    STATUS_FAILURE = 3;
+  }
+  Status status = 1;
+  string message = 2;
+}
+
+// SetPackage — streaming RPC for software packages
+message SetPackageRequest {
+  oneof request {
+    Package package = 1;
+    bytes contents = 2;
+    types.HashType hash = 3;
+  }
+}
+
+message Package {
+  string filename = 1;
+  string version = 4;
+  bool activate = 5;
+  common.RemoteDownload remote_download = 6;
+}
+```
+
+**Key proto details for the Python wrapper:**
+- `RebootMethod.HALT = 3` — the method used for DPU graceful shutdown
+- `RebootStatusResponse.active == false` with `status.status == STATUS_SUCCESS` indicates successful halt completion
+- `SetPackage` is a client-streaming RPC — the only streaming call in our scope
+
+## 9. Future Work
 
 - **TLS support**: Add optional mTLS when midplane security is hardened
 - **Build-time proto generation**: If more gNOI/gNMI services are needed, add a proto compilation step
