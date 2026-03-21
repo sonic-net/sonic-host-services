@@ -344,8 +344,6 @@ func main() {
 			system.Reboot(conn, ctx)
 		case "RebootStatus":
 			system.RebootStatus(conn, ctx)
-		case "SetPackage":
-			system.SetPackage(conn, ctx)
 		// ... other RPCs omitted for brevity
 		}
 	// ... other modules omitted
@@ -404,41 +402,7 @@ func RebootStatus(conn *grpc.ClientConn, ctx context.Context) {
 - `RebootStatus()` prints JSON-serialized `RebootStatusResponse` — the daemon searches for `"reboot complete"` which never appears in this JSON
 - Errors use `panic()` which produces Go stack traces instead of parseable error output
 
-### 8.3 `gnoi_client/system/set_package.go` — SetPackage Implementation
-
-**Source:** [`sonic-gnmi/gnoi_client/system/set_package.go`](https://github.com/sonic-net/sonic-gnmi/blob/master/gnoi_client/system/set_package.go)
-
-```go
-func SetPackage(conn *grpc.ClientConn, ctx context.Context) {
-	ctx = utils.SetUserCreds(ctx)
-	sc := newSystemClient(conn)
-
-	download := &common.RemoteDownload{Path: *url}
-	pkg := &system.Package{
-		Filename:       *filename,
-		Version:        *version,
-		Activate:       *activate,
-		RemoteDownload: download,
-	}
-
-	req := &system.SetPackageRequest{
-		Request: &system.SetPackageRequest_Package{Package: pkg},
-	}
-
-	stream, err := sc.SetPackage(ctx)
-	if err != nil {
-		return fmt.Errorf("error creating stream: %v", err)
-	}
-	stream.Send(req)
-	stream.CloseSend()
-	resp, err := stream.CloseAndRecv()
-	// ...
-}
-```
-
-This is the RPC path that triggered the `too_many_pings` issue fixed in PR #620 — the streaming `SetPackage` call is long-lived and sensitive to keepalive misconfiguration.
-
-### 8.4 OpenConfig gNOI System Proto Definition
+### 8.3 OpenConfig gNOI System Proto Definition
 
 **Source:** [`openconfig/gnoi/system/system.proto`](https://github.com/openconfig/gnoi/blob/main/system/system.proto) (vendored at `sonic-gnmi/vendor/github.com/openconfig/gnoi/system/system.proto`)
 
@@ -450,10 +414,9 @@ service System {
   rpc Reboot(RebootRequest) returns (RebootResponse) {}
   rpc RebootStatus(RebootStatusRequest) returns (RebootStatusResponse) {}
   rpc CancelReboot(CancelRebootRequest) returns (CancelRebootResponse) {}
-  rpc SetPackage(stream SetPackageRequest) returns (SetPackageResponse) {}
   rpc KillProcess(KillProcessRequest) returns (KillProcessResponse) {}
   rpc Time(TimeRequest) returns (TimeResponse) {}
-  // ... Ping, Traceroute, SwitchControlProcessor omitted
+  // ... Ping, Traceroute, SwitchControlProcessor, SetPackage omitted
 }
 
 message RebootRequest {
@@ -501,27 +464,11 @@ message RebootStatus {
   string message = 2;
 }
 
-// SetPackage — streaming RPC for software packages
-message SetPackageRequest {
-  oneof request {
-    Package package = 1;
-    bytes contents = 2;
-    types.HashType hash = 3;
-  }
-}
-
-message Package {
-  string filename = 1;
-  string version = 4;
-  bool activate = 5;
-  common.RemoteDownload remote_download = 6;
-}
 ```
 
 **Key proto details for the Python wrapper:**
 - `RebootMethod.HALT = 3` — the method used for DPU graceful shutdown
 - `RebootStatusResponse.active == false` with `status.status == STATUS_SUCCESS` indicates successful halt completion
-- `SetPackage` is a client-streaming RPC — the only streaming call in our scope
 
 ## 9. Future Work
 
