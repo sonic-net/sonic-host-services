@@ -85,7 +85,9 @@ Vendor pre-generated Python stubs from the gNOI `system.proto` definition.
 host_modules/gnoi/
 ├── __init__.py
 ├── system_pb2.py          # generated message classes
-└── system_pb2_grpc.py     # generated service stubs
+├── system_pb2_grpc.py     # generated service stubs
+├── types_pb2.py           # generated types (dependency of system_pb2)
+└── types_pb2_grpc.py      # generated (empty, no services in types.proto)
 ```
 
 The stubs are generated from:
@@ -217,9 +219,10 @@ def _poll_reboot_status(self, dpu_name, dpu_ip, port):
             try:
                 resp = client.reboot_status()
                 if not resp.active:
-                    status_str = system_pb2.RebootStatus.Status.Name(resp.status.status)
+                    status_enum = resp.status.status
+                    status_str = system_pb2.RebootStatus.Status.Name(status_enum)
                     logger.log_notice(f"{dpu_name}: RebootStatus complete: {status_str} - {resp.status.message}")
-                    return resp.status.status == system_pb2.RebootStatus.Status.STATUS_SUCCESS
+                    return status_enum == system_pb2.RebootStatus.STATUS_SUCCESS
             except grpc.RpcError as e:
                 logger.log_warning(
                     f"{dpu_name}: RebootStatus poll error: code={e.code()} details={e.details()}"
@@ -259,7 +262,10 @@ def test_send_reboot_command_success(self, MockClient):
 @mock.patch('gnoi_shutdown_daemon.GnoiClient')
 def test_send_reboot_command_failure(self, MockClient):
     mock_client = MockClient.return_value.__enter__.return_value
-    mock_client.reboot.side_effect = grpc.RpcError()
+    error = mock.create_autospec(grpc.RpcError)
+    error.code.return_value = grpc.StatusCode.UNAVAILABLE
+    error.details.return_value = "connection refused"
+    mock_client.reboot.side_effect = error
 
     result = handler._send_reboot_command("DPU0", "10.0.0.1", "8080")
     assert result is False
