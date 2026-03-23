@@ -120,6 +120,29 @@ class GnoiRebootHandler:
         self._config_db = config_db
         self._chassis = chassis
 
+    def _should_skip_gnoi_shutdown(self, dpu_name: str):
+        """
+        Check whether the DPU is already offline / powered-down.
+
+        Returns:
+            True  - DPU is known to be offline/powered-down; skip gNOI shutdown.
+            False - DPU is known to be in another state; proceed with gNOI shutdown.
+            None  - Cannot determine status; caller should proceed with gNOI shutdown.
+        """
+        module_index = self._chassis.get_module_index(dpu_name)
+        if module_index < 0:
+            return None
+
+        module = self._chassis.get_module(module_index)
+        if module is None:
+            return None
+
+        oper_status = module.get_oper_status()
+        return oper_status in (
+            ModuleBase.MODULE_STATUS_OFFLINE,
+            ModuleBase.MODULE_STATUS_POWERED_DOWN,
+        )
+
     def _handle_transition(self, dpu_name: str, transition_type: str) -> bool:
         """
         Handle a shutdown or reboot transition for a DPU module.
@@ -131,28 +154,25 @@ class GnoiRebootHandler:
         # This avoids error logs when config reload or reboot is issued while DPUs are
         # already in the down state (e.g. admin_status was previously set to "down").
         try:
-            module_index = self._chassis.get_module_index(dpu_name)
-            if module_index >= 0:
-                module = self._chassis.get_module(module_index)
-                if module is not None:
-                    oper_status = module.get_oper_status()
-                    if oper_status in (ModuleBase.MODULE_STATUS_OFFLINE,
-                                       ModuleBase.MODULE_STATUS_POWERED_DOWN):
-                        logger.log_notice(
-                            f"{dpu_name}: DPU is already in '{oper_status}' state, "
-                            "skipping gNOI shutdown sequence"
-                        )
-                        cleared = self._clear_halt_flag(dpu_name)
-                        if not cleared:
-                            logger.log_warning(
-                                f"{dpu_name}: Failed to clear halt flag while skipping gNOI shutdown"
-                            )
-                        return cleared
+            skip = self._should_skip_gnoi_shutdown(dpu_name)
         except Exception as e:
             logger.log_warning(
                 f"{dpu_name}: Could not determine operational status ({e}), "
                 "proceeding with gNOI shutdown"
             )
+            skip = False
+
+        if skip:
+            logger.log_notice(
+                f"{dpu_name}: DPU is already offline/powered-down, "
+                "skipping gNOI shutdown sequence"
+            )
+            cleared = self._clear_halt_flag(dpu_name)
+            if not cleared:
+                logger.log_warning(
+                    f"{dpu_name}: Failed to clear halt flag while skipping gNOI shutdown"
+                )
+            return cleared
 
         # Wait for platform PCI detach completion
         if not self._wait_for_gnoi_halt_in_progress(dpu_name):
