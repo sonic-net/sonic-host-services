@@ -2,23 +2,23 @@
 
 ## TL;DR
 
-`gnoi_shutdown_daemon` issues gNOI RPCs by shelling out to `docker exec gnmi gnoi_client`. This is fragile, opaque, and already causing silent failures. Replace with direct Python gRPC calls using vendored proto stubs.
+`gnoi_shutdown_daemon` issues gNOI RPCs by shelling out to `docker exec gnmi gnoi_client`. This introduces several layers of indirection that make failures hard to diagnose and completion detection unreliable. This document proposes replacing the subprocess path with direct Python gRPC calls using vendored proto stubs.
 
-## 1. Why This Pattern Is Bad
+## 1. Limitations of the Current Approach
 
-| Problem | Impact |
-|---------|--------|
-| Requires `gnmi` container running and healthy | DPU shutdown silently fails if gnmi is restarting |
-| Subprocess + Docker CLI overhead per RPC | Extra process creation, Docker round-trip, stdout capture |
-| Output is unstructured text with a header line | Any format change in `gnoi_client` breaks parsing |
-| gRPC status codes are lost | Caller only sees `rc != 0` — no code, no details |
-| Errors are Go `panic()` stack traces on stderr | Production diagnosis requires SSH + manual docker exec |
-| `suppress_stderr=True` discards those panics | Error output goes to `/dev/null`, logs say only "command failed" |
-| String matching for completion detection | `"reboot complete" in out_s.lower()` doesn't match actual output (see §2) |
-| Tight coupling to CLI flag interface | `-module System -rpc Reboot -jsonin '{...}'` is a serialization layer we don't need |
-| Security surface | Shell-out through Docker CLI is wider than a direct gRPC socket |
+| Observation | Consequence |
+|-------------|-------------|
+| Requires NPU `gnmi` container running and healthy | DPU shutdown depends on an unrelated NPU container's availability, even though the RPC target is the DPU's own gnmi server |
+| Subprocess + Docker CLI overhead per RPC | Extra process creation, Docker round-trip, stdout capture on each call |
+| Output is unstructured text with a header line | Parsing is coupled to `gnoi_client`'s print format, which has no stability guarantee |
+| gRPC status codes are not propagated | Caller only sees `rc != 0` — no status code, no error details |
+| Errors surface as Go `panic()` stack traces on stderr | Diagnosing RPC failures requires SSH + manual docker exec |
+| `suppress_stderr=True` on the Reboot call | Panic output is discarded; logs show only "command failed" |
+| Completion check uses string matching | `"reboot complete" in out_s.lower()` does not match actual output format (see §2) |
+| Tight coupling to CLI flag interface | `-module System -rpc Reboot -jsonin '{...}'` adds a serialization layer between caller and protobuf |
+| Broader privilege surface | Shell-out through Docker CLI vs. a direct gRPC socket |
 
-## 2. Already Broken: RebootStatus Parsing
+## 2. Existing Issue: RebootStatus Completion Detection
 
 The poll loop checks:
 
@@ -34,7 +34,7 @@ System RebootStatus
 {"active":false,"status":{"status":"STATUS_SUCCESS","message":"..."}}
 ```
 
-`"reboot complete"` never appears → poll **always times out** regardless of DPU state.
+`"reboot complete"` does not appear in this output → the poll always exhausts its timeout regardless of DPU state.
 
 ## 3. Proposed Change
 
@@ -59,10 +59,42 @@ if not resp.active and resp.status.status == STATUS_SUCCESS:
 ```
 
 ### What this gives us
-- **Structured errors**: `grpc.RpcError` with status code + details instead of opaque exit codes
-- **Correct completion check**: inspect `resp.active` and `resp.status.status` directly
-- **No container dependency**: gRPC goes straight to the DPU, gnmi container health is irrelevant
-- **No parsing**: protobuf deserialization, not string matching on CLI output
+
+**Better error detection** — gRPC errors carry status codes and details natively:
+```python
+except grpc.RpcError as e:
+    logger.log_error(f"{dpu_name}: Reboot failed: {e.code()} {e.details()}")
+    # e.g. "UNAVAILABLE: connection refused" vs today's "command failed"
+```
+
+**Better testing** — mocks operate on typed protobuf objects instead of crafting subprocess stdout strings:
+```python
+# Today: mock must reproduce gnoi_client's exact text output
+mock_execute.return_value = (0, "reboot complete", "")  # this doesn't even match reality
+
+# After: mock returns a typed response
+mock_client.reboot_status.return_value = RebootStatusResponse(
+    active=False, status=RebootStatus(status=STATUS_SUCCESS))
+```
+
+**Correct completion check** — inspect `resp.active` and `resp.status.status` directly instead of string matching.
+
+**Removes unnecessary NPU gnmi container dependency** — the current approach shells into the NPU's `gnmi` container to run `gnoi_client`, but there's no reason the NPU daemon needs the NPU gnmi container as an intermediary. The DPU's own gnmi server is the actual RPC endpoint; direct gRPC connects to it without involving the NPU container.
+
+**Scales to future RPCs** — the same pattern extends to any gNOI or gNMI call without adding more subprocess wrappers:
+```python
+# Adding a new gNOI RPC is just another method on the client
+class GnoiClient:
+    def reboot(self, ...): ...
+    def reboot_status(self, ...): ...
+    def cancel_reboot(self, ...): ...   # future
+    def system_time(self, ...): ...     # future
+
+# Or a gNMI client alongside it
+with GnmiClient(f"{dpu_ip}:{port}") as client:
+    client.get(path="/system/state/...")
+```
+Each new RPC is a typed method with protobuf request/response — no new shell commands, no new output formats to parse.
 
 ## 4. Scope
 
@@ -71,6 +103,25 @@ if not resp.active and resp.status.status == STATUS_SUCCESS:
 - Lightweight `GnoiClient` wrapper
 - Refactor the two RPC call sites in `GnoiRebootHandler`
 - Update unit tests
+
+New directory structure:
+```
+host_modules/gnoi/
+├── __init__.py
+├── client.py              # GnoiClient: reboot(), reboot_status(), context manager
+├── system_pb2.py          # vendored from openconfig/gnoi system.proto
+├── system_pb2_grpc.py
+├── types_pb2.py           # dependency of system.proto
+└── types_pb2_grpc.py
+```
+
+The daemon change is essentially replacing `execute_command(["docker", "exec", ...])` with:
+```python
+with GnoiClient(f"{dpu_ip}:{port}") as client:
+    client.reboot(method=REBOOT_METHOD_HALT, ...)
+    # ...
+    resp = client.reboot_status()
+```
 
 ### Out of scope
 - TLS/mTLS on midplane (future work; midplane is trusted today)
