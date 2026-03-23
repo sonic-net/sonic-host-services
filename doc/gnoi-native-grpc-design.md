@@ -2,100 +2,89 @@
 
 ## TL;DR
 
-`gnoi_shutdown_daemon` polls DPU reboot status by checking for `"reboot complete"` in `gnoi_client` stdout — but that string never appears in the output. Every DPU shutdown poll **times out unconditionally**. The fix: replace the subprocess calls with direct Python gRPC, which also eliminates the gnmi container dependency and gives us real error messages.
+`gnoi_shutdown_daemon` issues gNOI RPCs by shelling out to `docker exec gnmi gnoi_client`. This is fragile, opaque, and already causing silent failures. Replace with direct Python gRPC calls using vendored proto stubs.
 
-## The Bug
+## 1. Why This Pattern Is Bad
 
-`_poll_reboot_status()` in `scripts/gnoi_shutdown_daemon.py`:
+| Problem | Impact |
+|---------|--------|
+| Requires `gnmi` container running and healthy | DPU shutdown silently fails if gnmi is restarting |
+| Subprocess + Docker CLI overhead per RPC | Extra process creation, Docker round-trip, stdout capture |
+| Output is unstructured text with a header line | Any format change in `gnoi_client` breaks parsing |
+| gRPC status codes are lost | Caller only sees `rc != 0` — no code, no details |
+| Errors are Go `panic()` stack traces on stderr | Production diagnosis requires SSH + manual docker exec |
+| `suppress_stderr=True` discards those panics | Error output goes to `/dev/null`, logs say only "command failed" |
+| String matching for completion detection | `"reboot complete" in out_s.lower()` doesn't match actual output (see §2) |
+| Tight coupling to CLI flag interface | `-module System -rpc Reboot -jsonin '{...}'` is a serialization layer we don't need |
+| Security surface | Shell-out through Docker CLI is wider than a direct gRPC socket |
+
+## 2. Already Broken: RebootStatus Parsing
+
+The poll loop checks:
 
 ```python
 if rc_s == 0 and out_s and ("reboot complete" in out_s.lower()):
     return True
 ```
 
-Actual `gnoi_client -rpc RebootStatus` output:
+Actual `gnoi_client` output ([source](https://github.com/sonic-net/sonic-gnmi/blob/master/gnoi_client/system/reboot.go)):
 
 ```
 System RebootStatus
 {"active":false,"status":{"status":"STATUS_SUCCESS","message":"..."}}
 ```
 
-The string `"reboot complete"` never appears. The poll always exhausts its timeout, then proceeds as if the DPU halted — whether it did or not.
+`"reboot complete"` never appears → poll **always times out** regardless of DPU state.
 
-A secondary problem: when the Reboot RPC fails, `gnoi_client` panics with a Go stack trace on stderr. The daemon calls `execute_command(..., suppress_stderr=True)`, so the error goes to `/dev/null`. The only log is `"Reboot command failed"` with zero context.
+## 3. Proposed Change
 
-## What Changes
+Replace subprocess calls with a thin Python gRPC client using vendored [gNOI System proto](https://github.com/openconfig/gnoi/blob/main/system/system.proto) stubs.
 
-Replace `docker exec gnmi gnoi_client` subprocess calls with direct Python gRPC using vendored [gNOI System proto](https://github.com/openconfig/gnoi/blob/main/system/system.proto) stubs.
-
-### New files
-
+**Before** (subprocess):
 ```
-host_modules/gnoi/
-├── __init__.py
-├── client.py              # GnoiClient wrapper (reboot + reboot_status)
-├── system_pb2.py          # vendored proto stubs
-├── system_pb2_grpc.py
-├── types_pb2.py
-└── types_pb2_grpc.py
+docker exec gnmi gnoi_client -target=<ip>:<port> -notls -module System -rpc Reboot -jsonin '{"method":3}'
 ```
 
-### Modified files
-
-**`scripts/gnoi_shutdown_daemon.py`** — the two RPC call sites change:
-
-`_send_reboot_command` becomes:
+**After** (direct gRPC):
 ```python
-def _send_reboot_command(self, dpu_name, dpu_ip, port):
-    try:
-        with GnoiClient(f"{dpu_ip}:{port}", timeout=REBOOT_RPC_TIMEOUT_SEC) as client:
-            client.reboot(method=REBOOT_METHOD_HALT,
-                          message="Triggered by SmartSwitch graceful shutdown")
-        return True
-    except grpc.RpcError as e:
-        logger.log_error(f"{dpu_name}: gNOI Reboot failed: {e.code()} {e.details()}")
-        return False
+with GnoiClient(f"{dpu_ip}:{port}") as client:
+    client.reboot(method=REBOOT_METHOD_HALT, message="graceful shutdown")
 ```
 
-`_poll_reboot_status` becomes:
+For RebootStatus, check the protobuf response directly instead of string matching:
 ```python
-def _poll_reboot_status(self, dpu_name, dpu_ip, port):
-    deadline = time.monotonic() + _get_halt_timeout()
-    with GnoiClient(f"{dpu_ip}:{port}", timeout=STATUS_RPC_TIMEOUT_SEC) as client:
-        while time.monotonic() < deadline:
-            try:
-                resp = client.reboot_status()
-                if not resp.active:
-                    return resp.status.status == system_pb2.RebootStatus.STATUS_SUCCESS
-            except grpc.RpcError as e:
-                logger.log_warning(f"{dpu_name}: RebootStatus poll error: {e.code()} {e.details()}")
-            time.sleep(STATUS_POLL_INTERVAL_SEC)
-    return False
+resp = client.reboot_status()
+if not resp.active and resp.status.status == STATUS_SUCCESS:
+    return True
 ```
 
-`execute_command()` and `import subprocess` are removed.
+### What this gives us
+- **Structured errors**: `grpc.RpcError` with status code + details instead of opaque exit codes
+- **Correct completion check**: inspect `resp.active` and `resp.status.status` directly
+- **No container dependency**: gRPC goes straight to the DPU, gnmi container health is irrelevant
+- **No parsing**: protobuf deserialization, not string matching on CLI output
 
-**`setup.py`** — add `host_modules.gnoi` to packages list.
+## 4. Scope
 
-**`tests/gnoi_shutdown_daemon_test.py`** — mocks move from `execute_command` to `GnoiClient`.
+### In scope
+- Vendor Python gRPC stubs for `gnoi.system.System` (Reboot, RebootStatus)
+- Lightweight `GnoiClient` wrapper
+- Refactor the two RPC call sites in `GnoiRebootHandler`
+- Update unit tests
 
-### What stays the same
+### Out of scope
+- TLS/mTLS on midplane (future work; midplane is trusted today)
+- Main loop, config DB subscription, halt flag handling — unchanged
+- Other gNOI services beyond System
 
-Main loop, CONFIG_DB subscription, DPU IP/port discovery, halt flag handling, threading model — all unchanged.
+## 5. Why Vendor Stubs?
 
-## Why vendor stubs instead of build-time generation?
+sonic-host-services has no proto compilation infra. The gNOI System proto is stable (no changes in years). Vendoring keeps the build simple; can migrate to build-time generation later if more protos are needed.
 
-sonic-host-services has no proto compilation infra. The gNOI System proto hasn't changed in years. We can migrate to build-time generation later if more protos are needed.
+## 6. Risks
 
-## Risks
-
-- **grpcio/protobuf availability**: both are already in the SONiC build environment.
-- **Proto drift**: pin to a specific gnoi commit; the System service is stable.
-- **Insecure channel**: same trust model as today's `-notls` flag on midplane. TLS is future work.
-
-## Appendix: gnoi_client output format
-
-For readers who want to verify the bug claim — here's what `gnoi_client` actually does ([source](https://github.com/sonic-net/sonic-gnmi/blob/master/gnoi_client/system/reboot.go)):
-
-- **Reboot**: prints `"System Reboot\n"` on success, `panic(err.Error())` on failure (Go stack trace to stderr).
-- **RebootStatus**: prints `"System RebootStatus\n"` + `json.Marshal(resp)` on success, same panic on failure. The JSON is protobuf-serialized `RebootStatusResponse` with fields `active`, `wait`, `status.status`, `status.message`.
+| Risk | Mitigation |
+|------|------------|
+| grpcio/protobuf not in host environment | Already used by other SONiC components |
+| Proto drift from upstream gnoi | Pin to a specific commit; System service is stable |
+| Insecure channel on midplane | Same trust model as today's `-notls`; TLS is future work |
