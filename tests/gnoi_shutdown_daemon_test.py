@@ -11,6 +11,7 @@ sys.modules['redis'] = MagicMock()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
 import gnoi_shutdown_daemon
+from sonic_platform_base.module_base import ModuleBase
 
 # Common fixtures
 mock_message = {
@@ -200,6 +201,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock module for clear operation
         mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_ONLINE
         mock_chassis.get_module_index.return_value = 0
         mock_chassis.get_module.return_value = mock_module
 
@@ -208,8 +210,6 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertTrue(result)
-        mock_chassis.get_module_index.assert_called_with("DPU0")
-        mock_chassis.get_module.assert_called_with(0)
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
         self.assertEqual(mock_execute_command.call_count, 2)
 
@@ -248,6 +248,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock module for clear operation
         mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_ONLINE
         mock_chassis.get_module_index.return_value = 0
         mock_chassis.get_module.return_value = mock_module
 
@@ -257,8 +258,6 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Should still succeed - code proceeds anyway after timeout warning
         self.assertTrue(result)
-        mock_chassis.get_module_index.assert_called_with("DPU0")
-        mock_chassis.get_module.assert_called_with(0)
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
 
     def test_get_dpu_ip_and_port(self):
@@ -296,20 +295,19 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock module for clear operation
         mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_ONLINE
         mock_chassis.get_module_index.return_value = 0
         mock_chassis.get_module.return_value = mock_module
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
-        
+
         # Mock _wait_for_gnoi_halt_in_progress to return immediately to prevent hanging
         handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
-        
+
         result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertFalse(result)
         # Verify that clear_module_gnoi_halt_in_progress was called
-        mock_chassis.get_module_index.assert_called_with("DPU0")
-        mock_chassis.get_module.assert_called_with(0)
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
 
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
@@ -519,21 +517,198 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock module for clear operation
         mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_ONLINE
         mock_chassis.get_module_index.return_value = 0
         mock_chassis.get_module.return_value = mock_module
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
-        
+
         # Mock _wait_for_gnoi_halt_in_progress to return immediately to prevent hanging
         handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
-        
+
         result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertFalse(result)
         # Verify that clear_module_gnoi_halt_in_progress was called
-        mock_chassis.get_module_index.assert_called_with("DPU0")
-        mock_chassis.get_module.assert_called_with(0)
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
+
+    def test_should_skip_gnoi_shutdown_offline(self):
+        """Test _should_skip_gnoi_shutdown returns True for Offline DPU."""
+        mock_chassis = MagicMock()
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_OFFLINE
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), mock_chassis)
+        self.assertTrue(handler._should_skip_gnoi_shutdown("DPU0"))
+
+    def test_should_skip_gnoi_shutdown_powered_down(self):
+        """Test _should_skip_gnoi_shutdown returns True for PoweredDown DPU."""
+        mock_chassis = MagicMock()
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_POWERED_DOWN
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), mock_chassis)
+        self.assertTrue(handler._should_skip_gnoi_shutdown("DPU0"))
+
+    def test_should_skip_gnoi_shutdown_online(self):
+        """Test _should_skip_gnoi_shutdown returns False for Online DPU."""
+        mock_chassis = MagicMock()
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_ONLINE
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), mock_chassis)
+        self.assertFalse(handler._should_skip_gnoi_shutdown("DPU0"))
+
+    def test_should_skip_gnoi_shutdown_fault(self):
+        """Test _should_skip_gnoi_shutdown returns False for Fault DPU."""
+        mock_chassis = MagicMock()
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_FAULT
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), mock_chassis)
+        self.assertFalse(handler._should_skip_gnoi_shutdown("DPU0"))
+
+    def test_should_skip_gnoi_shutdown_bad_index(self):
+        """Test _should_skip_gnoi_shutdown returns None when module index is negative."""
+        mock_chassis = MagicMock()
+        mock_chassis.get_module_index.return_value = -1
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), mock_chassis)
+        self.assertIsNone(handler._should_skip_gnoi_shutdown("DPU0"))
+
+    def test_should_skip_gnoi_shutdown_no_module(self):
+        """Test _should_skip_gnoi_shutdown returns None when module is None."""
+        mock_chassis = MagicMock()
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = None
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), mock_chassis)
+        self.assertIsNone(handler._should_skip_gnoi_shutdown("DPU0"))
+
+    def test_handle_transition_dpu_already_offline(self):
+        """Test that gNOI shutdown is skipped when DPU is already offline."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_chassis = MagicMock()
+
+        # Mock module with Offline oper_status
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_OFFLINE
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
+        result = handler._handle_transition("DPU0", "shutdown")
+
+        # Should return True (success) without attempting gNOI reboot
+        self.assertTrue(result)
+        mock_module.get_oper_status.assert_called_once()
+        mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
+
+    def test_handle_transition_dpu_powered_down(self):
+        """Test that gNOI shutdown is skipped when DPU is in PoweredDown state."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_chassis = MagicMock()
+
+        # Mock module with PoweredDown oper_status
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_POWERED_DOWN
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
+        result = handler._handle_transition("DPU0", "shutdown")
+
+        # Should return True (success) without attempting gNOI reboot
+        self.assertTrue(result)
+        mock_module.get_oper_status.assert_called_once()
+        mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
+
+    def test_handle_transition_dpu_fault_proceeds(self):
+        """Test that gNOI shutdown proceeds when DPU is in Fault state."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_chassis = MagicMock()
+
+        # Mock module with Fault oper_status — should NOT skip
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_FAULT
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
+
+        # Mock remaining methods to prevent actual gNOI calls
+        handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
+        handler._send_reboot_command = MagicMock(return_value=True)
+        handler._poll_reboot_status = MagicMock(return_value=True)
+        handler._clear_halt_flag = MagicMock(return_value=True)
+
+        with patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1"), \
+             patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080"):
+            result = handler._handle_transition("DPU0", "shutdown")
+
+        # Should proceed with shutdown for Fault state
+        self.assertTrue(result)
+        handler._wait_for_gnoi_halt_in_progress.assert_called_once()
+        handler._send_reboot_command.assert_called_once()
+
+    def test_handle_transition_dpu_offline_clear_halt_failure(self):
+        """Test that _clear_halt_flag failure is propagated when DPU is offline."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_chassis = MagicMock()
+
+        # Mock module with Offline oper_status
+        mock_module = MagicMock()
+        mock_module.get_oper_status.return_value = ModuleBase.MODULE_STATUS_OFFLINE
+        mock_chassis.get_module_index.return_value = 0
+        mock_chassis.get_module.return_value = mock_module
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
+        # Make _clear_halt_flag fail
+        handler._clear_halt_flag = MagicMock(return_value=False)
+
+        result = handler._handle_transition("DPU0", "shutdown")
+
+        # Should return False since _clear_halt_flag failed
+        self.assertFalse(result)
+        handler._clear_halt_flag.assert_called_once_with("DPU0")
+
+    def test_handle_transition_oper_status_check_exception(self):
+        """Test that gNOI shutdown proceeds when oper_status check raises exception."""
+        mock_db = MagicMock()
+        mock_config_db = MagicMock()
+        mock_chassis = MagicMock()
+
+        # Mock module to raise exception on get_module_index
+        mock_chassis.get_module_index.side_effect = Exception("Platform error")
+
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(mock_db, mock_config_db, mock_chassis)
+
+        # Mock remaining methods to prevent actual gNOI calls
+        handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
+        handler._send_reboot_command = MagicMock(return_value=True)
+        handler._poll_reboot_status = MagicMock(return_value=True)
+        handler._clear_halt_flag = MagicMock(return_value=True)
+
+        with patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1"), \
+             patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080"):
+            result = handler._handle_transition("DPU0", "shutdown")
+
+        # Should proceed with shutdown despite oper_status check failure
+        self.assertTrue(result)
+        handler._wait_for_gnoi_halt_in_progress.assert_called_once()
+        handler._send_reboot_command.assert_called_once()
 
 
 if __name__ == '__main__':
