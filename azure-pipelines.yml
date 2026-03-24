@@ -98,6 +98,9 @@ stages:
     - script: |
         pip3 install ".[testing]"
         pip3 uninstall --yes sonic-host-services
+        python3 -c "import sys; print(sys.path)"
+        python3 -c "import tests; print(tests)"
+        python3 -c "import tests.common; print(tests.common)"
         pytest
       displayName: 'Test Python 3'
 
