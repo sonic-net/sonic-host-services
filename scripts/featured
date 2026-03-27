@@ -398,6 +398,31 @@ class FeatureHandler(object):
 
         return feature_names, feature_suffixes
 
+    WAIT_FOR_STABLE_TIMEOUT = 60
+    WAIT_FOR_STABLE_POLL_INTERVAL = 1
+
+    def wait_for_service_stable(self, unit):
+        """Wait for a systemd service to leave 'activating' state before stopping it.
+
+        Sending systemctl stop while a service is in 'activating' (ExecStartPre) kills the
+        startup script via SIGTERM without running ExecStop, which can leave Docker containers
+        orphaned. Waiting for a stable state ensures ExecStop runs on stop.
+        """
+        deadline = time.time() + self.WAIT_FOR_STABLE_TIMEOUT
+        while time.time() < deadline:
+            cmd = ["systemctl", "is-active", unit]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = proc.communicate()
+            state = stdout.decode().strip() if isinstance(stdout, bytes) else stdout.strip()
+            if state != "activating":
+                return state
+            syslog.syslog(syslog.LOG_INFO,
+                          "Waiting for '{}' to leave activating state".format(unit))
+            time.sleep(self.WAIT_FOR_STABLE_POLL_INTERVAL)
+        syslog.syslog(syslog.LOG_WARNING,
+                      "Timed out waiting for '{}' to leave activating state".format(unit))
+        return "activating"
+
     def get_systemd_unit_state(self, unit):
         """ Returns service configuration """
 
@@ -474,6 +499,11 @@ class FeatureHandler(object):
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
             if unit_file_state in ("disabled", "masked"):
                 continue
+            # Wait for the service to leave 'activating' state before stopping it.
+            # Stopping during ExecStartPre kills the startup script without running
+            # ExecStop, leaving Docker containers orphaned (see issue #24875).
+            service_unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            self.wait_for_service_stable(service_unit)
             cmds = []
             for suffix in reversed(feature_suffixes):
                 cmds.append(["sudo", "systemctl", "stop", "{}.{}".format(feature_name, suffix)])

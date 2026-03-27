@@ -565,3 +565,129 @@ class TestFeatureDaemon(TestCase):
 
                 # Verify the feature state was not enabled in the cache
                 assert feature_handler._cached_config[feature.name].state != 'enabled'
+
+
+class TestWaitForServiceStable(TestCase):
+    """Tests for wait_for_service_stable method that prevents orphaned containers."""
+
+    def _create_handler(self):
+        feature_state_table_mock = mock.Mock()
+        device_cfg = {"DEVICE_METADATA": {"localhost": {"type": "ToRRouter"}}}
+        handler = featured.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_cfg, False)
+        return handler
+
+    @mock.patch("featured.subprocess")
+    @mock.patch("featured.time.sleep")
+    def test_service_already_active(self, mock_sleep, mock_subprocess):
+        """Service is already 'active' — should return immediately without polling."""
+        handler = self._create_handler()
+        popen_mock = mock.Mock()
+        popen_mock.communicate.return_value = (b"active\n", b"")
+        popen_mock.returncode = 0
+        mock_subprocess.Popen.return_value = popen_mock
+
+        result = handler.wait_for_service_stable("bgp@3.service")
+
+        assert result == "active"
+        mock_sleep.assert_not_called()
+
+    @mock.patch("featured.subprocess")
+    @mock.patch("featured.time.sleep")
+    def test_service_inactive(self, mock_sleep, mock_subprocess):
+        """Service is 'inactive' — should return immediately."""
+        handler = self._create_handler()
+        popen_mock = mock.Mock()
+        popen_mock.communicate.return_value = (b"inactive\n", b"")
+        popen_mock.returncode = 0
+        mock_subprocess.Popen.return_value = popen_mock
+
+        result = handler.wait_for_service_stable("bgp@3.service")
+
+        assert result == "inactive"
+        mock_sleep.assert_not_called()
+
+    @mock.patch("featured.subprocess")
+    @mock.patch("featured.time.sleep")
+    def test_service_transitions_from_activating_to_active(self, mock_sleep, mock_subprocess):
+        """Service starts in 'activating' then transitions to 'active' — should poll and return."""
+        handler = self._create_handler()
+
+        popen_mocks = []
+        for state in [b"activating\n", b"activating\n", b"active\n"]:
+            m = mock.Mock()
+            m.communicate.return_value = (state, b"")
+            m.returncode = 0
+            popen_mocks.append(m)
+
+        mock_subprocess.Popen.side_effect = popen_mocks
+
+        result = handler.wait_for_service_stable("bgp@3.service")
+
+        assert result == "active"
+        assert mock_sleep.call_count == 2
+
+    @mock.patch("featured.subprocess")
+    @mock.patch("featured.time.sleep")
+    @mock.patch("featured.time.time")
+    def test_service_activating_timeout(self, mock_time, mock_sleep, mock_subprocess):
+        """Service stays 'activating' past timeout — should return 'activating'."""
+        handler = self._create_handler()
+
+        # Simulate time progressing past the timeout
+        mock_time.side_effect = [0.0, 1.0, 2.0, 61.0]
+
+        popen_mock = mock.Mock()
+        popen_mock.communicate.return_value = (b"activating\n", b"")
+        popen_mock.returncode = 0
+        mock_subprocess.Popen.return_value = popen_mock
+
+        result = handler.wait_for_service_stable("bgp@3.service")
+
+        assert result == "activating"
+
+    @mock.patch("featured.subprocess")
+    @mock.patch("featured.time.sleep")
+    def test_service_failed(self, mock_sleep, mock_subprocess):
+        """Service is 'failed' — should return immediately."""
+        handler = self._create_handler()
+        popen_mock = mock.Mock()
+        popen_mock.communicate.return_value = (b"failed\n", b"")
+        popen_mock.returncode = 0
+        mock_subprocess.Popen.return_value = popen_mock
+
+        result = handler.wait_for_service_stable("bgp@3.service")
+
+        assert result == "failed"
+        mock_sleep.assert_not_called()
+
+    @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+    def test_disable_feature_calls_wait_for_service_stable(self, mock_syslog):
+        """Verify disable_feature calls wait_for_service_stable before systemctl stop."""
+        handler = self._create_handler()
+
+        feat_cfg = {"state": "disabled", "auto_restart": "enabled"}
+        feature = featured.Feature("bgp", feat_cfg)
+
+        call_order = []
+
+        def track_wait(unit):
+            call_order.append(("wait", unit))
+            return "active"
+
+        def track_run_cmd(cmd, **kwargs):
+            call_order.append(("cmd", cmd))
+
+        with mock.patch.object(handler, "get_multiasic_feature_instances",
+                               return_value=(["bgp@3"], ["service"])), \
+             mock.patch.object(handler, "get_systemd_unit_state", return_value="enabled"), \
+             mock.patch.object(handler, "wait_for_service_stable", side_effect=track_wait), \
+             mock.patch("featured.run_cmd", side_effect=track_run_cmd), \
+             mock.patch.object(handler, "set_feature_state"):
+
+            handler.disable_feature(feature)
+
+            # Verify wait was called before stop
+            assert len(call_order) >= 2
+            assert call_order[0] == ("wait", "bgp@3.service")
+            assert call_order[1][0] == "cmd"
+            assert "stop" in call_order[1][1]
