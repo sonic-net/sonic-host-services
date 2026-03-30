@@ -1,8 +1,8 @@
 """
-Lightweight Python gRPC client for gNOI System service.
+Lightweight Python gRPC client for gNOI services.
 
-Wraps the vendored proto stubs to provide reboot() and reboot_status()
-with proper error handling and structured responses.
+Manages the gRPC channel and provides access to gNOI service stubs
+(System, etc.) with proper lifecycle management.
 """
 
 import grpc
@@ -11,7 +11,7 @@ from host_modules.gnoi import system_pb2_grpc
 
 
 class GnoiClient:
-    """gNOI System service client using direct gRPC (no Docker/subprocess)."""
+    """gNOI client managing a gRPC channel with access to multiple service stubs."""
 
     def __init__(self, target, timeout=60):
         """
@@ -22,11 +22,9 @@ class GnoiClient:
         self._target = target
         self._timeout = timeout
         self._channel = None
-        self._stub = None
 
     def __enter__(self):
         self._channel = grpc.insecure_channel(self._target)
-        self._stub = system_pb2_grpc.SystemStub(self._channel)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -37,7 +35,18 @@ class GnoiClient:
         if self._channel:
             self._channel.close()
             self._channel = None
-            self._stub = None
+
+    @property
+    def channel(self):
+        """Access the underlying gRPC channel for custom stubs."""
+        return self._channel
+
+    @property
+    def system(self):
+        """gNOI System service stub."""
+        return system_pb2_grpc.SystemStub(self._channel)
+
+    # ---- System service convenience methods ----
 
     def reboot(self, method, message="", timeout=None):
         """
@@ -58,7 +67,7 @@ class GnoiClient:
             method=method,
             message=message,
         )
-        return self._stub.Reboot(request, timeout=timeout or self._timeout)
+        return self.system.Reboot(request, timeout=timeout or self._timeout)
 
     def reboot_status(self, timeout=None):
         """
@@ -79,7 +88,7 @@ class GnoiClient:
             grpc.RpcError: On any gRPC failure.
         """
         request = system_pb2.RebootStatusRequest()
-        return self._stub.RebootStatus(request, timeout=timeout or self._timeout)
+        return self.system.RebootStatus(request, timeout=timeout or self._timeout)
 
     def cancel_reboot(self, message="", timeout=None):
         """
@@ -96,4 +105,4 @@ class GnoiClient:
             grpc.RpcError: On any gRPC failure.
         """
         request = system_pb2.CancelRebootRequest(message=message)
-        return self._stub.CancelReboot(request, timeout=timeout or self._timeout)
+        return self.system.CancelReboot(request, timeout=timeout or self._timeout)
