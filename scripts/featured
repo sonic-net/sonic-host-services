@@ -434,6 +434,12 @@ class FeatureHandler(object):
             # otherwise, start/enable corresponding systemd .service unit
 
             cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
+            # Reset any accumulated start-limit-hit counter before starting. featured issues
+            # deliberate, externally-triggered starts (e.g. after PortInitDone), so it is safe
+            # to clear the rate-limit state even if systemd's own Restart= loop would normally
+            # be subject to StartLimitBurst. reset-failed is idempotent and returns 0 when the
+            # service is not in a failed state.
+            cmds.append(["sudo", "systemctl", "reset-failed", "{}.{}".format(feature_name, feature_suffixes[-1])])
             cmds.append(["sudo", "systemctl", "start", "{}.{}".format(feature_name, feature_suffixes[-1])])
 
             for cmd in cmds:
