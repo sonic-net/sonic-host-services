@@ -31,11 +31,13 @@ setup(
     maintainer_email = 'jolevequ@microsoft.com',
     packages = [
         'host_modules',
+        'host_modules.gnoi',
         'utils'
     ],
     # Map packages to their actual dirs
     package_dir = {
         'host_modules': 'host_modules',
+        'host_modules.gnoi': 'host_modules/gnoi',
         'utils': 'utils'
     },
     scripts=[
@@ -58,7 +60,9 @@ setup(
         'Jinja2>=2.10',
         'PyGObject',
         'pycairo==1.26.1',
-        'psutil'
+        'psutil',
+        'grpcio',
+        'protobuf'
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',
