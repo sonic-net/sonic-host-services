@@ -565,3 +565,87 @@ class TestFeatureDaemon(TestCase):
 
                 # Verify the feature state was not enabled in the cache
                 assert feature_handler._cached_config[feature.name].state != 'enabled'
+
+    @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
+    def test_sync_feature_scope_skips_redundant_writes(self):
+        """sync_feature_scope should not write to CONFIG_DB when scope values are unchanged."""
+        mock_db = mock.MagicMock()
+        mock_db.get_entry = mock.MagicMock()
+        mock_db.mod_entry = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        })
+
+        # Case 1: Values already match in CONFIG_DB -> no write
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'True',
+        }
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_not_called()
+
+    @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
+    def test_sync_feature_scope_writes_on_change(self):
+        """sync_feature_scope should write to CONFIG_DB when scope values differ."""
+        mock_db = mock.MagicMock()
+        mock_db.get_entry = mock.MagicMock()
+        mock_db.mod_entry = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'True',
+        })
+
+        # CONFIG_DB has old values -> should write
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'True',
+        }
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_any_call('FEATURE', 'sflow', {'has_per_asic_scope': 'True'})
+        mock_db.mod_entry.assert_any_call('FEATURE', 'sflow', {'has_global_scope': 'True'})
+
+    @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
+    def test_sync_feature_scope_writes_on_missing_entry(self):
+        """sync_feature_scope should write when CONFIG_DB entry is missing (None)."""
+        mock_db = mock.MagicMock()
+        mock_db.get_entry = mock.MagicMock()
+        mock_db.mod_entry = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        })
+
+        # Case: get_entry returns None (entry doesn't exist) -> should write
+        mock_db.get_entry.return_value = None
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_any_call('FEATURE', 'sflow', {'has_per_asic_scope': 'False'})
+        mock_db.mod_entry.assert_any_call('FEATURE', 'sflow', {'has_global_scope': 'True'})
+        mock_db.mod_entry.reset_mock()
+
+        # Case: get_entry returns empty dict -> should write
+        mock_db.get_entry.return_value = {}
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_any_call('FEATURE', 'sflow', {'has_per_asic_scope': 'False'})
+        mock_db.mod_entry.assert_any_call('FEATURE', 'sflow', {'has_global_scope': 'True'})
