@@ -69,10 +69,13 @@ def _make_grpc_client_mock(reboot_status_resp=None, reboot_side_effect=None):
     client = MagicMock()
     client.__enter__ = MagicMock(return_value=client)
     client.__exit__ = MagicMock(return_value=False)
+    # All service RPCs go through client.system.*
+    system_stub = MagicMock()
+    client.system = system_stub
     if reboot_side_effect:
-        client.reboot.side_effect = reboot_side_effect
+        system_stub.Reboot.side_effect = reboot_side_effect
     if reboot_status_resp is not None:
-        client.reboot_status.return_value = reboot_status_resp
+        system_stub.RebootStatus.return_value = reboot_status_resp
     return client
 
 
@@ -309,7 +312,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
         self.assertTrue(handler._send_reboot_command("DPU0", "10.0.0.1", "8080"))
-        mock_client.reboot.assert_called_once()
+        mock_client.system.Reboot.assert_called_once()
 
     @patch('gnoi_shutdown_daemon.GnoiClient')
     def test_send_reboot_command_grpc_error(self, mock_gnoi_client_class):
@@ -389,7 +392,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_resp.status.status = mock_status_enum.STATUS_SUCCESS
 
         mock_client = _make_grpc_client_mock()
-        mock_client.reboot_status.side_effect = [rpc_error, mock_resp]
+        mock_client.system.RebootStatus.side_effect = [rpc_error, mock_resp]
         mock_gnoi_client_class.return_value = mock_client
 
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
@@ -433,8 +436,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             result = handler._handle_transition("DPU0", "shutdown")
 
         self.assertTrue(result)
-        mock_reboot_client.reboot.assert_called_once()
-        mock_status_client.reboot_status.assert_called_once()
+        mock_reboot_client.system.Reboot.assert_called_once()
+        mock_status_client.system.RebootStatus.assert_called_once()
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
 
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)

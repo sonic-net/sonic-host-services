@@ -240,11 +240,12 @@ class GnoiRebootHandler:
     def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
         """Send gNOI Reboot HALT command to the DPU via direct gRPC."""
         try:
-            with GnoiClient(f"{dpu_ip}:{port}", timeout=REBOOT_RPC_TIMEOUT_SEC) as client:
-                client.reboot(
+            with GnoiClient(f"{dpu_ip}:{port}") as client:
+                request = system_pb2.RebootRequest(
                     method=system_pb2.HALT,
                     message="Triggered by SmartSwitch graceful shutdown",
                 )
+                client.system.Reboot(request, timeout=REBOOT_RPC_TIMEOUT_SEC)
             return True
         except grpc.RpcError as e:
             logger.log_error(f"{dpu_name}: Reboot RPC failed: {e.code()} {e.details()}")
@@ -257,10 +258,11 @@ class GnoiRebootHandler:
         """Poll RebootStatus via direct gRPC until completion or timeout."""
         deadline = time.monotonic() + _get_halt_timeout()
         try:
-            with GnoiClient(f"{dpu_ip}:{port}", timeout=STATUS_RPC_TIMEOUT_SEC) as client:
+            with GnoiClient(f"{dpu_ip}:{port}") as client:
                 while time.monotonic() < deadline:
                     try:
-                        resp = client.reboot_status()
+                        request = system_pb2.RebootStatusRequest()
+                        resp = client.system.RebootStatus(request, timeout=STATUS_RPC_TIMEOUT_SEC)
                         if not resp.active and resp.status.status == system_pb2.RebootStatus.Status.STATUS_SUCCESS:
                             return True
                         if not resp.active and resp.status.status != system_pb2.RebootStatus.Status.STATUS_SUCCESS:
