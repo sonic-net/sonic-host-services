@@ -740,7 +740,11 @@ class ControlPlaneAclManager(logger.Logger):
             if table_data["type"] != self.ACL_TABLE_TYPE_CTRLPLANE:
                 continue
 
-            acl_services = table_data["services"]
+            try:
+                acl_services = table_data["services"]
+            except KeyError:
+                self.log_error("CtrlPlane ACL table {} does not have key 'services'!".format(table_name))
+                continue
 
             for acl_service in acl_services:
                 if acl_service not in self.ACL_SERVICES:
