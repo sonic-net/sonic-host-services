@@ -327,15 +327,24 @@ class FeatureHandler(object):
         current_entry = self._config_db.get_entry(FEATURE_TBL, feature_config.name) or {}
         new_per_asic = str(feature_config.has_per_asic_scope)
         new_global = str(feature_config.has_global_scope)
-        if current_entry.get('has_per_asic_scope') != new_per_asic or \
-           current_entry.get('has_global_scope') != new_global:
-            self._config_db.mod_entry(FEATURE_TBL, feature_config.name, {'has_per_asic_scope': new_per_asic})
-            self._config_db.mod_entry(FEATURE_TBL, feature_config.name, {'has_global_scope': new_global})
+        update_fields = {}
+        if current_entry.get('has_per_asic_scope') != new_per_asic:
+            update_fields['has_per_asic_scope'] = new_per_asic
+        if current_entry.get('has_global_scope') != new_global:
+            update_fields['has_global_scope'] = new_global
+        if update_fields:
+            self._config_db.mod_entry(FEATURE_TBL, feature_config.name, update_fields)
 
-            # sync has_per_asic_scope to CONFIG_DB in namespaces in multi-asic platform
-            for ns, db in self.ns_cfg_db.items():
-                db.mod_entry(FEATURE_TBL, feature_config.name, {'has_per_asic_scope': new_per_asic})
-                db.mod_entry(FEATURE_TBL, feature_config.name, {'has_global_scope': new_global})
+        # Sync both has_per_asic_scope and has_global_scope to CONFIG_DB in namespaces on multi-asic platforms
+        for ns, db in self.ns_cfg_db.items():
+            ns_entry = db.get_entry(FEATURE_TBL, feature_config.name) or {}
+            ns_update_fields = {}
+            if ns_entry.get('has_per_asic_scope') != new_per_asic:
+                ns_update_fields['has_per_asic_scope'] = new_per_asic
+            if ns_entry.get('has_global_scope') != new_global:
+                ns_update_fields['has_global_scope'] = new_global
+            if ns_update_fields:
+                db.mod_entry(FEATURE_TBL, feature_config.name, ns_update_fields)
     
     def update_systemd_config(self, feature_config):
         """Updates `Restart=` field in feature's systemd configuration file
