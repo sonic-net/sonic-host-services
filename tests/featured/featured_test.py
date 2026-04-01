@@ -414,10 +414,12 @@ class TestFeatureDaemon(TestCase):
             expected = [call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'reset-failed', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'reset-failed', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
             mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
@@ -455,10 +457,12 @@ class TestFeatureDaemon(TestCase):
             expected = [call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'reset-failed', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'reset-failed', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
 
             mocked_subprocess.run.assert_has_calls(expected, any_order=True)
@@ -481,10 +485,12 @@ class TestFeatureDaemon(TestCase):
                 call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'reset-failed', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'reset-failed', 'mux.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]               
         
             mocked_subprocess.run.assert_has_calls(expected, any_order=True)
@@ -509,10 +515,12 @@ class TestFeatureDaemon(TestCase):
             expected = [call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'reset-failed', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
+                        call(['sudo', 'systemctl', 'reset-failed', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
             mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
