@@ -188,6 +188,13 @@ class FeatureHandler(object):
             syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
             self._cached_config.pop(feature_name, None)
             self._feature_state_table._del(feature_name)
+
+            # Clean up feature from namespace CONFIG_DBs and STATE_DBs
+            for ns, db in self.ns_cfg_db.items():
+                db.set_entry(FEATURE_TBL, feature_name, None)
+            for ns, tbl in self.ns_feature_state_tbl.items():
+                tbl._del(feature_name)
+
             return
 
         device_config = {}
@@ -526,9 +533,6 @@ class FeatureHandler(object):
         current_entry = self._config_db.get_entry('FEATURE', feature.name)
         current_feature_state = current_entry.get('state') if current_entry else None
 
-        if feature.state == current_feature_state:
-            return
-
         # feature.state might be rendered from a template, so that it should resync CONFIG DB
         # FEATURE table to override the template value to valid state value
         # ('always_enabled', 'always_disabled', 'disabled', 'enabled'). However, we should only
@@ -539,11 +543,15 @@ class FeatureHandler(object):
         #     2. the current feature state in DB is a template which should be replaced by rendered feature
         #        state
         # For other cases, we should not resync feature.state to CONFIG DB to avoid overriding user configuration.
-        if self._feature_state_is_immutable(feature.state) or self._feature_state_is_template(current_feature_state):
-            self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
+        if feature.state != current_feature_state:
+            if self._feature_state_is_immutable(feature.state) or self._feature_state_is_template(current_feature_state):
+                self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
 
-            # resync the feature state to CONFIG_DB in namespaces in multi-asic platform
-            for ns, db in self.ns_cfg_db.items():
+        # Resync namespace CONFIG_DBs independently.
+        for ns, db in self.ns_cfg_db.items():
+            ns_entry = db.get_entry('FEATURE', feature.name)
+            ns_state = ns_entry.get('state') if ns_entry else None
+            if ns_state is not None and self._feature_state_is_template(ns_state):
                 db.mod_entry('FEATURE', feature.name, {'state': feature.state})
 
     def sync_feature_delay_state(self, feature):
