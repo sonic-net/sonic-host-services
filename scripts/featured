@@ -221,7 +221,14 @@ class FeatureHandler(object):
         Summary:
         Updates the state field in the FEATURE|* tables as the state field
         might have to be rendered based on DEVICE_METADATA table and generated Device Running Metadata
+
+        Uses a two-phase approach to avoid a race condition between systemctl
+        daemon-reload and Docker container startup:
+        Phase 1: Write all systemd config files, followed by daemon-reload.
+        Phase 2: Start/stop all feature services (no daemon-reloads required).
         """
+        # Phase 1: Write all systemd configs and cache features
+        syslog.syslog(syslog.LOG_INFO, "Writing systemd configs")
         for feature_name in feature_table.keys():
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
@@ -233,7 +240,18 @@ class FeatureHandler(object):
             feature = Feature(feature_name, feature_table[feature_name], device_config)
 
             self._cached_config.setdefault(feature_name, feature)
-            self.update_systemd_config(feature)
+            self.update_systemd_config(feature, reload=False)
+
+        # Perform daemon-reload after all configs are written
+        self.reload_systemd_config()
+
+        # Phase 2: Start/stop services without daemon-reloads
+        syslog.syslog(syslog.LOG_INFO, "Restarting services")
+        for feature_name in feature_table.keys():
+            if not feature_name:
+                syslog.syslog(syslog.LOG_WARNING, "Feature is None")
+                continue
+            feature = self._cached_config[feature_name]
             self.update_feature_state(feature)
             self.sync_feature_scope(feature)
             self.resync_feature_state(feature)
@@ -354,13 +372,15 @@ class FeatureHandler(object):
         for ns, db in self.ns_cfg_db.items():
             self._conditional_update_scope(db, feature_config.name, new_per_asic, new_global)
     
-    def update_systemd_config(self, feature_config):
+    def update_systemd_config(self, feature_config, reload=True):
         """Updates `Restart=` field in feature's systemd configuration file
         according to the value of `auto_restart` field in `FEATURE` table of `CONFIG_DB`.
 
         Args:
             feature: An object represents a feature's configuration in `FEATURE`
             table of `CONFIG_DB`.
+            reload: Whether to run systemctl daemon-reload after writing config.
+            Set to False when batching multiple config updates.
 
         Returns:
             None.
@@ -398,6 +418,10 @@ class FeatureHandler(object):
             syslog.syslog(syslog.LOG_INFO, "Feature '{}' systemd config file related to auto-restart is updated!"
                           .format(feature_name))
 
+        if reload:
+            self.reload_systemd_config()
+
+    def reload_systemd_config(self):
         try:
             syslog.syslog(syslog.LOG_INFO, "Reloading systemd configuration files ...")
             run_cmd(["sudo", "systemctl", "daemon-reload"], raise_exception=True)
