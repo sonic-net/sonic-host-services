@@ -46,8 +46,6 @@ setup(
         'scripts/procdockerstatsd',
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
-        'scripts/check_platform.py',
-        'scripts/wait-for-sonic-core.sh',
         'scripts/gnoi_shutdown_daemon.py',
         'scripts/sonic-host-server',
         'scripts/ldap.py'
