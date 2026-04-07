@@ -377,6 +377,86 @@ class TestFeatureHandler(TestCase):
             assert any("ExclusionList: skip disabling 'frr_bmp'" in str(c.args[1]) for c in mock_syslog.call_args_list)
 
 
+class TestHandlerDeregistration(TestCase):
+
+    def test_handler_deregister_cleans_namespace_dbs(self):
+        mock_db = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        mock_ns_cfg_db = mock.MagicMock()
+        mock_ns_state_tbl = mock.MagicMock()
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_cfg_db}
+        feature_handler.ns_feature_state_tbl = {'asic0': mock_ns_state_tbl}
+
+        feature_handler._cached_config['sflow'] = featured.Feature('sflow', {'state': 'enabled'})
+
+        feature_handler.handler('sflow', 'DEL', {})
+
+        mock_feature_state_table._del.assert_called_once_with('sflow')
+        mock_ns_cfg_db.set_entry.assert_called_once_with('FEATURE', 'sflow', None)
+        mock_ns_state_tbl._del.assert_called_once_with('sflow')
+        assert 'sflow' not in feature_handler._cached_config
+
+
+class TestResyncFeatureStateNamespace(TestCase):
+
+    @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_scope', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
+    def test_namespace_template_rendered_when_host_matches(self):
+        mock_db = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        mock_db.get_entry.return_value = {'state': 'enabled'}
+
+        mock_ns_db = mock.MagicMock()
+        mock_ns_db.get_entry.return_value = {'state': '{{ some_template }}'}
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_db}
+
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'auto_restart': 'enabled',
+        })
+        feature_handler._cached_config['sflow'] = feature
+
+        feature_handler.resync_feature_state(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        mock_ns_db.mod_entry.assert_called_once_with('FEATURE', 'sflow', {'state': 'enabled'})
+
+    @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_scope', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
+    def test_namespace_valid_state_not_overwritten(self):
+        mock_db = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        mock_db.get_entry.return_value = {'state': 'enabled'}
+
+        mock_ns_db = mock.MagicMock()
+        mock_ns_db.get_entry.return_value = {'state': 'enabled'}
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_db}
+
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'auto_restart': 'enabled',
+        })
+        feature_handler._cached_config['sflow'] = feature
+
+        feature_handler.resync_feature_state(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        mock_ns_db.mod_entry.assert_not_called()
+
+
 @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
 @mock.patch('sonic_py_common.device_info.get_device_runtime_metadata')
 class TestFeatureDaemon(TestCase):
