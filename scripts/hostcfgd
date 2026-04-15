@@ -105,7 +105,7 @@ DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
 # MISC Constants
 CFG_DB = "CONFIG_DB"
 STATE_DB = "STATE_DB"
-
+PROC_CMDLINE = '/proc/cmdline'
 
 def signal_handler(sig, frame):
     if sig == signal.SIGHUP:
