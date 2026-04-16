@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import threading
 import time
 import docker
@@ -9,6 +10,7 @@ import psutil
 from host_modules import host_service
 from utils.run_cmd import _run_command
 from enum import Enum
+from sonic_py_common import device_info
 
 MOD_NAME = 'reboot'
 # Reboot method in reboot request
@@ -33,6 +35,26 @@ class RebootStatus(Enum):
     STATUS_FAILURE = 3
 
 logger = logging.getLogger(__name__)
+
+
+def get_dpu_halt_services_timeout():
+    """Read dpu_halt_services_timeout from platform.json.
+       Fall back to HALT_TIMEOUT if missing/null/invalid/unreadable.
+    """
+    try:
+        platform_json_path = os.path.join(
+            device_info.get_path_to_platform_dir(), "platform.json"
+        )
+        with open(platform_json_path, "r") as f:
+            data = json.load(f)
+
+        timeout = data.get("dpu_halt_services_timeout")
+        if timeout is None:
+            return HALT_TIMEOUT
+
+        return int(timeout)
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        return HALT_TIMEOUT
 
 
 class Reboot(host_service.HostModule):
@@ -139,12 +161,12 @@ class Reboot(host_service.HostModule):
            is still alive after the below waiting period, we can conclude that the reboot has failed.
            Each container can take up to 20 seconds to get killed. In total, there are 10 containers,
            and adding a buffer of 1 minute brings up the delay value.
-           For Halt reboot_method, wait for 60 secs timeout. we expect pmon, syncd containers are killed, 
+           For Halt reboot_method, wait for configured timeout or fallback timeout. we expect pmon, syncd containers are killed,
            if Halt reboot is Successful."""
         if reboot_method in REBOOT_METHOD_HALT_BOOT_VALUES:
             # Periodically check every 5 seconds until PMON container is stopped or timeout occurs
             logger.info("%s: Waiting until services are halted or timeout occurs", MOD_NAME)
-            timeout = HALT_TIMEOUT
+            timeout = get_dpu_halt_services_timeout()
             start_time = time.monotonic()
 
             while time.monotonic() - start_time < timeout:
