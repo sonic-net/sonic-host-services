@@ -733,6 +733,9 @@ class ControlPlaneAclManager(logger.Logger):
 
         # Walk the ACL tables
         for (table_name, table_data) in self._tables_db_info.items():
+            # Ignore empty ACL tables
+            if not table_data:
+                continue
 
             table_ip_version = None
 

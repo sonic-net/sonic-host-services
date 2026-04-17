@@ -54,3 +54,27 @@ class TestCaclmgrdDefaultRule(TestCase):
         else:
             self.assertNotIn(self.default_deny_rule_v4, iptables_rules_ret)
             self.assertNotIn(self.default_deny_rule_v6, iptables_rules_ret)
+
+    @patchfs
+    def test_empty_acl_table_entry_skipped(self, fs):
+        """ACL_TABLE rows with empty data must be ignored (no KeyError on 'type')."""
+        if not os.path.exists(DBCONFIG_PATH):
+            fs.create_file(DBCONFIG_PATH)
+
+        MockConfigDb.set_config_db({
+            "ACL_RULE": {},
+            "ACL_TABLE": {"PLACEHOLDER": {}},
+            "DEVICE_METADATA": {"localhost": {}},
+            "FEATURE": {},
+        })
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
+        self.caclmgrd.ControlPlaneAclManager.generate_block_ip2me_traffic_iptables_commands = mock.MagicMock(return_value=[])
+        self.caclmgrd.ControlPlaneAclManager.get_chain_list = mock.MagicMock(return_value=["INPUT", "FORWARD", "OUTPUT"])
+        self.caclmgrd.ControlPlaneAclManager.get_chassis_midplane_interface_ip = mock.MagicMock(return_value='')
+        caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+
+        iptables_rules_ret, _ = caclmgrd_daemon.get_acl_rules_and_translate_to_iptables_commands('', MockConfigDb())
+        iptables_rules_ret = [tuple(i) for i in iptables_rules_ret]
+        self.assertNotIn(self.default_deny_rule_v4, iptables_rules_ret)
+        self.assertNotIn(self.default_deny_rule_v6, iptables_rules_ret)
