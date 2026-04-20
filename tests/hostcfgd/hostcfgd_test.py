@@ -13,6 +13,7 @@ from unittest import TestCase, mock
 
 from .test_vectors import HOSTCFG_DAEMON_INIT_CFG_DB, HOSTCFG_DAEMON_CFG_DB
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_restart_waiter import MockRestartWaiter
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
 from unittest.mock import call
@@ -28,6 +29,7 @@ hostcfgd = load_module_from_source('hostcfgd', hostcfgd_path)
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+swsscommon.RestartWaiter = MockRestartWaiter
 
 
 class TesNtpCfgd(TestCase):
@@ -165,15 +167,27 @@ class TestSerialConsoleCfgd(TestCase):
 class TestHostcfgdDaemon(TestCase):
 
     def setUp(self):
+        os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
         self.get_dev_meta = mock.patch(
             'sonic_py_common.device_info.get_device_runtime_metadata',
             return_value={'DEVICE_RUNTIME_METADATA': {}})
         self.get_dev_meta.start()
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
+        self.original_cmdline = None
 
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
         self.get_dev_meta.stop()
+        os.environ["HOSTCFGD_UNIT_TESTING"] = ""
+
+        # Restore cmdline if it was modified
+        if self.original_cmdline is not None:
+            modules_path = os.path.join(os.path.dirname(__file__), "../..")
+            tests_path = os.path.join(modules_path, "tests")
+            cmdline_path = os.path.join(tests_path, "proc", "cmdline")
+            with open(cmdline_path, 'w') as f:
+                f.write(self.original_cmdline)
+            self.original_cmdline = None
 
     def test_loopback_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
@@ -243,7 +257,16 @@ class TestHostcfgdDaemon(TestCase):
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
 
     def test_kdump_event_with_proc_cmdline(self):
-        os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
+        modules_path = os.path.join(os.path.dirname(__file__), "../..")
+        tests_path = os.path.join(modules_path, "tests")
+        cmdline_path = os.path.join(tests_path, "proc", "cmdline")
+
+        with open(cmdline_path, 'r') as f:
+            self.original_cmdline = f.read()
+
+        with open(cmdline_path, 'w') as f:
+            f.write(self.original_cmdline.rstrip() + ' crashkernel=8G-:1G\n')
+
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
         default=daemon.kdumpCfg.kdump_defaults
@@ -268,7 +291,6 @@ class TestHostcfgdDaemon(TestCase):
                 call(['sonic-kdump-config', '--ssh_path', '/a/b/c'])  # Covering ssh_path
             ]
             mocked_subprocess.check_call.assert_has_calls(expected, any_order=True)
-        os.environ["HOSTCFGD_UNIT_TESTING"] = ""
         
     def test_devicemeta_event(self):
         """
@@ -821,6 +843,7 @@ class TestMemoryStatisticsCfgd(TestCase):
 
     def test_memory_statistics_handler_exception(self):
         """Test exception handling in memory_statistics_handler"""
+        MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         daemon = hostcfgd.HostConfigDaemon()
         with mock.patch.object(daemon.memorystatisticscfg, 'memory_statistics_update',
                              side_effect=Exception("Handler error")):
