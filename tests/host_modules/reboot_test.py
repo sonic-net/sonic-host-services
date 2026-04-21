@@ -21,6 +21,7 @@ sonic_host_service_path = os.path.dirname(test_path)
 host_modules_path = os.path.join(sonic_host_service_path, "../host_modules")
 sys.path.insert(0, sonic_host_service_path)
 
+import host_modules.reboot as host_reboot
 from host_modules.reboot import RebootStatus
 
 TIME = 1617811205
@@ -93,21 +94,21 @@ class TestReboot(object):
         mock_data = {"dpu_halt_services_timeout": 120}
 
         with (
-            mock.patch("reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
+            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
             mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
-            mock.patch("reboot.json.load", return_value=mock_data),
+            mock.patch("host_modules.reboot.json.load", return_value=mock_data),
         ):
-            assert sys.modules["reboot"].get_halt_timeout_from_platform_json() == 120
+            assert host_reboot.get_halt_timeout_from_platform_json() == 120
 
     def test_get_halt_timeout_from_platform_json_none(self):
         mock_data = {"dpu_halt_services_timeout": None}
 
         with (
-            mock.patch("reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
+            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
             mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
-            mock.patch("reboot.json.load", return_value=mock_data),
+            mock.patch("host_modules.reboot.json.load", return_value=mock_data),
         ):
-            assert sys.modules["reboot"].get_halt_timeout_from_platform_json() == HALT_TIMEOUT
+            assert host_reboot.get_halt_timeout_from_platform_json() == HALT_TIMEOUT
 
     @pytest.mark.parametrize(
         "side_effect",
@@ -121,11 +122,11 @@ class TestReboot(object):
     )
     def test_get_halt_timeout_from_platform_json_exceptions(self, side_effect):
         with (
-            mock.patch("reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
+            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
             mock.patch("builtins.open", mock.mock_open(read_data="{}")),
-            mock.patch("reboot.json.load", side_effect=side_effect),
+            mock.patch("host_modules.reboot.json.load", side_effect=side_effect),
         ):
-            assert sys.modules["reboot"].get_halt_timeout_from_platform_json() == HALT_TIMEOUT
+            assert host_reboot.get_halt_timeout_from_platform_json() == HALT_TIMEOUT
 
     def test_validate_reboot_request_success_cold_boot_enum_method(self):
         reboot_request = {"method": REBOOT_METHOD_COLD_BOOT_ENUM, "reason": "test reboot request reason"}
