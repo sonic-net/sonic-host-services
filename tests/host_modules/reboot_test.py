@@ -21,6 +21,7 @@ sonic_host_service_path = os.path.dirname(test_path)
 host_modules_path = os.path.join(sonic_host_service_path, "../host_modules")
 sys.path.insert(0, sonic_host_service_path)
 
+import host_modules.reboot as host_reboot
 from host_modules.reboot import RebootStatus
 
 TIME = 1617811205
@@ -88,6 +89,44 @@ class TestReboot(object):
                 "status": RebootStatus.STATUS_SUCCESS.value,
                 "message": ""
             }
+
+    def test_get_dpu_halt_services_timeout_value(self):
+        mock_data = {"dpu_halt_services_timeout": 120}
+
+        with (
+            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
+            mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
+            mock.patch("host_modules.reboot.json.load", return_value=mock_data),
+        ):
+            assert host_reboot.get_dpu_halt_services_timeout() == 120
+
+    def test_get_dpu_halt_services_timeout_none(self):
+        mock_data = {"dpu_halt_services_timeout": None}
+
+        with (
+            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
+            mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
+            mock.patch("host_modules.reboot.json.load", return_value=mock_data),
+        ):
+            assert host_reboot.get_dpu_halt_services_timeout() == HALT_TIMEOUT
+
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            OSError(),
+            ValueError(),
+            TypeError(),
+            AttributeError(),
+            json.JSONDecodeError("Expecting value", "doc", 0),
+        ],
+    )
+    def test_get_dpu_halt_services_timeout_exceptions(self, side_effect):
+        with (
+            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
+            mock.patch("builtins.open", mock.mock_open(read_data="{}")),
+            mock.patch("host_modules.reboot.json.load", side_effect=side_effect),
+        ):
+            assert host_reboot.get_dpu_halt_services_timeout() == HALT_TIMEOUT
 
     def test_validate_reboot_request_success_cold_boot_enum_method(self):
         reboot_request = {"method": REBOOT_METHOD_COLD_BOOT_ENUM, "reason": "test reboot request reason"}
