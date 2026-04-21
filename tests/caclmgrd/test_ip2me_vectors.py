@@ -120,4 +120,36 @@ CACLMGRD_IP2ME_TEST_VECTOR = [
             ],  
         },
     ]
+    ,
+    [
+        # BUG 9 regression: non-/32 non-VLAN interface IP must be the interface's own
+        # IP, not the network address. Before the fix, Ethernet0|10.0.1.2/24 would
+        # produce -d 10.0.1.0/32 (network address) instead of -d 10.0.1.2/32.
+        "Non-/32 INTERFACE and PORTCHANNEL entries block interface IP not network address",
+        {
+            "config_db": {
+                "LOOPBACK_INTERFACE": {},
+                "VLAN_INTERFACE": {},
+                "PORTCHANNEL_INTERFACE": {
+                    "PortChannel0001|10.0.1.2/24": {},
+                },
+                "INTERFACE": {
+                    "Ethernet0|10.0.2.5/30": {}
+                },
+                "MGMT_INTERFACE": {
+                    "eth0|172.18.0.100/24": {
+                        "gwaddr": "172.18.0.1"
+                    }
+                },
+                "DEVICE_METADATA": {
+                    "localhost": {}
+                },
+                "FEATURE": {},
+            },
+            "return": [
+                ['iptables', '-A', 'INPUT', '-d', '10.0.1.2/32', '-j', 'DROP'],
+                ['iptables', '-A', 'INPUT', '-d', '10.0.2.5/32', '-j', 'DROP'],
+            ],
+        },
+    ]
 ]

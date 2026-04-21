@@ -306,7 +306,9 @@ class ControlPlaneAclManager(logger.Logger):
 
                     # For VLAN interfaces, the IP address we want to block is the default gateway (i.e.,
                     # the first available host IP address of the VLAN subnet)
-                    ip_addr = next(ip_ntwrk.hosts()) if iface_table_name == "VLAN_INTERFACE" else ip_ntwrk.network_address
+                    # Use ip_interface to get the actual interface IP (not the network address),
+                    # which would be wrong for non-/32 non-VLAN interfaces (e.g. /24 gives 10.0.0.0).
+                    ip_addr = next(ip_ntwrk.hosts()) if iface_table_name == "VLAN_INTERFACE" else ipaddress.ip_interface(iface_cidr).ip
 
                     if isinstance(ip_ntwrk, ipaddress.IPv4Network):
                         block_ip2me_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-d', '{}/{}'.format(ip_addr, ip_ntwrk.max_prefixlen), '-j', 'DROP'])
@@ -373,13 +375,19 @@ class ControlPlaneAclManager(logger.Logger):
         allow_internal_docker_ip_cmds = []
 
         if namespace:
-            # For namespace docker allow local communication on docker management ip for all proto
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ip[namespace], '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
+            # Guard each IP version independently: skip if either IP is unavailable
+            # to prevent empty strings being passed as iptables -s/-d arguments.
+            if self.namespace_docker_mgmt_ip.get(namespace) and self.namespace_mgmt_ip:
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ip[namespace], '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_mgmt_ip, '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
+            else:
+                self.log_warning("Skipping IPv4 internal docker traffic rules for namespace '{}': IPv4 management IP unavailable".format(namespace))
 
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ipv6[namespace], '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', self.namespace_mgmt_ip, '-d', self.namespace_docker_mgmt_ip[namespace], '-j', 'ACCEPT'])
-
-            allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
+            if self.namespace_docker_mgmt_ipv6.get(namespace) and self.namespace_mgmt_ipv6:
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_docker_mgmt_ipv6[namespace], '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
+                allow_internal_docker_ip_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', self.namespace_mgmt_ipv6, '-d', self.namespace_docker_mgmt_ipv6[namespace], '-j', 'ACCEPT'])
+            else:
+                self.log_warning("Skipping IPv6 internal docker traffic rules for namespace '{}': IPv6 management IP unavailable".format(namespace))
 
         else:
 
@@ -742,6 +750,11 @@ class ControlPlaneAclManager(logger.Logger):
 
             acl_services = table_data["services"]
 
+            # Shadow set for O(1) duplicate detection across all services in this table.
+            # Scoped per table (not per service) so cross-service duplicate commands are
+            # also caught. iptables_cmds stays a list to preserve rule ordering.
+            acl_cmds_seen = set()
+
             for acl_service in acl_services:
                 if acl_service not in self.ACL_SERVICES:
                     self.log_warning("Ignoring control plane ACL '{}' with unrecognized service '{}'"
@@ -782,18 +795,26 @@ class ControlPlaneAclManager(logger.Logger):
                             elif self.is_rule_ipv4(rule_props):
                                 table_ip_version = 4
 
-                        # Read DST_PORT info from Config DB, insert it back to ACL_SERVICES
+                        # Read DST_PORT info from Config DB into the local dst_ports list.
+                        # Do NOT write back into ACL_SERVICES (class-level dict) — doing so
+                        # would pollute subsequent reloads with stale ports from deleted rules.
                         if acl_service == 'EXTERNAL_CLIENT' and "L4_DST_PORT" in rule_props:
-                            dst_ports = [rule_props["L4_DST_PORT"]]
-                            self.ACL_SERVICES[acl_service]["dst_ports"] = dst_ports
+                            if rule_props["L4_DST_PORT"] not in dst_ports:
+                                dst_ports.append(rule_props["L4_DST_PORT"])
                         elif acl_service == 'EXTERNAL_CLIENT' and "L4_DST_PORT_RANGE" in rule_props:
-                            dst_ports = []
-                            port_ranges = rule_props["L4_DST_PORT_RANGE"].split("-")
-                            port_start = int(port_ranges[0])
-                            port_end = int(port_ranges[1])
+                            try:
+                                port_ranges = rule_props["L4_DST_PORT_RANGE"].split("-")
+                                port_start = int(port_ranges[0])
+                                port_end = int(port_ranges[1])
+                            except (ValueError, IndexError):
+                                self.log_error("Invalid L4_DST_PORT_RANGE value '{}' in ACL table '{}'. Skipping.".format(
+                                    rule_props["L4_DST_PORT_RANGE"], table_name))
+                                continue
                             for port in range(port_start, port_end + 1):
-                                dst_ports.append(port)
-                            self.ACL_SERVICES[acl_service]["dst_ports"] = dst_ports
+                                # Use str() to keep dst_ports type-consistent with L4_DST_PORT
+                                port_str = str(port)
+                                if port_str not in dst_ports:
+                                    dst_ports.append(port_str)
 
                         if (self.is_rule_ipv6(rule_props) and (table_ip_version == 4)):
                             self.log_error("CtrlPlane ACL table {} is a IPv4 based table and rule {} is a IPV6 rule! Ignoring rule."
@@ -869,8 +890,14 @@ class ControlPlaneAclManager(logger.Logger):
                             # Append the packet action as the jump target
                             rule_cmd += ["-j", "{}".format(rule_props["PACKET_ACTION"])]
 
-                            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + rule_cmd)
-                            num_ctrl_plane_acl_rules += 1
+                            # Deduplicate using a shadow set for O(1) lookup.
+                            # iptables_cmds stays a list to preserve rule ordering.
+                            full_cmd = self.iptables_cmd_ns_prefix[namespace] + rule_cmd
+                            full_cmd_key = tuple(full_cmd)
+                            if full_cmd_key not in acl_cmds_seen:
+                                acl_cmds_seen.add(full_cmd_key)
+                                iptables_cmds.append(full_cmd)
+                                num_ctrl_plane_acl_rules += 1
 
 
                 service_to_source_ip_map.update({ acl_service:{ "ipv4":ipv4_src_ip_set, "ipv6":ipv6_src_ip_set } })
