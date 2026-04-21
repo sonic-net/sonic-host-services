@@ -97,7 +97,7 @@ class TestReboot(object):
             mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
             mock.patch("reboot.json.load", return_value=mock_data),
         ):
-            assert reboot.get_halt_timeout_from_platform_json() == 120
+            assert sys.modules["reboot"].get_halt_timeout_from_platform_json() == 120
 
     def test_get_halt_timeout_from_platform_json_none(self):
         mock_data = {"dpu_halt_services_timeout": None}
@@ -107,7 +107,7 @@ class TestReboot(object):
             mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
             mock.patch("reboot.json.load", return_value=mock_data),
         ):
-            assert reboot.get_halt_timeout_from_platform_json() == HALT_TIMEOUT
+            assert sys.modules["reboot"].get_halt_timeout_from_platform_json() == HALT_TIMEOUT
 
     @pytest.mark.parametrize(
         "side_effect",
@@ -125,7 +125,7 @@ class TestReboot(object):
             mock.patch("builtins.open", mock.mock_open(read_data="{}")),
             mock.patch("reboot.json.load", side_effect=side_effect),
         ):
-            assert reboot.get_halt_timeout_from_platform_json() == HALT_TIMEOUT
+            assert sys.modules["reboot"].get_halt_timeout_from_platform_json() == HALT_TIMEOUT
 
     def test_validate_reboot_request_success_cold_boot_enum_method(self):
         reboot_request = {"method": REBOOT_METHOD_COLD_BOOT_ENUM, "reason": "test reboot request reason"}
