@@ -216,13 +216,74 @@ class FeatureHandler(object):
             else:
                 self.resync_feature_state(self._cached_config[feature_name])
 
+    def _is_bmc_platform(self):
+        """
+        Check if this is a BMC/Aspeed platform.
+
+        Returns:
+            bool: True if BMC platform, False otherwise
+        """
+        try:
+            platform = device_info.get_platform()
+            platform_env_file = f"/usr/share/sonic/device/{platform}/platform_env.conf"
+
+            # Check for switch_bmc=1 in platform_env.conf
+            if os.path.exists(platform_env_file):
+                with open(platform_env_file, 'r') as f:
+                    for line in f:
+                        if 'switch_bmc=1' in line.strip():
+                            return True
+
+            # Alternative check: platform_asic contains "aspeed"
+            platform_asic_file = f"/usr/share/sonic/device/{platform}/platform_asic"
+            if os.path.exists(platform_asic_file):
+                with open(platform_asic_file, 'r') as f:
+                    content = f.read().strip().lower()
+                    if 'aspeed' in content:
+                        return True
+        except Exception as e:
+            syslog.syslog(syslog.LOG_WARNING, f"Error detecting BMC platform: {e}")
+
+        return False
+
+    def _get_bmc_feature_priority_order(self):
+        """
+        Define feature startup priority order for BMC platforms.
+        Features listed first are started first. Features not in this list
+        are started after the prioritized ones in default order.
+
+        Returns:
+            list: Ordered list of feature names for BMC platforms
+        """
+        return [
+            'database',    # Database must start first
+            'pmon',        # Platform monitoring is critical for BMC
+            'lldp',        # Discovery
+            'gnmi',        # Management interface
+            'snmp',        # Monitoring
+            'redfish',     # BMC management interface
+            'telemetry',   # Metrics collection
+        ]
+
     def sync_state_field(self, feature_table):
         """
         Summary:
         Updates the state field in the FEATURE|* tables as the state field
         might have to be rendered based on DEVICE_METADATA table and generated Device Running Metadata
         """
-        for feature_name in feature_table.keys():
+        # Determine feature processing order
+        feature_names = list(feature_table.keys())
+
+        # On BMC platforms, process features in priority order
+        if self._is_bmc_platform():
+            priority_order = self._get_bmc_feature_priority_order()
+            # Reorder: priority features first, then remaining features
+            prioritized = [f for f in priority_order if f in feature_names]
+            remaining = [f for f in feature_names if f not in priority_order]
+            feature_names = prioritized + remaining
+            syslog.syslog(syslog.LOG_INFO, f"BMC platform detected, processing features in priority order: {prioritized}")
+
+        for feature_name in feature_names:
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
                 continue
