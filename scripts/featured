@@ -266,8 +266,12 @@ class FeatureHandler(object):
             return False
 
         if not enable and not disable:
-            syslog.syslog(syslog.LOG_ERR, "Unexpected state value '{}' for feature {}"
-                          .format(feature.state, feature.name))
+            # state=None means the FEATURE entry was deleted by a concurrent uninstall
+            # while this notification was queued — not an error.  Any other non-None
+            # value here is a genuinely unexpected state and should be flagged.
+            if feature.state is not None:
+                syslog.syslog(syslog.LOG_ERR, "Unexpected state value '{}' for feature {}"
+                              .format(feature.state, feature.name))
             return False
 
         if feature.delayed and not self.is_delayed_enabled:
@@ -349,6 +353,13 @@ class FeatureHandler(object):
         new_per_asic = str(feature_config.has_per_asic_scope)
         new_global = str(feature_config.has_global_scope)
         self._conditional_update_scope(self._config_db, feature_config.name, new_per_asic, new_global)
+        # If the entry was deleted by a concurrent deregister, _conditional_update_scope
+        # may have recreated it without a 'state' field.  Remove the partial entry to
+        # avoid a ghost record.
+        post_entry = self._config_db.get_entry(FEATURE_TBL, feature_config.name)
+        if post_entry and 'state' not in post_entry:
+            self._config_db.set_entry(FEATURE_TBL, feature_config.name, None)
+            return
 
         # Sync both has_per_asic_scope and has_global_scope to CONFIG_DB in namespaces on multi-asic platforms
         for ns, db in self.ns_cfg_db.items():
@@ -549,7 +560,17 @@ class FeatureHandler(object):
 
     def resync_feature_state(self, feature):
         current_entry = self._config_db.get_entry('FEATURE', feature.name)
-        current_feature_state = current_entry.get('state') if current_entry else None
+
+        # Entry was deleted by a concurrent deregister — do not recreate it.
+        if not current_entry:
+            return
+
+        # Partial entry left by sync_feature_scope racing with deregister — remove it.
+        if 'state' not in current_entry:
+            self._config_db.set_entry('FEATURE', feature.name, None)
+            return
+
+        current_feature_state = current_entry.get('state')
 
         if feature.state == current_feature_state:
             return
