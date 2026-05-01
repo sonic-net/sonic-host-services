@@ -2,8 +2,10 @@ import os
 import sys
 
 from parameterized import parameterized
+from swsscommon import swsscommon
 from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
+from tests.common.mock_configdb import MockConfigDb
 from pyfakefs.fake_filesystem_unittest import patchfs
 
 from .test_internal_docker_ip_traffic_vectors import CACLMGRD_INTERNAL_DOCKER_IP_TEST_VECTOR
@@ -20,6 +22,7 @@ class TestCaclmgrdGenerateInternalDockerIp(TestCase):
         sys.path.insert(0, modules_path)
         caclmgrd_path = os.path.join(scripts_path, 'caclmgrd')
         self.caclmgrd = load_module_from_source('caclmgrd', caclmgrd_path)
+        swsscommon.ConfigDBConnector = MockConfigDb
         self.maxDiff = None
 
     @parameterized.expand(CACLMGRD_INTERNAL_DOCKER_IP_TEST_VECTOR)
