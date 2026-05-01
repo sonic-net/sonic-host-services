@@ -1092,6 +1092,146 @@ FEATURED_TEST_VECTOR = [
                 'communicate.return_value': ('output', 'error')
             },
         },
+    ],
+    [
+        "Disaggregated_Chassis_VOQ_multiasic",
+        {
+            "num_npu": 2,
+            "device_runtime_metadata": {
+                "DEVICE_RUNTIME_METADATA": {
+                    "ETHERNET_PORTS_PRESENT":True,
+                    "MACSEC_SUPPORTED":True
+                    }
+                },
+            "config_db": {
+                "DEVICE_METADATA": {
+                    "localhost": {
+                        "type": "UpperSpineRouter",
+                    }
+                },
+                "FEATURE": {
+                    "bgp": {
+                        "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}disabled{% else %}enabled{% endif %}",
+                        "delayed": "False",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
+                    "teamd": {
+                        "state": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] %}disabled{% else %}enabled{% endif %}",
+                        "delayed": "False",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
+                    "lldp": {
+                        "state": "enabled",
+                        "delayed": "False",
+                        "has_global_scope": "{% if ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['linecard']) %}False{% else %}True{% endif %}",
+                        "has_per_asic_scope": "{% if not DEVICE_RUNTIME_METADATA['ETHERNET_PORTS_PRESENT'] or ('CHASSIS_METADATA' in DEVICE_RUNTIME_METADATA and DEVICE_RUNTIME_METADATA['CHASSIS_METADATA']['module_type'] in ['supervisor']) %}False{% else %}True{% endif %}",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
+                    "macsec": {
+                        "state": "{% if DEVICE_RUNTIME_METADATA['MACSEC_SUPPORTED'] %}enabled{% else %}disabled{% endif %}",
+                        "delayed": "False",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    },
+                    "pmon": {
+                        "state": "enabled",
+                        "delayed": "{% if 'type' in DEVICE_METADATA['localhost'] and 'SpineRouter' in DEVICE_METADATA['localhost']['type'] %}False{% else %}True{% endif %}",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "auto_restart": "enabled",
+                        "high_mem_alert": "disabled"
+                    }
+                },
+            },
+            "expected_config_db": {
+                "FEATURE": {
+                    "bgp": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
+                    "teamd": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
+                    "lldp": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
+                    "macsec": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    },
+                    "pmon": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "False",
+                        "has_per_asic_scope": "True",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "state": "enabled"
+                    }
+                },
+            },
+            "enable_feature_subprocess_calls": [
+                call(['sudo', 'systemctl', 'unmask', 'bgp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'bgp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'bgp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'bgp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'bgp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'bgp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'teamd@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'teamd@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'teamd@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'teamd@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'teamd@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'teamd@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'mask', 'lldp.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'disable', 'lldp.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'stop', 'lldp.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'lldp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'lldp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'lldp@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'lldp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'lldp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'lldp@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'macsec@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'macsec@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'macsec@0.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'unmask', 'macsec@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'enable', 'macsec@1.service'], capture_output=True, check=True, text=True),
+                call(['sudo', 'systemctl', 'start', 'macsec@1.service'], capture_output=True, check=True, text=True)
+            ],
+            "daemon_reload_subprocess_call": [
+                call(["sudo", "systemctl", "daemon-reload"], capture_output=True, check=True, text=True),
+            ],
+            "popen_attributes": {
+                'communicate.return_value': ('output', 'error')
+            },
+        },
     ]
 ]
 
