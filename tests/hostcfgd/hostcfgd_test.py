@@ -351,6 +351,27 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
 
+    def test_device_metadata_bmc_entry_does_not_trigger_hostname_update(self):
+        """
+        DEVICE_METADATA may include a 'bmc' row on BMC-capable systems. Those
+        updates must be ignored by device_metadata_handler so hostname_update
+        is not run with BMC-only fields (which lack hostname).
+        """
+        daemon = hostcfgd.HostConfigDaemon()
+        bmc_data = {
+            'bmc_addr': '169.254.0.1',
+            'bmc_if_addr': '169.254.0.2',
+            'bmc_if_name': 'usb0',
+            'bmc_net_mask': '255.255.255.252',
+        }
+        with mock.patch.object(daemon.devmetacfg, 'hostname_update') as mock_hostname_update:
+            with mock.patch.object(daemon.devmetacfg, 'timezone_update') as mock_tz_update:
+                with mock.patch.object(daemon.devmetacfg, 'rsyslog_config') as mock_rsyslog:
+                    daemon.device_metadata_handler('bmc', 'SET', bmc_data)
+                    mock_hostname_update.assert_not_called()
+                    mock_tz_update.assert_not_called()
+                    mock_rsyslog.assert_not_called()
+
     def test_mgmtiface_event(self):
         """
         Test handling mgmt events.
