@@ -376,6 +376,115 @@ class TestFeatureHandler(TestCase):
             mocked_set_state.assert_not_called()
             assert any("ExclusionList: skip disabling 'frr_bmp'" in str(c.args[1]) for c in mock_syslog.call_args_list)
 
+    @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.get_systemd_unit_state', mock.MagicMock(return_value=""))
+    def test_sync_feature_scope_conditional_write(self):
+        """Verify sync_feature_scope only writes when scope values differ or entry is missing."""
+        mock_db = mock.MagicMock()
+        mock_db.get_entry = mock.MagicMock()
+        mock_db.mod_entry = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        })
+
+        # Values already match -> no write
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'True',
+        }
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_not_called()
+        mock_db.mod_entry.reset_mock()
+
+        # Only has_per_asic_scope differs -> write only changed field in single call
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'True',
+            'has_global_scope': 'True',
+        }
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {'has_per_asic_scope': 'False'})
+        mock_db.mod_entry.reset_mock()
+
+        # Entry missing (None) -> write both fields in single call
+        mock_db.get_entry.return_value = None
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'True',
+        })
+
+    @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
+    @mock.patch('featured.FeatureHandler.get_systemd_unit_state', mock.MagicMock(return_value=""))
+    def test_sync_feature_scope_namespace_dbs(self):
+        """Verify sync_feature_scope propagates writes to per-namespace DBs on multi-ASIC."""
+        mock_db = mock.MagicMock()
+        mock_db.get_entry = mock.MagicMock()
+        mock_db.mod_entry = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        mock_ns_db_0 = mock.MagicMock()
+        mock_ns_db_1 = mock.MagicMock()
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_db_0, 'asic1': mock_ns_db_1}
+
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'True',
+        })
+
+        # Host differs -> both host and namespaces should be written
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'False',
+        }
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.get_entry.return_value = {
+                'has_per_asic_scope': 'False',
+                'has_global_scope': 'False',
+            }
+        feature_handler.sync_feature_scope(feature)
+
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {
+                'has_per_asic_scope': 'True',
+                'has_global_scope': 'True',
+            })
+
+        # Reset for next scenario
+        mock_db.mod_entry.reset_mock()
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.mod_entry.reset_mock()
+
+        # Host matches but namespaces are stale -> namespaces should still be written
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'True',
+            'has_global_scope': 'True',
+        }
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.get_entry.return_value = {
+                'has_per_asic_scope': 'False',
+                'has_global_scope': 'False',
+            }
+        feature_handler.sync_feature_scope(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {
+                'has_per_asic_scope': 'True',
+                'has_global_scope': 'True',
+            })
+
 
 @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
 @mock.patch('sonic_py_common.device_info.get_device_runtime_metadata')
