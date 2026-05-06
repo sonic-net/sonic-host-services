@@ -353,6 +353,7 @@ class FeatureHandler(object):
         new_per_asic = str(feature_config.has_per_asic_scope)
         new_global = str(feature_config.has_global_scope)
         self._conditional_update_scope(self._config_db, feature_config.name, new_per_asic, new_global)
+
         # If the entry was deleted by a concurrent deregister, _conditional_update_scope
         # may have recreated it without a 'state' field.  Remove the partial entry to
         # avoid a ghost record.
