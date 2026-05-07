@@ -286,6 +286,28 @@ class FeatureHandler(object):
 
         return True
 
+    @staticmethod
+    def _conditional_update_scope(db, feature_name, new_per_asic, new_global):
+        """Write scope fields to a CONFIG_DB only when the values have actually changed.
+
+        Args:
+            db: ConfigDBConnector instance (host or namespace).
+            feature_name (str): Name of the feature entry to update.
+            new_per_asic (str): Desired value for has_per_asic_scope ('True'/'False').
+            new_global (str): Desired value for has_global_scope ('True'/'False').
+
+        Returns:
+            None.
+        """
+        current_entry = db.get_entry(FEATURE_TBL, feature_name) or {}
+        update_fields = {}
+        if current_entry.get('has_per_asic_scope') != new_per_asic:
+            update_fields['has_per_asic_scope'] = new_per_asic
+        if current_entry.get('has_global_scope') != new_global:
+            update_fields['has_global_scope'] = new_global
+        if update_fields:
+            db.mod_entry(FEATURE_TBL, feature_name, update_fields)
+
     def sync_feature_scope(self, feature_config):
         """Updates the has_global_scope or has_per_asic_scope field in the FEATURE|* tables as the field
         might have to be rendered based on DEVICE_METADATA table or Device Running configuration.
@@ -321,13 +343,16 @@ class FeatureHandler(object):
                                       .format(feature_name, feature_suffixes[-1]))
                         self.set_feature_state(feature_config, self.FEATURE_STATE_FAILED)
                         return
-        self._config_db.mod_entry(FEATURE_TBL, feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
-        self._config_db.mod_entry(FEATURE_TBL, feature_config.name, {'has_global_scope': str(feature_config.has_global_scope)})
+        # Only write scope fields to CONFIG_DB if the values have actually changed.
+        # This avoids redundant writes that can race with config reload consumers
+        # (e.g. sonic-mgmt YANG validation checks reading CONFIG_DB snapshots).
+        new_per_asic = str(feature_config.has_per_asic_scope)
+        new_global = str(feature_config.has_global_scope)
+        self._conditional_update_scope(self._config_db, feature_config.name, new_per_asic, new_global)
 
-        # sync has_per_asic_scope to CONFIG_DB in namespaces in multi-asic platform
+        # Sync both has_per_asic_scope and has_global_scope to CONFIG_DB in namespaces on multi-asic platforms
         for ns, db in self.ns_cfg_db.items():
-            db.mod_entry(FEATURE_TBL, feature_config.name, {'has_per_asic_scope': str(feature_config.has_per_asic_scope)})
-            db.mod_entry(FEATURE_TBL, feature_config.name, {'has_global_scope': str(feature_config.has_global_scope)})
+            self._conditional_update_scope(db, feature_config.name, new_per_asic, new_global)
     
     def update_systemd_config(self, feature_config):
         """Updates `Restart=` field in feature's systemd configuration file
