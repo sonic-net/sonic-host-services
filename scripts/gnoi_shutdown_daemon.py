@@ -13,10 +13,13 @@ import subprocess
 import os
 import redis
 import threading
+import grpc
 import sonic_py_common.daemon_base as daemon_base
 from sonic_platform_base.module_base import ModuleBase
 from sonic_py_common import syslogger
 from swsscommon import swsscommon
+from host_modules.gnoi.client import GnoiClient
+from host_modules.gnoi import system_pb2
 
 REBOOT_RPC_TIMEOUT_SEC = 60  # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC = 60  # overall time - polling RebootStatus
@@ -235,36 +238,44 @@ class GnoiRebootHandler:
         return False
 
     def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
-        """Send gNOI Reboot HALT command to the DPU."""
-        reboot_cmd = [
-            "docker", "exec", "gnmi", "gnoi_client",
-            f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-notls",
-            "-module", "System",
-            "-rpc", "Reboot",
-            "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
-        ]
-        rc, out, err = execute_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC, suppress_stderr=True)
-        if rc != 0:
-            logger.log_error(f"{dpu_name}: Reboot command failed")
+        """Send gNOI Reboot HALT command to the DPU via direct gRPC."""
+        try:
+            with GnoiClient(f"{dpu_ip}:{port}") as client:
+                request = system_pb2.RebootRequest(
+                    method=system_pb2.HALT,
+                    message="Triggered by SmartSwitch graceful shutdown",
+                )
+                client.system.Reboot(request, timeout=REBOOT_RPC_TIMEOUT_SEC)
+            return True
+        except grpc.RpcError as e:
+            logger.log_error(f"{dpu_name}: Reboot RPC failed: {e.code()} {e.details()}")
             return False
-        return True
+        except Exception as e:
+            logger.log_error(f"{dpu_name}: Reboot command failed: {e}")
+            return False
 
     def _poll_reboot_status(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
-        """Poll RebootStatus until completion or timeout."""
+        """Poll RebootStatus via direct gRPC until completion or timeout."""
         deadline = time.monotonic() + _get_halt_timeout()
-        status_cmd = [
-            "docker", "exec", "gnmi", "gnoi_client",
-            f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-notls",
-            "-module", "System",
-            "-rpc", "RebootStatus"
-        ]
-        while time.monotonic() < deadline:
-            rc_s, out_s, err_s = execute_command(status_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
-            if rc_s == 0 and out_s and ("reboot complete" in out_s.lower()):
-                return True
-            time.sleep(STATUS_POLL_INTERVAL_SEC)
+        try:
+            with GnoiClient(f"{dpu_ip}:{port}") as client:
+                while time.monotonic() < deadline:
+                    try:
+                        request = system_pb2.RebootStatusRequest()
+                        resp = client.system.RebootStatus(request, timeout=STATUS_RPC_TIMEOUT_SEC)
+                        if not resp.active and resp.status.status == system_pb2.RebootStatus.Status.STATUS_SUCCESS:
+                            return True
+                        if not resp.active and resp.status.status != system_pb2.RebootStatus.Status.STATUS_SUCCESS:
+                            logger.log_error(
+                                f"{dpu_name}: RebootStatus reports failure: "
+                                f"status={resp.status.status}, message={resp.status.message}"
+                            )
+                            return False
+                    except grpc.RpcError as e:
+                        logger.log_warning(f"{dpu_name}: RebootStatus poll RPC error: {e.code()} {e.details()}")
+                    time.sleep(STATUS_POLL_INTERVAL_SEC)
+        except Exception as e:
+            logger.log_error(f"{dpu_name}: RebootStatus polling failed: {e}")
         logger.log_notice(f"{dpu_name}: Timeout waiting for RebootStatus completion, proceeding with halt flag clear")
         return False
 
