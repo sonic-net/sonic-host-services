@@ -359,8 +359,8 @@ class TestHostcfgdDaemon(TestCase):
         """
         daemon = hostcfgd.HostConfigDaemon()
         bmc_data = {
-            'bmc_addr': '169.254.0.1',
-            'bmc_if_addr': '169.254.0.2',
+            'bmc_addr': '169.254.100.1',
+            'bmc_if_addr': '169.254.100.2',
             'bmc_if_name': 'usb0',
             'bmc_net_mask': '255.255.255.252',
         }
