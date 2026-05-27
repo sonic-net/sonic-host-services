@@ -285,6 +285,25 @@ class TestReboot(object):
             assert caplog.records[0].message == msg
             mock_populate_reboot_status_flag.assert_called_once_with(False, int (time.time()), "Failed to execute reboot command", 3, RebootStatus.STATUS_FAILURE)
 
+    def test_get_dpu_halt_services_timeout_key_absent(self):
+        mock_data = {}
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch(
+                "reboot.device_info.get_path_to_platform_dir",
+                return_value="/usr/share/sonic/device/test_platform"
+            ))
+            stack.enter_context(mock.patch(
+                "builtins.open",
+                mock.mock_open(read_data=json.dumps(mock_data))
+            ))
+            stack.enter_context(mock.patch(
+                "reboot.json.load",
+                return_value=mock_data
+            ))
+
+            assert reboot.get_dpu_halt_services_timeout() == reboot.HALT_TIMEOUT
+
     def test_execute_reboot_success_halt(self):
         with (
             mock.patch("reboot._run_command") as mock_run_command,
@@ -292,6 +311,7 @@ class TestReboot(object):
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=False) as mock_is_halt_command_running,
             mock.patch("reboot.Reboot.is_container_running", return_value=False) as mock_is_container_running,
             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
+            mock.patch("reboot.get_dpu_halt_services_timeout", return_value=60),
         ):
             mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
             self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
@@ -307,6 +327,7 @@ class TestReboot(object):
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=True) as mock_is_halt_command_running,
             mock.patch("reboot.Reboot.is_container_running", return_value=True) as mock_is_container_running,
             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
+            mock.patch("reboot.get_dpu_halt_services_timeout", return_value=60),
             caplog.at_level(logging.ERROR),
         ):
             mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])

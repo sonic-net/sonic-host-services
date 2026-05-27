@@ -52,8 +52,13 @@ def get_dpu_halt_services_timeout():
         if timeout is None:
             return HALT_TIMEOUT
 
-        return int(timeout)
-    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        timeout = int(timeout)
+        return timeout if timeout > 0 else HALT_TIMEOUT
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as e:
+        logger.info(
+            "%s: Failed to read dpu_halt_services_timeout from platform.json: %s. Using default %d",
+            MOD_NAME, e, HALT_TIMEOUT
+        )
         return HALT_TIMEOUT
 
 
