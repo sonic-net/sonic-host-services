@@ -201,6 +201,7 @@ class TestReboot(object):
             assert any("Error checking if halt command is running: [psutil error]" in record.message for record in caplog.records)
 
     def test_execute_reboot_success(self):
+        """WARM reboot reaches the post-sleep failure-flag path when reboot command returns success."""
         with (
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.sleep") as mock_sleep,
@@ -220,6 +221,7 @@ class TestReboot(object):
             assert caplog.records[0].message == msg
 
     def test_execute_reboot_fail_issue_reboot_command_cold_boot(self, caplog):
+        """Cold-boot reboot command returning non-zero logs the error and records a failure timestamp."""
         with (
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.time", return_value=TIME),
@@ -235,6 +237,7 @@ class TestReboot(object):
             mock_populate_reboot_status_flag.assert_called_once_with(False, TIME, "Failed to execute reboot command", 1, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_issue_reboot_command_halt(self, caplog):
+        """Halt reboot command returning non-zero logs the error and records a failure timestamp."""
         with (
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.time", return_value=TIME),
@@ -265,6 +268,7 @@ class TestReboot(object):
             mock_populate_reboot_status_flag.assert_called_once_with(False, 0, 'Halt reboot completed', 3, RebootStatus.STATUS_SUCCESS)
 
     def test_execute_reboot_fail_halt_timeout(self, caplog):
+        """Halt reboot times out with pmon still running and records a failure timestamp."""
         with (
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.sleep") as mock_sleep,
@@ -283,6 +287,7 @@ class TestReboot(object):
             mock_populate_reboot_status_flag.assert_called_once_with(False, TIME, 'Halt reboot did not complete', 3, RebootStatus.STATUS_FAILURE)
 
     def test_execute_reboot_fail_issue_reboot_command_warm(self, caplog):
+        """WARM reboot command returning non-zero logs the error and records a failure timestamp."""
         with (
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.time", return_value=TIME),
