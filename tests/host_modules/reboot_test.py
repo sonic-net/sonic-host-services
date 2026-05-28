@@ -288,20 +288,20 @@ class TestReboot(object):
     def test_get_dpu_halt_services_timeout_key_absent(self):
         mock_data = {}
 
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch(
+        with (
+            mock.patch(
                 "reboot.device_info.get_path_to_platform_dir",
                 return_value="/usr/share/sonic/device/test_platform"
-            ))
-            stack.enter_context(mock.patch(
+            ),
+            mock.patch(
                 "builtins.open",
                 mock.mock_open(read_data=json.dumps(mock_data))
-            ))
-            stack.enter_context(mock.patch(
+            ),
+            mock.patch(
                 "reboot.json.load",
                 return_value=mock_data
-            ))
-
+            ),
+        ):
             assert reboot.get_dpu_halt_services_timeout() == reboot.HALT_TIMEOUT
 
     def test_execute_reboot_success_halt(self):
