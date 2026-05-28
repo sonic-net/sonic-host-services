@@ -302,7 +302,7 @@ class TestReboot(object):
                 return_value=mock_data
             ),
         ):
-            assert reboot.get_dpu_halt_services_timeout() == reboot.HALT_TIMEOUT
+            assert get_dpu_halt_services_timeout() == HALT_TIMEOUT
 
     def test_execute_reboot_success_halt(self):
         with (
