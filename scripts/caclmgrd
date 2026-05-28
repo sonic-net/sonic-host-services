@@ -715,6 +715,10 @@ class ControlPlaneAclManager(logger.Logger):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-p', 'udp', '--dport', '546:547', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-p', 'udp', '--dport', '546:547', '-j', 'ACCEPT'])
 
+        # Add iptables command to allow dhcp_server syslog traffic via docker0
+        if not namespace and "dhcp_server" in self.feature_present:
+            iptables_cmds += self.get_dhcp_server_syslog_iptable_commands(namespace)
+
         # Add iptables/ip6tables commands to allow all incoming BGP traffic
         # TODO: Determine BGP ACLs based on configured device sessions, and remove this blanket acceptance
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.exclude_mgmt_port(['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT']))
@@ -1056,6 +1060,12 @@ class ControlPlaneAclManager(logger.Logger):
         self.log_info("Disabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanSrcIP = ""
         return True
+
+    def get_dhcp_server_syslog_iptable_commands(self, namespace):
+        iptables_cmds = []
+        # IPv6 intentionally skipped: docker0 bridge traffic is IPv4-only
+        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-i', 'docker0', '-p', 'udp', '--dport', '514', '-m', 'comment', '--comment', 'dhcp_server_syslog', '-j', 'ACCEPT'])
+        return iptables_cmds
 
     def remove_dash_ha_rules(self, namespace, port):
         iptables_cmds = []
