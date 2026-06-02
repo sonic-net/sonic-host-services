@@ -60,7 +60,7 @@ REDFISH_ACL_TEST_VECTOR = [
                     "REDFISH_ACL|ALLOW_MGMT_V6": {
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "SRC_IP": "2001:db8::/32"
+                        "SRC_IPV6": "2001:db8::/32"
                     },
                 },
                 "DEVICE_METADATA": {
@@ -70,7 +70,7 @@ REDFISH_ACL_TEST_VECTOR = [
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001:db8::/32', '--dport', '443', '-j', 'ACCEPT'],
+                ['ip6tables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001:db8::/32', '--dport', '443', '-j', 'ACCEPT'],
             ],
         }
     ],
