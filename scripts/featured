@@ -219,6 +219,8 @@ class FeatureHandler(object):
         if self._cached_config[feature_name].state != feature.state:
             if self.update_feature_state(feature):
                 self.sync_feature_scope(feature)
+                # Resync namespaces on (re-)registration.
+                self.resync_feature_state(feature)
                 self._cached_config[feature_name] = feature
             else:
                 self.resync_feature_state(self._cached_config[feature_name])
@@ -530,7 +532,7 @@ class FeatureHandler(object):
         return True
 
     def resync_feature_state(self, feature):
-        current_entry = self._config_db.get_entry('FEATURE', feature.name)
+        current_entry = self._config_db.get_entry(FEATURE_TBL, feature.name)
         current_feature_state = current_entry.get('state') if current_entry else None
 
         # feature.state might be rendered from a template, so that it should resync CONFIG DB
@@ -545,14 +547,16 @@ class FeatureHandler(object):
         # For other cases, we should not resync feature.state to CONFIG DB to avoid overriding user configuration.
         if feature.state != current_feature_state:
             if self._feature_state_is_immutable(feature.state) or self._feature_state_is_template(current_feature_state):
-                self._config_db.mod_entry('FEATURE', feature.name, {'state': feature.state})
+                self._config_db.mod_entry(FEATURE_TBL, feature.name, {'state': feature.state})
 
-        # Resync namespace CONFIG_DBs independently.
+        # Resync namespaces like the host above: render templates, enforce immutable
+        # states, and restore a missing 'state'.
         for ns, db in self.ns_cfg_db.items():
-            ns_entry = db.get_entry('FEATURE', feature.name)
+            ns_entry = db.get_entry(FEATURE_TBL, feature.name)
             ns_state = ns_entry.get('state') if ns_entry else None
-            if ns_state is not None and self._feature_state_is_template(ns_state):
-                db.mod_entry('FEATURE', feature.name, {'state': feature.state})
+            if ns_state != feature.state and \
+               (self._feature_state_is_immutable(feature.state) or self._feature_state_is_template(ns_state)):
+                db.mod_entry(FEATURE_TBL, feature.name, {'state': feature.state})
 
     def sync_feature_delay_state(self, feature):
         current_entry = self._config_db.get_entry('FEATURE', feature.name)
