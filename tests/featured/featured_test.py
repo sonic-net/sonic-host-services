@@ -485,6 +485,7 @@ class TestFeatureHandler(TestCase):
 
         # Host differs -> both host and namespaces should be written
         mock_db.get_entry.return_value = {
+            'state': 'enabled',
             'has_per_asic_scope': 'False',
             'has_global_scope': 'False',
         }
@@ -508,6 +509,7 @@ class TestFeatureHandler(TestCase):
 
         # Host matches but namespaces are stale -> namespaces should still be written
         mock_db.get_entry.return_value = {
+            'state': 'enabled',
             'has_per_asic_scope': 'True',
             'has_global_scope': 'True',
         }
