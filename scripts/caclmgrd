@@ -131,6 +131,7 @@ class ControlPlaneAclManager(logger.Logger):
     bfdAllowed = False
     VxlanAllowed = False
     VxlanSrcIP = ""
+    RedfishAllowed = False
     # a map from dpu name to port
     dashHaPortMap = {}
 
@@ -166,6 +167,9 @@ class ControlPlaneAclManager(logger.Logger):
         # Get all features that are present {feature_name : True/False}
         self.feature_present = {}
         self.update_feature_present()
+
+        feature_tb = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.FEATURE_TABLE)
+        self.RedfishAllowed = feature_tb.get("redfish", {}).get("state") == "enabled"
 
         metadata = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.DEVICE_METADATA_TABLE)
         if 'subtype' in metadata['localhost'] and metadata['localhost']['subtype'] == 'DualToR':
@@ -753,6 +757,11 @@ class ControlPlaneAclManager(logger.Logger):
                                      .format(table_name, acl_service))
                     continue
 
+                if acl_service == "REDFISH" and not self.RedfishAllowed:
+                    self.log_warning("Ignoring control plane ACL '{}': REDFISH service is not enabled on this platform"
+                                     .format(table_name))
+                    continue
+
                 self.log_info("Translating ACL rules for control plane ACL '{}' (service: '{}')"
                               .format(table_name, acl_service))
 
@@ -1059,6 +1068,14 @@ class ControlPlaneAclManager(logger.Logger):
         self.VxlanSrcIP = ""
         return True
 
+    def allow_redfish(self):
+        self.RedfishAllowed = True
+        self.log_info("Enabled REDFISH control plane ACL handling")
+
+    def block_redfish(self):
+        self.RedfishAllowed = False
+        self.log_info("Disabled REDFISH control plane ACL handling")
+
     def remove_dash_ha_rules(self, namespace, port):
         iptables_cmds = []
         # Remove iptables/ip6tables commands that allow DASH-HA packets
@@ -1164,6 +1181,9 @@ class ControlPlaneAclManager(logger.Logger):
 
         subscribe_dpu_table = swsscommon.SubscriberStateTable(config_db_connector, self.DPU_TABLE)
         sel.addSelectable(subscribe_dpu_table)
+
+        subscribe_feature_table = swsscommon.SubscriberStateTable(config_db_connector, self.FEATURE_TABLE)
+        sel.addSelectable(subscribe_feature_table)
         # Map of Namespace <--> susbcriber table's object
         config_db_subscriber_table_map = {}
 
@@ -1250,6 +1270,8 @@ class ControlPlaneAclManager(logger.Logger):
                         self.update_dhcp_acl(key, op, dict(fvs), mark)
                 continue
 
+            ctrl_plane_acl_notification = set()
+
             if db_id == config_db_id:
                 while True:
                     key, op, fvs = subscribe_vxlan_table.pop()
@@ -1267,7 +1289,21 @@ class ControlPlaneAclManager(logger.Logger):
                     if "dash-ha" in self.feature_present:
                         self.update_dash_ha_rules(namespace, key, op, fvs)
 
-            ctrl_plane_acl_notification = set()
+                while True:
+                    key, op, fvs = subscribe_feature_table.pop()
+                    if not key:
+                        break
+                    if key != "redfish":
+                        continue
+                    new_state = (op == 'SET' and dict(fvs).get("state") == "enabled")
+                    if new_state == self.RedfishAllowed:
+                        continue
+                    if new_state:
+                        self.allow_redfish()
+                    else:
+                        self.block_redfish()
+                    # Re-walk so any existing REDFISH ACL rules get (de)programmed now.
+                    ctrl_plane_acl_notification.add(namespace)
 
             # Pop data of both Subscriber Table object of namespace that got config db acl table event
             for table in config_db_subscriber_table_map[namespace]:

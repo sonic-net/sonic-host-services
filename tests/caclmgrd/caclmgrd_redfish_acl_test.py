@@ -7,7 +7,7 @@ from sonic_py_common.general import load_module_from_source
 from unittest import TestCase, mock
 from pyfakefs.fake_filesystem_unittest import patchfs
 
-from .test_redfish_acl_vectors import REDFISH_ACL_TEST_VECTOR
+from .test_redfish_acl_vectors import REDFISH_ACL_TEST_VECTOR, REDFISH_ACL_DISABLED_FEATURE_VECTORS
 from tests.common.mock_configdb import MockConfigDb
 
 
@@ -43,8 +43,9 @@ class TestCaclmgrdRedfishAcl(TestCase):
         self.caclmgrd.ControlPlaneAclManager.get_chassis_midplane_interface_ip = mock.MagicMock(return_value='')
         caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
 
-        # Sanity: the dict entry under test must exist. If this assertion ever
-        # fires, scripts/caclmgrd is missing the REDFISH registration.
+        self.assertTrue(caclmgrd_daemon.RedfishAllowed,
+                        "Seed at __init__ should set RedfishAllowed=True for these vectors")
+
         self.assertIn("REDFISH", caclmgrd_daemon.ACL_SERVICES,
                       "ACL_SERVICES is missing the 'REDFISH' entry — see scripts/caclmgrd")
         self.assertEqual(caclmgrd_daemon.ACL_SERVICES["REDFISH"]["dst_ports"], ["443"])
@@ -55,3 +56,35 @@ class TestCaclmgrdRedfishAcl(TestCase):
         iptables_rules_ret = [tuple(i) for i in iptables_rules_ret]
         self.assertEqual(set(test_data["return"]).issubset(set(iptables_rules_ret)), True,
                          "Expected iptables rules not produced. Got: {}".format(iptables_rules_ret))
+
+    @parameterized.expand(REDFISH_ACL_DISABLED_FEATURE_VECTORS)
+    @patchfs
+    def test_caclmgrd_redfish_acl_skipped_when_feature_disabled(self, test_name, test_data, fs):
+        """
+            REDFISH only ships on BMC-equipped platforms. When the redfish FEATURE
+            is "disabled", RedfishAllowed stays False and an operator template
+            referencing the REDFISH service must not program any tcp/443 iptables
+            rules -- otherwise it would silently govern whatever else (if anything)
+            listens on 443. Parametrized over IPv4 and IPv6 to confirm the gate
+            skips REDFISH regardless of IP family.
+        """
+        if not os.path.exists(DBCONFIG_PATH):
+            fs.create_file(DBCONFIG_PATH)
+
+        MockConfigDb.set_config_db(test_data["config_db"])
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
+        self.caclmgrd.ControlPlaneAclManager.generate_block_ip2me_traffic_iptables_commands = mock.MagicMock(return_value=[])
+        self.caclmgrd.ControlPlaneAclManager.get_chain_list = mock.MagicMock(return_value=["INPUT", "FORWARD", "OUTPUT"])
+        self.caclmgrd.ControlPlaneAclManager.get_chassis_midplane_interface_ip = mock.MagicMock(return_value='')
+        caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+
+        self.assertFalse(caclmgrd_daemon.RedfishAllowed,
+                         "Seed at __init__ should set RedfishAllowed=False when FEATURE.redfish.state=disabled")
+
+        iptables_rules_ret, _ = caclmgrd_daemon.get_acl_rules_and_translate_to_iptables_commands('', MockConfigDb())
+
+        port_443_rules = [r for r in iptables_rules_ret if "--dport" in r and "443" in r]
+        self.assertEqual(port_443_rules, test_data["return"],
+                         "REDFISH ACL should be skipped when RedfishAllowed=False, "
+                         "but found tcp/443 rules: {}".format(port_443_rules))
