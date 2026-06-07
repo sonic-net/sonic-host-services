@@ -1076,6 +1076,28 @@ class ControlPlaneAclManager(logger.Logger):
         self.RedfishAllowed = False
         self.log_info("Disabled REDFISH control plane ACL handling")
 
+    def handle_redfish_feature_events(self, subscribe_feature_table, namespace, ctrl_plane_acl_notification):
+        """Drain FEATURE table events and toggle REDFISH control plane ACL handling.
+
+        REDFISH iptables rules are only emitted when FEATURE.redfish is enabled. On a
+        state change, flip RedfishAllowed and request a re-walk so any existing REDFISH
+        ACL rules get (de)programmed immediately.
+        """
+        while True:
+            key, op, fvs = subscribe_feature_table.pop()
+            if not key:
+                break
+            if key != "redfish":
+                continue
+            new_state = (op == 'SET' and dict(fvs).get("state") == "enabled")
+            if new_state == self.RedfishAllowed:
+                continue
+            if new_state:
+                self.allow_redfish()
+            else:
+                self.block_redfish()
+            ctrl_plane_acl_notification.add(namespace)
+
     def remove_dash_ha_rules(self, namespace, port):
         iptables_cmds = []
         # Remove iptables/ip6tables commands that allow DASH-HA packets
@@ -1289,21 +1311,7 @@ class ControlPlaneAclManager(logger.Logger):
                     if "dash-ha" in self.feature_present:
                         self.update_dash_ha_rules(namespace, key, op, fvs)
 
-                while True:
-                    key, op, fvs = subscribe_feature_table.pop()
-                    if not key:
-                        break
-                    if key != "redfish":
-                        continue
-                    new_state = (op == 'SET' and dict(fvs).get("state") == "enabled")
-                    if new_state == self.RedfishAllowed:
-                        continue
-                    if new_state:
-                        self.allow_redfish()
-                    else:
-                        self.block_redfish()
-                    # Re-walk so any existing REDFISH ACL rules get (de)programmed now.
-                    ctrl_plane_acl_notification.add(namespace)
+                self.handle_redfish_feature_events(subscribe_feature_table, namespace, ctrl_plane_acl_notification)
 
             # Pop data of both Subscriber Table object of namespace that got config db acl table event
             for table in config_db_subscriber_table_map[namespace]:

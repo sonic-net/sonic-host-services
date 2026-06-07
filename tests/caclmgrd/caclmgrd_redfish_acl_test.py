@@ -88,3 +88,58 @@ class TestCaclmgrdRedfishAcl(TestCase):
         self.assertEqual(port_443_rules, test_data["return"],
                          "REDFISH ACL should be skipped when RedfishAllowed=False, "
                          "but found tcp/443 rules: {}".format(port_443_rules))
+
+    @patchfs
+    def test_handle_redfish_feature_events(self, fs):
+        """
+            Drive handle_redfish_feature_events (the FEATURE-table subscription
+            handler) directly, covering every branch: enable transition, disable
+            transition, non-redfish event ignored, and same-state no-op.
+        """
+        if not os.path.exists(DBCONFIG_PATH):
+            fs.create_file(DBCONFIG_PATH)
+
+        MockConfigDb.set_config_db({
+            "DEVICE_METADATA": {"localhost": {}},
+            "FEATURE": {"redfish": {"state": "disabled"}},
+        })
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ip = mock.MagicMock()
+        self.caclmgrd.ControlPlaneAclManager.get_namespace_mgmt_ipv6 = mock.MagicMock()
+        self.caclmgrd.ControlPlaneAclManager.generate_block_ip2me_traffic_iptables_commands = mock.MagicMock(return_value=[])
+        self.caclmgrd.ControlPlaneAclManager.get_chain_list = mock.MagicMock(return_value=["INPUT", "FORWARD", "OUTPUT"])
+        self.caclmgrd.ControlPlaneAclManager.get_chassis_midplane_interface_ip = mock.MagicMock(return_value='')
+        caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+        self.assertFalse(caclmgrd_daemon.RedfishAllowed)
+
+        def sub_with(events):
+            sub = mock.MagicMock()
+            sub.pop.side_effect = events + [("", None, None)]
+            return sub
+
+        # enable: flag flips True and namespace queued for re-walk
+        notif = set()
+        caclmgrd_daemon.handle_redfish_feature_events(
+            sub_with([("redfish", "SET", (("state", "enabled"),))]), "", notif)
+        self.assertTrue(caclmgrd_daemon.RedfishAllowed)
+        self.assertIn("", notif)
+
+        # disable: flag flips False and namespace queued
+        notif = set()
+        caclmgrd_daemon.handle_redfish_feature_events(
+            sub_with([("redfish", "SET", (("state", "disabled"),))]), "", notif)
+        self.assertFalse(caclmgrd_daemon.RedfishAllowed)
+        self.assertIn("", notif)
+
+        # non-redfish FEATURE event: ignored, nothing queued
+        notif = set()
+        caclmgrd_daemon.handle_redfish_feature_events(
+            sub_with([("snmp", "SET", (("state", "enabled"),))]), "", notif)
+        self.assertFalse(caclmgrd_daemon.RedfishAllowed)
+        self.assertEqual(notif, set())
+
+        # same-state event (already disabled): no-op, nothing queued
+        notif = set()
+        caclmgrd_daemon.handle_redfish_feature_events(
+            sub_with([("redfish", "SET", (("state", "disabled"),))]), "", notif)
+        self.assertFalse(caclmgrd_daemon.RedfishAllowed)
+        self.assertEqual(notif, set())
