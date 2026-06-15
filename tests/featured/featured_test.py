@@ -338,8 +338,8 @@ class TestFeatureHandler(TestCase):
 
     def test_sync_feature_scope_toctou(self):
         """sync_feature_scope must delete a partial entry it accidentally creates when
-        the FEATURE row is deleted by a concurrent deregister between the mod_entry
-        calls and the post-write existence check (TOCTOU)."""
+        the FEATURE row is deleted by a concurrent deregister between the mod_entry and
+        the post-write existence check (TOCTOU)."""
         mock_db = mock.MagicMock()
         mock_feature_state_table = mock.MagicMock()
 
