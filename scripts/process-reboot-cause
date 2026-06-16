@@ -32,6 +32,8 @@ USER_ISSUED_REBOOT_CAUSE_REGEX ="User issued \'{}\' command [User: {}, Time: {}]
 REBOOT_CAUSE_UNKNOWN = "Unknown"
 REBOOT_CAUSE_TABLE_NAME = "REBOOT_CAUSE"
 MAX_HISTORY_FILES = 10
+DPU_REBOOT_CAUSE_DB_FIELDS = ("cause", "time", "user", "comment", "boot_id")
+NPU_REBOOT_CAUSE_DB_FIELDS = ("cause", "time", "user", "comment")
 
 REDIS_HOSTIP = "127.0.0.1"
 state_db = None
@@ -73,10 +75,10 @@ def read_reboot_cause_files_and_save_to_db(device='npu'):
                             sonic_logger.log_warning(f"Missing 'name' in reboot-cause file")
                             continue  # Skip this file
                         _hash = f"{REBOOT_CAUSE_TABLE_NAME}|{device.upper()}|{data['name']}"
-                    db.set(table, _hash, 'cause', data.get('cause', ''))
-                    db.set(table, _hash, 'time', data.get('time', ''))
-                    db.set(table, _hash, 'user', data.get('user', ''))
-                    db.set(table, _hash, 'comment', data.get('comment', ''))
+                    db_fields = (NPU_REBOOT_CAUSE_DB_FIELDS if device == 'npu'
+                                 else DPU_REBOOT_CAUSE_DB_FIELDS)
+                    for field in db_fields:
+                        db.set(table, _hash, field, data.get(field, ''))
                 except json.decoder.JSONDecodeError as je:
                     sonic_logger.log_error("Unable to process reload cause file {}: {}".format(x, je))
                     pass
