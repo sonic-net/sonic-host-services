@@ -7,6 +7,7 @@ After=network-online.target database.service gnmi.service pmon.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /usr/local/bin/gnoi_shutdown_daemon.py
+ExecCondition=/usr/bin/python3 -c "import sys; from sonic_py_common import device_info; from utilities_common.chassis import is_dpu; sys.exit(0 if (device_info.is_smartswitch() and not is_dpu()) else 1)"
 Restart=on-failure
 RestartSec=5
 
