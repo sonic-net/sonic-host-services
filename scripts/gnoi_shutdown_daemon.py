@@ -293,15 +293,6 @@ class GnoiRebootHandler:
 # #########
 
 def main():
-    # Check if this is a SmartSwitch NPU platform - exit gracefully if not
-    try:
-        if not (device_info.is_smartswitch() and not is_dpu()):
-            logger.log_notice("Not a SmartSwitch NPU platform, exiting gracefully")
-            return
-    except (ImportError, AttributeError, RuntimeError) as e:
-        logger.log_notice(f"Platform check failed ({e}), exiting gracefully")
-        return
-
     # Connect for STATE_DB (for gnoi_halt_in_progress flag) and CONFIG_DB
     state_db = daemon_base.db_connect("STATE_DB")
     config_db = daemon_base.db_connect("CONFIG_DB")
