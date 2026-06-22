@@ -11,12 +11,12 @@ import json
 import time
 import subprocess
 import os
-import redis
 import threading
 import sonic_py_common.daemon_base as daemon_base
 from sonic_platform_base.module_base import ModuleBase
-from sonic_py_common import syslogger
+from sonic_py_common import syslogger, device_info
 from swsscommon import swsscommon
+from utilities_common.chassis import is_dpu
 
 REBOOT_RPC_TIMEOUT_SEC = 60  # gNOI System.Reboot call timeout
 STATUS_POLL_TIMEOUT_SEC = 60  # overall time - polling RebootStatus
@@ -24,7 +24,6 @@ STATUS_POLL_INTERVAL_SEC = 1  # delay between reboot status polls
 HALT_IN_PROGRESS_POLL_INTERVAL_SEC = 5  # delay between halt_in_progress checks
 STATUS_RPC_TIMEOUT_SEC = 10  # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3  # gNOI System.Reboot method: HALT
-STATE_DB_INDEX = 6
 CONFIG_DB_INDEX = 4
 DEFAULT_GNMI_PORT = "8080"  # Default GNMI port for DPU
 

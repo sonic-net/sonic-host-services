@@ -5,9 +5,6 @@ import sys
 import os
 import json
 
-# Mock redis module (available in SONiC runtime, not in test environment)
-sys.modules['redis'] = MagicMock()
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
 import gnoi_shutdown_daemon

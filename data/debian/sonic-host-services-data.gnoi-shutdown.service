@@ -1,14 +1,13 @@
 [Unit]
 Description=gNOI based DPU Graceful Shutdown Daemon
-Requires=database.service
-Wants=network-online.target
-After=network-online.target database.service
+Requires=database.service gnmi.service
+Wants=network-online.target pmon.service
+After=network-online.target database.service gnmi.service pmon.service
 
 [Service]
 Type=simple
-ExecCondition=/usr/bin/python3 /usr/local/bin/check_platform.py
-ExecStartPre=/bin/bash /usr/local/bin/wait-for-sonic-core.sh
 ExecStart=/usr/bin/python3 /usr/local/bin/gnoi_shutdown_daemon.py
+ExecCondition=/usr/bin/python3 -c "import sys; from sonic_py_common import device_info; sys.exit(0 if (device_info.is_smartswitch() and not device_info.is_dpu()) else 1)"
 Restart=on-failure
 RestartSec=5
 

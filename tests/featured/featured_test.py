@@ -528,6 +528,138 @@ class TestFeatureHandler(TestCase):
             })
 
 
+class TestHandlerDeregistration(TestCase):
+
+    def test_handler_deregister_cleans_namespace_dbs(self):
+        mock_db = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        mock_ns_cfg_db = mock.MagicMock()
+        mock_ns_state_tbl = mock.MagicMock()
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_cfg_db}
+        feature_handler.ns_feature_state_tbl = {'asic0': mock_ns_state_tbl}
+
+        feature_handler._cached_config['sflow'] = featured.Feature('sflow', {'state': 'enabled'})
+
+        feature_handler.handler('sflow', 'DEL', {})
+
+        mock_feature_state_table._del.assert_called_once_with('sflow')
+        mock_ns_cfg_db.set_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', None)
+        mock_ns_state_tbl._del.assert_called_once_with('sflow')
+        assert 'sflow' not in feature_handler._cached_config
+
+
+class TestResyncFeatureStateNamespace(TestCase):
+
+    def _make_handler(self, host_state, ns_get_entry):
+        """Build a FeatureHandler with a mocked host DB and a single mocked namespace DB."""
+        mock_db = mock.MagicMock()
+        mock_db.get_entry.return_value = {'state': host_state} if host_state is not None else None
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+
+        mock_ns_db = mock.MagicMock()
+        mock_ns_db.get_entry.return_value = ns_get_entry
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_db}
+        return feature_handler, mock_db, mock_ns_db
+
+    def _feature(self, state):
+        return featured.Feature('sflow', {'state': state, 'auto_restart': 'enabled'})
+
+    def test_namespace_template_rendered_when_host_matches(self):
+        # Host already 'enabled' (no host write), namespace still holds a template -> render it.
+        feature_handler, mock_db, mock_ns_db = self._make_handler('enabled', {'state': '{{ some_template }}'})
+        feature = self._feature('enabled')
+        feature_handler._cached_config['sflow'] = feature
+
+        feature_handler.resync_feature_state(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        mock_ns_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {'state': 'enabled'})
+
+    def test_namespace_valid_state_not_overwritten(self):
+        # Namespace already matches the rendered state -> idempotent, no write.
+        feature_handler, mock_db, mock_ns_db = self._make_handler('enabled', {'state': 'enabled'})
+        feature = self._feature('enabled')
+        feature_handler._cached_config['sflow'] = feature
+
+        feature_handler.resync_feature_state(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        mock_ns_db.mod_entry.assert_not_called()
+
+    def test_namespace_immutable_state_forced(self):
+        # Immutable rendered state must be enforced in the namespace even if it holds a
+        # concrete (non-template) differing value.
+        feature_handler, mock_db, mock_ns_db = self._make_handler('always_enabled', {'state': 'disabled'})
+        feature = self._feature('always_enabled')
+        feature_handler._cached_config['sflow'] = feature
+
+        feature_handler.resync_feature_state(feature)
+
+        mock_ns_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {'state': 'always_enabled'})
+
+    def test_namespace_missing_state_repopulated(self):
+        # Namespace entry exists but has no 'state' (e.g. only has_* written by
+        # sync_feature_scope after a deregister/re-register) -> state must be repopulated.
+        feature_handler, mock_db, mock_ns_db = self._make_handler('enabled', {'has_global_scope': 'True'})
+        feature = self._feature('enabled')
+        feature_handler._cached_config['sflow'] = feature
+
+        feature_handler.resync_feature_state(feature)
+
+        mock_ns_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {'state': 'enabled'})
+
+    def test_namespace_concrete_user_state_preserved(self):
+        # Non-immutable rendered state: a concrete user-set namespace value that differs
+        # must NOT be overwritten.
+        feature_handler, mock_db, mock_ns_db = self._make_handler('disabled', {'state': 'enabled'})
+        feature = self._feature('disabled')
+        feature_handler._cached_config['sflow'] = feature
+
+        feature_handler.resync_feature_state(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        mock_ns_db.mod_entry.assert_not_called()
+
+
+class TestHandlerReregistration(TestCase):
+
+    def test_deregister_then_register_restores_namespace_state(self):
+        # DEL removes the namespace entry; on the subsequent SET, sync_feature_scope is
+        # stubbed and the namespace is simulated as a partial row (has_* only, no 'state'),
+        # so this asserts that the SET-success resync_feature_state writes the namespace
+        # 'state' back. (Handler-level test; sync_feature_scope itself is mocked out.)
+        mock_db = mock.MagicMock()
+        feature_handler = featured.FeatureHandler(mock_db, mock.MagicMock(), {}, False)
+        # Make Feature() rendering deterministic regardless of the host's runtime metadata.
+        feature_handler._device_running_config = {}
+
+        mock_ns_cfg_db = mock.MagicMock()
+        mock_ns_state_tbl = mock.MagicMock()
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_cfg_db}
+        feature_handler.ns_feature_state_tbl = {'asic0': mock_ns_state_tbl}
+
+        # 1) Deregister -> namespace entry deleted.
+        feature_handler.handler('sflow', 'DEL', {})
+        mock_ns_cfg_db.set_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', None)
+
+        # 2) Re-register. Host already carries the state; the namespace was rebuilt partial
+        #    (only has_* from sync_feature_scope) so it lacks 'state'.
+        mock_db.get_entry.return_value = {'state': 'enabled'}
+        mock_ns_cfg_db.get_entry.return_value = {'has_global_scope': 'True'}
+
+        with mock.patch.object(feature_handler, 'update_systemd_config'), \
+             mock.patch.object(feature_handler, 'update_feature_state', return_value=True), \
+             mock.patch.object(feature_handler, 'sync_feature_scope'):
+            feature_handler.handler('sflow', 'SET', {'state': 'enabled', 'auto_restart': 'enabled'})
+
+        mock_ns_cfg_db.mod_entry.assert_any_call(featured.FEATURE_TBL, 'sflow', {'state': 'enabled'})
+
+
 @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
 @mock.patch('sonic_py_common.device_info.get_device_runtime_metadata')
 class TestFeatureDaemon(TestCase):
