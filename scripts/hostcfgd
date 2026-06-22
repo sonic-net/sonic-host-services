@@ -96,6 +96,7 @@ RADIUS_SERVER_TIMEOUT_DEFAULT = "5"
 RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
+RADIUS_SERVER_DONT_SEND_MSG_AUTH = False
 
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
@@ -378,7 +379,8 @@ class AaaCfg(object):
             'retransmit': RADIUS_SERVER_RETRANSMIT_DEFAULT,
             'timeout': RADIUS_SERVER_TIMEOUT_DEFAULT,
             'passkey': RADIUS_SERVER_PASSKEY_DEFAULT,
-            'skip_msg_auth': RADIUS_SERVER_SKIP_MSG_AUTH
+            'skip_msg_auth': RADIUS_SERVER_SKIP_MSG_AUTH,
+            'dont_send_msg_auth': RADIUS_SERVER_DONT_SEND_MSG_AUTH
         }
         self.radius_global = {}
         self.radius_servers = {}
@@ -540,7 +542,9 @@ class AaaCfg(object):
             self.radius_servers[key] = data
             if self.radius_servers[key].get('skip_msg_auth', None) is not None:
                 data['skip_msg_auth'] = is_true(self.radius_servers[key]['skip_msg_auth'])
-
+            if self.radius_servers[key].get('dont_send_msg_auth', None) is not None:
+                data['dont_send_msg_auth'] = is_true(self.radius_servers[key]['dont_send_msg_auth'])
+                
         if modify_conf:
             self.modify_conf_file()
 
