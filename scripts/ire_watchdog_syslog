@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""
+ire_watchdog.py — IRE data-path CRC interrupt watchdog (syslog-tail mode).
+
+Watches /var/log/syslog for the SDK's `dnxc_interrupt_print_info` message
+emitted on IRE_ErrorDataPathCrc. When seen, shuts down all front-panel
+ports on the affected core via `sudo config interface shutdown`, raises a
+CRITICAL syslog, and latches (no auto-recovery).
+
+Design intent: treat any IRE data-path CRC error as a hard fail-stop event.
+The SDK already masks the interrupt after a single failed clear attempt,
+so the message is guaranteed to fire exactly once per occurrence (see
+production evidence: `dnxc_intr_unmask_handling_in_isr: ... exceed threshold
+1!!! Masked`). Memory corruption persists in chip SRAM until reset, so
+manual operator recovery (reboot or syncd reload) is required.
+
+Why syslog-tail instead of bcmcmd polling: every `bcmcmd` invocation makes
+syncd log a WARNING from sai_driver_shell:367, polluting /var/log/syslog at
+1Hz. Watching the existing dnxc_interrupt_print_info message that the SDK
+already emits on the actual fault produces zero ongoing log noise and
+catches the event with sub-100ms latency.
+
+Runs in the host (DUT) namespace. Reads /var/log/syslog via `tail -F`,
+which handles log rotation, truncation, and rsyslog restart transparently.
+
+Production sample line (WAW23 dump, 2026-06-09 incident):
+  INFO syncd#supervisord: syncd 0:dnxc_interrupt_print_info:
+  name=IRE_ErrorDataPathCrc, id=1666, index=0, block=3, unit=0,
+  recurring_action=0 | Check Configuration | None
+
+Recovery: not implemented. Operator runbook:
+  1. Capture techsupport.
+  2. Reload syncd (or reboot the device).
+  3. Manually bring ports back up: sudo config interface startup EthernetX
+"""
+
+import argparse
+import logging
+import logging.handlers
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PORT_CONFIG_GLOB = '/usr/share/sonic/device/*/*/port_config.ini'
+SYSLOG_PATH = '/var/log/syslog'
+SHUTDOWN_CMD = ['sudo', 'config', 'interface', 'shutdown']
+
+# Match dnxc_interrupt_print_info lines for the IRE data-path CRC error.
+# We extract the `block=N` field which maps 1:1 to DNX core N.
+# Order of fields is stable in the SDK (name first, then id/index/block/unit),
+# but we match permissively in case future SDK versions reorder.
+INTR_RE = re.compile(
+    r'dnxc_interrupt_print_info:.*?name=IRE_ErrorDataPathCrc.*?block=(\d+)'
+)
+
+
+class WatchdogError(Exception):
+    """Recoverable error during normal operation."""
+
+
+def setup_logging(verbose: bool) -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+
+    try:
+        syslog = logging.handlers.SysLogHandler(address='/dev/log')
+        syslog.ident = 'ire_watchdog'
+        syslog.setFormatter(logging.Formatter('ire_watchdog: %(message)s'))
+        root.addHandler(syslog)
+    except Exception as e:
+        root.warning(f'syslog handler unavailable: {e}')
+
+
+def find_port_config() -> Path:
+    """Locate port_config.ini under the running hwsku."""
+    try:
+        hwsku = subprocess.run(
+            ['sonic-cfggen', '-d', '-v', 'DEVICE_METADATA.localhost.hwsku'],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+        platform = subprocess.run(
+            ['sonic-cfggen', '-d', '-v', 'DEVICE_METADATA.localhost.platform'],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+        path = Path(f'/usr/share/sonic/device/{platform}/{hwsku}/port_config.ini')
+        if path.exists():
+            return path
+    except Exception as e:
+        logging.warning(f'sonic-cfggen probe failed: {e}, falling back to glob')
+
+    matches = sorted(Path('/').glob(PORT_CONFIG_GLOB.lstrip('/')))
+    if not matches:
+        raise RuntimeError(f'no port_config.ini found under {PORT_CONFIG_GLOB}')
+    return matches[0]
+
+
+def build_port_to_core(port_config: Path) -> dict[str, int]:
+    """Parse port_config.ini and return {EthernetX: core_id}."""
+    port_to_core: dict[str, int] = {}
+    header: list[str] | None = None
+    for line in port_config.read_text().splitlines():
+        line = line.strip()
+        if not line or (line.startswith('#') and 'name' not in line):
+            continue
+        if line.startswith('#'):
+            header = line.lstrip('#').split()
+            continue
+        if header is None:
+            raise RuntimeError(f'no header in {port_config}')
+        fields = line.split()
+        if len(fields) < len(header):
+            continue
+        row = dict(zip(header, fields))
+        name = row.get('name')
+        core_id = row.get('core_id')
+        if name and core_id and core_id.isdigit():
+            port_to_core[name] = int(core_id)
+    if not port_to_core:
+        raise RuntimeError(f'no port->core mappings parsed from {port_config}')
+    return port_to_core
+
+
+def shut_ports(ports: list[str]) -> list[tuple[str, bool, str]]:
+    """Shut down ports via `sudo config interface shutdown`.
+
+    Persists admin-down state in config_db across reboots — operator must
+    explicitly run `sudo config interface startup EthernetX` to revert.
+
+    Returns [(port, ok, msg)].
+    """
+    results = []
+    for port in ports:
+        try:
+            r = subprocess.run(
+                SHUTDOWN_CMD + [port],
+                capture_output=True, text=True, timeout=15,
+            )
+            msg = (r.stderr.strip() or r.stdout.strip())
+            results.append((port, r.returncode == 0, msg))
+        except subprocess.TimeoutExpired:
+            results.append((port, False, 'timeout'))
+        except Exception as e:
+            results.append((port, False, repr(e)))
+    return results
+
+
+def open_syslog_tail() -> subprocess.Popen:
+    """Spawn `tail -F` on /var/log/syslog.
+
+    `tail -F` (capital F) follows the file by name — it re-opens after log
+    rotation, truncation, or rsyslog restart. -n0 starts at end-of-file so
+    we only see new lines.
+    """
+    return subprocess.Popen(
+        ['tail', '-n0', '-F', SYSLOG_PATH],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,  # line-buffered
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    p.add_argument('--dry-run', action='store_true',
+                   help='log what would be shut down but do not execute')
+    p.add_argument('--verbose', action='store_true',
+                   help='enable debug logging')
+    p.add_argument('--simulate-line', metavar='LINE',
+                   help='for testing: inject a fake syslog line into the '
+                        'detection path before tailing real syslog')
+    return p.parse_args()
+
+
+def handle_match(core: int, ports_on_core: list[str], dry_run: bool, log: logging.Logger,
+                 latched_cores: set[int]) -> None:
+    if core in latched_cores:
+        log.debug(f'core {core} already latched, ignoring duplicate event')
+        return
+
+    log.critical(
+        f'IRE_ErrorDataPathCrc on block/core {core}; shutting '
+        f'{len(ports_on_core)} ports: {ports_on_core}; manual operator '
+        f'recovery required (reload syncd or reboot)'
+    )
+    if dry_run:
+        log.warning(f'DRY RUN: would shut {ports_on_core}')
+    else:
+        for port, ok, msg in shut_ports(ports_on_core):
+            if ok:
+                log.info(f'  shut {port}: OK')
+            else:
+                log.error(f'  shut {port}: FAILED: {msg}')
+    latched_cores.add(core)
+
+
+def main() -> int:
+    args = parse_args()
+    setup_logging(args.verbose)
+    log = logging.getLogger()
+    log.info(f'starting ire_watchdog (syslog-tail mode, dry_run={args.dry_run})')
+
+    port_config = find_port_config()
+    log.info(f'port config: {port_config}')
+    port_to_core = build_port_to_core(port_config)
+    core_to_ports: dict[int, list[str]] = {}
+    for port, core in port_to_core.items():
+        core_to_ports.setdefault(core, []).append(port)
+    for core, ports in sorted(core_to_ports.items()):
+        ports.sort(key=lambda p: int(p.removeprefix('Ethernet')) if p.removeprefix('Ethernet').isdigit() else 9999)
+        log.info(f'core {core}: {len(ports)} ports ({ports[0]}..{ports[-1]})')
+
+    latched_cores: set[int] = set()
+
+    # Optional injection for testing without touching real syslog
+    if args.simulate_line:
+        log.warning(f'SIMULATION: injecting line: {args.simulate_line}')
+        m = INTR_RE.search(args.simulate_line)
+        if m:
+            core = int(m.group(1))
+            ports = core_to_ports.get(core, [])
+            handle_match(core, ports, args.dry_run, log, latched_cores)
+        else:
+            log.error(f'SIMULATION: line did not match regex')
+
+    # Main loop: tail syslog, restart `tail` on EOF or error
+    while True:
+        try:
+            log.info(f'tailing {SYSLOG_PATH}')
+            proc = open_syslog_tail()
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                m = INTR_RE.search(line)
+                if not m:
+                    continue
+                core = int(m.group(1))
+                log.info(f'matched interrupt line for core {core}: {line.strip()}')
+                ports = core_to_ports.get(core, [])
+                if not ports:
+                    log.error(f'no ports mapped to core {core}; cannot act')
+                    continue
+                handle_match(core, ports, args.dry_run, log, latched_cores)
+            # tail's stdout EOF — shouldn't happen with -F, but reconnect anyway
+            log.warning(f'tail -F exited (rc={proc.poll()}); restarting in 2s')
+        except Exception as e:
+            log.error(f'tail loop error: {e}; restarting in 5s')
+            time.sleep(5)
+            continue
+        time.sleep(2)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

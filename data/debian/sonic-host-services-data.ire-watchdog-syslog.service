@@ -1,0 +1,20 @@
+[Unit]
+Description=IRE data-path CRC watchdog (syslog-tail mode)
+Requires=rsyslog.service database.service
+After=rsyslog.service database.service config-setup.service
+BindsTo=sonic.target
+After=sonic.target
+
+[Service]
+Type=simple
+# Gate to DNX/J3 platforms (switch_type == "voq"). The companion
+# ire_watchdog.service (poll-register mode) and this unit are mutually
+# exclusive — install/enable only one.
+ExecCondition=/usr/bin/python3 -c "import sys; from sonic_py_common import device_info; sys.exit(0 if device_info.get_localhost_info('switch_type') == 'voq' else 1)"
+ExecStart=/usr/local/bin/ire_watchdog_syslog
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=3
+
+[Install]
+WantedBy=sonic.target
