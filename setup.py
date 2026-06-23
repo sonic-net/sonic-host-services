@@ -50,8 +50,7 @@ setup(
         'scripts/sonic-host-server',
         'scripts/ldap.py',
         'scripts/console-monitor',
-        'scripts/ire_watchdog',
-        'scripts/ire_watchdog_syslog'
+        'scripts/ire_watchdog'
     ],
     install_requires = [
         'dbus-python',

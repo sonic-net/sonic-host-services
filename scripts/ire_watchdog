@@ -1,51 +1,4 @@
 #!/usr/bin/env python3
-"""
-ire_watchdog — IRE data-path CRC error watchdog (poll-register mode).
-
-Polls IRE_DATA_PATH_CRC_ERROR_COUNTER on each DNX core once per second via
-`docker exec syncd bcmcmd 'getreg ...'`. If any per-core counter increments
-above the startup baseline, shuts down all front-panel ports on that core
-via `sudo config interface shutdown`, raises a CRITICAL syslog, and latches
-(no auto-recovery).
-
-Design intent: treat any IRE data-path CRC error as a hard fail-stop event.
-The SDK already masks the interrupt after a single failed-clear-attempt
-(see syslog `dnxc_intr_unmask_handling_in_isr: ... exceed threshold 1!!! Masked`).
-Memory corruption persists in chip SRAM until reset, so manual operator
-recovery (reboot or syncd reload) is required.
-
-Runs in the host namespace. Uses `docker exec syncd bcmcmd ...` to read the
-register because the bcm shell socket lives only inside the syncd container.
-Shuts down ports via `sudo config interface shutdown` so the state persists
-in CONFIG_DB across reboots until the operator explicitly recovers.
-
-If syncd is not running (container down or restarting), the daemon logs at
-WARNING and continues polling — this is a known transient state during
-syncd reload/swss restart and must not crash the watchdog.
-
-This daemon is DNX-specific. The accompanying systemd unit gates activation
-on switch_type == "voq" via ExecCondition; additionally, the daemon exits
-cleanly at startup if it detects the IRE_DATA_PATH_CRC_ERROR_COUNTER
-register is unknown to the SDK (a fast-path safety belt for non-DNX images
-that somehow start the unit).
-
-Note: every `bcmcmd` invocation causes syncd to emit two WARNING lines from
-`sai_driver_shell:367`. To suppress this 1Hz syslog noise, install an
-rsyslog filter such as:
-
-    if ($programname startswith "syncd" and $msg contains "BCM shell command:") then stop
-
-A companion syslog-tail variant (ire_watchdog_syslog) avoids this noise
-entirely by watching for the SDK's dnxc_interrupt_print_info message instead
-of polling, at the cost of a coupling to the log message format.
-
-Recovery: not implemented. Operator runbook:
-  1. Capture techsupport.
-  2. Reload syncd (or reboot the device).
-  3. Verify counter is clear: docker exec syncd bcmcmd 'getreg IRE_DATA_PATH_CRC_ERROR_COUNTER'
-  4. Manually bring ports back up: sudo config interface startup EthernetX
-"""
-
 import argparse
 import logging
 import re
@@ -91,8 +44,8 @@ def setup_logging(verbose: bool) -> None:
     would cause messages to be logged twice with mangled identifiers
     (``ire_watchdogire_watchdog[PID]:``), so we don't use one.
 
-    When run interactively (e.g. ``--dry-run --simulate-core``), stderr
-    output goes to the terminal as expected.
+    When run interactively (e.g. ``--dry-run``), stderr output goes to
+    the terminal as expected.
     """
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -188,11 +141,36 @@ def syncd_running() -> bool:
         return False
 
 
+def _reap_leaked_bcmcmd() -> None:
+    """Kill bcmcmd processes left inside syncd by previous timeouts.
+
+    `docker exec` does NOT propagate SIGKILL into the container, so when
+    `subprocess.run(timeout=...)` fires we leak one bcmcmd process per call.
+    Worse, if the bcm shell is in a non-default mode (e.g. cint) every
+    queued `getreg` blocks until a human exits that mode, so the orphan
+    count grows monotonically.
+
+    Pattern-match on our specific command line so we only reap our own
+    orphans. An interactive `bcmcmd` session a human may have open shows
+    up as bare `bcmcmd` (no args) and won't match.
+    """
+    try:
+        subprocess.run(
+            ['docker', 'exec', SYNCD_CONTAINER, 'pkill', '-9', '-f',
+             f'bcmcmd.*getreg.*{COUNTER_REG}'],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        # Best-effort cleanup — never let reap failures crash the daemon.
+        pass
+
+
 def read_counters() -> dict[int, int]:
     """Read IRE_DATA_PATH_CRC_ERROR_COUNTER and return {core_id: count}.
 
     Raises SyncdUnavailable if syncd is not running.
-    Raises RuntimeError on other bcmcmd/parsing failures.
+    Raises RuntimeError on other bcmcmd/parsing failures (including
+    timeouts; the orphan bcmcmd inside syncd is reaped before re-raising).
     """
     try:
         out = subprocess.run(
@@ -200,6 +178,7 @@ def read_counters() -> dict[int, int]:
             capture_output=True, text=True, timeout=BCMCMD_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired as e:
+        _reap_leaked_bcmcmd()
         raise RuntimeError(f'bcmcmd timed out after {BCMCMD_TIMEOUT_SEC}s') from e
     except FileNotFoundError as e:
         raise SyncdUnavailable(f'docker binary not found: {e}')
@@ -256,16 +235,15 @@ def shut_ports(ports: list[str]) -> list[tuple[str, bool, str]]:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    p = argparse.ArgumentParser(
+        description='IRE data-path CRC error watchdog (poll-register mode)'
+    )
     p.add_argument('--interval', type=float, default=POLL_INTERVAL_SEC,
                    help='polling interval in seconds (default: 1.0)')
     p.add_argument('--dry-run', action='store_true',
                    help='log what would be shut down but do not execute')
     p.add_argument('--verbose', action='store_true',
                    help='enable debug logging')
-    p.add_argument('--simulate-core', type=int, default=None, metavar='N',
-                   help='for testing: force baseline of core N to -1 so the next read'
-                        ' looks like an increment (use with --dry-run)')
     return p.parse_args()
 
 
@@ -306,11 +284,6 @@ def main() -> int:
             time.sleep(5)
     log.info(f'baseline counters: {baseline}')
 
-    if args.simulate_core is not None:
-        baseline[args.simulate_core] = -1
-        log.warning(f'SIMULATION: baseline[core {args.simulate_core}] set to -1; '
-                    f'next read will trigger detection')
-
     latched_cores: set[int] = set()
     consecutive_errors = 0
     syncd_was_down = False
@@ -331,8 +304,15 @@ def main() -> int:
         except Exception as e:
             consecutive_errors += 1
             level = logging.WARNING if consecutive_errors < 5 else logging.ERROR
-            log.log(level, f'read failed ({consecutive_errors}x): {e}')
-            time.sleep(args.interval)
+            # Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s. Keeps
+            # us responsive to transient blips but stops piling on if the
+            # bcm shell is wedged in cint mode or similar — every queued
+            # bcmcmd inside syncd is another orphan to reap.
+            backoff = min(args.interval * (2 ** min(consecutive_errors - 1, 6)),
+                          60.0)
+            log.log(level, f'read failed ({consecutive_errors}x): {e}; '
+                           f'sleeping {backoff:.1f}s before retry')
+            time.sleep(backoff)
             continue
 
         for core, count in sorted(current.items()):
@@ -344,7 +324,7 @@ def main() -> int:
                     f'IRE_DATA_PATH_CRC_ERROR_COUNTER.IRE{core} '
                     f'increment detected: baseline={base} current={count}; '
                     f'shutting {len(ports)} ports on core {core}: {ports}; '
-                    f'manual operator recovery required (reload syncd/reboot)'
+                    f'manual operator recovery required'
                 )
                 if args.dry_run:
                     log.warning(f'DRY RUN: would shut {ports}')
