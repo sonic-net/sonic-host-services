@@ -491,8 +491,9 @@ class FeatureHandler(object):
 
             # If feature has timer associated with it, start/enable corresponding systemd .timer unit
             # otherwise, start/enable corresponding systemd .service unit
-
-            cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
+            if unit_file_state != "generated":
+                # if UnitFileState of service file is generated, enable it will generate error
+                cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
             cmds.append(["sudo", "systemctl", "start", "{}.{}".format(feature_name, feature_suffixes[-1])])
 
             for cmd in cmds:
