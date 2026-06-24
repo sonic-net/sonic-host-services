@@ -49,7 +49,8 @@ setup(
         'scripts/gnoi_shutdown_daemon.py',
         'scripts/sonic-host-server',
         'scripts/ldap.py',
-        'scripts/console-monitor'
+        'scripts/console-monitor',
+        'scripts/ire_watchdog'
     ],
     install_requires = [
         'dbus-python',
