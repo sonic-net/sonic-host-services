@@ -10,6 +10,7 @@ from syslog import syslog, LOG_ERR
 from tests.hostcfgd.test_rsyslog_vectors \
     import HOSTCFGD_TEST_RSYSLOG_VECTOR as rsyslog_test_data
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_restart_waiter import MockRestartWaiter
 from unittest import TestCase, mock
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +33,7 @@ sys.modules['hostcfgd'] = hostcfgd
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+swsscommon.RestartWaiter = MockRestartWaiter
 hostcfgd.run_cmd = mock.Mock()
 
 
@@ -45,6 +47,7 @@ class TestHostcfgdRSyslog(TestCase):
         self.host_config_daemon = None
 
     def setUp(self):
+        os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
         MockConfigDb.set_config_db(rsyslog_test_data['initial'])
         self.host_config_daemon = hostcfgd.HostConfigDaemon()
 
@@ -63,6 +66,7 @@ class TestHostcfgdRSyslog(TestCase):
     def tearDown(self):
         self.host_config_daemon = None
         MockConfigDb.set_config_db({})
+        os.environ["HOSTCFGD_UNIT_TESTING"] = ""
 
     def update_config(self, config_name):
         MockConfigDb.mod_config_db(rsyslog_test_data[config_name])
