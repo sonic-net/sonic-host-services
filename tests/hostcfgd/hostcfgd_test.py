@@ -415,9 +415,30 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_check_output.assert_has_calls(expected)
 
+    def test_mgmtvrf_no_restart_on_same_state(self):
+        """
+        Verify that load() correctly reads mgmtVrfEnabled from the nested
+        'vrf_global' row so that a subsequent update_mgmt_vrf() call with the
+        same value does NOT trigger an interfaces-config restart.
+
+        This is a regression test for the bug where load() used
+        mgmt_vrf.get('mgmtVrfEnabled') instead of
+        mgmt_vrf.get('vrf_global', {}).get('mgmtVrfEnabled'), causing the
+        cache to always be initialised to '' and every config load to
+        incorrectly detect a state change and restart interfaces-config.
+        """
+        mgmtiface = hostcfgd.MgmtIfaceCfg()
+        mgmtiface.load({}, {'vrf_global': {'mgmtVrfEnabled': 'true'}})
+        assert mgmtiface.mgmt_vrf_enabled == 'true'
+
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            mocked_subprocess.CalledProcessError = CalledProcessError
+            mgmtiface.update_mgmt_vrf({'mgmtVrfEnabled': 'true'})
+            mocked_subprocess.check_call.assert_not_called()
+
     def test_mgmtvrf_route_check_failed(self):
         mgmtiface = hostcfgd.MgmtIfaceCfg()
-        mgmtiface.load({}, {'mgmtVrfEnabled' : "false"})
+        mgmtiface.load({}, {'vrf_global': {'mgmtVrfEnabled': "false"}})
         with mock.patch('hostcfgd.check_output_pipe') as mocked_check_output:
             with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
                 popen_mock = mock.Mock()
