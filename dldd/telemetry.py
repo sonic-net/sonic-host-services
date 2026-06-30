@@ -1,0 +1,352 @@
+"""STATE_DB publication and startup reconciliation helpers."""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from dataclasses import asdict
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional
+
+from .config import DLDDConfig
+from .runtime import FaultRecord, ValueConfig
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return list(value)
+    if isinstance(value, Mapping):
+        return {str(name): _json_safe(item) for name, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _redis_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(
+            _json_safe(value), sort_keys=True, separators=(",", ":")
+        )
+    return str(value)
+
+
+class StateDB:
+    """Minimal hash/TTL interface used by the daemon."""
+
+    def hset(self, key: str, values: Mapping[str, Any]) -> None:
+        raise NotImplementedError
+
+    def expire(self, key: str, seconds: int) -> None:
+        raise NotImplementedError
+
+    def hset_with_ttl(
+        self, key: str, values: Mapping[str, Any], seconds: int
+    ) -> None:
+        self.hset(key, values)
+        self.expire(key, seconds)
+
+    def persist(self, key: str) -> None:
+        raise NotImplementedError
+
+    def hdel(self, key: str, fields: Iterable[str]) -> None:
+        raise NotImplementedError
+
+    def replace_hash(
+        self, key: str, values: Mapping[str, Any], ttl_seconds: Optional[int]
+    ) -> None:
+        """Replace a complete logical row and its TTL.
+
+        Test and alternate backends get a correct fallback.  The production
+        backend overrides this with one Redis transaction.
+        """
+
+        existing = self.hgetall(key)
+        existing_fields = {
+            name.decode() if isinstance(name, bytes) else name
+            for name in existing
+        }
+        stale_fields = existing_fields - set(values)
+        self.hset(key, values)
+        if stale_fields:
+            self.hdel(key, stale_fields)
+        if ttl_seconds is None:
+            self.persist(key)
+        else:
+            self.expire(key, ttl_seconds)
+
+    def delete(self, key: str) -> None:
+        raise NotImplementedError
+
+    def hgetall(self, key: str) -> Mapping[str, str]:
+        raise NotImplementedError
+
+    def keys(self, pattern: str) -> Iterable[str]:
+        raise NotImplementedError
+
+
+class SonicStateDB(StateDB):
+    def __init__(self, connector=None) -> None:
+        self._connector = connector
+
+    def _db(self):
+        if self._connector is None:
+            try:
+                from swsscommon import swsscommon
+            except ImportError as error:
+                raise RuntimeError("swsscommon is unavailable: {}".format(error))
+            connector = swsscommon.SonicV2Connector(host="127.0.0.1")
+            connector.connect(connector.STATE_DB, False)
+            self._connector = connector
+        return self._connector
+
+    def hset(self, key: str, values: Mapping[str, Any]) -> None:
+        db = self._db()
+        client = db.get_redis_client(db.STATE_DB)
+        mapping = {name: _redis_value(value) for name, value in values.items()}
+        client.hset(key, mapping=mapping)
+
+    def hset_with_ttl(
+        self, key: str, values: Mapping[str, Any], seconds: int
+    ) -> None:
+        db = self._db()
+        client = db.get_redis_client(db.STATE_DB)
+        mapping = {name: _redis_value(value) for name, value in values.items()}
+        transaction = client.pipeline(transaction=True)
+        transaction.hset(key, mapping=mapping)
+        transaction.expire(key, seconds)
+        transaction.execute()
+
+    def expire(self, key: str, seconds: int) -> None:
+        db = self._db()
+        db.get_redis_client(db.STATE_DB).expire(key, seconds)
+
+    def persist(self, key: str) -> None:
+        db = self._db()
+        db.get_redis_client(db.STATE_DB).persist(key)
+
+    def hdel(self, key: str, fields: Iterable[str]) -> None:
+        fields = tuple(fields)
+        if not fields:
+            return
+        db = self._db()
+        db.get_redis_client(db.STATE_DB).hdel(key, *fields)
+
+    def replace_hash(
+        self, key: str, values: Mapping[str, Any], ttl_seconds: Optional[int]
+    ) -> None:
+        db = self._db()
+        client = db.get_redis_client(db.STATE_DB)
+        mapping = {name: _redis_value(value) for name, value in values.items()}
+        existing = client.hkeys(key)
+        existing_fields = {
+            name.decode() if isinstance(name, bytes) else name
+            for name in existing
+        }
+        stale_fields = tuple(sorted(existing_fields - set(mapping)))
+        transaction = client.pipeline(transaction=True)
+        transaction.hset(key, mapping=mapping)
+        if stale_fields:
+            transaction.hdel(key, *stale_fields)
+        if ttl_seconds is None:
+            transaction.persist(key)
+        else:
+            transaction.expire(key, ttl_seconds)
+        transaction.execute()
+
+    def delete(self, key: str) -> None:
+        db = self._db()
+        db.get_redis_client(db.STATE_DB).delete(key)
+
+    def hgetall(self, key: str) -> Mapping[str, str]:
+        db = self._db()
+        return db.get_redis_client(db.STATE_DB).hgetall(key)
+
+    def keys(self, pattern: str) -> Iterable[str]:
+        db = self._db()
+        return db.get_redis_client(db.STATE_DB).scan_iter(match=pattern)
+
+
+class TelemetryPublisher:
+    STATUS_KEY = "DLDD_STATUS|process_state"
+    STATUS_TTL = 120
+
+    def __init__(
+        self,
+        state_db: StateDB,
+        config: DLDDConfig,
+        serial_resolver: Optional[Callable[[str, str], str]] = None,
+    ) -> None:
+        self.state_db = state_db
+        self.config = config
+        self.serial_resolver = serial_resolver
+
+    def publish_status(
+        self,
+        state: str,
+        running_schema: str,
+        active_rules_file: str,
+        active_rules_checksum: str,
+        broken_rules=(),
+        source_status=(),
+        inflight_fault_evidence=(),
+        service_diagnostics=(),
+        reason: str = "",
+        local_action_default_timeout: Optional[int] = None,
+        active_rules_source: str = "",
+        activation_result: str = "",
+        activation_fallback_used: bool = False,
+        previous_active_rules_checksum: str = "",
+    ) -> bool:
+        payload = {
+            "state": state,
+            "running_schema": running_schema,
+            "active_rules_file": active_rules_file,
+            "active_rules_checksum": active_rules_checksum,
+            "active_rules_source": active_rules_source,
+            "activation_result": activation_result,
+            "activation_fallback_used": activation_fallback_used,
+            "previous_active_rules_checksum": previous_active_rules_checksum,
+            "individual_max_failure_threshold": self.config.individual_max_failure_threshold,
+            "broken_rules_max_threshold": self.config.broken_rules_max_threshold,
+            "redis_monitor_polling_interval": self.config.redis_monitor_polling_interval,
+            "file_monitor_polling_interval": self.config.file_monitor_polling_interval,
+            "common_monitor_polling_interval": self.config.common_monitor_polling_interval,
+            "source_unavailable_grace_period": self.config.source_unavailable_grace_period,
+            "source_recovery_samples": self.config.source_recovery_samples,
+            "inactive_fault_retention_period": self.config.inactive_fault_retention_period,
+            "fault_evidence_ack_timeout": self.config.fault_evidence_ack_timeout,
+            "active_fault_recheck_interval": self.config.active_fault_recheck_interval,
+            "rules_inbox_settle_time": self.config.rules_inbox_settle_time,
+            "local_action_default_timeout": local_action_default_timeout,
+            "broken_rules": list(broken_rules),
+            "source_status": list(source_status),
+            "inflight_fault_evidence": list(inflight_fault_evidence),
+            "service_diagnostics": list(service_diagnostics),
+            "reason": reason,
+        }
+        try:
+            self.state_db.hset_with_ttl(self.STATUS_KEY, payload, self.STATUS_TTL)
+            return True
+        except Exception as error:
+            LOGGER.error("unable to publish DLDD_STATUS: %s", error)
+            return False
+
+    def publish_fault(
+        self,
+        fault: FaultRecord,
+        serial_number: Optional[str] = None,
+        remote_action_time_window: int = 0,
+        local_action_details: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        if serial_number is None:
+            serial_number = fault.serial_number
+            if not serial_number and self.serial_resolver is not None:
+                try:
+                    serial_number = str(
+                        self.serial_resolver(
+                            fault.component_type, fault.component_name
+                        )
+                        or ""
+                    )
+                    fault.serial_number = serial_number
+                except Exception as error:
+                    LOGGER.warning(
+                        "unable to resolve serial number for %s: %s",
+                        fault.component_name,
+                        error,
+                    )
+        payload = {
+            "rule": fault.rule_name,
+            "rule_id": fault.rule_id,
+            "rule_version": fault.rule_version,
+            "schema_version": fault.schema_version,
+            "active_rules_checksum": fault.active_rules_checksum,
+            "component_info": {
+                "component": fault.component_type,
+                "name": fault.component_name,
+                "serial_number": serial_number,
+            },
+            "error_type": fault.error_type,
+            "events": list(fault.events),
+            "remote_action_time_window": remote_action_time_window,
+            "repair_actions": [
+                {"action": action} for action in fault.repair_actions
+            ],
+            "actions_taken": list(fault.actions_taken),
+            "local_action_state": dict(
+                local_action_details
+                or fault.local_action_details
+                or {
+                    "state": fault.local_action_state,
+                    "action_suppressed": fault.action_suppressed,
+                    "last_error": "",
+                }
+            ),
+            "severity": fault.severity,
+            "symptom": fault.symptom,
+            "status": fault.status,
+            "origin_time": fault.origin_time,
+            "last_detection_time": fault.last_detection_time,
+            "occurrences": fault.occurrences,
+            "description": fault.description,
+        }
+        if fault.healthz_artifact is not None:
+            payload["healthz_artifact"] = dict(fault.healthz_artifact)
+        if fault.stale_source:
+            payload["source_stale"] = True
+        payload = _json_safe(payload)
+        try:
+            ttl = (
+                None
+                if fault.status == "ACTIVE"
+                else self.config.inactive_fault_retention_period
+            )
+            self.state_db.replace_hash(fault.redis_key, payload, ttl)
+            return True
+        except Exception as error:
+            LOGGER.error("unable to publish %s: %s", fault.redis_key, error)
+            return False
+
+    def read_faults(self) -> Iterable[Mapping[str, Any]]:
+        try:
+            keys = tuple(self.state_db.keys("FAULT_INFO|*"))
+        except Exception as error:
+            LOGGER.error("unable to read existing FAULT_INFO records: %s", error)
+            return
+        for raw_key in keys:
+            key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+            try:
+                raw = self.state_db.hgetall(key)
+            except Exception as error:
+                LOGGER.error("unable to read %s: %s", key, error)
+                continue
+            decoded: Dict[str, Any] = {}
+            for raw_name, raw_value in raw.items():
+                name = raw_name.decode() if isinstance(raw_name, bytes) else raw_name
+                value = raw_value.decode() if isinstance(raw_value, bytes) else raw_value
+                if name in (
+                    "component_info",
+                    "events",
+                    "repair_actions",
+                    "actions_taken",
+                    "local_action_state",
+                    "healthz_artifact",
+                ):
+                    try:
+                        value = json.loads(value)
+                    except (TypeError, ValueError):
+                        pass
+                decoded[name] = value
+            decoded["redis_key"] = key
+            yield decoded
+
+
+def value_config_payload(config: ValueConfig) -> Mapping[str, Any]:
+    return asdict(config)

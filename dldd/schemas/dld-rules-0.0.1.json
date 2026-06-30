@@ -1,0 +1,483 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sonic-net.github.io/dldd/schemas/dld-rules-0.0.1.json",
+  "title": "SONiC Device Local Diagnosis rules 0.0.1",
+  "type": "object",
+  "required": ["schema_version", "signatures"],
+  "properties": {
+    "schema_version": {"const": "0.0.1"},
+    "local_action_default_timeout": {"type": "integer", "minimum": 1},
+    "signatures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/definitions/signature_wrapper"}
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "nonempty_string": {"type": "string", "minLength": 1},
+    "dse_reference": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9_.-]+:[A-Za-z_][A-Za-z0-9_]*\\(\\)|\\{[A-Za-z0-9_.?*\\-]+\\}:\\{[A-Za-z_][A-Za-z0-9_]*\\(\\)\\})$"
+    },
+    "integer_string": {
+      "type": "string",
+      "pattern": "^\\s*[+-]?(?:0[bB][01]+|0[oO][0-7]+|0[xX][0-9A-Fa-f]+|0+|[1-9][0-9]*)\\s*$"
+    },
+    "string_list": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/definitions/nonempty_string"}
+    },
+    "value_configs": {
+      "type": "object",
+      "required": ["type", "unit"],
+      "properties": {
+        "type": {
+          "enum": ["binary", "hex", "int", "float", "string", "boolean", "json", "bytes", "N/A"]
+        },
+        "unit": {"$ref": "#/definitions/nonempty_string"},
+        "scaling": {
+          "oneOf": [
+            {"type": "number"},
+            {"const": "N/A"}
+          ]
+        },
+        "encoding": {"$ref": "#/definitions/nonempty_string"}
+      },
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "name", "id", "version", "description", "product_ids",
+        "sw_versions", "component", "symptom", "error_type", "severity"
+      ],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Za-z0-9_]+$"},
+        "id": {"type": "integer", "minimum": 1000000, "maximum": 9999999},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "description": {"$ref": "#/definitions/nonempty_string"},
+        "product_ids": {"$ref": "#/definitions/string_list"},
+        "sw_versions": {"$ref": "#/definitions/string_list"},
+        "component": {
+          "enum": ["PSU", "FAN", "CHASSIS", "SSD", "CPU", "MEMORY", "ASIC", "TRANSCEIVER"]
+        },
+        "symptom": {
+          "enum": [
+            "SYMPTOM_OVER_THRESHOLD",
+            "SYMPTOM_UNDER_THRESHOLD",
+            "SYMPTOM_MEMORY_ERRORS",
+            "SYMPTOM_MISSING_COMPONENT",
+            "SYMPTOM_COMM_ERROR",
+            "SYMPTOM_UNKNOWN"
+          ]
+        },
+        "error_type": {"$ref": "#/definitions/nonempty_string"},
+        "severity": {"enum": ["CRITICAL", "MAJOR", "WARNING", "MINOR", "UNKNOWN"]},
+        "priority": {"type": "integer", "minimum": 0, "default": 5},
+        "tags": {"type": "array", "items": {"$ref": "#/definitions/nonempty_string"}}
+      },
+      "additionalProperties": true
+    },
+    "i2c_path": {
+      "type": "object",
+      "required": ["bus", "chip_addr", "i2c_type", "command", "size"],
+      "properties": {
+        "bus": {
+          "oneOf": [
+            {"$ref": "#/definitions/nonempty_string"},
+            {"$ref": "#/definitions/string_list"}
+          ]
+        },
+        "chip_addr": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
+        "i2c_type": {"const": "get"},
+        "command": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
+        "size": {"enum": ["b", "w", "l"]},
+        "scaling": {
+          "oneOf": [{"type": "number"}, {"const": "N/A"}]
+        }
+      },
+      "additionalProperties": true
+    },
+    "redis_path": {
+      "type": "object",
+      "required": ["database", "table", "key", "path"],
+      "properties": {
+        "database": {"$ref": "#/definitions/nonempty_string"},
+        "table": {"$ref": "#/definitions/nonempty_string"},
+        "key": {"$ref": "#/definitions/nonempty_string"},
+        "path": {"$ref": "#/definitions/nonempty_string"}
+      },
+      "additionalProperties": true
+    },
+    "cli_path": {
+      "type": "object",
+      "required": ["argv"],
+      "properties": {
+        "argv": {"$ref": "#/definitions/string_list"},
+        "timeout": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "file_path": {
+      "type": "object",
+      "required": ["file", "format"],
+      "properties": {
+        "file": {"$ref": "#/definitions/nonempty_string"},
+        "format": {"$ref": "#/definitions/nonempty_string"},
+        "scaling": {
+          "oneOf": [{"type": "number"}, {"const": "N/A"}]
+        },
+        "unit": {"$ref": "#/definitions/nonempty_string"}
+      },
+      "additionalProperties": true
+    },
+    "evaluation": {
+      "oneOf": [
+        {"$ref": "#/definitions/mask_evaluation"},
+        {"$ref": "#/definitions/comparison_evaluation"},
+        {"$ref": "#/definitions/string_evaluation"},
+        {"$ref": "#/definitions/boolean_evaluation"},
+        {"$ref": "#/definitions/dse_evaluation"}
+      ]
+    },
+    "evaluation_common": {
+      "type": "object",
+      "properties": {"value_configs": {"$ref": "#/definitions/value_configs"}},
+      "additionalProperties": true
+    },
+    "mask_evaluation": {
+      "allOf": [
+        {"$ref": "#/definitions/evaluation_common"},
+        {
+          "type": "object",
+          "required": ["type", "logic", "value"],
+          "properties": {
+            "type": {"const": "mask"},
+            "logic": {"const": "&"},
+            "value": {"oneOf": [{"type": "integer"}, {"$ref": "#/definitions/integer_string"}]}
+          }
+        }
+      ]
+    },
+    "comparison_evaluation": {
+      "allOf": [
+        {"$ref": "#/definitions/evaluation_common"},
+        {
+          "type": "object",
+          "required": ["type", "operator", "value"],
+          "properties": {
+            "type": {"const": "comparison"},
+            "operator": {"enum": [">", "<", ">=", "<=", "==", "!="]},
+            "value": {"type": ["number", "string"]},
+            "unit": {"$ref": "#/definitions/nonempty_string"}
+          }
+        }
+      ]
+    },
+    "string_evaluation": {
+      "allOf": [
+        {"$ref": "#/definitions/evaluation_common"},
+        {
+          "type": "object",
+          "required": ["type", "operator", "value"],
+          "properties": {
+            "type": {"const": "string"},
+            "operator": {"enum": ["contains", "equals", "regex"]},
+            "value": {"type": "string"},
+            "case_sensitive": {"type": "boolean", "default": true}
+          }
+        }
+      ]
+    },
+    "boolean_evaluation": {
+      "allOf": [
+        {"$ref": "#/definitions/evaluation_common"},
+        {
+          "type": "object",
+          "required": ["type", "value"],
+          "properties": {
+            "type": {"const": "boolean"},
+            "value": {"type": "boolean"}
+          }
+        }
+      ]
+    },
+    "dse_evaluation": {
+      "allOf": [
+        {"$ref": "#/definitions/evaluation_common"},
+        {
+          "type": "object",
+          "required": ["type", "value"],
+          "properties": {
+            "type": {"const": "dse"},
+            "value": {"$ref": "#/definitions/dse_reference"},
+            "operator": {"enum": [">", "<", ">=", "<=", "==", "!=", "equals", "not_equals"]}
+          }
+        }
+      ]
+    },
+    "event": {
+      "type": "object",
+      "required": ["id", "type", "path", "evaluation", "match_count", "match_period"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1, "maximum": 999},
+        "type": {"enum": ["i2c", "redis", "dse", "cli", "file", "sysfs", "platform_api"]},
+        "instances": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "^[^:]+:.*$"}
+        },
+        "evaluation": {"$ref": "#/definitions/evaluation"},
+        "match_count": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "match_period": {"type": "integer", "minimum": 0, "maximum": 3600}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "i2c"}}},
+          "then": {"properties": {"path": {"$ref": "#/definitions/i2c_path"}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "redis"}}},
+          "then": {"properties": {"path": {"$ref": "#/definitions/redis_path"}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "dse"}}},
+          "then": {"properties": {"path": {"$ref": "#/definitions/dse_reference"}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "cli"}}},
+          "then": {"properties": {"path": {"$ref": "#/definitions/cli_path"}}}
+        },
+        {
+          "if": {"properties": {"type": {"enum": ["file", "sysfs"]}}},
+          "then": {"properties": {"path": {"$ref": "#/definitions/file_path"}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "platform_api"}}},
+          "then": {
+            "properties": {
+              "path": {
+                "oneOf": [
+                  {"$ref": "#/definitions/dse_reference"},
+                  {
+                    "type": "object",
+                    "required": ["hook"],
+                    "properties": {
+                      "hook": {"$ref": "#/definitions/nonempty_string"}
+                    },
+                    "additionalProperties": true
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "event_wrapper": {
+      "type": "object",
+      "required": ["event"],
+      "properties": {"event": {"$ref": "#/definitions/event"}},
+      "additionalProperties": true
+    },
+    "conditions": {
+      "type": "object",
+      "required": ["logic", "logic_lookback_time", "events"],
+      "properties": {
+        "logic": {"$ref": "#/definitions/nonempty_string"},
+        "logic_lookback_time": {"type": "integer", "minimum": 0, "maximum": 86400},
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/event_wrapper"}
+        }
+      },
+      "additionalProperties": true
+    },
+    "cli_operation": {
+      "type": "object",
+      "required": ["type", "argv"],
+      "properties": {
+        "type": {"const": "cli"},
+        "argv": {"$ref": "#/definitions/string_list"},
+        "timeout": {"type": "integer", "minimum": 1},
+        "max_output_bytes": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "dse_operation": {
+      "type": "object",
+      "required": ["type", "command"],
+      "properties": {
+        "type": {"const": "dse"},
+        "command": {"$ref": "#/definitions/nonempty_string"},
+        "timeout": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "i2c_action_path": {
+      "type": "object",
+      "required": ["bus", "chip_addr", "i2c_type", "command", "size"],
+      "properties": {
+        "bus": {
+          "oneOf": [
+            {"$ref": "#/definitions/nonempty_string"},
+            {"$ref": "#/definitions/string_list"}
+          ]
+        },
+        "chip_addr": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
+        "i2c_type": {"enum": ["get", "set"]},
+        "command": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
+        "size": {"enum": ["b", "w", "l"]},
+        "value": {}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"i2c_type": {"const": "set"}}},
+          "then": {"required": ["value"]}
+        }
+      ],
+      "additionalProperties": true
+    },
+    "i2c_operation": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"const": "i2c"},
+        "path": {"$ref": "#/definitions/i2c_action_path"},
+        "timeout": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "vendor_operation": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "not": {"enum": ["dse", "cli", "i2c"]}
+        },
+        "timeout": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "local_action_wrapper": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {
+          "oneOf": [
+            {"$ref": "#/definitions/dse_operation"},
+            {"$ref": "#/definitions/cli_operation"},
+            {"$ref": "#/definitions/i2c_operation"},
+            {"$ref": "#/definitions/vendor_operation"}
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "query_wrapper": {
+      "type": "object",
+      "required": ["query"],
+      "properties": {
+        "query": {
+          "oneOf": [
+            {"$ref": "#/definitions/dse_operation"},
+            {"$ref": "#/definitions/cli_operation"},
+            {"$ref": "#/definitions/i2c_operation"},
+            {"$ref": "#/definitions/vendor_operation"}
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "local_actions": {
+      "type": "object",
+      "required": ["wait_period", "action_list"],
+      "properties": {
+        "wait_period": {"type": "integer", "minimum": 0},
+        "action_list": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/local_action_wrapper"}
+        }
+      },
+      "additionalProperties": true
+    },
+    "remote_actions": {
+      "type": "object",
+      "required": ["action_list", "time_window"],
+      "properties": {
+        "action_list": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": ["ACTION_RESEAT", "ACTION_WARM_REBOOT", "ACTION_COLD_REBOOT", "ACTION_POWER_CYCLE", "ACTION_FACTORY_RESET", "ACTION_REPLACE"]
+          }
+        },
+        "time_window": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "repair_actions": {
+      "type": "object",
+      "required": ["remote_actions"],
+      "properties": {
+        "local_actions": {"$ref": "#/definitions/local_actions"},
+        "remote_actions": {"$ref": "#/definitions/remote_actions"}
+      },
+      "additionalProperties": true
+    },
+    "log_entry": {
+      "type": "object",
+      "required": ["log"],
+      "properties": {"log": {"$ref": "#/definitions/nonempty_string"}},
+      "additionalProperties": true
+    },
+    "log_collection": {
+      "type": "object",
+      "properties": {
+        "logs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/log_entry"}
+        },
+        "queries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/query_wrapper"}
+        }
+      },
+      "anyOf": [{"required": ["logs"]}, {"required": ["queries"]}],
+      "additionalProperties": true
+    },
+    "actions": {
+      "type": "object",
+      "required": ["repair_actions"],
+      "properties": {
+        "repair_actions": {"$ref": "#/definitions/repair_actions"},
+        "log_collection": {"$ref": "#/definitions/log_collection"}
+      },
+      "additionalProperties": true
+    },
+    "signature": {
+      "type": "object",
+      "required": ["metadata", "conditions", "actions"],
+      "properties": {
+        "metadata": {"$ref": "#/definitions/metadata"},
+        "conditions": {"$ref": "#/definitions/conditions"},
+        "actions": {"$ref": "#/definitions/actions"}
+      },
+      "additionalProperties": true
+    },
+    "signature_wrapper": {
+      "type": "object",
+      "required": ["signature"],
+      "properties": {"signature": {"$ref": "#/definitions/signature"}},
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,332 @@
+from __future__ import absolute_import
+
+import fnmatch
+import json
+from queue import Queue
+
+from dldd.config import DLDDConfig
+from dldd.correlation import CorrelationEngine
+from dldd.orchestrator import PrimaryOrchestrator
+from dldd.planner import build_plans
+from dldd.runtime import FaultRecord
+from dldd.telemetry import SonicStateDB, StateDB, TelemetryPublisher
+from dldd.validation import load_rules
+
+
+class FakeStateDB(StateDB):
+    def __init__(self):
+        self.values = {}
+        self.ttls = {}
+        self.delete_calls = 0
+
+    def hset(self, key, values):
+        current = self.values.setdefault(key, {})
+        for name, value in values.items():
+            current[name] = json.dumps(value) if isinstance(value, (dict, list, tuple)) else str(value)
+
+    def expire(self, key, seconds):
+        self.ttls[key] = seconds
+
+    def persist(self, key):
+        self.ttls.pop(key, None)
+
+    def hdel(self, key, fields):
+        for field in fields:
+            self.values.get(key, {}).pop(field, None)
+
+    def delete(self, key):
+        self.delete_calls += 1
+        self.values.pop(key, None)
+
+    def hgetall(self, key):
+        return self.values.get(key, {})
+
+    def keys(self, pattern):
+        return [key for key in self.values if fnmatch.fnmatch(key, pattern)]
+
+
+def fault(status="ACTIVE"):
+    return FaultRecord(
+        rule_id=1000001,
+        rule_name="PSU_FAULT",
+        rule_version="1.0.0",
+        schema_version="0.0.1",
+        active_rules_checksum="sha256:test",
+        component_type="PSU",
+        component_name="PSU0",
+        symptom="SYMPTOM_OVER_THRESHOLD",
+        severity="CRITICAL",
+        priority=1,
+        error_type="POWER",
+        status=status,
+        events=({"id": 1},),
+        repair_actions=("ACTION_RESEAT",),
+    )
+
+
+def test_status_uses_120_second_atomic_ttl_contract():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    publisher.publish_status(
+        "OK",
+        "0.0.1",
+        "/active",
+        "sha256:test",
+        active_rules_source="inbox",
+        activation_result="DEGRADED",
+        activation_fallback_used=True,
+        previous_active_rules_checksum="sha256:old",
+    )
+    assert database.ttls[publisher.STATUS_KEY] == 120
+    assert json.loads(database.values[publisher.STATUS_KEY]["broken_rules"]) == []
+    assert database.values[publisher.STATUS_KEY]["redis_monitor_polling_interval"] == "60"
+    assert database.values[publisher.STATUS_KEY]["rules_inbox_settle_time"] == "30"
+    assert database.values[publisher.STATUS_KEY]["active_rules_source"] == "inbox"
+    assert database.values[publisher.STATUS_KEY]["activation_result"] == "DEGRADED"
+    assert database.values[publisher.STATUS_KEY]["activation_fallback_used"] == "True"
+    assert database.values[publisher.STATUS_KEY]["previous_active_rules_checksum"] == "sha256:old"
+
+
+def test_active_fault_is_persistent_and_nested_fields_are_json():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    record = fault()
+    publisher.publish_fault(record, serial_number="serial")
+    assert record.redis_key not in database.ttls
+    assert json.loads(database.values[record.redis_key]["component_info"])["name"] == "PSU0"
+    assert json.loads(database.values[record.redis_key]["repair_actions"])[0]["action"] == "ACTION_RESEAT"
+
+
+def test_fault_serial_can_be_supplied_by_platform_metadata_hook():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(
+        database,
+        DLDDConfig(),
+        serial_resolver=lambda component_type, component_name: "SERIAL-1",
+    )
+    record = fault()
+    publisher.publish_fault(record)
+    component = json.loads(database.values[record.redis_key]["component_info"])
+    assert component["serial_number"] == "SERIAL-1"
+    assert record.serial_number == "SERIAL-1"
+
+
+def test_inactive_fault_gets_retention_ttl():
+    database = FakeStateDB()
+    config = DLDDConfig(inactive_fault_retention_period=42)
+    publisher = TelemetryPublisher(database, config)
+    record = fault("INACTIVE")
+    publisher.publish_fault(record)
+    assert database.ttls[record.redis_key] == 42
+
+
+def test_complete_fault_row_replacement_removes_stale_optional_fields():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    record = fault()
+    record.healthz_artifact = {"artifact_id": "old", "state": "COMPLETED"}
+    publisher.publish_fault(record)
+    assert "healthz_artifact" in database.values[record.redis_key]
+
+    record.healthz_artifact = None
+    publisher.publish_fault(record)
+    assert "healthz_artifact" not in database.values[record.redis_key]
+    assert database.delete_calls == 0
+
+
+def test_nested_byte_evidence_is_json_safe():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    record = fault()
+    record.events = ({"id": 1, "value_read": b"\x00\xff"},)
+    assert publisher.publish_fault(record)
+    assert json.loads(database.values[record.redis_key]["events"])[0][
+        "value_read"
+    ] == [0, 255]
+
+
+def test_production_hash_replacement_never_deletes_whole_fault_key():
+    class Pipeline(object):
+        def __init__(self):
+            self.operations = []
+
+        def hset(self, key, mapping):
+            self.operations.append(("hset", key, mapping))
+
+        def hdel(self, key, *fields):
+            self.operations.append(("hdel", key, fields))
+
+        def persist(self, key):
+            self.operations.append(("persist", key))
+
+        def expire(self, key, seconds):
+            self.operations.append(("expire", key, seconds))
+
+        def execute(self):
+            self.operations.append(("execute",))
+
+    class Client(object):
+        def __init__(self):
+            self.transaction = Pipeline()
+
+        def hkeys(self, key):
+            return [b"status", b"healthz_artifact"]
+
+        def pipeline(self, transaction=True):
+            assert transaction
+            return self.transaction
+
+    class Connector(object):
+        STATE_DB = "STATE_DB"
+
+        def __init__(self):
+            self.client = Client()
+
+        def get_redis_client(self, database):
+            assert database == self.STATE_DB
+            return self.client
+
+    connector = Connector()
+    database = SonicStateDB(connector)
+    database.replace_hash("FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None)
+
+    names = [operation[0] for operation in connector.client.transaction.operations]
+    assert names == ["hset", "hdel", "persist", "execute"]
+    assert "delete" not in names
+
+
+def test_fault_key_escapes_redis_separator_reversibly():
+    record = fault()
+    record.component_name = "PSU|0"
+    assert record.redis_key == "FAULT_INFO|PSU%7C0|SYMPTOM_OVER_THRESHOLD"
+
+
+def test_startup_reconciliation_schedules_current_fault_recheck():
+    database = FakeStateDB()
+    config = DLDDConfig()
+    publisher = TelemetryPublisher(database, config)
+    record = fault()
+    record.component_name = "PSU"
+    publisher.publish_fault(record)
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        bundle.monitor_plans,
+        bundle.work_items,
+        CorrelationEngine(bundle.signatures),
+        publisher,
+        config,
+        "sha256:test",
+    )
+    orchestrator.reconcile_existing_faults()
+    assert (1000001, "PSU") in orchestrator.reconciliation
+    command = bundle.monitor_plans["redis"].control_queue.get_nowait()
+    assert command.command.value == "RECHECK_ONCE"
+
+
+def test_reconciliation_timeout_restores_active_fault_to_arbiter():
+    database = FakeStateDB()
+    config = DLDDConfig(fault_evidence_ack_timeout=1)
+    publisher = TelemetryPublisher(database, config)
+    record = fault()
+    record.component_name = "PSU"
+    publisher.publish_fault(record)
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    clock = [0.0]
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        bundle.monitor_plans,
+        bundle.work_items,
+        CorrelationEngine(bundle.signatures),
+        publisher,
+        config,
+        "sha256:test",
+        clock=lambda: clock[0],
+    )
+    orchestrator.reconcile_existing_faults()
+
+    clock[0] = 1.0
+    orchestrator.tick()
+    clock[0] = 2.0
+    orchestrator.tick()
+
+    assert (1000001, "PSU") not in orchestrator.reconciliation
+    assert any(key[2] == 1000001 for key in orchestrator.arbiter._active)
+    assert orchestrator.faults[(1000001, "PSU")].stale_source is True
+
+
+def test_startup_loads_retained_inactive_occurrence_history_without_recheck():
+    database = FakeStateDB()
+    config = DLDDConfig()
+    publisher = TelemetryPublisher(database, config)
+    record = fault("INACTIVE")
+    record.component_name = "PSU"
+    record.occurrences = 4
+    publisher.publish_fault(record)
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        bundle.monitor_plans,
+        bundle.work_items,
+        CorrelationEngine(bundle.signatures),
+        publisher,
+        config,
+        "sha256:test",
+    )
+
+    orchestrator.reconcile_existing_faults()
+
+    loaded = orchestrator.faults[(1000001, "PSU")]
+    assert loaded.status == "INACTIVE"
+    assert loaded.occurrences == 4
+    assert bundle.monitor_plans["redis"].control_queue.empty()
+
+
+def test_primary_owned_config_update_refreshes_inactive_fault_ttl():
+    database = FakeStateDB()
+    initial = DLDDConfig(inactive_fault_retention_period=3600)
+    publisher = TelemetryPublisher(database, initial)
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        bundle.monitor_plans,
+        bundle.work_items,
+        CorrelationEngine(bundle.signatures),
+        publisher,
+        initial,
+        "sha256:test",
+    )
+    record = fault("INACTIVE")
+    record.component_name = "PSU"
+    identity = (record.rule_id, record.component_name)
+    orchestrator.faults[identity] = record
+    orchestrator.published_by_key[(record.component_name, record.symptom)] = record.rule_id
+    publisher.publish_fault(record)
+
+    updated = DLDDConfig(inactive_fault_retention_period=42)
+    publisher.config = updated
+    orchestrator.queue_config_update(updated)
+    orchestrator.tick()
+
+    assert orchestrator.config is updated
+    assert database.ttls[record.redis_key] == 42

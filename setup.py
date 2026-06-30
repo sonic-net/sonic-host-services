@@ -30,13 +30,18 @@ setup(
     maintainer = 'Joe LeVeque',
     maintainer_email = 'jolevequ@microsoft.com',
     packages = [
+        'dldd',
         'host_modules',
         'utils'
     ],
     # Map packages to their actual dirs
     package_dir = {
+        'dldd': 'dldd',
         'host_modules': 'host_modules',
         'utils': 'utils'
+    },
+    package_data = {
+        'dldd': ['schemas/*.json']
     },
     scripts=[
         'scripts/caclmgrd',
@@ -49,7 +54,9 @@ setup(
         'scripts/gnoi_shutdown_daemon.py',
         'scripts/sonic-host-server',
         'scripts/ldap.py',
-        'scripts/console-monitor'
+        'scripts/console-monitor',
+        'scripts/dldd',
+        'scripts/dldd-rules-watch'
     ],
     install_requires = [
         'dbus-python',
@@ -57,7 +64,8 @@ setup(
         'Jinja2>=2.10',
         'PyGObject',
         'pycairo==1.26.1',
-        'psutil'
+        'psutil',
+        'PyYAML'
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',
