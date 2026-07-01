@@ -656,7 +656,6 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
-                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
@@ -697,7 +696,6 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
-                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
@@ -723,7 +721,6 @@ class TestFeatureDaemon(TestCase):
                 call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
-                call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
                 call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]               
@@ -751,7 +748,6 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'unmask', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'dhcp_relay.service'], capture_output=True, check=True, text=True),
-                        call(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'unmask', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'enable', 'mux.service'], capture_output=True, check=True, text=True),
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
