@@ -13,6 +13,7 @@
 try:
     import ipaddress
     import os
+    import shlex
     import subprocess
     import sys
     import threading
@@ -89,6 +90,12 @@ class ControlPlaneAclManager(logger.Logger):
     VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL"
     DPU_TABLE = "DPU"
     MID_PLANE_BRIDGE_TABLE = "MID_PLANE_BRIDGE"
+
+    # iptables --comment markers for INPUT rules owned by other services. caclmgrd
+    # never comments its own rules, so a matching comment marks an external rule to
+    # preserve across the flush-and-rebuild (the dhcp_server docker0 syslog rule,
+    # sonic-net/sonic-buildimage#27584).
+    IGNORED_INPUT_RULE_COMMENTS = ["dhcp_server_syslog"]
 
     # To specify a port range instead of a single port, use iptables format:
     # separate start and end ports with a colon, e.g., "1000:2000"
@@ -642,6 +649,12 @@ class ControlPlaneAclManager(logger.Logger):
         iptables_cmds = []
         service_to_source_ip_map = {}
 
+        # Snapshot externally-owned INPUT rules before the flush wipes them, to
+        # re-add below before any DROP. Host namespace only.
+        preserved_input_rules = []
+        if namespace == DEFAULT_NAMESPACE:
+            preserved_input_rules = self.get_preserved_input_rules(namespace)
+
         # First, add iptables commands to set default policies to accept all
         # traffic. In case we are connected remotely, the connection will not
         # drop when we flush the current rules
@@ -667,6 +680,10 @@ class ControlPlaneAclManager(logger.Logger):
         # Add iptables/ip6tables commands to allow all traffic from localhost
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', '127.0.0.1', '-i', 'lo', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', '::1', '-i', 'lo', '-j', 'ACCEPT'])
+
+        # Re-add preserved external rules here -- before any DROP, while the
+        # policy is still ACCEPT -- so the rebuild drops no syslog.
+        iptables_cmds += preserved_input_rules
 
 
         if self.bfdAllowed:
@@ -1085,6 +1102,43 @@ class ControlPlaneAclManager(logger.Logger):
         self.log_info("Disabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanSrcIP = ""
         return True
+
+    def get_preserved_input_rules(self, namespace):
+        """Snapshot INPUT rules owned by other services so a rebuild won't drop them.
+
+        caclmgrd never comments its own rules, so a --comment in
+        IGNORED_INPUT_RULE_COMMENTS marks an external rule. Each is captured
+        verbatim so the owner's own -C/-D keep matching after rebuild.
+        """
+        preserved = []
+        if not self.IGNORED_INPUT_RULE_COMMENTS:
+            return preserved
+        list_cmd = self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-S', 'INPUT']
+        try:
+            output = subprocess.check_output(list_cmd, universal_newlines=True)
+        except (subprocess.CalledProcessError, OSError) as e:
+            self.log_warning("Unable to read INPUT chain to preserve externally-owned rules: {}".format(e))
+            return preserved
+        for line in output.splitlines():
+            # iptables -S quotes comments that contain spaces, so tokenize like a
+            # shell (shlex) rather than split() to keep argument boundaries and
+            # drop quotes -- otherwise the re-added rule would not be byte-identical
+            # and the owner's -C/-D could stop matching.
+            try:
+                tokens = shlex.split(line)
+            except ValueError:
+                continue
+            if len(tokens) < 2 or tokens[0] != '-A' or tokens[1] != 'INPUT':
+                continue
+            if '--comment' not in tokens:
+                continue
+            idx = tokens.index('--comment')
+            if idx + 1 >= len(tokens):
+                continue
+            if tokens[idx + 1] not in self.IGNORED_INPUT_RULE_COMMENTS:
+                continue
+            preserved.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables'] + tokens)
+        return preserved
 
     def allow_redfish(self):
         self.RedfishAllowed = True
