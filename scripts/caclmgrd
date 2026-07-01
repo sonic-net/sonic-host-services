@@ -125,6 +125,17 @@ class ControlPlaneAclManager(logger.Logger):
     }
     smartswitch_midplane_bridge_ip = "169.254.200.254"
 
+    # Restrict access to FRR daemon TCP ports on the loopback interface.
+    # FRR processes run as a dedicated user (UID 300); only that UID is
+    # permitted to connect to these ports over `lo`, everything else is
+    # dropped. iptables match order requires the ACCEPT (uid-owner) rule to
+    # be appended before the DROP for the same port.
+    FRR_USER_UID = 300
+    FRR_LOOPBACK_TCP_DROP_PORTS = [
+        2601,  # zebra VTY
+        2620,  # fpmsyncd <-> zebra
+    ]
+
     UPDATE_DELAY_SECS = 0.5
 
     DualToR = False
@@ -435,6 +446,28 @@ class ControlPlaneAclManager(logger.Logger):
 
         return drop_dulator_bgp_loopback1_cmds
 
+    def generate_frr_daemon_loopback_acl_commands(self, namespace):
+        """Restrict FRR daemon TCP ports on `lo` to FRR_USER_UID; emit ACCEPT
+        (uid-owner) before DROP per port. Applied in every managed namespace."""
+        cmds = []
+        prefix = self.iptables_cmd_ns_prefix[namespace]
+        uid = str(self.FRR_USER_UID)
+        for port in self.FRR_LOOPBACK_TCP_DROP_PORTS:
+            port_str = str(port)
+            cmds.append(prefix + [
+                'iptables', '-A', 'OUTPUT', '-o', 'lo',
+                '-p', 'tcp', '--dport', port_str,
+                '-m', 'owner', '--uid-owner', uid,
+                '-j', 'ACCEPT',
+            ])
+            cmds.append(prefix + [
+                'iptables', '-A', 'OUTPUT', '-o', 'lo',
+                '-p', 'tcp', '--dport', port_str,
+                '-j', 'DROP',
+            ])
+
+        return cmds
+
     def generate_fwd_traffic_from_host_to_soc(self, namespace, config_db_connector):
 
         fwd_dualtor_grpc_traffic_from_host_to_soc_cmds = []
@@ -741,6 +774,9 @@ class ControlPlaneAclManager(logger.Logger):
                                              ['ip6tables', '-A', 'FORWARD', '-p', str(ip_protocol), '-s', self.namespace_mgmt_ipv6, '--sport', dst_port, '-j', 'ACCEPT'])
                         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
                                              ['iptables', '-A', 'FORWARD', '-p', str(ip_protocol), '-s', self.namespace_mgmt_ip, '--sport', dst_port, '-j', 'ACCEPT'])
+
+        # Restrict FRR daemon loopback TCP ports to the FRR user only
+        iptables_cmds += self.generate_frr_daemon_loopback_acl_commands(namespace)
 
         # Get current ACL tables and rules from Config DB
 
