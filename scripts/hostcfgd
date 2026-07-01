@@ -125,8 +125,8 @@ def run_cmd(cmd, log_err=True, raise_exception=False):
         subprocess.check_call(cmd)
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
-                  .format(err.cmd, err.returncode, err.output))
+            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}, err: {}"
+                  .format(getattr(err, 'cmd', cmd), getattr(err, 'returncode', None), getattr(err, 'output', None), err))
         if raise_exception:
             raise
 
@@ -135,8 +135,8 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
         check_output_pipe(cmd0, cmd1, cmd2)
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_WARNING, "{} - failed: return code - {}, output:\n{}"
-                  .format(err.cmd, err.returncode, err.output))
+            syslog.syslog(syslog.LOG_WARNING, "{} - failed: return code - {}, output:\n{}, err: {}"
+                  .format(getattr(err, 'cmd', [cmd0, cmd1, cmd2]), getattr(err, 'returncode', None), getattr(err, 'output', None), err))
         if raise_exception:
             raise
 
@@ -146,8 +146,8 @@ def run_cmd_output(cmd, log_err=True, raise_exception=False):
         output = subprocess.check_output(cmd)
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
-                  .format(err.cmd, err.returncode, err.output))
+            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}, err: {}"
+                  .format(getattr(err, 'cmd', cmd), getattr(err, 'returncode', None), getattr(err, 'output', None), err))
         if raise_exception:
             raise
     return output
