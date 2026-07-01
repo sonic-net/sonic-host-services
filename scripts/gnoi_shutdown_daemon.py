@@ -243,9 +243,9 @@ class GnoiRebootHandler:
             "-rpc", "Reboot",
             "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
         ]
-        rc, out, err = execute_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC, suppress_stderr=True)
+        rc, out, err = execute_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
         if rc != 0:
-            logger.log_error(f"{dpu_name}: Reboot command failed")
+            logger.log_error(f"{dpu_name}: Reboot command failed (rc={rc}, target={dpu_ip}:{port}): {err}")
             return False
         return True
 
