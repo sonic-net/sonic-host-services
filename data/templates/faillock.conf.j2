@@ -1,0 +1,16 @@
+# PAM faillock configuration managed by userd
+# Do not edit manually - changes will be overwritten
+#
+# Note: deny= values are set per-role in /etc/pam.d/common-auth-faillock
+# This file contains only global faillock settings.
+
+# Global settings
+dir = /var/run/faillock
+audit
+silent
+no_log_info
+
+# Timing settings
+unlock_time = 900
+fail_interval = 900
+root_unlock_time = 900
