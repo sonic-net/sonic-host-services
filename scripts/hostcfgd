@@ -1617,7 +1617,7 @@ class MgmtIfaceCfg(object):
     def load(self, mgmt_iface={}, mgmt_vrf={}):
         # Get initial data
         self.iface_config_data = mgmt_iface
-        self.mgmt_vrf_enabled = mgmt_vrf.get('mgmtVrfEnabled', '')
+        self.mgmt_vrf_enabled = mgmt_vrf.get('vrf_global', {}).get('mgmtVrfEnabled', '')
         syslog.syslog(syslog.LOG_DEBUG,
                       f'Initial mgmt interface conf: {self.iface_config_data}')
         syslog.syslog(syslog.LOG_DEBUG,
