@@ -282,7 +282,8 @@ class TestFeatureHandler(TestCase):
         }
         mock_db.get_entry.return_value = None
         feature_handler.sync_state_field(feature_table)
-        mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'enabled'})
+        # Missing FEATURE row: resync_feature_state skips mod_entry (avoid recreating a row removed concurrently).
+        mock_db.mod_entry.assert_not_called()
         mock_db.mod_entry.reset_mock()
 
         feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
@@ -321,7 +322,46 @@ class TestFeatureHandler(TestCase):
         }
         feature_handler.sync_state_field(feature_table)
         mock_db.mod_entry.assert_called_with('FEATURE', 'sflow', {'state': 'enabled'})
-    
+        mock_db.mod_entry.reset_mock()
+
+        # Partial entry (no 'state' key): left behind by sync_feature_scope racing with
+        # deregister.  resync_feature_state must delete it rather than completing it.
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'True',
+        }
+        mock_db.set_entry = mock.MagicMock()
+        feature_handler.sync_state_field(feature_table)
+        mock_db.set_entry.assert_called_with('FEATURE', 'sflow', None)
+        mock_db.mod_entry.assert_not_called()
+
+    def test_sync_feature_scope_toctou(self):
+        """sync_feature_scope must delete a partial entry it accidentally creates when
+        the FEATURE row is deleted by a concurrent deregister between the mod_entry and
+        the post-write existence check (TOCTOU)."""
+        mock_db = mock.MagicMock()
+        mock_feature_state_table = mock.MagicMock()
+
+        feature_handler = featured.FeatureHandler(mock_db, mock_feature_state_table, {}, False)
+        feature = featured.Feature('sflow', {
+            'state': 'disabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+            'delayed': 'False',
+        })
+
+        # Post-write check sees a partial entry (no 'state' key): the FEATURE row was
+        # deleted by deregister and then recreated by mod_entry during the race
+        # window, leaving only the scope fields.
+        mock_db.get_entry.return_value = {
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'True',
+        }
+
+        feature_handler.sync_feature_scope(feature)
+        mock_db.set_entry.assert_called_with(featured.FEATURE_TBL, 'sflow', None)
+
     def test_port_init_done_twice(self):
         """There could be multiple "PortInitDone" event in case of swss
         restart(either due to crash or due to manual operation). swss
@@ -445,6 +485,7 @@ class TestFeatureHandler(TestCase):
 
         # Host differs -> both host and namespaces should be written
         mock_db.get_entry.return_value = {
+            'state': 'enabled',
             'has_per_asic_scope': 'False',
             'has_global_scope': 'False',
         }
@@ -468,6 +509,7 @@ class TestFeatureHandler(TestCase):
 
         # Host matches but namespaces are stale -> namespaces should still be written
         mock_db.get_entry.return_value = {
+            'state': 'enabled',
             'has_per_asic_scope': 'True',
             'has_global_scope': 'True',
         }
