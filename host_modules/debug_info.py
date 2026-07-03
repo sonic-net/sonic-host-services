@@ -457,7 +457,7 @@ class DebugArtifactCollector(host_service.HostModule):
   def ack(self, options):
     if isinstance(options, str):
       options = [options]
-    if not options:
+    if not options or not options[0]:
       return 1, "Invalid artifact path: artifact ID is missing"
     artifact = options[0]
     try:
