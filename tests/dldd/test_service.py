@@ -254,6 +254,76 @@ def test_ingestion_broken_rule_includes_version_and_last_attempt(
     )
 
 
+def test_service_candidate_preflight_validates_without_reading(
+    tmp_path, monkeypatch
+):
+    extensions = PlatformExtensions(
+        PlatformIdentity("test", "product", "software"),
+        DSERegistry(),
+        VendorHookRegistry(),
+        ExactCompatibilityMatcher(),
+    )
+    service = DLDDService(
+        paths=RulePaths(str(tmp_path)),
+        state_db=object(),
+        extensions=extensions,
+    )
+    materialized = SimpleNamespace(
+        signature=SimpleNamespace(
+            metadata=SimpleNamespace(
+                id=1000001, name="NO_READ", version="1.0.0"
+            ),
+            actions=SimpleNamespace(
+                repair_actions=SimpleNamespace(local_actions=None),
+                log_collection=None,
+            ),
+        )
+    )
+    validation = SimpleNamespace(
+        schema_version="0.0.1",
+        materialized_rules=(materialized,),
+        broken_rules=(),
+        file_errors=(),
+        file_valid=True,
+        source_lines={"$": 1},
+    )
+    item = SimpleNamespace(
+        source_type="redis",
+        rule_id=1000001,
+        rule_name="NO_READ",
+        correlation_key="1000001:1",
+    )
+    calls = []
+
+    class NoReadAdapter(object):
+        def validate(self, received):
+            calls.append(("validate", received.correlation_key))
+
+        def get_value(self, unused_item):
+            pytest.fail("service activation read a source value")
+
+        def collect(self, unused_item):
+            pytest.fail("service activation collected a source")
+
+    monkeypatch.setattr(dldd_service, "load_rules", lambda *args: validation)
+    monkeypatch.setattr(
+        dldd_service,
+        "build_plans",
+        lambda *args, **kwargs: SimpleNamespace(
+            work_items={item.correlation_key: item}
+        ),
+    )
+    monkeypatch.setattr(
+        service, "_adapters", lambda: {"redis": NoReadAdapter()}
+    )
+
+    candidate = service._validate_candidate("rules.yaml", "dse.yaml")
+
+    assert candidate.activatable
+    assert candidate.usable_rule_count == 1
+    assert calls == [("validate", item.correlation_key)]
+
+
 def test_adapter_broken_rule_includes_last_attempt(tmp_path, monkeypatch):
     extensions = PlatformExtensions(
         PlatformIdentity("test", "product", "software"),
@@ -543,6 +613,84 @@ def test_activation_preflight_runs_optional_i2c_hook_validation():
 
     with pytest.raises(ValueError, match="not mapped"):
         validate_runtime_operation_hooks(materialized, hooks)
+
+
+def test_activation_dry_run_validates_adapter_without_reading(
+    monkeypatch, capsys
+):
+    calls = []
+
+    class NoReadAdapter(object):
+        def validate(self, item):
+            calls.append(("validate", item.correlation_key))
+
+        def get_value(self, unused_item):
+            pytest.fail("activation dry-run read a source value")
+
+        def collect(self, unused_item):
+            pytest.fail("activation dry-run collected a source")
+
+    materialized = SimpleNamespace(
+        signature=SimpleNamespace(
+            metadata=SimpleNamespace(id=1000001, name="NO_READ"),
+            actions=SimpleNamespace(
+                repair_actions=SimpleNamespace(local_actions=None),
+                log_collection=None,
+            ),
+        )
+    )
+    result = SimpleNamespace(
+        schema_version="0.0.1",
+        ruleset=None,
+        materialized_rules=(materialized,),
+        broken_rules=(),
+        file_errors=(),
+        file_valid=True,
+        activation_valid=True,
+        source_lines={"$": 1},
+    )
+    item = SimpleNamespace(
+        source_type="redis",
+        rule_id=1000001,
+        correlation_key="1000001:1",
+    )
+    extensions = SimpleNamespace(
+        dse_registry=SimpleNamespace(source_types=()),
+        vendor_hooks=VendorHookRegistry(),
+        compatibility_matcher=SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        dldd_cli,
+        "detect_identity",
+        lambda: PlatformIdentity("test", "product", "software"),
+    )
+    monkeypatch.setattr(dldd_cli, "load_extensions", lambda *args: extensions)
+    monkeypatch.setattr(dldd_cli, "load_rules", lambda *args, **kwargs: result)
+    monkeypatch.setattr(
+        dldd_cli,
+        "build_plans",
+        lambda *args, **kwargs: SimpleNamespace(
+            work_items={item.correlation_key: item}
+        ),
+    )
+    monkeypatch.setattr(
+        dldd_cli, "adapter_map", lambda **kwargs: {"redis": NoReadAdapter()}
+    )
+    args = SimpleNamespace(
+        mode="activation-dry-run",
+        platform_dir=None,
+        dse=None,
+        file="rules.yaml",
+        json=True,
+        verbose=False,
+    )
+
+    assert dldd_cli.validate_rules(args) == 0
+    assert calls == [("validate", item.correlation_key)]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["probe_results"] == [
+        {"correlation_key": item.correlation_key, "state": "VALID"}
+    ]
 
 
 def test_activation_dry_run_reports_missing_runtime_operation_hook(

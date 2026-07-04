@@ -141,21 +141,26 @@ class DSEHook(object, metaclass=ABCMeta):
 
     @abstractmethod
     def resolve_source(self, reference, context):
-        """Return a sequence of :class:`ResolvedSource` objects."""
+        """Return configured sources without sampling or executing them.
+
+        Resolution runs during activation validation.  Implementations must
+        be side-effect-free and must not read hardware or external source
+        values.
+        """
 
     @abstractmethod
     def resolve_evaluation(self, reference, context):
-        """Return a :class:`ResolvedEvaluation`."""
+        """Return a configured evaluator without sampling source values."""
 
     def resolve_action(self, command, context):
-        """Resolve a parsed :class:`DSEReference` or opaque command string."""
+        """Resolve an action contract without executing the action."""
 
         raise DSEUnresolvedError(
             "DSE action {} is not exposed".format(_operation_label(command))
         )
 
     def resolve_query(self, command, context):
-        """Resolve a parsed :class:`DSEReference` or opaque command string."""
+        """Resolve a query contract without executing the query."""
 
         raise DSEUnresolvedError(
             "DSE query {} is not exposed".format(_operation_label(command))
@@ -166,17 +171,18 @@ class DSEHook(object, metaclass=ABCMeta):
 
         Vendors may raise :class:`DSEError` (or ``ValueError``) with a useful
         diagnostic.  Returning normally means the contract is supported.
+        Validation must not execute the operation or read its target.
         """
 
         return None
 
     def validate_vendor_source(self, event, context):
-        """Validate an event using a platform-advertised source type."""
+        """Validate source configuration without sampling the source."""
 
         return None
 
     def validate_resolved_source(self, source, context):
-        """Validate a vendor-specific source produced by DSE resolution."""
+        """Validate a resolved source binding without sampling its value."""
 
         return None
 

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import operator
-import re
 from typing import Any, Callable, Dict, Mapping
+
+import regex as bounded_regex
+
+
+REGEX_TIMEOUT_SECONDS = 0.1
 
 
 class EvaluationContractError(ValueError):
@@ -80,8 +84,18 @@ def evaluate(specification: Mapping[str, Any], actual: Any) -> bool:
             return left == right
         if op == "regex":
             try:
-                return re.search(right, left) is not None
-            except re.error as error:
+                return bounded_regex.search(
+                    right,
+                    left,
+                    timeout=REGEX_TIMEOUT_SECONDS,
+                ) is not None
+            except TimeoutError:
+                raise EvaluationContractError(
+                    "regex evaluation exceeded {:.3f} seconds".format(
+                        REGEX_TIMEOUT_SECONDS
+                    )
+                )
+            except bounded_regex.error as error:
                 raise EvaluationContractError("invalid regex: {}".format(error))
         raise EvaluationContractError("unsupported string operator: {}".format(op))
 

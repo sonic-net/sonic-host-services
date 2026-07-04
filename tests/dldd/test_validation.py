@@ -588,6 +588,19 @@ def test_dse_without_hook_is_a_rule_materialization_failure():
     assert result.broken_rules[0].issues[0].code == "materialization_failed"
 
 
+def test_unexpected_vendor_materializer_error_is_not_blame_on_rule():
+    class BuggyHook(FakeHook):
+        def resolve_source(self, reference, context):
+            raise RuntimeError("vendor implementation bug")
+
+    document = load_fixture()
+    event(document).update({"type": "dse", "path": "PSU:get_fault()"})
+    context = ValidationContext(dse_registry=DSERegistry(hook=BuggyHook()))
+
+    with pytest.raises(RuntimeError, match="vendor implementation bug"):
+        validate_document(document, context=context)
+
+
 def test_dse_evaluation_without_operator_requires_hook_comparator():
     document = load_fixture()
     event(document).update(

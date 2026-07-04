@@ -5,9 +5,13 @@ from __future__ import absolute_import
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 import json
+import math
 import os
 import re
+from types import MappingProxyType
 from typing import Mapping, Optional
+
+import regex as bounded_regex
 
 try:
     import yaml
@@ -48,13 +52,23 @@ from .models import (
     freeze_value,
     frozen_mapping,
 )
+from .schema_registry import DEFAULT_SCHEMA_REGISTRY, SchemaRegistryError
 
 
-SUPPORTED_SCHEMA_VERSIONS = frozenset(("0.0.1",))
+SUPPORTED_SCHEMA_VERSIONS = frozenset(DEFAULT_SCHEMA_REGISTRY.versions)
 SCHEMA_VERSION = "0.0.1"
-SCHEMA_PATH = os.path.join(
-    os.path.dirname(__file__), "schemas", "dld-rules-0.0.1.json"
-)
+SCHEMA_PATH = DEFAULT_SCHEMA_REGISTRY.schema_path(SCHEMA_VERSION)
+
+MAX_SOURCE_BYTES = 4 * 1024 * 1024
+MAX_DOCUMENT_DEPTH = 64
+MAX_DOCUMENT_NODES = 100000
+MAX_COLLECTION_ITEMS = 10000
+MAX_SCALAR_BYTES = 1024 * 1024
+MAX_SIGNATURES = 1024
+MAX_EVENTS_PER_SIGNATURE = 1000
+MAX_YAML_ALIASES = 0
+MAX_REGEX_CHARACTERS = 4096
+MAX_REGEX_NESTING = 64
 
 EVENT_TYPES = frozenset(
     ("i2c", "redis", "dse", "cli", "file", "sysfs", "platform_api")
@@ -132,6 +146,135 @@ class RulesParseError(ValueError):
         self.line = line
 
 
+if yaml is not None:
+    class _UniqueKeySafeLoader(yaml.SafeLoader):
+        """SafeLoader variant that rejects ambiguous duplicate keys."""
+
+        def construct_mapping(self, node, deep=False):
+            keys = set()
+            for key_node, unused_value_node in node.value:
+                key = self.construct_object(key_node, deep=False)
+                try:
+                    duplicate = key in keys
+                except TypeError:
+                    duplicate = False
+                if duplicate:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        "found duplicate key {!r}".format(key),
+                        key_node.start_mark,
+                    )
+                try:
+                    keys.add(key)
+                except TypeError:
+                    pass
+            return super().construct_mapping(node, deep=deep)
+else:  # pragma: no cover - SONiC images provide PyYAML
+    _UniqueKeySafeLoader = None
+
+
+def _bounded_text(value):
+    if isinstance(value, str):
+        size = len(value.encode("utf-8"))
+        text = value
+    elif isinstance(value, bytes):
+        size = len(value)
+        if size > MAX_SOURCE_BYTES:
+            raise RulesParseError(
+                "rules source exceeds {} bytes".format(MAX_SOURCE_BYTES), 1
+            )
+        text = value.decode("utf-8")
+    else:
+        raise TypeError("rules source must produce text or bytes")
+    if size > MAX_SOURCE_BYTES:
+        raise RulesParseError(
+            "rules source exceeds {} bytes".format(MAX_SOURCE_BYTES), 1
+        )
+    return text
+
+
+def _reject_duplicate_json_pairs(pairs):
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise RulesParseError(
+                "duplicate JSON key {!r}".format(name)
+            )
+        result[name] = value
+    return result
+
+
+def _reject_nonfinite_json_number(value):
+    raise RulesParseError(
+        "non-finite JSON number {!r} is not allowed".format(value), 1
+    )
+
+
+def _enforce_document_limits(document):
+    stack = [(document, 0, frozenset())]
+    nodes = 0
+    while stack:
+        value, depth, ancestors = stack.pop()
+        nodes += 1
+        if nodes > MAX_DOCUMENT_NODES:
+            raise RulesParseError(
+                "rules document exceeds {} nodes".format(MAX_DOCUMENT_NODES),
+                1,
+            )
+        if depth > MAX_DOCUMENT_DEPTH:
+            raise RulesParseError(
+                "rules document exceeds nesting depth {}".format(
+                    MAX_DOCUMENT_DEPTH
+                ),
+                1,
+            )
+        if isinstance(value, str) and len(value.encode("utf-8")) > MAX_SCALAR_BYTES:
+            raise RulesParseError(
+                "rules document contains a scalar larger than {} bytes".format(
+                    MAX_SCALAR_BYTES
+                ),
+                1,
+            )
+        if isinstance(value, float) and not math.isfinite(value):
+            raise RulesParseError("non-finite numbers are not allowed", 1)
+        if not isinstance(value, (Mapping, list, tuple)):
+            continue
+        identity = id(value)
+        if identity in ancestors:
+            raise RulesParseError("recursive aliases are not allowed", 1)
+        if len(value) > MAX_COLLECTION_ITEMS:
+            raise RulesParseError(
+                "rules document collection exceeds {} items".format(
+                    MAX_COLLECTION_ITEMS
+                ),
+                1,
+            )
+        nested = ancestors | {identity}
+        children = value.values() if isinstance(value, Mapping) else value
+        stack.extend((item, depth + 1, nested) for item in children)
+
+
+def _check_yaml_alias_limit(text):
+    aliases = 0
+    try:
+        events = yaml.parse(text, Loader=_UniqueKeySafeLoader)
+        for event in events:
+            if isinstance(event, yaml.events.AliasEvent):
+                aliases += 1
+                if aliases > MAX_YAML_ALIASES:
+                    mark = getattr(event, "start_mark", None)
+                    raise RulesParseError(
+                        "YAML aliases are not allowed",
+                        mark.line + 1 if mark is not None else 1,
+                    )
+    except RulesParseError:
+        raise
+    except Exception:
+        # The authoritative loader below will produce the parse diagnostic.
+        return
+
+
 def _build_source_lines(root_node):
     """Map validator JSONPath-like paths to one-based YAML/JSON node lines."""
 
@@ -153,8 +296,6 @@ def _build_source_lines(root_node):
                 child_path = "{}.{}".format(path, key)
                 key_mark = getattr(key_node, "start_mark", None)
                 if key_mark is not None:
-                    # Last duplicate key wins in SafeLoader; its line should
-                    # likewise be the diagnostic location.
                     lines[child_path] = key_mark.line + 1
                 visit(value_node, child_path, nested)
         elif yaml is not None and isinstance(node, yaml.nodes.SequenceNode):
@@ -188,6 +329,29 @@ def _is_int(value):
 
 def _is_number(value):
     return (isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
+def _regex_nesting(pattern):
+    nesting = 0
+    maximum = 0
+    escaped = False
+    character_class = False
+    for character in pattern:
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+        elif character == "[" and not character_class:
+            character_class = True
+        elif character == "]" and character_class:
+            character_class = False
+        elif not character_class and character == "(":
+            nesting += 1
+            maximum = max(maximum, nesting)
+        elif not character_class and character == ")":
+            nesting = max(0, nesting - 1)
+    return maximum
 
 
 def _issue(issues, code, message, path):
@@ -349,10 +513,34 @@ def _validate_evaluation(value, issues, path):
             _issue(issues, "invalid_type", "must be a boolean", path + ".case_sensitive")
             case_sensitive = True
         if operator == "regex" and isinstance(configured, str):
-            try:
-                re.compile(configured)
-            except re.error as error:
-                _issue(issues, "invalid_regex", str(error), path + ".value")
+            if len(configured) > MAX_REGEX_CHARACTERS:
+                _issue(
+                    issues,
+                    "invalid_regex",
+                    "regex exceeds {} characters".format(
+                        MAX_REGEX_CHARACTERS
+                    ),
+                    path + ".value",
+                )
+            elif _regex_nesting(configured) > MAX_REGEX_NESTING:
+                _issue(
+                    issues,
+                    "invalid_regex",
+                    "regex nesting exceeds {} levels".format(
+                        MAX_REGEX_NESTING
+                    ),
+                    path + ".value",
+                )
+            else:
+                try:
+                    bounded_regex.compile(configured)
+                except (bounded_regex.error, RecursionError) as error:
+                    _issue(
+                        issues,
+                        "invalid_regex",
+                        str(error),
+                        path + ".value",
+                    )
     elif kind == "boolean":
         if not isinstance(configured, bool):
             _issue(issues, "invalid_type", "boolean evaluation value must be a boolean", path + ".value")
@@ -861,7 +1049,7 @@ def _validate_signature(value, index, default_timeout, registry):
     ), issues
 
 
-def _file_gate(document):
+def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
     issues = []
     if not isinstance(document, Mapping):
         _issue(issues, "invalid_top_level", "rules document must be an object", "$")
@@ -869,7 +1057,7 @@ def _file_gate(document):
     version = document.get("schema_version")
     if not isinstance(version, str):
         _issue(issues, "missing_schema_version", "schema_version must be a string", "$.schema_version")
-    elif version not in SUPPORTED_SCHEMA_VERSIONS:
+    elif version not in supported_versions:
         _issue(
             issues,
             "unsupported_schema_version",
@@ -879,6 +1067,16 @@ def _file_gate(document):
     signatures = document.get("signatures")
     if not isinstance(signatures, list) or not signatures:
         _issue(issues, "invalid_signatures", "signatures must be a non-empty list", "$.signatures")
+        return issues
+    if len(signatures) > MAX_SIGNATURES:
+        _issue(
+            issues,
+            "too_many_signatures",
+            "signatures must contain at most {} entries".format(
+                MAX_SIGNATURES
+            ),
+            "$.signatures",
+        )
         return issues
     for index, wrapper in enumerate(signatures):
         if not isinstance(wrapper, Mapping) or not isinstance(wrapper.get("signature"), Mapping):
@@ -1167,15 +1365,72 @@ def materialize_signature(signature, context=None):
     )
 
 
+@dataclass(frozen=True)
+class _RuntimeSchemaContract(object):
+    """Trusted code handlers paired with one exact static schema version."""
+
+    semantic_validator: object
+    materializer: object
+
+
+_RUNTIME_SCHEMA_CONTRACTS = MappingProxyType({
+    "0.0.1": _RuntimeSchemaContract(
+        semantic_validator=_validate_signature,
+        materializer=materialize_signature,
+    ),
+})
+
+if frozenset(DEFAULT_SCHEMA_REGISTRY.versions) != frozenset(
+    _RUNTIME_SCHEMA_CONTRACTS
+):
+    raise SchemaRegistryError(
+        "installed DLDD static and runtime schema versions do not match"
+    )
+
+
+def _require_runtime_schema_contract(version):
+    try:
+        return _RUNTIME_SCHEMA_CONTRACTS[version]
+    except KeyError:
+        # A packaged static schema without its code-side semantic and
+        # materialization contract is an installation error, not bad vendor
+        # input.  Fail closed instead of interpreting it as another version.
+        raise SchemaRegistryError(
+            "no DLDD runtime validation contract is installed for schema {}".format(
+                version
+            )
+        )
+
+
 def validate_document(
-    document, context=None, materialize=True, source_lines=None
+    document,
+    context=None,
+    materialize=True,
+    source_lines=None,
+    schema_registry=None,
 ):
     """Validate an already-parsed YAML/JSON rules document."""
 
     context = context or ValidationContext()
     source_lines = source_lines or {}
-    file_issues = _file_gate(document)
-    version = document.get("schema_version") if isinstance(document, Mapping) else None
+    version = (
+        document.get("schema_version")
+        if isinstance(document, Mapping)
+        else None
+    )
+    try:
+        _enforce_document_limits(document)
+    except (RulesParseError, RecursionError, UnicodeError) as error:
+        return ValidationResult(
+            schema_version=version,
+            ruleset=None,
+            file_errors=_to_file_issues(
+                (("parse_error", str(error), "$"),), source_lines
+            ),
+            source_lines=source_lines,
+        )
+    registry = schema_registry or DEFAULT_SCHEMA_REGISTRY
+    file_issues = _file_gate(document, frozenset(registry.versions))
     if file_issues:
         return ValidationResult(
             schema_version=version,
@@ -1203,24 +1458,49 @@ def validate_document(
             source_lines=source_lines,
         )
 
+    contract = registry.require_exact(version)
+    runtime_contract = _require_runtime_schema_contract(version)
+    envelope_issues = contract.validate_envelope(document)
+    if envelope_issues:
+        raw_issues = tuple(
+            (issue.code, issue.message, issue.path)
+            for issue in envelope_issues
+        )
+        return ValidationResult(
+            schema_version=version,
+            ruleset=None,
+            file_errors=_to_file_issues(raw_issues, source_lines),
+            source_lines=source_lines,
+        )
+
     signatures = []
     materialized = []
     broken = []
     for index, raw in enumerate(document["signatures"]):
-        signature, raw_issues = _validate_signature(
+        # Keep the long-standing semantic diagnostics (for example,
+        # ``invalid_operator``) while also enforcing every constraint in the
+        # versioned static schema.  The semantic pass is intentionally first:
+        # its paths are more precise than a JSON Schema ``oneOf`` failure and
+        # are part of the operator-facing telemetry contract.
+        schema_issues = tuple(
+            (issue.code, issue.message, issue.path)
+            for issue in contract.validate_signature(raw, index)
+        )
+        signature, raw_issues = runtime_contract.semantic_validator(
             raw, index, default_timeout, context.dse_registry
         )
-        if raw_issues or signature is None:
+        combined_issues = tuple(raw_issues) + schema_issues
+        if combined_issues or signature is None:
             broken.append(
-                _to_broken(raw, index, raw_issues, source_lines)
+                _to_broken(raw, index, combined_issues, source_lines)
             )
             continue
         if not materialize:
             signatures.append(signature)
             continue
         try:
-            result = materialize_signature(signature, context)
-        except Exception as error:
+            result = runtime_contract.materializer(signature, context)
+        except ValueError as error:
             broken.append(
                 _to_broken(
                     raw,
@@ -1249,18 +1529,21 @@ def validate_document(
 
 def _load_text(source):
     if hasattr(source, "read"):
-        value = source.read()
-        return value.decode("utf-8") if isinstance(value, bytes) else value
+        return _bounded_text(source.read(MAX_SOURCE_BYTES + 1))
     if isinstance(source, bytes):
-        return source.decode("utf-8")
+        return _bounded_text(source)
     if isinstance(source, os.PathLike):
-        with open(str(source), "r") as stream:
-            return stream.read()
+        with open(str(source), "rb") as stream:
+            return _bounded_text(stream.read(MAX_SOURCE_BYTES + 1))
     if isinstance(source, str):
-        if os.path.isfile(source):
-            with open(source, "r") as stream:
-                return stream.read()
-        return source
+        try:
+            is_file = os.path.isfile(source)
+        except OSError:
+            is_file = False
+        if is_file:
+            with open(source, "rb") as stream:
+                return _bounded_text(stream.read(MAX_SOURCE_BYTES + 1))
+        return _bounded_text(source)
     raise TypeError("source must be text, bytes, a path, or a readable stream")
 
 
@@ -1270,7 +1553,7 @@ def _parse_error_line(error):
     )
     if mark is not None:
         return mark.line + 1
-    return getattr(error, "lineno", None)
+    return getattr(error, "line", None) or getattr(error, "lineno", None)
 
 
 def _parse_document_with_lines(source):
@@ -1278,17 +1561,22 @@ def _parse_document_with_lines(source):
     if not isinstance(text, str):
         raise TypeError("rules source must produce text")
     try:
-        document = json.loads(text)
+        document = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_json_pairs,
+            parse_constant=_reject_nonfinite_json_number,
+        )
     except json.JSONDecodeError as json_error:
         document = None
         json_error_line = json_error.lineno
     else:
+        _enforce_document_limits(document)
         if yaml is None:
             return document, {"$": 1}
         # JSON is a YAML subset.  Compose it once solely to retain exact node
         # marks while json.loads remains authoritative for JSON scalar types.
         try:
-            node = yaml.compose(text, Loader=yaml.SafeLoader)
+            node = yaml.compose(text, Loader=_UniqueKeySafeLoader)
             return document, _build_source_lines(node)
         except Exception:
             return document, {"$": 1}
@@ -1299,10 +1587,12 @@ def _parse_document_with_lines(source):
             json_error_line,
         )
 
-    loader = yaml.SafeLoader(text)
+    _check_yaml_alias_limit(text)
+    loader = _UniqueKeySafeLoader(text)
     try:
         node = loader.get_single_node()
         document = loader.construct_document(node) if node is not None else None
+        _enforce_document_limits(document)
         source_lines = _build_source_lines(node)
         return document, source_lines or {"$": 1}
     except Exception as error:
@@ -1321,12 +1611,21 @@ def load_document(source):
     return document
 
 
-def load_rules(source, context=None, materialize=True):
+def load_rules(
+    source, context=None, materialize=True, schema_registry=None
+):
     """Parse and validate rules, returning failures as ``ValidationResult``."""
 
     try:
         document, source_lines = _parse_document_with_lines(source)
-    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError) as error:
+    except (
+        ValueError,
+        TypeError,
+        UnicodeError,
+        OSError,
+        RecursionError,
+        json.JSONDecodeError,
+    ) as error:
         line = getattr(error, "line", None)
         if line is None and isinstance(error, UnicodeError):
             line = 1
@@ -1348,6 +1647,7 @@ def load_rules(source, context=None, materialize=True):
         context=context,
         materialize=materialize,
         source_lines=source_lines,
+        schema_registry=schema_registry,
     )
 
 

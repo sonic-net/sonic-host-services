@@ -3,6 +3,7 @@ from __future__ import absolute_import
 from dataclasses import replace
 from queue import Empty, Queue
 import subprocess
+import time
 
 import pytest
 
@@ -91,6 +92,18 @@ def test_evaluators_cover_schema_contracts():
     assert evaluate({"type": "boolean", "value": True}, "true")
     with pytest.raises(EvaluationContractError):
         evaluate({"type": "comparison", "operator": "bad", "value": 3}, 4)
+
+
+def test_regex_evaluation_times_out_catastrophic_backtracking():
+    started = time.monotonic()
+
+    with pytest.raises(EvaluationContractError, match="exceeded"):
+        evaluate(
+            {"type": "string", "operator": "regex", "value": "(a+)+$"},
+            "a" * 10000 + "!",
+        )
+
+    assert time.monotonic() - started < 1.0
 
 
 def test_monitor_single_flight_and_clear_transition():

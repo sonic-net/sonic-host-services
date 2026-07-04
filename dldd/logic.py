@@ -33,15 +33,25 @@ class OrExpression(object):
 
 
 _TOKEN = re.compile(r"\s*(?:(AND|OR)|([0-9]+)|(\()|(\))|(\S+))")
+MAX_LOGIC_CHARACTERS = 16384
+MAX_LOGIC_TOKENS = 4096
+MAX_LOGIC_NESTING = 64
 
 
 def _tokenize(expression):
     if not isinstance(expression, str) or not expression.strip():
         raise LogicSyntaxError("logic expression must be a non-empty string")
     expression = expression.strip()
+    if len(expression) > MAX_LOGIC_CHARACTERS:
+        raise LogicSyntaxError(
+            "logic expression exceeds {} characters".format(
+                MAX_LOGIC_CHARACTERS
+            )
+        )
 
     tokens = []
     position = 0
+    nesting = 0
     while position < len(expression):
         match = _TOKEN.match(expression, position)
         if match is None:
@@ -54,11 +64,31 @@ def _tokenize(expression):
         if operator is not None:
             tokens.append((operator, position))
         elif number is not None:
-            tokens.append((int(number), position))
+            try:
+                event_id = int(number)
+            except ValueError:
+                raise LogicSyntaxError(
+                    "event ID is too large at character {}".format(position)
+                )
+            tokens.append((event_id, position))
         elif left is not None:
+            nesting += 1
+            if nesting > MAX_LOGIC_NESTING:
+                raise LogicSyntaxError(
+                    "logic nesting exceeds {} levels".format(
+                        MAX_LOGIC_NESTING
+                    )
+                )
             tokens.append(("(", position))
         else:
+            nesting -= 1
             tokens.append((")", position))
+        if len(tokens) > MAX_LOGIC_TOKENS:
+            raise LogicSyntaxError(
+                "logic expression exceeds {} tokens".format(
+                    MAX_LOGIC_TOKENS
+                )
+            )
         position = match.end()
 
     return tokens
@@ -148,11 +178,19 @@ def parse_logic(expression, valid_event_ids=None):
 def collect_event_ids(expression):
     """Return the event IDs referenced by a parsed expression."""
 
-    if isinstance(expression, EventReference):
-        return {expression.event_id}
-    if isinstance(expression, (AndExpression, OrExpression)):
-        return collect_event_ids(expression.left) | collect_event_ids(expression.right)
-    raise TypeError("unsupported logic expression node {!r}".format(expression))
+    event_ids = set()
+    pending = [expression]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, EventReference):
+            event_ids.add(node.event_id)
+        elif isinstance(node, (AndExpression, OrExpression)):
+            pending.extend((node.left, node.right))
+        else:
+            raise TypeError(
+                "unsupported logic expression node {!r}".format(node)
+            )
+    return event_ids
 
 
 def evaluate_logic(expression, event_states):
@@ -162,14 +200,29 @@ def evaluate_logic(expression, event_states):
     should validate with :func:`parse_logic` before runtime evaluation.
     """
 
-    if isinstance(expression, EventReference):
-        return bool(event_states.get(expression.event_id, False))
-    if isinstance(expression, AndExpression):
-        return evaluate_logic(expression.left, event_states) and evaluate_logic(
-            expression.right, event_states
-        )
-    if isinstance(expression, OrExpression):
-        return evaluate_logic(expression.left, event_states) or evaluate_logic(
-            expression.right, event_states
-        )
-    raise TypeError("unsupported logic expression node {!r}".format(expression))
+    pending = [(expression, False)]
+    values = []
+    while pending:
+        node, combine = pending.pop()
+        if isinstance(node, EventReference):
+            values.append(bool(event_states.get(node.event_id, False)))
+        elif isinstance(node, (AndExpression, OrExpression)):
+            if combine:
+                right = values.pop()
+                left = values.pop()
+                values.append(
+                    left and right
+                    if isinstance(node, AndExpression)
+                    else left or right
+                )
+            else:
+                pending.extend(
+                    ((node, True), (node.right, False), (node.left, False))
+                )
+        else:
+            raise TypeError(
+                "unsupported logic expression node {!r}".format(node)
+            )
+    if len(values) != 1:
+        raise TypeError("invalid logic expression tree")
+    return values[0]

@@ -3,6 +3,7 @@ from __future__ import absolute_import
 import pytest
 
 from dldd.logic import (
+    MAX_LOGIC_NESTING,
     AndExpression,
     EventReference,
     LogicSyntaxError,
@@ -37,6 +38,30 @@ def test_parentheses_override_precedence_and_ids_are_collected():
     assert collect_event_ids(expression) == {1, 2, 3}
     assert evaluate_logic(expression, {1: True, 2: False, 3: True}) is True
     assert evaluate_logic(expression, {1: True, 2: False, 3: False}) is False
+
+
+def test_large_flat_expression_uses_iterative_traversal_and_evaluation():
+    event_ids = set(range(1, 1000))
+    expression = parse_logic(
+        " AND ".join(str(value) for value in sorted(event_ids)), event_ids
+    )
+
+    assert collect_event_ids(expression) == event_ids
+    assert evaluate_logic(
+        expression, {value: True for value in event_ids}
+    ) is True
+    assert evaluate_logic(
+        expression, {value: value != 500 for value in event_ids}
+    ) is False
+
+
+def test_excessive_parenthesis_nesting_is_rejected_cleanly():
+    source = "(" * (MAX_LOGIC_NESTING + 1) + "1" + ")" * (
+        MAX_LOGIC_NESTING + 1
+    )
+
+    with pytest.raises(LogicSyntaxError, match="nesting exceeds"):
+        parse_logic(source)
 
 
 @pytest.mark.parametrize(
