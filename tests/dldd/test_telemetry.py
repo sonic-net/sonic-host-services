@@ -45,6 +45,44 @@ class FakeStateDB(StateDB):
         return [key for key in self.values if fnmatch.fnmatch(key, pattern)]
 
 
+class RecordingPipeline(object):
+    def __init__(self):
+        self.operations = []
+
+    def hset(self, key, mapping):
+        self.operations.append(("hset", key, mapping))
+
+    def hdel(self, key, *fields):
+        self.operations.append(("hdel", key, fields))
+
+    def persist(self, key):
+        self.operations.append(("persist", key))
+
+    def expire(self, key, seconds):
+        self.operations.append(("expire", key, seconds))
+
+    def execute(self):
+        self.operations.append(("execute",))
+
+
+class RecordingRedisClient(object):
+    def __init__(self, fields=()):
+        self.fields = fields
+        self.transaction = RecordingPipeline()
+        self.scan_pattern = None
+
+    def hkeys(self, key):
+        return self.fields
+
+    def pipeline(self, transaction=True):
+        assert transaction
+        return self.transaction
+
+    def scan_iter(self, match):
+        self.scan_pattern = match
+        return iter((b"FAULT_INFO|PSU0|SYMPTOM",))
+
+
 def fault(status="ACTIVE"):
     return FaultRecord(
         rule_id=1000001,
@@ -146,53 +184,52 @@ def test_nested_byte_evidence_is_json_safe():
 
 
 def test_production_hash_replacement_never_deletes_whole_fault_key():
-    class Pipeline(object):
-        def __init__(self):
-            self.operations = []
-
-        def hset(self, key, mapping):
-            self.operations.append(("hset", key, mapping))
-
-        def hdel(self, key, *fields):
-            self.operations.append(("hdel", key, fields))
-
-        def persist(self, key):
-            self.operations.append(("persist", key))
-
-        def expire(self, key, seconds):
-            self.operations.append(("expire", key, seconds))
-
-        def execute(self):
-            self.operations.append(("execute",))
-
-    class Client(object):
-        def __init__(self):
-            self.transaction = Pipeline()
-
-        def hkeys(self, key):
-            return [b"status", b"healthz_artifact"]
-
-        def pipeline(self, transaction=True):
-            assert transaction
-            return self.transaction
-
-    class Connector(object):
-        STATE_DB = "STATE_DB"
-
-        def __init__(self):
-            self.client = Client()
-
-        def get_redis_client(self, database):
-            assert database == self.STATE_DB
-            return self.client
-
-    connector = Connector()
-    database = SonicStateDB(connector)
+    client = RecordingRedisClient((b"status", b"healthz_artifact"))
+    database = SonicStateDB(client)
     database.replace_hash("FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None)
 
-    names = [operation[0] for operation in connector.client.transaction.operations]
+    names = [operation[0] for operation in client.transaction.operations]
     assert names == ["hset", "hdel", "persist", "execute"]
     assert "delete" not in names
+
+
+def test_production_status_write_sets_ttl_in_one_transaction():
+    client = RecordingRedisClient()
+    database = SonicStateDB(client)
+
+    database.hset_with_ttl("DLDD_STATUS|process_state", {"state": "OK"}, 120)
+
+    assert client.transaction.operations == [
+        ("hset", "DLDD_STATUS|process_state", {"state": "OK"}),
+        ("expire", "DLDD_STATUS|process_state", 120),
+        ("execute",),
+    ]
+
+
+def test_production_inactive_fault_replacement_sets_retention_ttl():
+    client = RecordingRedisClient((b"status", b"healthz_artifact"))
+    database = SonicStateDB(client)
+
+    database.replace_hash(
+        "FAULT_INFO|PSU0|SYMPTOM", {"status": "INACTIVE"}, 42
+    )
+
+    assert client.transaction.operations == [
+        ("hset", "FAULT_INFO|PSU0|SYMPTOM", {"status": "INACTIVE"}),
+        ("hdel", "FAULT_INFO|PSU0|SYMPTOM", ("healthz_artifact",)),
+        ("expire", "FAULT_INFO|PSU0|SYMPTOM", 42),
+        ("execute",),
+    ]
+
+
+def test_production_fault_scan_uses_nonblocking_iterator():
+    client = RecordingRedisClient()
+    database = SonicStateDB(client)
+
+    assert list(database.keys("FAULT_INFO|*")) == [
+        b"FAULT_INFO|PSU0|SYMPTOM"
+    ]
+    assert client.scan_pattern == "FAULT_INFO|*"
 
 
 def test_fault_key_escapes_redis_separator_reversibly():

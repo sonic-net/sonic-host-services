@@ -92,31 +92,52 @@ class StateDB:
 
 
 class SonicStateDB(StateDB):
-    def __init__(self, connector=None) -> None:
-        self._connector = connector
+    def __init__(self, redis_client=None) -> None:
+        self._redis_client = redis_client
 
     def _db(self):
-        if self._connector is None:
+        if self._redis_client is None:
             try:
+                import redis
                 from swsscommon import swsscommon
             except ImportError as error:
-                raise RuntimeError("swsscommon is unavailable: {}".format(error))
-            connector = swsscommon.SonicV2Connector(host="127.0.0.1")
-            connector.connect(connector.STATE_DB, False)
-            self._connector = connector
-        return self._connector
+                raise RuntimeError(
+                    "STATE_DB dependencies are unavailable: {}".format(error)
+                )
+
+            database = "STATE_DB"
+            database_key = swsscommon.SonicDBKey()
+            database_id = swsscommon.SonicDBConfig.getDbId(
+                database, database_key
+            )
+            socket_path = swsscommon.SonicDBConfig.getDbSock(
+                database, database_key
+            )
+            if socket_path:
+                self._redis_client = redis.Redis(
+                    unix_socket_path=socket_path,
+                    db=database_id,
+                )
+            else:
+                self._redis_client = redis.Redis(
+                    host=swsscommon.SonicDBConfig.getDbHostname(
+                        database, database_key
+                    ),
+                    port=swsscommon.SonicDBConfig.getDbPort(
+                        database, database_key
+                    ),
+                    db=database_id,
+                )
+        return self._redis_client
 
     def hset(self, key: str, values: Mapping[str, Any]) -> None:
-        db = self._db()
-        client = db.get_redis_client(db.STATE_DB)
         mapping = {name: _redis_value(value) for name, value in values.items()}
-        client.hset(key, mapping=mapping)
+        self._db().hset(key, mapping=mapping)
 
     def hset_with_ttl(
         self, key: str, values: Mapping[str, Any], seconds: int
     ) -> None:
-        db = self._db()
-        client = db.get_redis_client(db.STATE_DB)
+        client = self._db()
         mapping = {name: _redis_value(value) for name, value in values.items()}
         transaction = client.pipeline(transaction=True)
         transaction.hset(key, mapping=mapping)
@@ -124,25 +145,21 @@ class SonicStateDB(StateDB):
         transaction.execute()
 
     def expire(self, key: str, seconds: int) -> None:
-        db = self._db()
-        db.get_redis_client(db.STATE_DB).expire(key, seconds)
+        self._db().expire(key, seconds)
 
     def persist(self, key: str) -> None:
-        db = self._db()
-        db.get_redis_client(db.STATE_DB).persist(key)
+        self._db().persist(key)
 
     def hdel(self, key: str, fields: Iterable[str]) -> None:
         fields = tuple(fields)
         if not fields:
             return
-        db = self._db()
-        db.get_redis_client(db.STATE_DB).hdel(key, *fields)
+        self._db().hdel(key, *fields)
 
     def replace_hash(
         self, key: str, values: Mapping[str, Any], ttl_seconds: Optional[int]
     ) -> None:
-        db = self._db()
-        client = db.get_redis_client(db.STATE_DB)
+        client = self._db()
         mapping = {name: _redis_value(value) for name, value in values.items()}
         existing = client.hkeys(key)
         existing_fields = {
@@ -161,16 +178,13 @@ class SonicStateDB(StateDB):
         transaction.execute()
 
     def delete(self, key: str) -> None:
-        db = self._db()
-        db.get_redis_client(db.STATE_DB).delete(key)
+        self._db().delete(key)
 
     def hgetall(self, key: str) -> Mapping[str, str]:
-        db = self._db()
-        return db.get_redis_client(db.STATE_DB).hgetall(key)
+        return self._db().hgetall(key)
 
     def keys(self, pattern: str) -> Iterable[str]:
-        db = self._db()
-        return db.get_redis_client(db.STATE_DB).scan_iter(match=pattern)
+        return self._db().scan_iter(match=pattern)
 
 
 class TelemetryPublisher:
