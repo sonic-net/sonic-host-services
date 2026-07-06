@@ -1071,16 +1071,7 @@
       "additionalProperties": false,
       "properties": {
         "component": {
-          "enum": [
-            "PSU",
-            "FAN",
-            "CHASSIS",
-            "SSD",
-            "CPU",
-            "MEMORY",
-            "ASIC",
-            "TRANSCEIVER"
-          ],
+          "minLength": 1,
           "title": "Component",
           "type": "string"
         },
@@ -1482,14 +1473,7 @@
       "properties": {
         "action_list": {
           "items": {
-            "enum": [
-              "ACTION_RESEAT",
-              "ACTION_WARM_REBOOT",
-              "ACTION_COLD_REBOOT",
-              "ACTION_POWER_CYCLE",
-              "ACTION_FACTORY_RESET",
-              "ACTION_REPLACE"
-            ],
+            "minLength": 1,
             "type": "string"
           },
           "minItems": 1,

@@ -115,16 +115,10 @@ NonEmptyStringList = Annotated[List[NonEmptyString], Field(min_length=1)]
 NonEmptyInstanceList = Annotated[List[InstanceBinding], Field(min_length=1)]
 ScalingValue = Union[FiniteNumber, Literal["N/A"]]
 
-ComponentType = Literal[
-    "PSU",
-    "FAN",
-    "CHASSIS",
-    "SSD",
-    "CPU",
-    "MEMORY",
-    "ASIC",
-    "TRANSCEIVER",
-]
+# Component types are vendor/platform identities. DLDD requires a usable
+# string but deliberately does not maintain an allowlist: a platform can
+# define any number of component classes without a schema revision.
+ComponentType = NonEmptyString
 SymptomType = Literal[
     "SYMPTOM_OVER_THRESHOLD",
     "SYMPTOM_UNDER_THRESHOLD",
@@ -145,14 +139,10 @@ ValueType = Literal[
     "bytes",
     "N/A",
 ]
-RemoteActionType = Literal[
-    "ACTION_RESEAT",
-    "ACTION_WARM_REBOOT",
-    "ACTION_COLD_REBOOT",
-    "ACTION_POWER_CYCLE",
-    "ACTION_FACTORY_RESET",
-    "ACTION_REPLACE",
-]
+# OpenConfig remediation identities are extensible. Preserve any non-empty
+# identity string and leave namespace/identity resolution to the controller's
+# OpenConfig implementation rather than embedding a DLDD-side enum.
+RemoteActionType = NonEmptyString
 
 
 def _regex_nesting(pattern: str) -> int:

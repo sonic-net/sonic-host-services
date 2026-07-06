@@ -83,6 +83,90 @@ def test_valid_direct_rule_materializes_and_applies_defaults():
     assert local_action.timeout == 300
 
 
+def test_component_and_remote_action_identities_are_extensible():
+    document = load_fixture()
+    metadata = document["signatures"][0]["signature"]["metadata"]
+    metadata["component"] = "VENDOR_FABRIC_MODULE"
+    remote = document["signatures"][0]["signature"]["actions"][
+        "repair_actions"
+    ]["remote_actions"]
+    remote["action_list"] = [
+        "ACTION_RESEAT",
+        "vendor-healthz:ACTION_REPAIR_FABRIC_MODULE",
+    ]
+
+    result = validate_document(document)
+
+    assert result.activation_valid
+    signature = result.ruleset.signatures[0]
+    assert signature.metadata.component == "VENDOR_FABRIC_MODULE"
+    assert signature.actions.repair_actions.remote_actions.action_list == (
+        "ACTION_RESEAT",
+        "vendor-healthz:ACTION_REPAIR_FABRIC_MODULE",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate, expected_code, expected_path",
+    (
+        (
+            lambda document: document["signatures"][0]["signature"][
+                "metadata"
+            ].pop("component"),
+            "missing_field",
+            "$.signatures[0].signature.metadata.component",
+        ),
+        (
+            lambda document: document["signatures"][0]["signature"][
+                "metadata"
+            ].update({"component": ""}),
+            "invalid_length",
+            "$.signatures[0].signature.metadata.component",
+        ),
+        (
+            lambda document: document["signatures"][0]["signature"][
+                "metadata"
+            ].update({"component": 7}),
+            "invalid_type",
+            "$.signatures[0].signature.metadata.component",
+        ),
+        (
+            lambda document: document["signatures"][0]["signature"][
+                "actions"
+            ]["repair_actions"]["remote_actions"].update(
+                {"action_list": [""]}
+            ),
+            "invalid_length",
+            "$.signatures[0].signature.actions.repair_actions."
+            "remote_actions.action_list[0]",
+        ),
+        (
+            lambda document: document["signatures"][0]["signature"][
+                "actions"
+            ]["repair_actions"]["remote_actions"].update(
+                {"action_list": [7]}
+            ),
+            "invalid_type",
+            "$.signatures[0].signature.actions.repair_actions."
+            "remote_actions.action_list[0]",
+        ),
+    ),
+)
+def test_extensible_identity_fields_remain_required_nonempty_strict_strings(
+    mutate, expected_code, expected_path
+):
+    document = load_fixture()
+    mutate(document)
+
+    result = validate_document(document, materialize=False)
+
+    assert not result.activation_valid
+    assert any(
+        issue.code == expected_code and issue.path == expected_path
+        for issue in result.broken_rules[0].issues
+    )
+
+
 def test_event_sampling_interval_is_optional_and_strictly_materialized():
     document = load_fixture()
 

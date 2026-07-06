@@ -135,6 +135,26 @@ def test_active_fault_is_persistent_and_nested_fields_are_json():
     assert json.loads(database.values[record.redis_key]["repair_actions"])[0]["action"] == "ACTION_RESEAT"
 
 
+def test_vendor_component_and_remote_action_identities_are_preserved():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    record = fault()
+    record.component_type = "VENDOR_FABRIC_MODULE"
+    record.repair_actions = (
+        "vendor-healthz:ACTION_REPAIR_FABRIC_MODULE",
+    )
+
+    publisher.publish_fault(record)
+
+    payload = database.values[record.redis_key]
+    component = json.loads(payload["component_info"])
+    actions = json.loads(payload["repair_actions"])
+    assert component["component"] == "VENDOR_FABRIC_MODULE"
+    assert actions == [
+        {"action": "vendor-healthz:ACTION_REPAIR_FABRIC_MODULE"}
+    ]
+
+
 def test_fault_serial_can_be_supplied_by_platform_metadata_hook():
     database = FakeStateDB()
     publisher = TelemetryPublisher(

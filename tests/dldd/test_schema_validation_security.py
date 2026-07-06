@@ -152,6 +152,19 @@ def test_packaged_derivative_schema_is_current_for_installed_contract():
         for option in schema["$defs"]["NonNullJsonValue"]["anyOf"]
     )
 
+    metadata = schema["$defs"]["MetadataV001"]
+    component = metadata["properties"]["component"]
+    assert component["type"] == "string"
+    assert component["minLength"] == 1
+    assert "enum" not in component
+    assert "component" in metadata["required"]
+
+    remote = schema["$defs"]["RemoteActionsV001"]
+    remote_identity = remote["properties"]["action_list"]["items"]
+    assert remote_identity["type"] == "string"
+    assert remote_identity["minLength"] == 1
+    assert "enum" not in remote_identity
+
 
 def test_generated_schema_is_documentation_not_a_runtime_dependency(
     monkeypatch,
