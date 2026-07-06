@@ -16,7 +16,7 @@ from dldd.config import ConfigDBProvider, DLDDConfig
 from dldd.dse import DSERegistry
 from dldd.hooks import VendorHook, VendorHookError, VendorHookRegistry
 from dldd.lifecycle import RulePaths
-from dldd.models import BrokenRule, ValidationIssue
+from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
 from dldd.service import DLDDService, validate_runtime_operation_hooks
 from dldd.validation import ExactCompatibilityMatcher
@@ -39,6 +39,9 @@ class VendorArtifactClient(HealthzArtifactClient):
         ("invalid_dse_reference", "unknown DSE binding", "dse_error:"),
         ("invalid_operator", "operator cannot execute", "evaluation_error:"),
         ("missing_field", "severity is required", "schema_error:"),
+        ("unknown_field", "field is not permitted", "schema_error:"),
+        ("out_of_range", "value exceeds its bound", "schema_error:"),
+        ("unsupported_type", "type is unsupported", "schema_error:"),
         ("materialization_failed", "platform binding failed", "validation_error:"),
     ),
 )
@@ -324,7 +327,112 @@ def test_service_candidate_preflight_validates_without_reading(
     assert calls == [("validate", item.correlation_key)]
 
 
-def test_adapter_broken_rule_includes_last_attempt(tmp_path, monkeypatch):
+def test_service_candidate_preflight_propagates_adapter_programming_error(
+    tmp_path, monkeypatch
+):
+    extensions = PlatformExtensions(
+        PlatformIdentity("test", "product", "software"),
+        DSERegistry(),
+        VendorHookRegistry(),
+        ExactCompatibilityMatcher(),
+    )
+    service = DLDDService(
+        paths=RulePaths(str(tmp_path)),
+        state_db=object(),
+        extensions=extensions,
+    )
+    materialized = SimpleNamespace(
+        signature=SimpleNamespace(
+            metadata=SimpleNamespace(
+                id=1000001, name="BUGGY", version="1.0.0"
+            ),
+            actions=SimpleNamespace(
+                repair_actions=SimpleNamespace(local_actions=None),
+                log_collection=None,
+            ),
+        )
+    )
+    validation = ValidationResult(
+        schema_version="0.0.1",
+        ruleset=None,
+        materialized_rules=(materialized,),
+        source_lines={"$": 1},
+    )
+    item = SimpleNamespace(
+        source_type="redis",
+        rule_id=1000001,
+        rule_name="BUGGY",
+        correlation_key="1000001:1",
+    )
+
+    class BuggyAdapter(object):
+        def validate(self, unused_item):
+            raise RuntimeError("adapter implementation bug")
+
+    monkeypatch.setattr(dldd_service, "load_rules", lambda *args: validation)
+    monkeypatch.setattr(
+        dldd_service,
+        "build_plans",
+        lambda *args, **kwargs: SimpleNamespace(
+            work_items={item.correlation_key: item}
+        ),
+    )
+    monkeypatch.setattr(
+        service, "_adapters", lambda: {"redis": BuggyAdapter()}
+    )
+
+    with pytest.raises(RuntimeError, match="adapter implementation bug"):
+        service._validate_candidate("rules.yaml", "dse.yaml")
+
+    class RejectingAdapter(object):
+        def validate(self, unused_item):
+            raise ValueError("unsupported source binding")
+
+    monkeypatch.setattr(
+        service, "_adapters", lambda: {"redis": RejectingAdapter()}
+    )
+    monkeypatch.setattr(dldd_service.time, "time", lambda: 6789.0)
+
+    candidate = service._validate_candidate("rules.yaml", "dse.yaml")
+
+    assert candidate.usable_rule_count == 0
+    assert candidate.broken_rules[0]["last_attempt"] == 6789.0
+    assert "unsupported source binding" in candidate.broken_rules[0]["reason"]
+
+
+def test_service_candidate_records_remain_within_external_byte_cap():
+    broken_rules = tuple(
+        BrokenRule(
+            rule_name="\0" * 240 + "{:04d}".format(index),
+            rule_id=1_000_000 + index,
+            rule_version="1.0.0",
+            issues=(
+                ValidationIssue(
+                    "rule",
+                    "unknown_field",
+                    "X" * 4096,
+                    path="$." + "Y" * 2048,
+                ),
+            ),
+        )
+        for index in range(1024)
+    )
+    result = SimpleNamespace(broken_rules=broken_rules)
+
+    records = dldd_service._bounded_broken_rule_records(result, 1234.5)
+    serialized = json.dumps(
+        records, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+    assert len(records) == 1024
+    assert len(serialized) <= dldd_service.MAX_SERIALIZED_DIAGNOSTIC_BYTES
+    assert len({record["rule"] for record in records}) == 1024
+    assert all("\0" not in record["rule"] for record in records)
+
+
+def test_start_does_not_repeat_candidate_adapter_preflight(
+    tmp_path, monkeypatch
+):
     extensions = PlatformExtensions(
         PlatformIdentity("test", "product", "software"),
         DSERegistry(),
@@ -355,9 +463,12 @@ def test_adapter_broken_rule_includes_last_attempt(tmp_path, monkeypatch):
         correlation_key="1000001:event:component:source",
     )
 
-    class RejectingAdapter(object):
+    validation_calls = []
+
+    class SecondCallBugAdapter(object):
         def validate(self, unused_item):
-            raise ValueError("unsupported source binding")
+            validation_calls.append(unused_item)
+            raise RuntimeError("adapter must not be validated twice")
 
     class CapturingTelemetry(object):
         def __init__(self, *args, **kwargs):
@@ -366,9 +477,9 @@ def test_adapter_broken_rule_includes_last_attempt(tmp_path, monkeypatch):
         def publish_status(self, *args, **kwargs):
             self.status = (args, kwargs)
 
-    def fake_build_plans(rules, *args):
+    def fake_build_plans(unused_rules, *args):
         return SimpleNamespace(
-            work_items={item.correlation_key: item} if tuple(rules) else {},
+            work_items={item.correlation_key: item},
             monitor_plans={},
             signatures={},
         )
@@ -381,22 +492,20 @@ def test_adapter_broken_rule_includes_last_attempt(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(dldd_service, "TelemetryPublisher", CapturingTelemetry)
     monkeypatch.setattr(dldd_service, "build_plans", fake_build_plans)
-    monkeypatch.setattr(service, "_adapters", lambda: {"redis": RejectingAdapter()})
-    monkeypatch.setattr(dldd_service.time, "time", lambda: 6789.0)
+    monkeypatch.setattr(
+        service, "_adapters", lambda: {"redis": SecondCallBugAdapter()}
+    )
+    monkeypatch.setattr(
+        service,
+        "_create_artifact_client",
+        lambda: (_ for _ in ()).throw(RuntimeError("stop after preflight")),
+    )
 
     service.start()
 
-    assert service.startup_broken == (
-        {
-            "rule": "BAD_ADAPTER",
-            "rule_id": 1000001,
-            "version": "4.5.6",
-            "correlation_key": item.correlation_key,
-            "reason": "validation_error: unsupported source binding",
-            "failure_count": 1,
-            "state": "BROKEN",
-            "last_attempt": 6789.0,
-        },
+    assert validation_calls == []
+    assert service.fatal_reason == (
+        "artifact client initialization failed: stop after preflight"
     )
 
 
@@ -434,6 +543,52 @@ def test_dynamic_config_updates_runtime_and_monitor_intervals(tmp_path):
         and monitor.source_recovery_samples == 2
         for monitor in service.monitors
     )
+
+
+def test_dynamic_config_uses_stable_monitor_snapshot_during_replacement(tmp_path):
+    service = object.__new__(DLDDService)
+    service.paths = SimpleNamespace(defaults=str(tmp_path / "missing.yaml"))
+    service.config = DLDDConfig()
+    service.telemetry = None
+    service.orchestrator = None
+    updates = []
+
+    class Monitor(object):
+        def __init__(self, monitor_type, plan=None, replace_self=False):
+            self.plan = plan or SimpleNamespace(
+                monitor_type=monitor_type, polling_interval=60
+            )
+            self.fault_evidence_ack_timeout = 120
+            self.source_recovery_samples = 1
+            self.replace_self = replace_self
+
+        def update_polling_interval(self, interval):
+            updates.append(self.plan.monitor_type)
+            self.plan.polling_interval = interval
+            if self.replace_self:
+                replacement = Monitor(self.plan.monitor_type, plan=self.plan)
+                service.monitors.remove(self)
+                service.monitors.append(replacement)
+
+    service.monitors = [
+        Monitor("redis", replace_self=True),
+        Monitor("file"),
+        Monitor("common"),
+    ]
+
+    service._apply_config(
+        {
+            "redis_monitor_polling_interval": "7",
+            "file_monitor_polling_interval": "8",
+            "common_monitor_polling_interval": "9",
+        }
+    )
+
+    assert updates == ["redis", "file", "common"]
+    assert sorted(
+        (monitor.plan.monitor_type, monitor.plan.polling_interval)
+        for monitor in service.monitors
+    ) == [("common", 9), ("file", 8), ("redis", 7)]
 
 
 def test_crash_state_persists_only_broken_not_degraded_records():
@@ -691,6 +846,18 @@ def test_activation_dry_run_validates_adapter_without_reading(
     assert payload["probe_results"] == [
         {"correlation_key": item.correlation_key, "state": "VALID"}
     ]
+
+    class BuggyAdapter(object):
+        def validate(self, unused_item):
+            raise RuntimeError("adapter implementation bug")
+
+    monkeypatch.setattr(
+        dldd_cli,
+        "adapter_map",
+        lambda **kwargs: {"redis": BuggyAdapter()},
+    )
+    with pytest.raises(RuntimeError, match="adapter implementation bug"):
+        dldd_cli.validate_rules(args)
 
 
 def test_activation_dry_run_reports_missing_runtime_operation_hook(

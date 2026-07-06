@@ -21,9 +21,16 @@ from dldd.dse import (
 from dldd.models import ResolvedSource, ValueConfig, to_mutable
 from dldd.platform import PlatformIdentity, load_extensions
 from dldd.planner import build_plans
+from dldd.rule_schema import DEFAULT_CONTRACT_REGISTRY
+from dldd.rule_schema.generate import (
+    GENERATED_WARNING,
+    JSON_SCHEMA_DIALECT,
+    default_output_path,
+    generate_schema,
+    render_schema,
+)
 from dldd.validation import (
     CompatibilityMatcher,
-    SCHEMA_PATH,
     ValidationContext,
     load_rules,
     validate_document,
@@ -42,12 +49,25 @@ def event(document, signature=0, index=0):
     return document["signatures"][signature]["signature"]["conditions"]["events"][index]["event"]
 
 
-def test_machine_readable_schema_is_valid_json():
-    with open(SCHEMA_PATH) as stream:
-        schema = json.load(stream)
+def test_exact_pydantic_contract_is_the_runtime_authority():
+    assert DEFAULT_CONTRACT_REGISTRY.versions == ("0.0.1",)
+    contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
 
-    assert schema["$schema"].endswith("draft-07/schema#")
+    envelope = contract.validate_envelope(load_fixture())
+
+    assert envelope.schema_version == "0.0.1"
+    assert len(envelope.signatures) == 1
+
+
+def test_generated_json_schema_is_a_current_derivative():
+    schema = generate_schema("0.0.1")
+
+    assert schema["$schema"] == JSON_SCHEMA_DIALECT
     assert schema["properties"]["schema_version"]["const"] == "0.0.1"
+    assert schema["x-dldd-schema-version"] == "0.0.1"
+    assert schema["x-generated-warning"] == GENERATED_WARNING
+    assert "does not load this file at runtime" in GENERATED_WARNING
+    assert default_output_path("0.0.1").read_text() == render_schema("0.0.1")
 
 
 def test_valid_direct_rule_materializes_and_applies_defaults():
@@ -61,6 +81,264 @@ def test_valid_direct_rule_materializes_and_applies_defaults():
     assert rule.events[0].sources[0].type == "redis"
     local_action = rule.signature.actions.repair_actions.local_actions.action_list[0]
     assert local_action.timeout == 300
+
+
+def test_event_sampling_interval_is_optional_and_strictly_materialized():
+    document = load_fixture()
+
+    omitted = validate_document(document)
+    assert omitted.activation_valid
+    omitted_event = omitted.ruleset.signatures[0].conditions.events[0]
+    assert omitted_event.sampling_interval is None
+    assert (
+        omitted.materialized_rules[0].events[0].event.sampling_interval is None
+    )
+
+    event(document)["sampling_interval"] = 86400
+    explicit = validate_document(document)
+    assert explicit.activation_valid
+    explicit_event = explicit.ruleset.signatures[0].conditions.events[0]
+    assert explicit_event.sampling_interval == 86400
+    assert (
+        explicit.materialized_rules[0].events[0].event.sampling_interval
+        == 86400
+    )
+
+
+@pytest.mark.parametrize(
+    "value, expected_code",
+    (
+        (None, "invalid_type"),
+        (True, "invalid_type"),
+        ("60", "invalid_type"),
+        (60.0, "invalid_type"),
+        (0, "out_of_range"),
+        (2**32, "out_of_range"),
+    ),
+)
+def test_event_sampling_interval_rejects_null_coercion_and_bad_ranges(
+    value, expected_code
+):
+    document = load_fixture()
+    event(document)["sampling_interval"] = value
+
+    result = validate_document(document)
+
+    assert not result.activation_valid
+    assert {
+        (issue.code, issue.path) for issue in result.broken_rules[0].issues
+    } == {
+        (
+            expected_code,
+            "$.signatures[0].signature.conditions.events[0].event."
+            "sampling_interval",
+        )
+    }
+
+
+def test_omitted_optional_timeout_is_distinct_from_explicit_null():
+    document = load_fixture()
+    del document["local_action_default_timeout"]
+    action = document["signatures"][0]["signature"]["actions"][
+        "repair_actions"
+    ]["local_actions"]["action_list"][0]["action"]
+    action["timeout"] = 30
+
+    omitted = validate_document(document)
+    assert omitted.activation_valid
+    assert omitted.ruleset.local_action_default_timeout is None
+
+    document["local_action_default_timeout"] = None
+    explicit_null = validate_document(document)
+    assert not explicit_null.file_valid
+    assert [
+        (issue.code, issue.path) for issue in explicit_null.file_errors
+    ] == [("invalid_type", "$.local_action_default_timeout")]
+
+
+def test_contract_fields_are_closed_but_vendor_payloads_are_preserved():
+    document = load_fixture()
+    document["unexpected_root_field"] = True
+
+    file_failure = validate_document(document)
+    assert [(issue.code, issue.path) for issue in file_failure.file_errors] == [
+        ("unknown_field", "$.unexpected_root_field")
+    ]
+
+    del document["unexpected_root_field"]
+    event(document)["unexpected_event_field"] = True
+    rule_failure = validate_document(document)
+    assert [
+        (issue.code, issue.path) for issue in rule_failure.broken_rules[0].issues
+    ] == [
+        (
+            "unknown_field",
+            "$.signatures[0].signature.conditions.events[0].event."
+            "unexpected_event_field",
+        )
+    ]
+
+    del event(document)["unexpected_event_field"]
+    action = document["signatures"][0]["signature"]["actions"][
+        "repair_actions"
+    ]["local_actions"]["action_list"][0]["action"]
+    action.clear()
+    action.update(
+        {
+            "type": "vendor_reset",
+            "timeout": 10,
+            "token": "safe",
+            "policy": {
+                "attempts": 2,
+                "flags": [True, None, "cold"],
+            },
+        }
+    )
+
+    vendor = validate_document(document, materialize=False)
+    assert vendor.file_valid
+    assert not vendor.broken_rules
+    operation = vendor.ruleset.signatures[0].actions.repair_actions
+    operation = operation.local_actions.action_list[0]
+    assert operation.options["token"] == "safe"
+    assert operation.options["policy"]["attempts"] == 2
+    assert operation.options["policy"]["flags"] == (True, None, "cold")
+
+
+@pytest.mark.parametrize(
+    "mutation, expected_path",
+    (
+        (
+            lambda doc: doc["signatures"][0]["signature"]["metadata"].update(
+                {"id": "1000001"}
+            ),
+            "$.signatures[0].signature.metadata.id",
+        ),
+        (
+            lambda doc: event(doc).update({"match_count": True}),
+            "$.signatures[0].signature.conditions.events[0].event.match_count",
+        ),
+        (
+            lambda doc: event(doc).update(
+                {
+                    "evaluation": {
+                        "type": "string",
+                        "operator": "equals",
+                        "value": "fault",
+                        "case_sensitive": 1,
+                    }
+                }
+            ),
+            "$.signatures[0].signature.conditions.events[0].event.evaluation."
+            "case_sensitive",
+        ),
+    ),
+)
+def test_core_scalar_fields_do_not_coerce(mutation, expected_path):
+    document = load_fixture()
+    mutation(document)
+
+    result = validate_document(document)
+
+    assert any(
+        issue.code == "invalid_type" and issue.path == expected_path
+        for issue in result.broken_rules[0].issues
+    )
+
+
+@pytest.mark.parametrize(
+    "operation_type, expected_field",
+    (("cli", "argv"), ("dse", "command"), ("i2c", "path")),
+)
+def test_malformed_builtin_operation_never_falls_through_vendor_model(
+    operation_type, expected_field
+):
+    document = load_fixture()
+    action = document["signatures"][0]["signature"]["actions"][
+        "repair_actions"
+    ]["local_actions"]["action_list"][0]["action"]
+    action.clear()
+    action.update(
+        {"type": operation_type, "timeout": 10, "vendor_only": "unsafe"}
+    )
+
+    result = validate_document(document)
+
+    issues = {
+        (issue.code, issue.path) for issue in result.broken_rules[0].issues
+    }
+    base = (
+        "$.signatures[0].signature.actions.repair_actions.local_actions."
+        "action_list[0].action"
+    )
+    assert ("missing_field", "{}.{}".format(base, expected_field)) in issues
+    assert ("unknown_field", "{}.vendor_only".format(base)) in issues
+
+
+@pytest.mark.parametrize("invalid_type", ([], {}))
+def test_unhashable_operation_type_is_a_rule_diagnostic(invalid_type):
+    document = load_fixture()
+    action = document["signatures"][0]["signature"]["actions"][
+        "repair_actions"
+    ]["local_actions"]["action_list"][0]["action"]
+    action["type"] = invalid_type
+
+    result = validate_document(document)
+
+    assert result.file_valid
+    assert [(issue.code, issue.path) for issue in result.broken_rules[0].issues] == [
+        (
+            "invalid_type",
+            "$.signatures[0].signature.actions.repair_actions.local_actions."
+            "action_list[0].action.type",
+        )
+    ]
+
+
+def test_platform_vendor_positional_lists_must_match_instances():
+    document = load_fixture()
+    configured = event(document)
+    configured["type"] = "platform_api"
+    configured["instances"] = ["FAN0:first", "FAN1:second"]
+    configured["path"] = {"hook": "read_fault", "channels": ["first"]}
+
+    result = validate_document(document, materialize=False)
+
+    assert result.file_valid
+    assert any(
+        issue.code == "instance_path_mismatch"
+        for issue in result.broken_rules[0].issues
+    )
+
+
+def test_i2c_set_action_rejects_explicit_null_value():
+    document = load_fixture()
+    action = document["signatures"][0]["signature"]["actions"][
+        "repair_actions"
+    ]["local_actions"]["action_list"][0]["action"]
+    action.clear()
+    action.update(
+        {
+            "type": "i2c",
+            "timeout": 10,
+            "path": {
+                "bus": "IO-MUX-6",
+                "chip_addr": "0x58",
+                "i2c_type": "set",
+                "command": "0x7A",
+                "size": "b",
+                "value": None,
+            },
+        }
+    )
+
+    result = validate_document(document, materialize=False)
+
+    assert result.file_valid
+    assert any(
+        issue.code == "invalid_type" and issue.path.endswith(".action.path.value")
+        for issue in result.broken_rules[0].issues
+    )
 
 
 def test_json_source_is_safely_loaded():
@@ -106,7 +384,7 @@ def test_bad_rule_is_isolated_when_another_rule_is_usable():
     assert result.activation_valid
     assert len(result.usable_rules) == 1
     assert result.broken_rules[0].rule_name == "BAD_SOURCE"
-    assert "unsupported_event_type" in {
+    assert "unsupported_type" in {
         issue.code for issue in result.broken_rules[0].issues
     }
 
@@ -170,8 +448,11 @@ def test_mask_evaluation_rejects_values_that_cannot_execute(value):
 
     result = validate_document(document)
 
-    assert "invalid_mask_value" in {
-        issue.code for issue in result.broken_rules[0].issues
+    value_path = (
+        "$.signatures[0].signature.conditions.events[0].event.evaluation.value"
+    )
+    assert ("invalid_format", value_path) in {
+        (issue.code, issue.path) for issue in result.broken_rules[0].issues
     }
 
 
@@ -205,8 +486,11 @@ def test_direct_i2c_monitoring_is_read_only_and_instance_lists_are_positional():
 
     source_event["path"]["i2c_type"] = "set"
     result = validate_document(document)
-    assert "invalid_i2c_operation" in {
-        issue.code for issue in result.broken_rules[0].issues
+    assert (
+        "unsupported_value",
+        "$.signatures[0].signature.conditions.events[0].event.path.i2c_type",
+    ) in {
+        (issue.code, issue.path) for issue in result.broken_rules[0].issues
     }
 
 
@@ -407,18 +691,21 @@ def test_question_mark_wildcard_dse_requires_instance_identity():
         ("path", "{psu*}:get_fault()"),
     ),
 )
-def test_static_schema_rejects_malformed_dse_source_references(field, value):
+def test_pydantic_contract_rejects_malformed_dse_source_references(field, value):
     document = load_fixture()
     event(document).update({"type": "dse", field: value})
 
     result = validate_document(document, materialize=False)
 
-    assert "invalid_dse_reference" in {
-        issue.code for issue in result.broken_rules[0].issues
+    assert (
+        "invalid_format",
+        "$.signatures[0].signature.conditions.events[0].event.path",
+    ) in {
+        (issue.code, issue.path) for issue in result.broken_rules[0].issues
     }
 
 
-def test_static_schema_rejects_malformed_dse_evaluation_reference():
+def test_pydantic_contract_rejects_malformed_dse_evaluation_reference():
     document = load_fixture()
     event(document)["evaluation"] = {
         "type": "dse",
@@ -429,7 +716,7 @@ def test_static_schema_rejects_malformed_dse_evaluation_reference():
 
     assert {
         issue.path for issue in result.broken_rules[0].issues
-        if issue.code == "invalid_dse_reference"
+        if issue.code == "invalid_format"
     } == {
         "$.signatures[0].signature.conditions.events[0].event.evaluation.value",
     }
@@ -770,9 +1057,10 @@ def test_vendor_action_types_must_be_advertised_and_hook_validated():
     action.update({"type": "vendor_reset", "token": "safe", "timeout": 10})
 
     unsupported = validate_document(document)
-    assert "unsupported_operation_type" in {
+    assert "materialization_failed" in {
         issue.code for issue in unsupported.broken_rules[0].issues
     }
+    assert "not advertised" in unsupported.broken_rules[0].issues[0].message
 
     context = ValidationContext(
         dse_registry=DSERegistry(hook=VendorHook(), action_types=("vendor_reset",))
@@ -798,9 +1086,10 @@ def test_i2c_log_query_requires_explicit_platform_support():
     }
 
     unsupported = validate_document(document)
-    assert "unsupported_operation_type" in {
+    assert "materialization_failed" in {
         issue.code for issue in unsupported.broken_rules[0].issues
     }
+    assert "not advertised" in unsupported.broken_rules[0].issues[0].message
 
     context = ValidationContext(
         dse_registry=DSERegistry(hook=FakeHook(), query_types=("i2c",))

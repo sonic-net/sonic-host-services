@@ -152,6 +152,11 @@ def build_plans(
                 for instance in targets:
                     source_mapping = _source_mapping(source)
                     source_id = _source_identity(source)
+                    monitor_type = _MONITOR_BY_SOURCE.get(source.type)
+                    if monitor_type is None:
+                        # Vendor sources must materialize to an advertised adapter
+                        # type before planning; they run in the common monitor.
+                        monitor_type = "common"
                     key = make_correlation_key(
                         metadata.id, event.id, instance, metadata.symptom, source_id
                     )
@@ -196,12 +201,15 @@ def build_plans(
                         match_period=event.match_period,
                         value_config=value_config,
                         common_predicate=source.instance is None,
+                        sampling_interval=float(
+                            event.sampling_interval
+                            if event.sampling_interval is not None
+                            else polling_intervals[monitor_type]
+                        ),
+                        sampling_interval_is_explicit=(
+                            event.sampling_interval is not None
+                        ),
                     )
-                    monitor_type = _MONITOR_BY_SOURCE.get(source.type)
-                    if monitor_type is None:
-                        # Vendor sources must materialize to an advertised adapter
-                        # type before planning; they run in the common monitor.
-                        monitor_type = "common"
                     grouped[monitor_type][key] = item
                     all_items[key] = item
                     items_by_instance[instance].setdefault(event.id, []).append(key)

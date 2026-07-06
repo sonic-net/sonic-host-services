@@ -23,7 +23,7 @@ setup(
     name = 'sonic-host-services',
     version = '1.0',
     description = 'Python services which run in the SONiC host OS',
-    python_requires = '>=3.8',
+    python_requires = '>=3.9',
     license = 'Apache 2.0',
     author = 'SONiC Team',
     author_email = 'linuxnetdev@microsoft.com',
@@ -32,6 +32,7 @@ setup(
     maintainer_email = 'jolevequ@microsoft.com',
     packages = [
         'dldd',
+        'dldd.rule_schema',
         'host_modules',
         'utils'
     ],
@@ -68,7 +69,7 @@ setup(
         'psutil',
         'PyYAML',
         'redis>=3.5.3',
-        'fastjsonschema==2.21.2',
+        'pydantic==2.13.4',
         'regex==2024.11.6',
     ] + sonic_dependencies,
     setup_requires = [

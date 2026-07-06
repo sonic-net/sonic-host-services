@@ -32,6 +32,7 @@
               "event_instances": "$.signatures[*].signature.conditions.events[*].event.instances",
               "event_path": "$.signatures[*].signature.conditions.events[*].event.path",
               "event_evaluation": "$.signatures[*].signature.conditions.events[*].event.evaluation",
+              "event_sampling_interval": "$.signatures[*].signature.conditions.events[*].event.sampling_interval",
               "event_match_count": "$.signatures[*].signature.conditions.events[*].event.match_count",
               "event_match_period": "$.signatures[*].signature.conditions.events[*].event.match_period",
               "local_actions": "$.signatures[*].signature.actions.repair_actions.local_actions",

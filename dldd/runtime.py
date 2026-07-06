@@ -7,6 +7,7 @@ boundary.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -103,8 +104,21 @@ class MonitorWorkItem:
     match_period: int = 0
     value_config: ValueConfig = field(default_factory=ValueConfig)
     common_predicate: bool = False
+    sampling_interval: float = 60.0
+    sampling_interval_is_explicit: bool = False
 
     def __post_init__(self) -> None:
+        interval = float(self.sampling_interval)
+        if not math.isfinite(interval) or not 1 <= interval <= 0xFFFFFFFF:
+            raise ValueError(
+                "sampling_interval must be between 1 and 4294967295 seconds"
+            )
+        object.__setattr__(self, "sampling_interval", interval)
+        object.__setattr__(
+            self,
+            "sampling_interval_is_explicit",
+            bool(self.sampling_interval_is_explicit),
+        )
         object.__setattr__(self, "source", MappingProxyType(dict(self.source)))
         object.__setattr__(self, "evaluation", MappingProxyType(dict(self.evaluation)))
 
@@ -123,6 +137,7 @@ class MonitorWorkStateRecord:
     consecutive_failure_count: int = 0
     recovery_success_count: int = 0
     source_status: SourceAvailability = SourceAvailability.AVAILABLE
+    next_sample_due: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -150,12 +165,34 @@ class MonitorExecutionPlan:
     items_by_key: Mapping[str, MonitorWorkItem]
     state_by_key: Dict[str, MonitorWorkStateRecord]
     control_queue: Queue
+    interval_update_queue: Queue = field(default_factory=Queue)
 
     def __post_init__(self) -> None:
+        self.polling_interval = self.validated_polling_interval(self.polling_interval)
+        # Work assignments are immutable for the lifetime of a plan.  An
+        # inherited item's current effective interval is read from
+        # ``polling_interval`` by the owning monitor thread; CONFIG_DB updates
+        # therefore never replace work-item objects behind other consumers.
         self.items_by_key = MappingProxyType(dict(self.items_by_key))
         missing = set(self.items_by_key) - set(self.state_by_key)
         for key in missing:
             self.state_by_key[key] = MonitorWorkStateRecord()
+
+    @staticmethod
+    def validated_polling_interval(interval: float) -> float:
+        interval = float(interval)
+        if not math.isfinite(interval) or not 1 <= interval <= 0xFFFFFFFF:
+            raise ValueError(
+                "polling interval must be between 1 and 4294967295 seconds"
+            )
+        return interval
+
+    def queue_polling_interval_update(self, interval: float) -> None:
+        """Queue a default-cadence update for the owning monitor thread."""
+
+        self.interval_update_queue.put_nowait(
+            self.validated_polling_interval(interval)
+        )
 
 
 @dataclass(frozen=True)

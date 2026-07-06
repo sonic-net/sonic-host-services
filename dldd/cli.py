@@ -10,6 +10,7 @@ import sys
 
 from .adapters import VendorAdapter, adapter_map
 from .dse import DSERegistry
+from .hooks import VendorHookError
 from .planner import build_plans
 from .platform import PlatformIdentity, detect_identity, load_extensions
 from .service import run_service, validate_runtime_operation_hooks
@@ -114,7 +115,7 @@ def validate_rules(args) -> int:
                 validate_runtime_operation_hooks(
                     rule, extensions.vendor_hooks
                 )
-            except Exception as error:
+            except (ValueError, VendorHookError) as error:
                 rule_id = rule.signature.metadata.id
                 invalid_rule_ids.add(rule_id)
                 invalid_reasons.setdefault(
@@ -148,13 +149,29 @@ def validate_rules(args) -> int:
                 probe_results.append(
                     {"correlation_key": item.correlation_key, "state": state}
                 )
-            except Exception as error:
+            except (ValueError, VendorHookError) as error:
                 if args.mode in ("hardware-probe", "e2e-execute"):
                     probe_failed = True
                 invalid_rule_ids.add(item.rule_id)
                 invalid_reasons.setdefault(
                     item.rule_id,
                     ("adapter_validation_failed", str(error)),
+                )
+                probe_results.append(
+                    {
+                        "correlation_key": item.correlation_key,
+                        "state": "FAILED",
+                        "error": str(error),
+                    }
+                )
+            except Exception as error:
+                if args.mode == "activation-dry-run":
+                    raise
+                probe_failed = True
+                invalid_rule_ids.add(item.rule_id)
+                invalid_reasons.setdefault(
+                    item.rule_id,
+                    ("adapter_probe_failed", str(error)),
                 )
                 probe_results.append(
                     {

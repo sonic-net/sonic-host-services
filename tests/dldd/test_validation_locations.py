@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 
 import json
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,7 +38,7 @@ def test_json_nested_validation_issue_has_exact_source_line():
     issue = next(
         item
         for item in result.broken_rules[0].issues
-        if item.code == "invalid_operator"
+        if item.code == "unsupported_value"
     )
 
     assert issue.line == _line_containing(source, '"operator": "bogus"')
@@ -57,6 +58,31 @@ def test_yaml_missing_action_field_uses_nearest_parent_line():
     )
 
     assert issue.line == _line_containing(source, "- action:")
+
+
+def test_yaml_exotic_vendor_key_has_exact_source_line():
+    yaml = pytest.importorskip("yaml")
+    document = _document()
+    action = document["signatures"][0]["signature"]["actions"][
+        "repair_actions"
+    ]["local_actions"]["action_list"][0]["action"]
+    action.clear()
+    action.update(
+        {
+            "type": "acme_psu_reset",
+            "payload": {"x.y": date(2026, 7, 6)},
+        }
+    )
+    source = yaml.safe_dump(document, sort_keys=False)
+
+    result = load_rules(source, materialize=False)
+    issue = next(
+        item
+        for item in result.broken_rules[0].issues
+        if item.path.endswith('payload["x.y"]')
+    )
+
+    assert issue.line == _line_containing(source, "x.y:")
 
 
 @pytest.mark.parametrize(

@@ -99,6 +99,7 @@ class Event(object):
     match_count: int
     match_period: int
     instances: Tuple[str, ...] = ()
+    sampling_interval: Optional[int] = None
 
     def __post_init__(self):
         object.__setattr__(self, "path", freeze_value(self.path))

@@ -1,68 +1,1146 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://sonic-net.github.io/dldd/schemas/dld-rules-0.0.1.json",
-  "title": "SONiC Device Local Diagnosis rules 0.0.1",
-  "type": "object",
-  "required": ["schema_version", "signatures"],
-  "properties": {
-    "schema_version": {"const": "0.0.1"},
-    "local_action_default_timeout": {"type": "integer", "minimum": 1},
-    "signatures": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 1024,
-      "items": {"$ref": "#/definitions/signature_wrapper"}
-    }
-  },
-  "additionalProperties": true,
-  "definitions": {
-    "nonempty_string": {"type": "string", "minLength": 1},
-    "dse_reference": {
-      "type": "string",
-      "pattern": "^(?:[A-Za-z0-9_.-]+:[A-Za-z_][A-Za-z0-9_]*\\(\\)|\\{[A-Za-z0-9_.?*\\-]+\\}:\\{[A-Za-z_][A-Za-z0-9_]*\\(\\)\\})$"
+  "$defs": {
+    "ActionsV001": {
+      "additionalProperties": false,
+      "properties": {
+        "log_collection": {
+          "$ref": "#/$defs/LogCollectionV001"
+        },
+        "repair_actions": {
+          "$ref": "#/$defs/RepairActionsV001"
+        }
+      },
+      "required": [
+        "repair_actions"
+      ],
+      "title": "ActionsV001",
+      "type": "object"
     },
-    "integer_string": {
-      "type": "string",
-      "pattern": "^\\s*[+-]?(?:0[bB][01]+|0[oO][0-7]+|0[xX][0-9A-Fa-f]+|0+|[1-9][0-9]*)\\s*$"
-    },
-    "string_list": {
-      "type": "array",
-      "minItems": 1,
-      "items": {"$ref": "#/definitions/nonempty_string"}
-    },
-    "value_configs": {
-      "type": "object",
-      "required": ["type", "unit"],
+    "BooleanEvaluationV001": {
+      "additionalProperties": false,
       "properties": {
         "type": {
-          "enum": ["binary", "hex", "int", "float", "string", "boolean", "json", "bytes", "N/A"]
+          "const": "boolean",
+          "title": "Type",
+          "type": "string"
         },
-        "unit": {"$ref": "#/definitions/nonempty_string"},
-        "scaling": {
-          "oneOf": [
-            {"type": "number"},
-            {"const": "N/A"}
-          ]
+        "value": {
+          "title": "Value",
+          "type": "boolean"
         },
-        "encoding": {"$ref": "#/definitions/nonempty_string"}
+        "value_configs": {
+          "$ref": "#/$defs/ValueConfigV001"
+        }
       },
-      "additionalProperties": true
-    },
-    "metadata": {
-      "type": "object",
       "required": [
-        "name", "id", "version", "description", "product_ids",
-        "sw_versions", "component", "symptom", "error_type", "severity"
+        "type",
+        "value"
+      ],
+      "title": "BooleanEvaluationV001",
+      "type": "object"
+    },
+    "CLIEventV001": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluation": {
+          "discriminator": {
+            "mapping": {
+              "boolean": "#/$defs/BooleanEvaluationV001",
+              "comparison": "#/$defs/ComparisonEvaluationV001",
+              "dse": "#/$defs/DSEEvaluationV001",
+              "mask": "#/$defs/MaskEvaluationV001",
+              "string": "#/$defs/StringEvaluationV001"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MaskEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/ComparisonEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/StringEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/BooleanEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEvaluationV001"
+            }
+          ],
+          "title": "Evaluation"
+        },
+        "id": {
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Id",
+          "type": "integer"
+        },
+        "instances": {
+          "items": {
+            "pattern": "^[^:]+:.*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instances",
+          "type": "array"
+        },
+        "match_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Match Count",
+          "type": "integer"
+        },
+        "match_period": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Match Period",
+          "type": "integer"
+        },
+        "path": {
+          "$ref": "#/$defs/CLIPathV001"
+        },
+        "sampling_interval": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Sampling Interval",
+          "type": "integer"
+        },
+        "type": {
+          "const": "cli",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "evaluation",
+        "match_count",
+        "match_period",
+        "type",
+        "path"
+      ],
+      "title": "CLIEventV001",
+      "type": "object"
+    },
+    "CLIOperationV001": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Argv",
+          "type": "array"
+        },
+        "max_output_bytes": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Max Output Bytes",
+          "type": "integer"
+        },
+        "timeout": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Timeout",
+          "type": "integer"
+        },
+        "type": {
+          "const": "cli",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "argv"
+      ],
+      "title": "CLIOperationV001",
+      "type": "object"
+    },
+    "CLIPathV001": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Argv",
+          "type": "array"
+        },
+        "timeout": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Timeout",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "title": "CLIPathV001",
+      "type": "object"
+    },
+    "ComparisonEvaluationV001": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "enum": [
+            ">",
+            "<",
+            ">=",
+            "<=",
+            "==",
+            "!="
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "type": {
+          "const": "comparison",
+          "title": "Type",
+          "type": "string"
+        },
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maximum": 18446744073709551615,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            {
+              "type": "number",
+              "x-dldd-runtime-constraint": {
+                "authority": "pydantic-runtime-contract",
+                "description": "The parsed value must be an actual finite Python float; an integer cannot use this union branch.",
+                "kind": "python-float-type"
+              }
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Value"
+        },
+        "value_configs": {
+          "$ref": "#/$defs/ValueConfigV001"
+        }
+      },
+      "required": [
+        "type",
+        "operator",
+        "value"
+      ],
+      "title": "ComparisonEvaluationV001",
+      "type": "object"
+    },
+    "ConditionsV001": {
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/$defs/EventWrapperV001"
+          },
+          "maxItems": 1000,
+          "minItems": 1,
+          "title": "Events",
+          "type": "array"
+        },
+        "logic": {
+          "minLength": 1,
+          "title": "Logic",
+          "type": "string"
+        },
+        "logic_lookback_time": {
+          "maximum": 86400,
+          "minimum": 0,
+          "title": "Logic Lookback Time",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "logic",
+        "logic_lookback_time",
+        "events"
+      ],
+      "title": "ConditionsV001",
+      "type": "object"
+    },
+    "DSEEvaluationV001": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "enum": [
+            ">",
+            "<",
+            ">=",
+            "<=",
+            "==",
+            "!=",
+            "equals",
+            "not_equals"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "type": {
+          "const": "dse",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "pattern": "^(?:[A-Za-z0-9_.-]+:[A-Za-z_][A-Za-z0-9_]*\\(\\)|\\{[A-Za-z0-9_.?*\\-]+\\}:\\{[A-Za-z_][A-Za-z0-9_]*\\(\\)\\})$",
+          "title": "Value",
+          "type": "string"
+        },
+        "value_configs": {
+          "$ref": "#/$defs/ValueConfigV001"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ],
+      "title": "DSEEvaluationV001",
+      "type": "object"
+    },
+    "DSEEventV001": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluation": {
+          "discriminator": {
+            "mapping": {
+              "boolean": "#/$defs/BooleanEvaluationV001",
+              "comparison": "#/$defs/ComparisonEvaluationV001",
+              "dse": "#/$defs/DSEEvaluationV001",
+              "mask": "#/$defs/MaskEvaluationV001",
+              "string": "#/$defs/StringEvaluationV001"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MaskEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/ComparisonEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/StringEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/BooleanEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEvaluationV001"
+            }
+          ],
+          "title": "Evaluation"
+        },
+        "id": {
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Id",
+          "type": "integer"
+        },
+        "instances": {
+          "items": {
+            "pattern": "^[^:]+:.*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instances",
+          "type": "array"
+        },
+        "match_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Match Count",
+          "type": "integer"
+        },
+        "match_period": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Match Period",
+          "type": "integer"
+        },
+        "path": {
+          "pattern": "^(?:[A-Za-z0-9_.-]+:[A-Za-z_][A-Za-z0-9_]*\\(\\)|\\{[A-Za-z0-9_.?*\\-]+\\}:\\{[A-Za-z_][A-Za-z0-9_]*\\(\\)\\})$",
+          "title": "Path",
+          "type": "string"
+        },
+        "sampling_interval": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Sampling Interval",
+          "type": "integer"
+        },
+        "type": {
+          "const": "dse",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "evaluation",
+        "match_count",
+        "match_period",
+        "type",
+        "path"
+      ],
+      "title": "DSEEventV001",
+      "type": "object"
+    },
+    "DSEOperationV001": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "minLength": 1,
+          "title": "Command",
+          "type": "string"
+        },
+        "timeout": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Timeout",
+          "type": "integer"
+        },
+        "type": {
+          "const": "dse",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "command"
+      ],
+      "title": "DSEOperationV001",
+      "type": "object"
+    },
+    "EventWrapperV001": {
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "discriminator": {
+            "mapping": {
+              "cli": "#/$defs/CLIEventV001",
+              "dse": "#/$defs/DSEEventV001",
+              "file": "#/$defs/FileEventV001",
+              "i2c": "#/$defs/I2CEventV001",
+              "platform_api": "#/$defs/PlatformAPIEventV001",
+              "redis": "#/$defs/RedisEventV001",
+              "sysfs": "#/$defs/SysfsEventV001"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/I2CEventV001"
+            },
+            {
+              "$ref": "#/$defs/RedisEventV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEventV001"
+            },
+            {
+              "$ref": "#/$defs/CLIEventV001"
+            },
+            {
+              "$ref": "#/$defs/FileEventV001"
+            },
+            {
+              "$ref": "#/$defs/SysfsEventV001"
+            },
+            {
+              "$ref": "#/$defs/PlatformAPIEventV001"
+            }
+          ],
+          "title": "Event"
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "title": "EventWrapperV001",
+      "type": "object"
+    },
+    "FileEventV001": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluation": {
+          "discriminator": {
+            "mapping": {
+              "boolean": "#/$defs/BooleanEvaluationV001",
+              "comparison": "#/$defs/ComparisonEvaluationV001",
+              "dse": "#/$defs/DSEEvaluationV001",
+              "mask": "#/$defs/MaskEvaluationV001",
+              "string": "#/$defs/StringEvaluationV001"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MaskEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/ComparisonEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/StringEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/BooleanEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEvaluationV001"
+            }
+          ],
+          "title": "Evaluation"
+        },
+        "id": {
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Id",
+          "type": "integer"
+        },
+        "instances": {
+          "items": {
+            "pattern": "^[^:]+:.*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instances",
+          "type": "array"
+        },
+        "match_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Match Count",
+          "type": "integer"
+        },
+        "match_period": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Match Period",
+          "type": "integer"
+        },
+        "path": {
+          "$ref": "#/$defs/FilePathV001"
+        },
+        "sampling_interval": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Sampling Interval",
+          "type": "integer"
+        },
+        "type": {
+          "const": "file",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "evaluation",
+        "match_count",
+        "match_period",
+        "type",
+        "path"
+      ],
+      "title": "FileEventV001",
+      "type": "object"
+    },
+    "FilePathV001": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "format": {
+          "minLength": 1,
+          "title": "Format",
+          "type": "string"
+        },
+        "scaling": {
+          "anyOf": [
+            {
+              "maximum": 18446744073709551615,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            {
+              "type": "number",
+              "x-dldd-runtime-constraint": {
+                "authority": "pydantic-runtime-contract",
+                "description": "The parsed value must be an actual finite Python float; an integer cannot use this union branch.",
+                "kind": "python-float-type"
+              }
+            },
+            {
+              "const": "N/A",
+              "type": "string"
+            }
+          ],
+          "title": "Scaling"
+        },
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "format"
+      ],
+      "title": "FilePathV001",
+      "type": "object"
+    },
+    "I2CActionPathV001": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "i2c_type": {
+                "const": "set"
+              }
+            },
+            "required": [
+              "i2c_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ]
+          }
+        }
       ],
       "properties": {
-        "name": {"type": "string", "pattern": "^[A-Za-z0-9_]+$"},
-        "id": {"type": "integer", "minimum": 1000000, "maximum": 9999999},
-        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
-        "description": {"$ref": "#/definitions/nonempty_string"},
-        "product_ids": {"$ref": "#/definitions/string_list"},
-        "sw_versions": {"$ref": "#/definitions/string_list"},
+        "bus": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "title": "Bus"
+        },
+        "chip_addr": {
+          "pattern": "^0x[0-9A-Fa-f]+$",
+          "title": "Chip Addr",
+          "type": "string"
+        },
+        "command": {
+          "pattern": "^0x[0-9A-Fa-f]+$",
+          "title": "Command",
+          "type": "string"
+        },
+        "i2c_type": {
+          "enum": [
+            "get",
+            "set"
+          ],
+          "title": "I2C Type",
+          "type": "string"
+        },
+        "size": {
+          "enum": [
+            "b",
+            "w",
+            "l"
+          ],
+          "title": "Size",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/NonNullJsonValue"
+        }
+      },
+      "required": [
+        "bus",
+        "chip_addr",
+        "i2c_type",
+        "command",
+        "size"
+      ],
+      "title": "I2CActionPathV001",
+      "type": "object"
+    },
+    "I2CEventV001": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluation": {
+          "discriminator": {
+            "mapping": {
+              "boolean": "#/$defs/BooleanEvaluationV001",
+              "comparison": "#/$defs/ComparisonEvaluationV001",
+              "dse": "#/$defs/DSEEvaluationV001",
+              "mask": "#/$defs/MaskEvaluationV001",
+              "string": "#/$defs/StringEvaluationV001"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MaskEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/ComparisonEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/StringEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/BooleanEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEvaluationV001"
+            }
+          ],
+          "title": "Evaluation"
+        },
+        "id": {
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Id",
+          "type": "integer"
+        },
+        "instances": {
+          "items": {
+            "pattern": "^[^:]+:.*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instances",
+          "type": "array"
+        },
+        "match_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Match Count",
+          "type": "integer"
+        },
+        "match_period": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Match Period",
+          "type": "integer"
+        },
+        "path": {
+          "$ref": "#/$defs/I2CReadPathV001"
+        },
+        "sampling_interval": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Sampling Interval",
+          "type": "integer"
+        },
+        "type": {
+          "const": "i2c",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "evaluation",
+        "match_count",
+        "match_period",
+        "type",
+        "path"
+      ],
+      "title": "I2CEventV001",
+      "type": "object"
+    },
+    "I2COperationV001": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/I2CActionPathV001"
+        },
+        "timeout": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Timeout",
+          "type": "integer"
+        },
+        "type": {
+          "const": "i2c",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "path"
+      ],
+      "title": "I2COperationV001",
+      "type": "object"
+    },
+    "I2CReadPathV001": {
+      "additionalProperties": false,
+      "properties": {
+        "bus": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "title": "Bus"
+        },
+        "chip_addr": {
+          "pattern": "^0x[0-9A-Fa-f]+$",
+          "title": "Chip Addr",
+          "type": "string"
+        },
+        "command": {
+          "pattern": "^0x[0-9A-Fa-f]+$",
+          "title": "Command",
+          "type": "string"
+        },
+        "i2c_type": {
+          "const": "get",
+          "title": "I2C Type",
+          "type": "string"
+        },
+        "scaling": {
+          "anyOf": [
+            {
+              "maximum": 18446744073709551615,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            {
+              "type": "number",
+              "x-dldd-runtime-constraint": {
+                "authority": "pydantic-runtime-contract",
+                "description": "The parsed value must be an actual finite Python float; an integer cannot use this union branch.",
+                "kind": "python-float-type"
+              }
+            },
+            {
+              "const": "N/A",
+              "type": "string"
+            }
+          ],
+          "title": "Scaling"
+        },
+        "size": {
+          "enum": [
+            "b",
+            "w",
+            "l"
+          ],
+          "title": "Size",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bus",
+        "chip_addr",
+        "i2c_type",
+        "command",
+        "size"
+      ],
+      "title": "I2CReadPathV001",
+      "type": "object"
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "maximum": 18446744073709551615,
+          "minimum": -9223372036854775808,
+          "type": "integer"
+        },
+        {
+          "type": "number",
+          "x-dldd-runtime-constraint": {
+            "authority": "pydantic-runtime-contract",
+            "description": "The parsed value must be an actual finite Python float; an integer cannot use this union branch.",
+            "kind": "python-float-type"
+          }
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "LocalActionWrapperV001": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CLIOperationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEOperationV001"
+            },
+            {
+              "$ref": "#/$defs/I2COperationV001"
+            },
+            {
+              "$ref": "#/$defs/VendorOperationV001"
+            }
+          ],
+          "title": "Action"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "LocalActionWrapperV001",
+      "type": "object"
+    },
+    "LocalActionsV001": {
+      "additionalProperties": false,
+      "properties": {
+        "action_list": {
+          "items": {
+            "$ref": "#/$defs/LocalActionWrapperV001"
+          },
+          "minItems": 1,
+          "title": "Action List",
+          "type": "array"
+        },
+        "wait_period": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Wait Period",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wait_period",
+        "action_list"
+      ],
+      "title": "LocalActionsV001",
+      "type": "object"
+    },
+    "LogCollectionV001": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "logs"
+          ]
+        },
+        {
+          "required": [
+            "queries"
+          ]
+        }
+      ],
+      "properties": {
+        "logs": {
+          "items": {
+            "$ref": "#/$defs/LogEntryV001"
+          },
+          "minItems": 1,
+          "title": "Logs",
+          "type": "array"
+        },
+        "queries": {
+          "items": {
+            "$ref": "#/$defs/QueryWrapperV001"
+          },
+          "minItems": 1,
+          "title": "Queries",
+          "type": "array"
+        }
+      },
+      "title": "LogCollectionV001",
+      "type": "object"
+    },
+    "LogEntryV001": {
+      "additionalProperties": false,
+      "properties": {
+        "log": {
+          "minLength": 1,
+          "title": "Log",
+          "type": "string"
+        }
+      },
+      "required": [
+        "log"
+      ],
+      "title": "LogEntryV001",
+      "type": "object"
+    },
+    "MaskEvaluationV001": {
+      "additionalProperties": false,
+      "properties": {
+        "logic": {
+          "const": "&",
+          "title": "Logic",
+          "type": "string"
+        },
+        "type": {
+          "const": "mask",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maximum": 18446744073709551615,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            {
+              "maxLength": 256,
+              "pattern": "^\\s*[+-]?(?:0[bB][01]+|0[oO][0-7]+|0[xX][0-9A-Fa-f]+|0+|[1-9][0-9]*)\\s*$",
+              "type": "string",
+              "x-dldd-runtime-constraint": {
+                "authority": "pydantic-runtime-contract",
+                "description": "After parsing decimal, binary, octal, or hexadecimal notation, the value must be within the published range.",
+                "kind": "parsed-integer-range",
+                "maximum": 18446744073709551615,
+                "minimum": -9223372036854775808
+              }
+            }
+          ],
+          "title": "Value"
+        },
+        "value_configs": {
+          "$ref": "#/$defs/ValueConfigV001"
+        }
+      },
+      "required": [
+        "type",
+        "logic",
+        "value"
+      ],
+      "title": "MaskEvaluationV001",
+      "type": "object"
+    },
+    "MetadataV001": {
+      "additionalProperties": false,
+      "properties": {
         "component": {
-          "enum": ["PSU", "FAN", "CHASSIS", "SSD", "CPU", "MEMORY", "ASIC", "TRANSCEIVER"]
+          "enum": [
+            "PSU",
+            "FAN",
+            "CHASSIS",
+            "SSD",
+            "CPU",
+            "MEMORY",
+            "ASIC",
+            "TRANSCEIVER"
+          ],
+          "title": "Component",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "error_type": {
+          "minLength": 1,
+          "title": "Error Type",
+          "type": "string"
+        },
+        "id": {
+          "maximum": 9999999,
+          "minimum": 1000000,
+          "title": "Id",
+          "type": "integer"
+        },
+        "name": {
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "priority": {
+          "default": 5,
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "product_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Product Ids",
+          "type": "array"
+        },
+        "severity": {
+          "enum": [
+            "CRITICAL",
+            "MAJOR",
+            "WARNING",
+            "MINOR",
+            "UNKNOWN"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "sw_versions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Sw Versions",
+          "type": "array"
         },
         "symptom": {
           "enum": [
@@ -72,414 +1150,692 @@
             "SYMPTOM_MISSING_COMPONENT",
             "SYMPTOM_COMM_ERROR",
             "SYMPTOM_UNKNOWN"
-          ]
+          ],
+          "title": "Symptom",
+          "type": "string"
         },
-        "error_type": {"$ref": "#/definitions/nonempty_string"},
-        "severity": {"enum": ["CRITICAL", "MAJOR", "WARNING", "MINOR", "UNKNOWN"]},
-        "priority": {"type": "integer", "minimum": 0, "default": 5},
-        "tags": {"type": "array", "items": {"$ref": "#/definitions/nonempty_string"}}
+        "tags": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "version": {
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "title": "Version",
+          "type": "string"
+        }
       },
-      "additionalProperties": true
+      "required": [
+        "name",
+        "id",
+        "version",
+        "description",
+        "product_ids",
+        "sw_versions",
+        "component",
+        "symptom",
+        "error_type",
+        "severity"
+      ],
+      "title": "MetadataV001",
+      "type": "object"
     },
-    "i2c_path": {
-      "type": "object",
-      "required": ["bus", "chip_addr", "i2c_type", "command", "size"],
+    "NonNullJsonValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "maximum": 18446744073709551615,
+          "minimum": -9223372036854775808,
+          "type": "integer"
+        },
+        {
+          "type": "number",
+          "x-dldd-runtime-constraint": {
+            "authority": "pydantic-runtime-contract",
+            "description": "The parsed value must be an actual finite Python float; an integer cannot use this union branch.",
+            "kind": "python-float-type"
+          }
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        }
+      ]
+    },
+    "PlatformAPIEventV001": {
+      "additionalProperties": false,
       "properties": {
-        "bus": {
+        "evaluation": {
+          "discriminator": {
+            "mapping": {
+              "boolean": "#/$defs/BooleanEvaluationV001",
+              "comparison": "#/$defs/ComparisonEvaluationV001",
+              "dse": "#/$defs/DSEEvaluationV001",
+              "mask": "#/$defs/MaskEvaluationV001",
+              "string": "#/$defs/StringEvaluationV001"
+            },
+            "propertyName": "type"
+          },
           "oneOf": [
-            {"$ref": "#/definitions/nonempty_string"},
-            {"$ref": "#/definitions/string_list"}
-          ]
-        },
-        "chip_addr": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
-        "i2c_type": {"const": "get"},
-        "command": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
-        "size": {"enum": ["b", "w", "l"]},
-        "scaling": {
-          "oneOf": [{"type": "number"}, {"const": "N/A"}]
-        }
-      },
-      "additionalProperties": true
-    },
-    "redis_path": {
-      "type": "object",
-      "required": ["database", "table", "key", "path"],
-      "properties": {
-        "database": {"$ref": "#/definitions/nonempty_string"},
-        "table": {"$ref": "#/definitions/nonempty_string"},
-        "key": {"$ref": "#/definitions/nonempty_string"},
-        "path": {"$ref": "#/definitions/nonempty_string"}
-      },
-      "additionalProperties": true
-    },
-    "cli_path": {
-      "type": "object",
-      "required": ["argv"],
-      "properties": {
-        "argv": {"$ref": "#/definitions/string_list"},
-        "timeout": {"type": "integer", "minimum": 1}
-      },
-      "additionalProperties": true
-    },
-    "file_path": {
-      "type": "object",
-      "required": ["file", "format"],
-      "properties": {
-        "file": {"$ref": "#/definitions/nonempty_string"},
-        "format": {"$ref": "#/definitions/nonempty_string"},
-        "scaling": {
-          "oneOf": [{"type": "number"}, {"const": "N/A"}]
-        },
-        "unit": {"$ref": "#/definitions/nonempty_string"}
-      },
-      "additionalProperties": true
-    },
-    "evaluation": {
-      "oneOf": [
-        {"$ref": "#/definitions/mask_evaluation"},
-        {"$ref": "#/definitions/comparison_evaluation"},
-        {"$ref": "#/definitions/string_evaluation"},
-        {"$ref": "#/definitions/boolean_evaluation"},
-        {"$ref": "#/definitions/dse_evaluation"}
-      ]
-    },
-    "evaluation_common": {
-      "type": "object",
-      "properties": {"value_configs": {"$ref": "#/definitions/value_configs"}},
-      "additionalProperties": true
-    },
-    "mask_evaluation": {
-      "allOf": [
-        {"$ref": "#/definitions/evaluation_common"},
-        {
-          "type": "object",
-          "required": ["type", "logic", "value"],
-          "properties": {
-            "type": {"const": "mask"},
-            "logic": {"const": "&"},
-            "value": {"oneOf": [{"type": "integer"}, {"$ref": "#/definitions/integer_string"}]}
-          }
-        }
-      ]
-    },
-    "comparison_evaluation": {
-      "allOf": [
-        {"$ref": "#/definitions/evaluation_common"},
-        {
-          "type": "object",
-          "required": ["type", "operator", "value"],
-          "properties": {
-            "type": {"const": "comparison"},
-            "operator": {"enum": [">", "<", ">=", "<=", "==", "!="]},
-            "value": {"type": ["number", "string"]},
-            "unit": {"$ref": "#/definitions/nonempty_string"}
-          }
-        }
-      ]
-    },
-    "string_evaluation": {
-      "allOf": [
-        {"$ref": "#/definitions/evaluation_common"},
-        {
-          "type": "object",
-          "required": ["type", "operator", "value"],
-          "properties": {
-            "type": {"const": "string"},
-            "operator": {"enum": ["contains", "equals", "regex"]},
-            "value": {"type": "string"},
-            "case_sensitive": {"type": "boolean", "default": true}
-          }
-        }
-      ]
-    },
-    "boolean_evaluation": {
-      "allOf": [
-        {"$ref": "#/definitions/evaluation_common"},
-        {
-          "type": "object",
-          "required": ["type", "value"],
-          "properties": {
-            "type": {"const": "boolean"},
-            "value": {"type": "boolean"}
-          }
-        }
-      ]
-    },
-    "dse_evaluation": {
-      "allOf": [
-        {"$ref": "#/definitions/evaluation_common"},
-        {
-          "type": "object",
-          "required": ["type", "value"],
-          "properties": {
-            "type": {"const": "dse"},
-            "value": {"$ref": "#/definitions/dse_reference"},
-            "operator": {"enum": [">", "<", ">=", "<=", "==", "!=", "equals", "not_equals"]}
-          }
-        }
-      ]
-    },
-    "event": {
-      "type": "object",
-      "required": ["id", "type", "path", "evaluation", "match_count", "match_period"],
-      "properties": {
-        "id": {"type": "integer", "minimum": 1, "maximum": 999},
-        "type": {"enum": ["i2c", "redis", "dse", "cli", "file", "sysfs", "platform_api"]},
-        "instances": {
-          "type": "array",
-          "minItems": 1,
-          "items": {"type": "string", "pattern": "^[^:]+:.*$"}
-        },
-        "evaluation": {"$ref": "#/definitions/evaluation"},
-        "match_count": {"type": "integer", "minimum": 1, "maximum": 1000},
-        "match_period": {"type": "integer", "minimum": 0, "maximum": 3600}
-      },
-      "allOf": [
-        {
-          "if": {"properties": {"type": {"const": "i2c"}}},
-          "then": {"properties": {"path": {"$ref": "#/definitions/i2c_path"}}}
-        },
-        {
-          "if": {"properties": {"type": {"const": "redis"}}},
-          "then": {"properties": {"path": {"$ref": "#/definitions/redis_path"}}}
-        },
-        {
-          "if": {"properties": {"type": {"const": "dse"}}},
-          "then": {"properties": {"path": {"$ref": "#/definitions/dse_reference"}}}
-        },
-        {
-          "if": {"properties": {"type": {"const": "cli"}}},
-          "then": {"properties": {"path": {"$ref": "#/definitions/cli_path"}}}
-        },
-        {
-          "if": {"properties": {"type": {"enum": ["file", "sysfs"]}}},
-          "then": {"properties": {"path": {"$ref": "#/definitions/file_path"}}}
-        },
-        {
-          "if": {"properties": {"type": {"const": "platform_api"}}},
-          "then": {
-            "properties": {
-              "path": {
-                "oneOf": [
-                  {"$ref": "#/definitions/dse_reference"},
-                  {
-                    "type": "object",
-                    "required": ["hook"],
-                    "properties": {
-                      "hook": {"$ref": "#/definitions/nonempty_string"}
-                    },
-                    "additionalProperties": true
-                  }
-                ]
-              }
+            {
+              "$ref": "#/$defs/MaskEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/ComparisonEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/StringEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/BooleanEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEvaluationV001"
             }
-          }
-        }
-      ],
-      "additionalProperties": true
-    },
-    "event_wrapper": {
-      "type": "object",
-      "required": ["event"],
-      "properties": {"event": {"$ref": "#/definitions/event"}},
-      "additionalProperties": true
-    },
-    "conditions": {
-      "type": "object",
-      "required": ["logic", "logic_lookback_time", "events"],
-      "properties": {
-        "logic": {"$ref": "#/definitions/nonempty_string"},
-        "logic_lookback_time": {"type": "integer", "minimum": 0, "maximum": 86400},
-        "events": {
-          "type": "array",
+          ],
+          "title": "Evaluation"
+        },
+        "id": {
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Id",
+          "type": "integer"
+        },
+        "instances": {
+          "items": {
+            "pattern": "^[^:]+:.*$",
+            "type": "string"
+          },
           "minItems": 1,
-          "maxItems": 1000,
-          "items": {"$ref": "#/definitions/event_wrapper"}
-        }
-      },
-      "additionalProperties": true
-    },
-    "cli_operation": {
-      "type": "object",
-      "required": ["type", "argv"],
-      "properties": {
-        "type": {"const": "cli"},
-        "argv": {"$ref": "#/definitions/string_list"},
-        "timeout": {"type": "integer", "minimum": 1},
-        "max_output_bytes": {"type": "integer", "minimum": 1}
-      },
-      "additionalProperties": true
-    },
-    "dse_operation": {
-      "type": "object",
-      "required": ["type", "command"],
-      "properties": {
-        "type": {"const": "dse"},
-        "command": {"$ref": "#/definitions/nonempty_string"},
-        "timeout": {"type": "integer", "minimum": 1}
-      },
-      "additionalProperties": true
-    },
-    "i2c_action_path": {
-      "type": "object",
-      "required": ["bus", "chip_addr", "i2c_type", "command", "size"],
-      "properties": {
-        "bus": {
-          "oneOf": [
-            {"$ref": "#/definitions/nonempty_string"},
-            {"$ref": "#/definitions/string_list"}
-          ]
+          "title": "Instances",
+          "type": "array"
         },
-        "chip_addr": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
-        "i2c_type": {"enum": ["get", "set"]},
-        "command": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
-        "size": {"enum": ["b", "w", "l"]},
-        "value": {}
-      },
-      "allOf": [
-        {
-          "if": {"properties": {"i2c_type": {"const": "set"}}},
-          "then": {"required": ["value"]}
-        }
-      ],
-      "additionalProperties": true
-    },
-    "i2c_operation": {
-      "type": "object",
-      "required": ["type", "path"],
-      "properties": {
-        "type": {"const": "i2c"},
-        "path": {"$ref": "#/definitions/i2c_action_path"},
-        "timeout": {"type": "integer", "minimum": 1}
-      },
-      "additionalProperties": true
-    },
-    "vendor_operation": {
-      "type": "object",
-      "required": ["type"],
-      "properties": {
+        "match_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Match Count",
+          "type": "integer"
+        },
+        "match_period": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Match Period",
+          "type": "integer"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "pattern": "^(?:[A-Za-z0-9_.-]+:[A-Za-z_][A-Za-z0-9_]*\\(\\)|\\{[A-Za-z0-9_.?*\\-]+\\}:\\{[A-Za-z_][A-Za-z0-9_]*\\(\\)\\})$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/PlatformAPIHookPathV001"
+            }
+          ],
+          "title": "Path"
+        },
+        "sampling_interval": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Sampling Interval",
+          "type": "integer"
+        },
         "type": {
-          "type": "string",
-          "not": {"enum": ["dse", "cli", "i2c"]}
-        },
-        "timeout": {"type": "integer", "minimum": 1}
-      },
-      "additionalProperties": true
-    },
-    "local_action_wrapper": {
-      "type": "object",
-      "required": ["action"],
-      "properties": {
-        "action": {
-          "oneOf": [
-            {"$ref": "#/definitions/dse_operation"},
-            {"$ref": "#/definitions/cli_operation"},
-            {"$ref": "#/definitions/i2c_operation"},
-            {"$ref": "#/definitions/vendor_operation"}
-          ]
+          "const": "platform_api",
+          "title": "Type",
+          "type": "string"
         }
       },
-      "additionalProperties": true
+      "required": [
+        "id",
+        "evaluation",
+        "match_count",
+        "match_period",
+        "type",
+        "path"
+      ],
+      "title": "PlatformAPIEventV001",
+      "type": "object"
     },
-    "query_wrapper": {
-      "type": "object",
-      "required": ["query"],
+    "PlatformAPIHookPathV001": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Explicit vendor-owned platform API path envelope.",
+      "properties": {
+        "hook": {
+          "minLength": 1,
+          "title": "Hook",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hook"
+      ],
+      "title": "PlatformAPIHookPathV001",
+      "type": "object"
+    },
+    "QueryWrapperV001": {
+      "additionalProperties": false,
       "properties": {
         "query": {
           "oneOf": [
-            {"$ref": "#/definitions/dse_operation"},
-            {"$ref": "#/definitions/cli_operation"},
-            {"$ref": "#/definitions/i2c_operation"},
-            {"$ref": "#/definitions/vendor_operation"}
-          ]
+            {
+              "$ref": "#/$defs/CLIOperationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEOperationV001"
+            },
+            {
+              "$ref": "#/$defs/I2COperationV001"
+            },
+            {
+              "$ref": "#/$defs/VendorOperationV001"
+            }
+          ],
+          "title": "Query"
         }
       },
-      "additionalProperties": true
+      "required": [
+        "query"
+      ],
+      "title": "QueryWrapperV001",
+      "type": "object"
     },
-    "local_actions": {
-      "type": "object",
-      "required": ["wait_period", "action_list"],
+    "RedisEventV001": {
+      "additionalProperties": false,
       "properties": {
-        "wait_period": {"type": "integer", "minimum": 0},
-        "action_list": {
-          "type": "array",
-          "minItems": 1,
-          "items": {"$ref": "#/definitions/local_action_wrapper"}
-        }
-      },
-      "additionalProperties": true
-    },
-    "remote_actions": {
-      "type": "object",
-      "required": ["action_list", "time_window"],
-      "properties": {
-        "action_list": {
-          "type": "array",
-          "minItems": 1,
+        "evaluation": {
+          "discriminator": {
+            "mapping": {
+              "boolean": "#/$defs/BooleanEvaluationV001",
+              "comparison": "#/$defs/ComparisonEvaluationV001",
+              "dse": "#/$defs/DSEEvaluationV001",
+              "mask": "#/$defs/MaskEvaluationV001",
+              "string": "#/$defs/StringEvaluationV001"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MaskEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/ComparisonEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/StringEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/BooleanEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEvaluationV001"
+            }
+          ],
+          "title": "Evaluation"
+        },
+        "id": {
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Id",
+          "type": "integer"
+        },
+        "instances": {
           "items": {
-            "enum": ["ACTION_RESEAT", "ACTION_WARM_REBOOT", "ACTION_COLD_REBOOT", "ACTION_POWER_CYCLE", "ACTION_FACTORY_RESET", "ACTION_REPLACE"]
-          }
-        },
-        "time_window": {"type": "integer", "minimum": 1}
-      },
-      "additionalProperties": true
-    },
-    "repair_actions": {
-      "type": "object",
-      "required": ["remote_actions"],
-      "properties": {
-        "local_actions": {"$ref": "#/definitions/local_actions"},
-        "remote_actions": {"$ref": "#/definitions/remote_actions"}
-      },
-      "additionalProperties": true
-    },
-    "log_entry": {
-      "type": "object",
-      "required": ["log"],
-      "properties": {"log": {"$ref": "#/definitions/nonempty_string"}},
-      "additionalProperties": true
-    },
-    "log_collection": {
-      "type": "object",
-      "properties": {
-        "logs": {
-          "type": "array",
+            "pattern": "^[^:]+:.*$",
+            "type": "string"
+          },
           "minItems": 1,
-          "items": {"$ref": "#/definitions/log_entry"}
+          "title": "Instances",
+          "type": "array"
         },
-        "queries": {
-          "type": "array",
-          "minItems": 1,
-          "items": {"$ref": "#/definitions/query_wrapper"}
+        "match_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Match Count",
+          "type": "integer"
+        },
+        "match_period": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Match Period",
+          "type": "integer"
+        },
+        "path": {
+          "$ref": "#/$defs/RedisPathV001"
+        },
+        "sampling_interval": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Sampling Interval",
+          "type": "integer"
+        },
+        "type": {
+          "const": "redis",
+          "title": "Type",
+          "type": "string"
         }
       },
-      "anyOf": [{"required": ["logs"]}, {"required": ["queries"]}],
-      "additionalProperties": true
+      "required": [
+        "id",
+        "evaluation",
+        "match_count",
+        "match_period",
+        "type",
+        "path"
+      ],
+      "title": "RedisEventV001",
+      "type": "object"
     },
-    "actions": {
-      "type": "object",
-      "required": ["repair_actions"],
+    "RedisPathV001": {
+      "additionalProperties": false,
       "properties": {
-        "repair_actions": {"$ref": "#/definitions/repair_actions"},
-        "log_collection": {"$ref": "#/definitions/log_collection"}
+        "database": {
+          "minLength": 1,
+          "title": "Database",
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "table": {
+          "minLength": 1,
+          "title": "Table",
+          "type": "string"
+        }
       },
-      "additionalProperties": true
+      "required": [
+        "database",
+        "table",
+        "key",
+        "path"
+      ],
+      "title": "RedisPathV001",
+      "type": "object"
     },
-    "signature": {
-      "type": "object",
-      "required": ["metadata", "conditions", "actions"],
+    "RemoteActionsV001": {
+      "additionalProperties": false,
       "properties": {
-        "metadata": {"$ref": "#/definitions/metadata"},
-        "conditions": {"$ref": "#/definitions/conditions"},
-        "actions": {"$ref": "#/definitions/actions"}
+        "action_list": {
+          "items": {
+            "enum": [
+              "ACTION_RESEAT",
+              "ACTION_WARM_REBOOT",
+              "ACTION_COLD_REBOOT",
+              "ACTION_POWER_CYCLE",
+              "ACTION_FACTORY_RESET",
+              "ACTION_REPLACE"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Action List",
+          "type": "array"
+        },
+        "time_window": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Time Window",
+          "type": "integer"
+        }
       },
-      "additionalProperties": true
+      "required": [
+        "action_list",
+        "time_window"
+      ],
+      "title": "RemoteActionsV001",
+      "type": "object"
     },
-    "signature_wrapper": {
-      "type": "object",
-      "required": ["signature"],
-      "properties": {"signature": {"$ref": "#/definitions/signature"}},
-      "additionalProperties": true
+    "RepairActionsV001": {
+      "additionalProperties": false,
+      "properties": {
+        "local_actions": {
+          "$ref": "#/$defs/LocalActionsV001"
+        },
+        "remote_actions": {
+          "$ref": "#/$defs/RemoteActionsV001"
+        }
+      },
+      "required": [
+        "remote_actions"
+      ],
+      "title": "RepairActionsV001",
+      "type": "object"
+    },
+    "SignatureV001": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "$ref": "#/$defs/ActionsV001"
+        },
+        "conditions": {
+          "$ref": "#/$defs/ConditionsV001"
+        },
+        "metadata": {
+          "$ref": "#/$defs/MetadataV001"
+        }
+      },
+      "required": [
+        "metadata",
+        "conditions",
+        "actions"
+      ],
+      "title": "SignatureV001",
+      "type": "object"
+    },
+    "SignatureWrapperV001": {
+      "additionalProperties": false,
+      "properties": {
+        "signature": {
+          "$ref": "#/$defs/SignatureV001"
+        }
+      },
+      "required": [
+        "signature"
+      ],
+      "title": "SignatureWrapperV001",
+      "type": "object"
+    },
+    "StringEvaluationV001": {
+      "additionalProperties": false,
+      "properties": {
+        "case_sensitive": {
+          "default": true,
+          "title": "Case Sensitive",
+          "type": "boolean"
+        },
+        "operator": {
+          "enum": [
+            "contains",
+            "equals",
+            "regex"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "type": {
+          "const": "string",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "value_configs": {
+          "$ref": "#/$defs/ValueConfigV001"
+        }
+      },
+      "required": [
+        "type",
+        "operator",
+        "value"
+      ],
+      "title": "StringEvaluationV001",
+      "type": "object"
+    },
+    "SysfsEventV001": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluation": {
+          "discriminator": {
+            "mapping": {
+              "boolean": "#/$defs/BooleanEvaluationV001",
+              "comparison": "#/$defs/ComparisonEvaluationV001",
+              "dse": "#/$defs/DSEEvaluationV001",
+              "mask": "#/$defs/MaskEvaluationV001",
+              "string": "#/$defs/StringEvaluationV001"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MaskEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/ComparisonEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/StringEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/BooleanEvaluationV001"
+            },
+            {
+              "$ref": "#/$defs/DSEEvaluationV001"
+            }
+          ],
+          "title": "Evaluation"
+        },
+        "id": {
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Id",
+          "type": "integer"
+        },
+        "instances": {
+          "items": {
+            "pattern": "^[^:]+:.*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Instances",
+          "type": "array"
+        },
+        "match_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Match Count",
+          "type": "integer"
+        },
+        "match_period": {
+          "maximum": 3600,
+          "minimum": 0,
+          "title": "Match Period",
+          "type": "integer"
+        },
+        "path": {
+          "$ref": "#/$defs/FilePathV001"
+        },
+        "sampling_interval": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Sampling Interval",
+          "type": "integer"
+        },
+        "type": {
+          "const": "sysfs",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "evaluation",
+        "match_count",
+        "match_period",
+        "type",
+        "path"
+      ],
+      "title": "SysfsEventV001",
+      "type": "object"
+    },
+    "ValueConfigV001": {
+      "additionalProperties": false,
+      "properties": {
+        "encoding": {
+          "default": "N/A",
+          "minLength": 1,
+          "title": "Encoding",
+          "type": "string"
+        },
+        "scaling": {
+          "anyOf": [
+            {
+              "maximum": 18446744073709551615,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            {
+              "type": "number",
+              "x-dldd-runtime-constraint": {
+                "authority": "pydantic-runtime-contract",
+                "description": "The parsed value must be an actual finite Python float; an integer cannot use this union branch.",
+                "kind": "python-float-type"
+              }
+            },
+            {
+              "const": "N/A",
+              "type": "string"
+            }
+          ],
+          "default": "N/A",
+          "title": "Scaling"
+        },
+        "type": {
+          "enum": [
+            "binary",
+            "hex",
+            "int",
+            "float",
+            "string",
+            "boolean",
+            "json",
+            "bytes",
+            "N/A"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "unit"
+      ],
+      "title": "ValueConfigV001",
+      "type": "object"
+    },
+    "VendorOperationV001": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "allOf": [
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "argv"
+                ]
+              },
+              {
+                "required": [
+                  "command"
+                ]
+              },
+              {
+                "required": [
+                  "max_output_bytes"
+                ]
+              },
+              {
+                "required": [
+                  "path"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Bounded envelope for a platform-advertised action or query type.",
+      "properties": {
+        "timeout": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Timeout",
+          "type": "integer"
+        },
+        "type": {
+          "minLength": 1,
+          "not": {
+            "enum": [
+              "cli",
+              "dse",
+              "i2c"
+            ]
+          },
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "VendorOperationV001",
+      "type": "object"
     }
-  }
+  },
+  "$id": "https://sonic-net.github.io/dldd/schemas/dld-rules-0.0.1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Fully nested publication model; runtime uses :class:`EnvelopeV001`.",
+  "properties": {
+    "local_action_default_timeout": {
+      "maximum": 4294967295,
+      "minimum": 1,
+      "title": "Local Action Default Timeout",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "0.0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "signatures": {
+      "items": {
+        "$ref": "#/$defs/SignatureWrapperV001"
+      },
+      "maxItems": 1024,
+      "minItems": 1,
+      "title": "Signatures",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "signatures"
+  ],
+  "title": "SONiC Device Local Diagnosis rules 0.0.1",
+  "type": "object",
+  "x-dldd-schema-version": "0.0.1",
+  "x-generated-warning": "Generated from the installed DLDD Pydantic contract; do not edit by hand. The daemon does not load this file at runtime."
 }

@@ -53,19 +53,44 @@ class MonitorThread(threading.Thread):
         self.wall_clock = wall_clock
         self._sequence = 0
         self._next_poll = self.clock()
-        self._schedule_lock = threading.Lock()
         self.diagnostics = deque(maxlen=32)
 
     def stop(self) -> None:
         self.stop_event.set()
 
     def update_polling_interval(self, interval: float) -> None:
-        """Apply a dynamic interval and pull an overly distant poll forward."""
+        """Queue a monitor-default update for application by this thread."""
 
-        interval = max(0.1, float(interval))
+        self.plan.queue_polling_interval_update(interval)
+
+    def drain_interval_update_queue(self) -> None:
+        """Apply queued defaults while retaining sole ownership of cadence state."""
+
+        while True:
+            try:
+                interval = self.plan.interval_update_queue.get_nowait()
+            except Empty:
+                return
+            try:
+                self._apply_polling_interval(interval)
+            finally:
+                self.plan.interval_update_queue.task_done()
+
+    def _apply_polling_interval(self, interval: float) -> None:
+        interval = self.plan.validated_polling_interval(interval)
+        now = self.clock()
         self.plan.polling_interval = interval
-        with self._schedule_lock:
-            self._next_poll = min(self._next_poll, self.clock() + interval)
+        for key, item in self.plan.items_by_key.items():
+            if item.sampling_interval_is_explicit:
+                continue
+            state = self.plan.state_by_key[key]
+            if state.next_sample_due is not None:
+                # A shorter default takes effect promptly. A longer default
+                # does not postpone work that was already scheduled sooner.
+                state.next_sample_due = min(
+                    state.next_sample_due, now + interval
+                )
+        self._refresh_next_poll(now)
 
     def run(self) -> None:
         while not self.stop_event.is_set():
@@ -76,11 +101,11 @@ class MonitorThread(threading.Thread):
             self.stop_event.wait(0.2)
 
     def run_once(self) -> None:
+        self.drain_interval_update_queue()
         self.drain_control_queue()
         now = self.clock()
         self._recover_expired_ownership(now)
-        with self._schedule_lock:
-            normal_poll_due = now >= self._next_poll
+        normal_poll_due = now >= self._next_poll
         recheck_due = any(
             state.state == MonitorWorkState.RECHECK_REQUESTED
             and (
@@ -91,10 +116,33 @@ class MonitorThread(threading.Thread):
         )
         if not normal_poll_due and not recheck_due:
             return
-        if normal_poll_due:
-            with self._schedule_lock:
-                self._next_poll = now + max(0.1, self.plan.polling_interval)
-        self.poll_once(now, include_normal=normal_poll_due)
+        self.poll_once(include_normal=normal_poll_due, respect_schedule=True)
+        self._refresh_next_poll(self.clock())
+
+    def _refresh_next_poll(self, now: float) -> None:
+        due_times = []
+        for state in self.plan.state_by_key.values():
+            if state.state not in (
+                MonitorWorkState.READY,
+                MonitorWorkState.DEGRADED,
+            ):
+                continue
+            due_times.append(
+                now if state.next_sample_due is None else state.next_sample_due
+            )
+        self._next_poll = (
+            min(due_times)
+            if due_times
+            else now + max(0.1, self.plan.polling_interval)
+        )
+
+    def _make_normal_work_due(self, state: MonitorWorkStateRecord) -> None:
+        due = (
+            self.clock()
+            if state.next_sample_due is None
+            else state.next_sample_due
+        )
+        self._next_poll = min(self._next_poll, due)
 
     def drain_control_queue(self) -> None:
         while True:
@@ -133,6 +181,7 @@ class MonitorThread(threading.Thread):
             state.ack_deadline = None
             state.hold_deadline = None
             state.recheck_not_before = None
+            self._make_normal_work_due(state)
         elif command.command == MonitorCommandType.HOLD:
             self._transition(state, MonitorWorkState.HELD_BY_PRIMARY)
             state.ack_deadline = None
@@ -171,6 +220,7 @@ class MonitorThread(threading.Thread):
                 self._record_lease_expiry(key, "IN_FLIGHT", now)
                 self._transition(state, MonitorWorkState.READY)
                 state.ack_deadline = None
+                self._make_normal_work_due(state)
             elif (
                 state.state == MonitorWorkState.HELD_BY_PRIMARY
                 and state.hold_deadline is not None
@@ -180,6 +230,7 @@ class MonitorThread(threading.Thread):
                 self._record_lease_expiry(key, "HELD_BY_PRIMARY", now)
                 self._transition(state, MonitorWorkState.READY)
                 state.hold_deadline = None
+                self._make_normal_work_due(state)
             elif (
                 state.state == MonitorWorkState.RECHECK_REQUESTED
                 and state.hold_deadline is not None
@@ -190,6 +241,7 @@ class MonitorThread(threading.Thread):
                 self._transition(state, MonitorWorkState.READY)
                 state.hold_deadline = None
                 state.recheck_not_before = None
+                self._make_normal_work_due(state)
 
     def _record_lease_expiry(self, key: str, state: str, now: float) -> None:
         self.diagnostics.append(
@@ -204,12 +256,16 @@ class MonitorThread(threading.Thread):
         )
 
     def poll_once(
-        self, now: Optional[float] = None, include_normal: bool = True
+        self,
+        now: Optional[float] = None,
+        include_normal: bool = True,
+        respect_schedule: bool = False,
     ) -> None:
-        now = self.clock() if now is None else now
+        cycle_now = self.clock() if now is None else now
         for key in sorted(self.plan.items_by_key):
             state = self.plan.state_by_key[key]
             recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
+            key_now = self.clock() if respect_schedule else cycle_now
             if not recheck and (
                 not include_normal
                 or state.state
@@ -219,13 +275,31 @@ class MonitorThread(threading.Thread):
             if (
                 recheck
                 and state.recheck_not_before is not None
-                and now < state.recheck_not_before
+                and key_now < state.recheck_not_before
             ):
                 continue
-            self._collect_key(key, state)
+            item = self.plan.items_by_key[key]
+            if not recheck:
+                attempt_time = key_now
+                if (
+                    respect_schedule
+                    and state.next_sample_due is not None
+                    and attempt_time < state.next_sample_due
+                ):
+                    continue
+                # Schedule from this key's attempt, not from the cycle start or
+                # prior deadline.  This coalesces missed intervals without
+                # shortening later keys when an earlier adapter is slow.
+                interval = (
+                    item.sampling_interval
+                    if item.sampling_interval_is_explicit
+                    else self.plan.polling_interval
+                )
+                state.next_sample_due = attempt_time + interval
+            self._collect_key(key, state, item=item)
 
-    def _collect_key(self, key: str, state: MonitorWorkStateRecord) -> None:
-        item = self.plan.items_by_key[key]
+    def _collect_key(self, key: str, state: MonitorWorkStateRecord, item=None) -> None:
+        item = item or self.plan.items_by_key[key]
         from_recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
         try:
             adapter = self.adapters[item.source_type]
@@ -344,6 +418,11 @@ class MonitorThread(threading.Thread):
             LOGGER.error("fault evidence queue is full; releasing %s", item.correlation_key)
             self._transition(state, previous_work_state)
             state.ack_deadline = None
+            if not from_recheck:
+                state.next_sample_due = self.clock()
+                self._next_poll = min(
+                    self._next_poll, state.next_sample_due
+                )
             return False
         state.last_evidence_sequence = self._sequence
         state.last_enqueue_timestamp = enqueued_at

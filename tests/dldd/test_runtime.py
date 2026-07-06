@@ -3,6 +3,7 @@ from __future__ import absolute_import
 from dataclasses import replace
 from queue import Empty, Queue
 import subprocess
+from threading import Event as ThreadEvent, Thread
 import time
 
 import pytest
@@ -18,6 +19,7 @@ from dldd.adapters import (
 from dldd.evaluators import EvaluationContractError, evaluate
 from dldd.monitor import MonitorThread, command_for_event
 from dldd.hooks import VendorHook, VendorHookRegistry
+from dldd.planner import build_plans
 from dldd.runtime import (
     CollectedValue,
     EvaluationResult,
@@ -341,6 +343,243 @@ def test_due_recheck_does_not_poll_unrelated_ready_keys_early():
     assert calls == ["first"]
 
 
+def test_per_key_sampling_intervals_start_due_and_coalesce_missed_cycles():
+    clock = [0.0]
+    fast = replace(
+        work_item("fast"),
+        sampling_interval=10,
+        sampling_interval_is_explicit=True,
+    )
+    slow = replace(
+        work_item("slow"),
+        event_id=2,
+        sampling_interval=30,
+        sampling_interval_is_explicit=True,
+    )
+    execution_plan = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {fast.correlation_key: fast, slow.correlation_key: slow},
+        {
+            fast.correlation_key: MonitorWorkStateRecord(),
+            slow.correlation_key: MonitorWorkStateRecord(),
+        },
+        Queue(),
+    )
+    calls = []
+
+    class RecordingAdapter(object):
+        def collect(self, item):
+            calls.append((clock[0], item.correlation_key))
+            return result(EvaluationResultType.NO_MATCH, False)
+
+    monitor = MonitorThread(
+        execution_plan,
+        {"test": RecordingAdapter()},
+        Queue(),
+        clock=lambda: clock[0],
+    )
+
+    monitor.run_once()
+    assert calls == [(0.0, "fast"), (0.0, "slow")]
+    assert execution_plan.state_by_key["fast"].next_sample_due == 10.0
+    assert execution_plan.state_by_key["slow"].next_sample_due == 30.0
+
+    clock[0] = 9.0
+    monitor.run_once()
+    assert len(calls) == 2
+
+    clock[0] = 10.0
+    monitor.run_once()
+    assert calls[-1] == (10.0, "fast")
+
+    # A late cycle collects each due key once and schedules from the actual
+    # attempt time instead of replaying every missed interval.
+    clock[0] = 100.0
+    monitor.run_once()
+    assert calls[-2:] == [(100.0, "fast"), (100.0, "slow")]
+    assert execution_plan.state_by_key["fast"].next_sample_due == 110.0
+    assert execution_plan.state_by_key["slow"].next_sample_due == 130.0
+
+
+def test_each_key_schedules_from_its_actual_attempt_time():
+    clock = [0.0]
+    first = replace(
+        work_item("first"),
+        sampling_interval=10,
+        sampling_interval_is_explicit=True,
+    )
+    second = replace(
+        work_item("second"),
+        event_id=2,
+        sampling_interval=10,
+        sampling_interval_is_explicit=True,
+    )
+    execution_plan = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {"first": first, "second": second},
+        {
+            "first": MonitorWorkStateRecord(),
+            "second": MonitorWorkStateRecord(),
+        },
+        Queue(),
+    )
+
+    class SlowFirstAdapter(object):
+        def collect(self, item):
+            if item.correlation_key == "first":
+                clock[0] += 7.0
+            return result(EvaluationResultType.NO_MATCH, False)
+
+    monitor = MonitorThread(
+        execution_plan,
+        {"test": SlowFirstAdapter()},
+        Queue(),
+        clock=lambda: clock[0],
+    )
+
+    monitor.run_once()
+
+    assert execution_plan.state_by_key["first"].next_sample_due == 10.0
+    assert execution_plan.state_by_key["second"].next_sample_due == 17.0
+
+
+def test_planner_resolves_explicit_and_monitor_default_sampling_intervals():
+    validated = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    original = validated.materialized_rules[0]
+    original_event = original.events[0]
+    explicit_event = replace(original_event.event, sampling_interval=17)
+    explicit_rule = replace(
+        original,
+        events=(replace(original_event, event=explicit_event),),
+    )
+
+    explicit_bundle = build_plans(
+        (explicit_rule,),
+        "sha256:explicit",
+        {"redis": 41, "file": 42, "common": 43},
+    )
+    explicit_item = next(iter(explicit_bundle.work_items.values()))
+    assert explicit_item.sampling_interval == 17
+    assert explicit_item.sampling_interval_is_explicit
+
+    inherited_bundle = build_plans(
+        (original,),
+        "sha256:inherited",
+        {"redis": 41, "file": 42, "common": 43},
+    )
+    inherited_item = next(iter(inherited_bundle.work_items.values()))
+    assert inherited_item.sampling_interval == 41
+    assert not inherited_item.sampling_interval_is_explicit
+
+
+def test_recheck_once_bypasses_cadence_without_resetting_normal_due_time():
+    clock = [0.0]
+    item = replace(
+        work_item(),
+        sampling_interval=100,
+        sampling_interval_is_explicit=True,
+    )
+    evidence = Queue()
+    monitor = MonitorThread(
+        plan(item),
+        {
+            "test": SequenceAdapter(
+                [
+                    result(EvaluationResultType.NO_MATCH, False),
+                    result(EvaluationResultType.NO_MATCH, False),
+                ]
+            )
+        },
+        evidence,
+        clock=lambda: clock[0],
+    )
+
+    monitor.run_once()
+    state = monitor.plan.state_by_key[item.correlation_key]
+    assert state.next_sample_due == 100.0
+
+    state.state = MonitorWorkState.RECHECK_REQUESTED
+    state.recheck_not_before = 10.0
+    clock[0] = 10.0
+    monitor.run_once()
+
+    recheck = evidence.get_nowait()
+    assert recheck.from_recheck
+    assert state.next_sample_due == 100.0
+
+
+def test_dynamic_monitor_default_updates_only_inherited_work_items():
+    clock = [0.0]
+    inherited = replace(
+        work_item("inherited"),
+        sampling_interval=60,
+        sampling_interval_is_explicit=False,
+    )
+    explicit = replace(
+        work_item("explicit"),
+        event_id=2,
+        sampling_interval=300,
+        sampling_interval_is_explicit=True,
+    )
+    execution_plan = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {
+            inherited.correlation_key: inherited,
+            explicit.correlation_key: explicit,
+        },
+        {
+            inherited.correlation_key: MonitorWorkStateRecord(
+                next_sample_due=50.0
+            ),
+            explicit.correlation_key: MonitorWorkStateRecord(
+                next_sample_due=50.0
+            ),
+        },
+        Queue(),
+    )
+    monitor = MonitorThread(
+        execution_plan,
+        {"test": SequenceAdapter([])},
+        Queue(),
+        clock=lambda: clock[0],
+    )
+    items_mapping = execution_plan.items_by_key
+    inherited_identity = execution_plan.items_by_key["inherited"]
+    explicit_identity = execution_plan.items_by_key["explicit"]
+    assert inherited_identity is inherited
+    assert explicit_identity is explicit
+
+    monitor.update_polling_interval(10)
+    assert execution_plan.polling_interval == 60
+    monitor.drain_interval_update_queue()
+
+    assert execution_plan.polling_interval == 10
+    assert execution_plan.items_by_key is items_mapping
+    assert execution_plan.items_by_key["inherited"] is inherited_identity
+    assert execution_plan.items_by_key["explicit"] is explicit_identity
+    assert execution_plan.items_by_key["inherited"].sampling_interval == 60
+    assert execution_plan.items_by_key["explicit"].sampling_interval == 300
+    assert execution_plan.state_by_key["inherited"].next_sample_due == 10.0
+    assert execution_plan.state_by_key["explicit"].next_sample_due == 50.0
+
+    monitor.update_polling_interval(100)
+    monitor.drain_interval_update_queue()
+    assert execution_plan.polling_interval == 100
+    assert execution_plan.items_by_key["inherited"] is inherited_identity
+    assert execution_plan.items_by_key["explicit"].sampling_interval == 300
+    # Increasing a default does not postpone an already-nearer inherited due.
+    assert execution_plan.state_by_key["inherited"].next_sample_due == 10.0
+
+
 def test_lower_dynamic_polling_interval_pulls_next_poll_forward():
     clock = [0.0]
     item = work_item()
@@ -354,8 +593,87 @@ def test_lower_dynamic_polling_interval_pulls_next_poll_forward():
 
     monitor.update_polling_interval(1)
 
+    assert monitor.plan.polling_interval == 60
+    monitor.drain_interval_update_queue()
     assert monitor.plan.polling_interval == 1
-    assert monitor._next_poll == 1.0
+    # A never-sampled eligible key remains immediately due.
+    assert monitor._next_poll == 0.0
+
+
+def test_interval_update_queued_during_collection_cannot_be_overwritten():
+    clock = [0.0]
+    collection_started = ThreadEvent()
+    finish_collection = ThreadEvent()
+    inherited = replace(
+        work_item(),
+        sampling_interval=86400,
+        sampling_interval_is_explicit=False,
+    )
+    execution_plan = MonitorExecutionPlan(
+        "common",
+        "common",
+        86400,
+        "sha256:test",
+        {inherited.correlation_key: inherited},
+        {inherited.correlation_key: MonitorWorkStateRecord()},
+        Queue(),
+    )
+
+    class BlockingAdapter(object):
+        def collect(self, _item):
+            collection_started.set()
+            assert finish_collection.wait(1.0)
+            return result(EvaluationResultType.NO_MATCH, False)
+
+    monitor = MonitorThread(
+        execution_plan,
+        {"test": BlockingAdapter()},
+        Queue(),
+        clock=lambda: clock[0],
+    )
+
+    worker = Thread(target=monitor.run_once)
+    worker.start()
+    assert collection_started.wait(1.0)
+    monitor.update_polling_interval(60)
+    finish_collection.set()
+    worker.join(1.0)
+    assert not worker.is_alive()
+    state = execution_plan.state_by_key[inherited.correlation_key]
+    assert state.next_sample_due == 86400
+
+    monitor.run_once()
+    assert execution_plan.polling_interval == 60
+    assert state.next_sample_due == 60
+
+
+def test_replacement_monitor_consumes_plan_owned_interval_update():
+    clock = [0.0]
+    inherited = replace(
+        work_item(),
+        sampling_interval=60,
+        sampling_interval_is_explicit=False,
+    )
+    execution_plan = plan(inherited)
+    old_monitor = MonitorThread(
+        execution_plan,
+        {"test": SequenceAdapter([])},
+        Queue(),
+        clock=lambda: clock[0],
+    )
+    old_monitor.update_polling_interval(7)
+
+    replacement = MonitorThread(
+        execution_plan,
+        {"test": SequenceAdapter([])},
+        Queue(),
+        clock=lambda: clock[0],
+    )
+    replacement.drain_interval_update_queue()
+
+    assert replacement.plan is old_monitor.plan
+    assert execution_plan.polling_interval == 7
+    assert execution_plan.interval_update_queue.empty()
 
 
 def test_recheck_lease_expiry_recovers_key_and_records_diagnostic():

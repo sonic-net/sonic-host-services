@@ -30,12 +30,19 @@ from .lifecycle import (
 )
 from .monitor import MonitorThread
 from .models import BrokenRule, ValidationIssue
+from .hooks import VendorHookError
 from .orchestrator import PrimaryOrchestrator
 from .planner import build_plans
 from .platform import PlatformExtensions, detect_identity, load_extensions
 from .runtime import MonitorCommandType, MonitorWorkState
+from .rule_schema.errors import bound_diagnostic, bound_identity
 from .telemetry import SonicStateDB, TelemetryPublisher
-from .validation import ValidationContext, load_rules, source_line_for_path
+from .validation import (
+    MAX_SERIALIZED_DIAGNOSTIC_BYTES,
+    ValidationContext,
+    load_rules,
+    source_line_for_path,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -58,10 +65,20 @@ _SCHEMA_ISSUE_CODES = frozenset(
         "invalid_signature",
         "invalid_type",
         "invalid_value",
+        "instance_path_mismatch",
+        "invalid_format",
+        "invalid_length",
+        "missing_i2c_value",
         "missing_field",
+        "out_of_range",
+        "reserved_operation_field",
+        "reserved_operation_type",
         "unsupported_component",
         "unsupported_severity",
+        "unsupported_type",
+        "unsupported_value",
         "unsupported_value_type",
+        "unknown_field",
     )
 )
 
@@ -85,7 +102,56 @@ def _ingestion_failure_reason(issues) -> str:
         category = "schema_error"
     else:
         category = "validation_error"
-    return "{}: {}".format(category, details)
+    return bound_diagnostic("{}: {}".format(category, details), 4096)
+
+
+def _compact_json_size(value) -> int:
+    return len(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8", "replace"
+        )
+    )
+
+
+def _bounded_broken_rule_records(result, validation_time):
+    """Project every broken identity within the external candidate budget."""
+
+    records = [
+        {
+            "rule": bound_identity(item.rule_name, 128),
+            "rule_id": item.rule_id,
+            "version": bound_identity(item.rule_version, 64),
+            "state": "BROKEN",
+            "reason": _ingestion_failure_reason(item.issues),
+            "failure_count": 1,
+            "last_attempt": validation_time,
+        }
+        for item in result.broken_rules
+    ]
+    budget = MAX_SERIALIZED_DIAGNOSTIC_BYTES - 32 * 1024
+    if _compact_json_size(records) <= budget:
+        return tuple(records)
+
+    original_reasons = [record["reason"] for record in records]
+    for maximum in (1024, 512, 256, 128, 64):
+        for record, reason in zip(records, original_reasons):
+            record["reason"] = bound_diagnostic(reason, maximum)
+        if _compact_json_size(records) <= budget:
+            return tuple(records)
+
+    # A fixed reason is the final fallback and preserves every broken rule
+    # identity/count.  Identity projection above is JSON-safe, so the schema's
+    # 1024-signature bound guarantees this representation fits the reserve.
+    for record in records:
+        record["reason"] = "validation details omitted by candidate byte cap"
+    return tuple(records)
+
+
+def _bounded_file_error_strings(issues):
+    selected = [bound_diagnostic(str(issue), 1024) for issue in issues[:256]]
+    if len(issues) > len(selected):
+        selected.append("additional file diagnostics were omitted")
+    return tuple(selected)
 
 
 def validate_runtime_operation_hooks(materialized_rule, vendor_hooks) -> None:
@@ -171,9 +237,15 @@ class DLDDService:
                     validate_runtime_operation_hooks(
                         rule, self.extensions.vendor_hooks
                     )
-                except Exception as error:
+                except (ValueError, VendorHookError) as error:
                     metadata = rule.signature.metadata
-                    invalid.setdefault(metadata.id, (metadata.name, str(error)))
+                    invalid.setdefault(
+                        metadata.id,
+                        (
+                            bound_identity(metadata.name, 128),
+                            bound_diagnostic(str(error), 256),
+                        ),
+                    )
             validation_bundle = build_plans(
                 result.materialized_rules,
                 "validation",
@@ -183,8 +255,14 @@ class DLDDService:
             for item in validation_bundle.work_items.values():
                 try:
                     adapters[item.source_type].validate(item)
-                except Exception as error:
-                    invalid.setdefault(item.rule_id, (item.rule_name, str(error)))
+                except (ValueError, VendorHookError) as error:
+                    invalid.setdefault(
+                        item.rule_id,
+                        (
+                            bound_identity(item.rule_name, 128),
+                            bound_diagnostic(str(error), 256),
+                        ),
+                    )
             if invalid:
                 materialized = tuple(
                     rule
@@ -195,10 +273,13 @@ class DLDDService:
                     BrokenRule(
                         rule_name=name,
                         rule_id=rule_id,
-                        rule_version=next(
-                            rule.signature.metadata.version
-                            for rule in result.materialized_rules
-                            if rule.signature.metadata.id == rule_id
+                        rule_version=bound_identity(
+                            next(
+                                rule.signature.metadata.version
+                                for rule in result.materialized_rules
+                                if rule.signature.metadata.id == rule_id
+                            ),
+                            64,
                         ),
                         issues=(
                             ValidationIssue(
@@ -222,34 +303,20 @@ class DLDDService:
                     broken_rules=result.broken_rules + added_broken,
                 )
         validation_time = time.time()
-        broken = tuple(
-            {
-                "rule": item.rule_name,
-                "rule_id": item.rule_id,
-                "version": item.rule_version,
-                "state": "BROKEN",
-                "reason": _ingestion_failure_reason(item.issues),
-                "failure_count": 1,
-                "last_attempt": validation_time,
-            }
-            for item in result.broken_rules
-        )
+        broken = _bounded_broken_rule_records(result, validation_time)
+        errors = _bounded_file_error_strings(result.file_errors)
+        if not result.materialized_rules and result.broken_rules:
+            errors += (
+                "zero usable rules; see {} bounded broken-rule diagnostics".format(
+                    len(result.broken_rules)
+                ),
+            )
         return CandidateValidation(
             file_valid=result.file_valid,
             usable_rule_count=len(result.materialized_rules),
             schema_version=result.schema_version or "",
             broken_rules=broken,
-            errors=(
-                tuple(str(item) for item in result.file_errors)
-                + tuple(
-                    "{}: {}".format(
-                        item.rule_name,
-                        "; ".join(str(issue) for issue in item.issues),
-                    )
-                    for item in result.broken_rules
-                    if not result.materialized_rules
-                )
-            ),
+            errors=errors,
             payload=result,
         )
 
@@ -313,43 +380,9 @@ class DLDDService:
             intervals,
         )
         adapters = self._adapters()
-        adapter_broken = []
-        invalid_rule_ids = set()
-        for item in bundle.work_items.values():
-            try:
-                adapters[item.source_type].validate(item)
-            except Exception as error:
-                invalid_rule_ids.add(item.rule_id)
-                adapter_broken.append(
-                    {
-                        "rule": item.rule_name,
-                        "rule_id": item.rule_id,
-                        "version": item.rule_version,
-                        "correlation_key": item.correlation_key,
-                        "reason": "validation_error: {}".format(error),
-                        "failure_count": 1,
-                        "state": "BROKEN",
-                        "last_attempt": time.time(),
-                    }
-                )
-        if invalid_rule_ids:
-            usable_rules = tuple(
-                rule
-                for rule in validation.materialized_rules
-                if rule.signature.metadata.id not in invalid_rule_ids
-            )
-            bundle = build_plans(
-                usable_rules,
-                self.activation.checksum,
-                intervals,
-            )
         if not bundle.work_items:
-            self.fatal_reason = (
-                "zero usable monitor work items after adapter validation"
-            )
-            self.startup_broken = (
-                tuple(self.activation.broken_rules) + tuple(adapter_broken)
-            )
+            self.fatal_reason = "zero usable monitor work items after activation"
+            self.startup_broken = tuple(self.activation.broken_rules)
             self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 self.activation.schema_version,
@@ -368,9 +401,7 @@ class DLDDService:
             self.fatal_reason = "artifact client initialization failed: {}".format(
                 error
             )
-            self.startup_broken = (
-                tuple(self.activation.broken_rules) + tuple(adapter_broken)
-            )
+            self.startup_broken = tuple(self.activation.broken_rules)
             self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 self.activation.schema_version,
@@ -404,7 +435,7 @@ class DLDDService:
             {
                 item.get("correlation_key", "ingestion:{}".format(index)): item
                 for index, item in enumerate(
-                    tuple(self.activation.broken_rules) + tuple(adapter_broken)
+                    tuple(self.activation.broken_rules)
                 )
             }
         )
@@ -520,7 +551,10 @@ class DLDDService:
                 self.orchestrator.queue_config_update(updated)
             else:  # lightweight test doubles
                 self.orchestrator.config = updated
-        for monitor in self.monitors:
+        # Monitor supervision may replace a stopped thread concurrently.  A
+        # stable snapshot prevents list compaction from skipping another plan;
+        # replacements reuse the same plan-owned update queue.
+        for monitor in tuple(self.monitors):
             if monitor.plan.monitor_type == "redis":
                 interval = updated.redis_monitor_polling_interval
             elif monitor.plan.monitor_type == "file":

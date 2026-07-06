@@ -8,10 +8,9 @@ import json
 import math
 import os
 import re
-from types import MappingProxyType
 from typing import Mapping, Optional
 
-import regex as bounded_regex
+from pydantic import ValidationError
 
 try:
     import yaml
@@ -26,38 +25,39 @@ from .dse import (
     EMPTY_DSE_REGISTRY,
     parse_reference,
 )
-from .evaluators import EvaluationContractError, parse_integer
-from .logic import LogicSyntaxError, parse_logic
 from .models import (
     Actions,
     BrokenRule,
-    Conditions,
     Evaluation,
     Event,
     LocalActions,
     LogCollection,
     MaterializedEvent,
     MaterializedRule,
-    Metadata,
     Operation,
-    RemoteActions,
     RepairActions,
     ResolvedSource,
     RuleSet,
     Signature,
     ValidationIssue,
     ValidationResult,
-    VALUE_CONFIG_TYPES,
     ValueConfig,
     freeze_value,
-    frozen_mapping,
 )
-from .schema_registry import DEFAULT_SCHEMA_REGISTRY, SchemaRegistryError
+from .rule_schema import (
+    DEFAULT_CONTRACT_REGISTRY,
+    DomainConversionError,
+    normalize_validation_error,
+)
+from .rule_schema.errors import (
+    append_path_component,
+    bound_diagnostic,
+    bound_identity,
+    bound_path,
+)
 
 
-SUPPORTED_SCHEMA_VERSIONS = frozenset(DEFAULT_SCHEMA_REGISTRY.versions)
-SCHEMA_VERSION = "0.0.1"
-SCHEMA_PATH = DEFAULT_SCHEMA_REGISTRY.schema_path(SCHEMA_VERSION)
+SUPPORTED_SCHEMA_VERSIONS = frozenset(DEFAULT_CONTRACT_REGISTRY.versions)
 
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 MAX_DOCUMENT_DEPTH = 64
@@ -67,43 +67,11 @@ MAX_SCALAR_BYTES = 1024 * 1024
 MAX_SIGNATURES = 1024
 MAX_EVENTS_PER_SIGNATURE = 1000
 MAX_YAML_ALIASES = 0
-MAX_REGEX_CHARACTERS = 4096
-MAX_REGEX_NESTING = 64
-
-EVENT_TYPES = frozenset(
-    ("i2c", "redis", "dse", "cli", "file", "sysfs", "platform_api")
-)
-EVALUATION_TYPES = frozenset(("mask", "comparison", "string", "boolean", "dse"))
-COMPONENT_TYPES = frozenset(
-    ("PSU", "FAN", "CHASSIS", "SSD", "CPU", "MEMORY", "ASIC", "TRANSCEIVER")
-)
-SEVERITIES = frozenset(("CRITICAL", "MAJOR", "WARNING", "MINOR", "UNKNOWN"))
-OPENCONFIG_SYMPTOMS = frozenset(
-    (
-        "SYMPTOM_OVER_THRESHOLD",
-        "SYMPTOM_UNDER_THRESHOLD",
-        "SYMPTOM_MEMORY_ERRORS",
-        "SYMPTOM_MISSING_COMPONENT",
-        "SYMPTOM_COMM_ERROR",
-        "SYMPTOM_UNKNOWN",
-    )
-)
-REMOTE_ACTIONS = frozenset(
-    (
-        "ACTION_RESEAT",
-        "ACTION_WARM_REBOOT",
-        "ACTION_COLD_REBOOT",
-        "ACTION_POWER_CYCLE",
-        "ACTION_FACTORY_RESET",
-        "ACTION_REPLACE",
-    )
-)
-VALUE_TYPES = VALUE_CONFIG_TYPES
-COMPARISON_OPERATORS = frozenset((">", "<", ">=", "<=", "==", "!="))
-DSE_OPERATORS = COMPARISON_OPERATORS | frozenset(("equals", "not_equals"))
-STRING_OPERATORS = frozenset(("contains", "equals", "regex"))
-_SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-_RULE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+MAX_ISSUES_PER_CANDIDATE = 4096
+MAX_SERIALIZED_DIAGNOSTIC_BYTES = 1024 * 1024
+MAX_DIAGNOSTIC_MESSAGE_BYTES = 1024
+MAX_DIAGNOSTIC_PATH_BYTES = 2048
+MAX_DIAGNOSTIC_IDENTITY_BYTES = 256
 _HEX = re.compile(r"^0x[0-9A-Fa-f]+$")
 
 
@@ -236,6 +204,13 @@ def _enforce_document_limits(document):
                 ),
                 1,
             )
+        if isinstance(value, bytes) and len(value) > MAX_SCALAR_BYTES:
+            raise RulesParseError(
+                "rules document contains a scalar larger than {} bytes".format(
+                    MAX_SCALAR_BYTES
+                ),
+                1,
+            )
         if isinstance(value, float) and not math.isfinite(value):
             raise RulesParseError("non-finite numbers are not allowed", 1)
         if not isinstance(value, (Mapping, list, tuple)):
@@ -251,8 +226,27 @@ def _enforce_document_limits(document):
                 1,
             )
         nested = ancestors | {identity}
-        children = value.values() if isinstance(value, Mapping) else value
-        stack.extend((item, depth + 1, nested) for item in children)
+        if isinstance(value, Mapping):
+            # Keys are input scalars too, but they are not counted as value
+            # nodes so the established document-node boundary is unchanged.
+            for key, item in value.items():
+                if isinstance(key, float) and not math.isfinite(key):
+                    raise RulesParseError("non-finite numbers are not allowed", 1)
+                if (
+                    isinstance(key, str)
+                    and len(key.encode("utf-8")) > MAX_SCALAR_BYTES
+                ) or (
+                    isinstance(key, bytes) and len(key) > MAX_SCALAR_BYTES
+                ):
+                    raise RulesParseError(
+                        "rules document contains a scalar larger than {} bytes".format(
+                            MAX_SCALAR_BYTES
+                        ),
+                        1,
+                    )
+                stack.append((item, depth + 1, nested))
+        else:
+            stack.extend((item, depth + 1, nested) for item in value)
 
 
 def _check_yaml_alias_limit(text):
@@ -293,14 +287,26 @@ def _build_source_lines(root_node):
         if yaml is not None and isinstance(node, yaml.nodes.MappingNode):
             for key_node, value_node in node.value:
                 key = str(getattr(key_node, "value", ""))
-                child_path = "{}.{}".format(path, key)
+                if (
+                    isinstance(key_node, yaml.nodes.ScalarNode)
+                    and key_node.tag != "tag:yaml.org,2002:str"
+                ):
+                    try:
+                        key = yaml.safe_load(key_node.value)
+                    except (TypeError, ValueError, yaml.YAMLError):
+                        pass
+                child_path = append_path_component(path, key)
                 key_mark = getattr(key_node, "start_mark", None)
                 if key_mark is not None:
                     lines[child_path] = key_mark.line + 1
                 visit(value_node, child_path, nested)
         elif yaml is not None and isinstance(node, yaml.nodes.SequenceNode):
             for index, item_node in enumerate(node.value):
-                visit(item_node, "{}[{}]".format(path, index), nested)
+                visit(
+                    item_node,
+                    append_path_component(path, index),
+                    nested,
+                )
 
     visit(root_node, "$", set())
     return lines
@@ -327,31 +333,12 @@ def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_rule_id(value):
+    return _is_int(value) and 1_000_000 <= value <= 9_999_999
+
+
 def _is_number(value):
     return (isinstance(value, (int, float)) and not isinstance(value, bool))
-
-
-def _regex_nesting(pattern):
-    nesting = 0
-    maximum = 0
-    escaped = False
-    character_class = False
-    for character in pattern:
-        if escaped:
-            escaped = False
-            continue
-        if character == "\\":
-            escaped = True
-        elif character == "[" and not character_class:
-            character_class = True
-        elif character == "]" and character_class:
-            character_class = False
-        elif not character_class and character == "(":
-            nesting += 1
-            maximum = max(maximum, nesting)
-        elif not character_class and character == ")":
-            nesting = max(0, nesting - 1)
-    return maximum
 
 
 def _issue(issues, code, message, path):
@@ -400,61 +387,6 @@ def _require_integer(mapping, key, issues, path, minimum=None, maximum=None):
     return value
 
 
-def _string_list(mapping, key, issues, path, required=True, nonempty=True):
-    value = mapping.get(key)
-    field_path = "{}.{}".format(path, key)
-    if value is None and not required:
-        return ()
-    if not isinstance(value, list):
-        _issue(issues, "invalid_type", "must be a list", field_path)
-        return ()
-    if nonempty and not value:
-        _issue(issues, "invalid_value", "must not be empty", field_path)
-    result = []
-    for index, item in enumerate(value):
-        if not isinstance(item, str) or not item:
-            _issue(
-                issues,
-                "invalid_type",
-                "must be a non-empty string",
-                "{}[{}]".format(field_path, index),
-            )
-        else:
-            result.append(item)
-    return tuple(result)
-
-
-def _validate_value_config(value, issues, path):
-    if value is None:
-        return ValueConfig()
-    config = _require_mapping(value, issues, path)
-    if config is None:
-        return ValueConfig()
-    value_type = _require_string(config, "type", issues, path)
-    unit = _require_string(config, "unit", issues, path)
-    if value_type is not None and value_type not in VALUE_TYPES:
-        _issue(issues, "unsupported_value_type", "unsupported value type", path + ".type")
-    scaling = config.get("scaling", "N/A")
-    if not (_is_number(scaling) or scaling == "N/A"):
-        _issue(
-            issues,
-            "invalid_type",
-            "must be a number or 'N/A'",
-            path + ".scaling",
-        )
-        scaling = "N/A"
-    encoding = config.get("encoding", "N/A")
-    if not isinstance(encoding, str) or not encoding:
-        _issue(issues, "invalid_type", "must be a non-empty string", path + ".encoding")
-        encoding = "N/A"
-    return ValueConfig(
-        type=value_type or "N/A",
-        unit=unit or "N/A",
-        scaling=scaling,
-        encoding=encoding,
-    )
-
-
 def _validate_dse_reference(value, issues, path):
     if not isinstance(value, str) or not value:
         return
@@ -462,108 +394,6 @@ def _validate_dse_reference(value, issues, path):
         parse_reference(value)
     except DSEReferenceError as error:
         _issue(issues, "invalid_dse_reference", str(error), path)
-
-
-def _validate_evaluation(value, issues, path):
-    evaluation = _require_mapping(value, issues, path)
-    if evaluation is None:
-        return None
-    kind = _require_string(evaluation, "type", issues, path)
-    if kind not in EVALUATION_TYPES:
-        if kind is not None:
-            _issue(issues, "unsupported_evaluation", "unsupported evaluation type", path + ".type")
-        return None
-
-    configured = evaluation.get("value")
-    if "value" not in evaluation:
-        _issue(issues, "missing_field", "is required", path + ".value")
-    operator = evaluation.get("operator")
-    logic = evaluation.get("logic")
-    unit = evaluation.get("unit")
-    case_sensitive = evaluation.get("case_sensitive", True)
-
-    if kind == "mask":
-        if logic != "&":
-            _issue(issues, "invalid_mask_logic", "schema 0.0.1 only supports '&'", path + ".logic")
-        if not (_is_int(configured) or isinstance(configured, str)):
-            _issue(issues, "invalid_type", "mask value must be an integer or string", path + ".value")
-        else:
-            try:
-                parse_integer(configured)
-            except (EvaluationContractError, UnicodeError, ValueError):
-                _issue(
-                    issues,
-                    "invalid_mask_value",
-                    "mask value must use integer, decimal, binary, octal, or hexadecimal notation",
-                    path + ".value",
-                )
-    elif kind == "comparison":
-        if operator not in COMPARISON_OPERATORS:
-            _issue(issues, "invalid_operator", "unsupported comparison operator", path + ".operator")
-        if not (_is_number(configured) or isinstance(configured, str)):
-            _issue(issues, "invalid_type", "comparison value must be numeric or string", path + ".value")
-        if unit is not None and (not isinstance(unit, str) or not unit):
-            _issue(issues, "invalid_type", "unit must be a non-empty string", path + ".unit")
-    elif kind == "string":
-        if operator not in STRING_OPERATORS:
-            _issue(issues, "invalid_operator", "unsupported string operator", path + ".operator")
-        if not isinstance(configured, str):
-            _issue(issues, "invalid_type", "string evaluation value must be a string", path + ".value")
-        if not isinstance(case_sensitive, bool):
-            _issue(issues, "invalid_type", "must be a boolean", path + ".case_sensitive")
-            case_sensitive = True
-        if operator == "regex" and isinstance(configured, str):
-            if len(configured) > MAX_REGEX_CHARACTERS:
-                _issue(
-                    issues,
-                    "invalid_regex",
-                    "regex exceeds {} characters".format(
-                        MAX_REGEX_CHARACTERS
-                    ),
-                    path + ".value",
-                )
-            elif _regex_nesting(configured) > MAX_REGEX_NESTING:
-                _issue(
-                    issues,
-                    "invalid_regex",
-                    "regex nesting exceeds {} levels".format(
-                        MAX_REGEX_NESTING
-                    ),
-                    path + ".value",
-                )
-            else:
-                try:
-                    bounded_regex.compile(configured)
-                except (bounded_regex.error, RecursionError) as error:
-                    _issue(
-                        issues,
-                        "invalid_regex",
-                        str(error),
-                        path + ".value",
-                    )
-    elif kind == "boolean":
-        if not isinstance(configured, bool):
-            _issue(issues, "invalid_type", "boolean evaluation value must be a boolean", path + ".value")
-    elif kind == "dse":
-        if not isinstance(configured, str) or not configured:
-            _issue(issues, "invalid_type", "DSE evaluation value must be a reference string", path + ".value")
-        else:
-            _validate_dse_reference(configured, issues, path + ".value")
-        if operator is not None and operator not in DSE_OPERATORS:
-            _issue(issues, "invalid_operator", "unsupported DSE comparison operator", path + ".operator")
-
-    configs = _validate_value_config(
-        evaluation.get("value_configs"), issues, path + ".value_configs"
-    )
-    return Evaluation(
-        type=kind,
-        value=freeze_value(configured),
-        operator=operator,
-        logic=logic,
-        unit=unit,
-        case_sensitive=case_sensitive,
-        value_configs=configs,
-    )
 
 
 def _validate_i2c_path(value, issues, path, monitoring=True):
@@ -611,7 +441,7 @@ def _validate_argv(value, issues, path):
     return tuple(result)
 
 
-def _validate_source_path(kind, value, instances, issues, path, registry):
+def _validate_source_path(kind, value, instances, issues, path):
     if kind == "i2c":
         _validate_i2c_path(value, issues, path, monitoring=True)
         if (
@@ -684,372 +514,14 @@ def _validate_source_path(kind, value, instances, issues, path, registry):
                 )
 
 
-def _validate_event(value, issues, path, registry):
-    wrapper = _require_mapping(value, issues, path)
-    if wrapper is None:
-        return None
-    event = _require_mapping(wrapper.get("event"), issues, path + ".event")
-    if event is None:
-        return None
-    event_path = path + ".event"
-    event_id = _require_integer(event, "id", issues, event_path, minimum=1, maximum=999)
-    kind = _require_string(event, "type", issues, event_path)
-    instances = _string_list(event, "instances", issues, event_path, required=False, nonempty=True)
-    instance_names = []
-    for index, item in enumerate(instances):
-        if ":" not in item or not item.split(":", 1)[0]:
-            _issue(
-                issues,
-                "invalid_instance",
-                "must use DeviceName:PathIdentifier form",
-                "{}.instances[{}]".format(event_path, index),
-            )
-        else:
-            instance_names.append(item.split(":", 1)[0])
-    if len(set(instance_names)) != len(instance_names):
-        _issue(issues, "duplicate_instance", "component instances must be unique", event_path + ".instances")
-
-    if "path" not in event:
-        _issue(issues, "missing_field", "is required", event_path + ".path")
-    _validate_source_path(
-        kind,
-        event.get("path"),
-        instances,
-        issues,
-        event_path + ".path",
-        registry,
-    )
-    evaluation = _validate_evaluation(
-        event.get("evaluation"), issues, event_path + ".evaluation"
-    )
-    match_count = _require_integer(event, "match_count", issues, event_path, minimum=1, maximum=1000)
-    match_period = _require_integer(event, "match_period", issues, event_path, minimum=0, maximum=3600)
-    if match_period == 0 and match_count not in (None, 1):
-        _issue(
-            issues,
-            "invalid_match_window",
-            "match_period 0 uses current-state semantics and requires match_count 1",
-            event_path + ".match_count",
-        )
-    if event_id is None or kind is None or evaluation is None or match_count is None or match_period is None:
-        return None
-    return Event(
-        id=event_id,
-        type=kind,
-        path=freeze_value(event.get("path")),
-        evaluation=evaluation,
-        match_count=match_count,
-        match_period=match_period,
-        instances=instances,
-    )
-
-
-def _validate_operation(value, issues, path, default_timeout, registry, query=False):
-    wrapper_name = "query" if query else "action"
-    wrapper = _require_mapping(value, issues, path)
-    if wrapper is None:
-        return None
-    operation = _require_mapping(wrapper.get(wrapper_name), issues, path + "." + wrapper_name)
-    if operation is None:
-        return None
-    op_path = path + "." + wrapper_name
-    kind = _require_string(operation, "type", issues, op_path)
-    command = None
-    argv = ()
-    target = {}
-
-    if kind == "dse":
-        command = _require_string(operation, "command", issues, op_path)
-    elif kind == "cli":
-        argv = _validate_argv(operation.get("argv"), issues, op_path + ".argv")
-    elif kind == "i2c":
-        if (
-            query
-            and kind not in registry.query_types
-            and not registry.allow_unadvertised_operations
-        ):
-            _issue(
-                issues,
-                "unsupported_operation_type",
-                "i2c queries require explicit platform support",
-                op_path + ".type",
-            )
-        else:
-            _validate_i2c_path(
-                operation.get("path"),
-                issues,
-                op_path + ".path",
-                monitoring=False,
-            )
-            target = (
-                operation.get("path")
-                if isinstance(operation.get("path"), Mapping)
-                else {}
-            )
-    elif kind in (registry.query_types if query else registry.action_types):
-        pass
-    elif kind is not None:
-        # Vendor operation types are structurally valid at the static-schema
-        # layer.  Activation materialization below requires the installed
-        # platform DSE hook to advertise and validate them.
-        if not registry.allow_unadvertised_operations:
-            _issue(
-                issues,
-                "unsupported_operation_type",
-                "unsupported {} type".format(wrapper_name),
-                op_path + ".type",
-            )
-
-    timeout = operation.get("timeout")
-    if timeout is not None:
-        timeout = _require_integer(operation, "timeout", issues, op_path, minimum=1)
-    elif not query:
-        if default_timeout is None:
-            _issue(
-                issues,
-                "missing_action_timeout",
-                "local action requires timeout or local_action_default_timeout",
-                op_path + ".timeout",
-            )
-        else:
-            timeout = default_timeout
-    max_output = operation.get("max_output_bytes")
-    if max_output is not None:
-        if kind != "cli":
-            _issue(issues, "invalid_field", "max_output_bytes is only valid for CLI", op_path + ".max_output_bytes")
-        max_output = _require_integer(operation, "max_output_bytes", issues, op_path, minimum=1)
-    known = {"type", "command", "argv", "path", "timeout", "max_output_bytes"}
-    options = {key: item for key, item in operation.items() if key not in known}
-    if kind is None:
-        return None
-    return Operation(
-        type=kind,
-        command=command,
-        argv=argv,
-        path=frozen_mapping(target),
-        timeout=timeout,
-        max_output_bytes=max_output,
-        options=frozen_mapping(options),
-    )
-
-
-def _validate_actions(value, issues, path, default_timeout, registry):
-    actions = _require_mapping(value, issues, path)
-    if actions is None:
-        return None
-    repairs = _require_mapping(actions.get("repair_actions"), issues, path + ".repair_actions")
-    if repairs is None:
-        return None
-    repair_path = path + ".repair_actions"
-    remote = _require_mapping(repairs.get("remote_actions"), issues, repair_path + ".remote_actions")
-    remote_model = None
-    if remote is not None:
-        action_list = _string_list(remote, "action_list", issues, repair_path + ".remote_actions")
-        for index, action in enumerate(action_list):
-            if action not in REMOTE_ACTIONS:
-                _issue(
-                    issues,
-                    "unsupported_remote_action",
-                    "unsupported remediation identity",
-                    "{}.remote_actions.action_list[{}]".format(repair_path, index),
-                )
-        time_window = _require_integer(remote, "time_window", issues, repair_path + ".remote_actions", minimum=1)
-        if time_window is not None:
-            remote_model = RemoteActions(action_list=action_list, time_window=time_window)
-
-    local_model = None
-    if "local_actions" in repairs:
-        local = _require_mapping(repairs.get("local_actions"), issues, repair_path + ".local_actions")
-        if local is not None:
-            wait_period = _require_integer(local, "wait_period", issues, repair_path + ".local_actions", minimum=0)
-            action_values = local.get("action_list")
-            local_operations = []
-            if not isinstance(action_values, list) or not action_values:
-                _issue(
-                    issues,
-                    "invalid_action_list",
-                    "must be a non-empty list",
-                    repair_path + ".local_actions.action_list",
-                )
-            else:
-                for index, item in enumerate(action_values):
-                    operation = _validate_operation(
-                        item,
-                        issues,
-                        "{}.local_actions.action_list[{}]".format(repair_path, index),
-                        default_timeout,
-                        registry,
-                    )
-                    if operation is not None:
-                        local_operations.append(operation)
-            if wait_period is not None:
-                local_model = LocalActions(wait_period=wait_period, action_list=tuple(local_operations))
-
-    log_model = None
-    if "log_collection" in actions:
-        log = _require_mapping(actions.get("log_collection"), issues, path + ".log_collection")
-        if log is not None:
-            logs = []
-            queries = []
-            log_values = log.get("logs", [])
-            query_values = log.get("queries", [])
-            if "logs" in log:
-                if not isinstance(log_values, list) or not log_values:
-                    _issue(issues, "invalid_logs", "must be a non-empty list", path + ".log_collection.logs")
-                else:
-                    for index, item in enumerate(log_values):
-                        entry = _require_mapping(item, issues, "{}.log_collection.logs[{}]".format(path, index))
-                        if entry is not None:
-                            value = _require_string(
-                                entry,
-                                "log",
-                                issues,
-                                "{}.log_collection.logs[{}]".format(path, index),
-                            )
-                            if value is not None:
-                                logs.append(value)
-            if "queries" in log:
-                if not isinstance(query_values, list) or not query_values:
-                    _issue(issues, "invalid_queries", "must be a non-empty list", path + ".log_collection.queries")
-                else:
-                    for index, item in enumerate(query_values):
-                        operation = _validate_operation(
-                            item,
-                            issues,
-                            "{}.log_collection.queries[{}]".format(path, index),
-                            default_timeout,
-                            registry,
-                            query=True,
-                        )
-                        if operation is not None:
-                            queries.append(operation)
-            if not logs and not queries:
-                _issue(issues, "empty_log_collection", "requires at least one log or query", path + ".log_collection")
-            log_model = LogCollection(logs=tuple(logs), queries=tuple(queries))
-
-    if remote_model is None:
-        return None
-    return Actions(
-        repair_actions=RepairActions(
-            remote_actions=remote_model, local_actions=local_model
-        ),
-        log_collection=log_model,
-    )
-
-
-def _validate_signature(value, index, default_timeout, registry):
-    base_path = "$.signatures[{}].signature".format(index)
-    issues = []
-    signature = value.get("signature") if isinstance(value, Mapping) else None
-    if not isinstance(signature, Mapping):
-        _issue(issues, "invalid_signature", "signature wrapper must contain an object", base_path)
-        return None, issues
-
-    metadata = _require_mapping(signature.get("metadata"), issues, base_path + ".metadata")
-    metadata_model = None
-    if metadata is not None:
-        path = base_path + ".metadata"
-        name = _require_string(metadata, "name", issues, path)
-        if name is not None and _RULE_NAME.match(name) is None:
-            _issue(issues, "invalid_rule_name", "must contain only letters, digits, and underscores", path + ".name")
-        rule_id = _require_integer(metadata, "id", issues, path, minimum=1000000, maximum=9999999)
-        version = _require_string(metadata, "version", issues, path)
-        if version is not None and _SEMVER.match(version) is None:
-            _issue(issues, "invalid_semver", "must use MAJOR.MINOR.PATCH", path + ".version")
-        description = _require_string(metadata, "description", issues, path)
-        products = _string_list(metadata, "product_ids", issues, path)
-        software = _string_list(metadata, "sw_versions", issues, path)
-        component = _require_string(metadata, "component", issues, path)
-        if component is not None and component not in COMPONENT_TYPES:
-            _issue(issues, "unsupported_component", "unsupported component", path + ".component")
-        symptom = _require_string(metadata, "symptom", issues, path)
-        if symptom is not None and symptom not in OPENCONFIG_SYMPTOMS:
-            _issue(
-                issues,
-                "invalid_symptom",
-                "must be a schema 0.0.1 OpenConfig Healthz symptom identity",
-                path + ".symptom",
-            )
-        error_type = _require_string(metadata, "error_type", issues, path)
-        severity = _require_string(metadata, "severity", issues, path)
-        if severity is not None and severity not in SEVERITIES:
-            _issue(issues, "unsupported_severity", "unsupported severity", path + ".severity")
-        priority = metadata.get("priority", 5)
-        if not _is_int(priority) or priority < 0:
-            _issue(issues, "invalid_priority", "must be a non-negative integer", path + ".priority")
-            priority = 5
-        tags = _string_list(metadata, "tags", issues, path, required=False, nonempty=False)
-        required_metadata = (
-            name,
-            rule_id,
-            version,
-            description,
-            component,
-            symptom,
-            error_type,
-            severity,
-        )
-        if all(item is not None for item in required_metadata):
-            metadata_model = Metadata(
-                name=name,
-                id=rule_id,
-                version=version,
-                description=description,
-                product_ids=products,
-                sw_versions=software,
-                component=component,
-                symptom=symptom,
-                error_type=error_type,
-                severity=severity,
-                priority=priority,
-                tags=tags,
-            )
-
-    conditions = _require_mapping(signature.get("conditions"), issues, base_path + ".conditions")
-    conditions_model = None
-    if conditions is not None:
-        path = base_path + ".conditions"
-        logic = _require_string(conditions, "logic", issues, path)
-        lookback = _require_integer(conditions, "logic_lookback_time", issues, path, minimum=0, maximum=86400)
-        event_values = conditions.get("events")
-        events = []
-        if not isinstance(event_values, list) or not event_values:
-            _issue(issues, "invalid_events", "must be a non-empty list", path + ".events")
-        else:
-            for event_index, item in enumerate(event_values):
-                event = _validate_event(item, issues, "{}.events[{}]".format(path, event_index), registry)
-                if event is not None:
-                    events.append(event)
-        ids = [event.id for event in events]
-        if len(ids) != len(set(ids)):
-            _issue(issues, "duplicate_event_id", "event IDs must be unique within a signature", path + ".events")
-        tree = None
-        if logic is not None:
-            try:
-                tree = parse_logic(logic, ids)
-            except LogicSyntaxError as error:
-                _issue(issues, "invalid_logic", str(error), path + ".logic")
-        if tree is not None and lookback is not None:
-            conditions_model = Conditions(
-                logic=logic,
-                logic_tree=tree,
-                logic_lookback_time=lookback,
-                events=tuple(events),
-            )
-
-    actions_model = _validate_actions(
-        signature.get("actions"), issues, base_path + ".actions", default_timeout, registry
-    )
-    if metadata_model is None or conditions_model is None or actions_model is None or issues:
-        return None, issues
-    return Signature(
-        metadata=metadata_model,
-        conditions=conditions_model,
-        actions=actions_model,
-    ), issues
-
-
 def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
+    """Perform only the checks needed to select trusted model code.
+
+    Pydantic owns the document and signature structure.  This small gate exists
+    before model dispatch because an untrusted document cannot select anything
+    except an exact, installed contract version.
+    """
+
     issues = []
     if not isinstance(document, Mapping):
         _issue(issues, "invalid_top_level", "rules document must be an object", "$")
@@ -1064,41 +536,23 @@ def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
             "unsupported schema version {!r}".format(version),
             "$.schema_version",
         )
-    signatures = document.get("signatures")
-    if not isinstance(signatures, list) or not signatures:
-        _issue(issues, "invalid_signatures", "signatures must be a non-empty list", "$.signatures")
-        return issues
-    if len(signatures) > MAX_SIGNATURES:
-        _issue(
-            issues,
-            "too_many_signatures",
-            "signatures must contain at most {} entries".format(
-                MAX_SIGNATURES
-            ),
-            "$.signatures",
-        )
-        return issues
-    for index, wrapper in enumerate(signatures):
-        if not isinstance(wrapper, Mapping) or not isinstance(wrapper.get("signature"), Mapping):
-            _issue(
-                issues,
-                "invalid_signature_wrapper",
-                "each list entry must contain a signature object",
-                "$.signatures[{}]".format(index),
-            )
+    return issues
 
+
+def _duplicate_rule_identity_issues(signatures):
+    """Enforce document-wide identity uniqueness after envelope validation."""
+
+    issues = []
     identities = {}
     names = {}
     for index, wrapper in enumerate(signatures):
-        if not isinstance(wrapper, Mapping):
-            continue
         signature = wrapper.get("signature")
-        metadata = signature.get("metadata") if isinstance(signature, Mapping) else None
+        metadata = signature.get("metadata")
         if not isinstance(metadata, Mapping):
             continue
         rule_id = metadata.get("id")
         name = metadata.get("name")
-        if _is_int(rule_id):
+        if _is_rule_id(rule_id):
             if rule_id in identities:
                 _issue(
                     issues,
@@ -1125,6 +579,164 @@ def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
     return issues
 
 
+def _bounded_raw_issue(issue):
+    code, message, path = issue
+    return (
+        bound_diagnostic(code, 128),
+        bound_diagnostic(message, MAX_DIAGNOSTIC_MESSAGE_BYTES),
+        bound_path(path, MAX_DIAGNOSTIC_PATH_BYTES),
+    )
+
+
+def _raw_issue_size(issue, identity=None):
+    code, message, path = issue
+    payload = {
+        "scope": "rule" if identity is not None else "file",
+        "code": code,
+        "message": message,
+        "path": path,
+        "line": None,
+    }
+    if identity is not None:
+        payload.update(
+            {
+                "rule_name": identity[0],
+                "rule_id": identity[1],
+            }
+        )
+    return len(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8", "replace"
+        )
+    )
+
+
+def _truncation_issue(path):
+    return (
+        "validation_issues_truncated",
+        "additional validation issues were omitted",
+        bound_path(path, MAX_DIAGNOSTIC_PATH_BYTES),
+    )
+
+
+def _limit_file_issues(raw):
+    marker = _truncation_issue("$")
+    marker_size = _raw_issue_size(marker)
+    selected = []
+    used_bytes = 0
+    for issue in raw:
+        bounded = _bounded_raw_issue(issue)
+        size = _raw_issue_size(bounded)
+        if (
+            len(selected) + 1 >= MAX_ISSUES_PER_CANDIDATE
+            or used_bytes + size + marker_size
+            > MAX_SERIALIZED_DIAGNOSTIC_BYTES
+        ):
+            selected.append(marker)
+            break
+        selected.append(bounded)
+        used_bytes += size
+    return tuple(selected)
+
+
+class _CandidateDiagnosticBudget(object):
+    """Exactly bound serialized rule diagnostics.
+
+    The budget measures the same compact JSON representation exposed by the
+    validation result.  It reserves one truncation marker for every later
+    signature, then releases that reservation as valid signatures pass.  This
+    is deliberately serialization-aware: UTF-8 length is not a safe proxy for
+    JSON when an otherwise valid identity contains control characters.
+    """
+
+    def __init__(self, identities, source_lines):
+        self.identities = tuple(identities)
+        self.signature_count = len(self.identities)
+        self.source_lines = source_lines or {}
+        self.issue_count = 0
+        # Two list delimiters and at most one comma between every possible
+        # broken-rule record are accounted for outside individual records.
+        self.byte_limit = MAX_SERIALIZED_DIAGNOSTIC_BYTES - 2 - max(
+            0, self.signature_count - 1
+        )
+        self.byte_count = 0
+
+        self.minimum_sizes = tuple(
+            self._record_size(
+                identity,
+                (_truncation_issue("$.signatures[{}]".format(index)),),
+            )
+            for index, identity in enumerate(self.identities)
+        )
+
+    def _record_size(self, identity, raw_issues):
+        name, rule_id, version = identity
+        issues = []
+        for raw_issue in raw_issues:
+            full_path = raw_issue[2]
+            code, message, path = _bounded_raw_issue(raw_issue)
+            issues.append(
+                {
+                    "scope": "rule",
+                    "code": code,
+                    "message": message,
+                    "path": path,
+                    "rule_name": name,
+                    "rule_id": rule_id,
+                    "line": source_line_for_path(self.source_lines, full_path),
+                }
+            )
+        payload = {
+            "rule_name": name,
+            "rule_id": rule_id,
+            "issues": issues,
+            "rule_version": version,
+        }
+        return len(
+            json.dumps(
+                payload, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8", "replace")
+        )
+
+    def limit(self, raw, base_path, remaining_signatures, identity):
+        bounded = tuple(_bounded_raw_issue(issue) for issue in raw)
+        marker = _truncation_issue(base_path)
+        index = self.signature_count - remaining_signatures - 1
+        future_minimum = sum(self.minimum_sizes[index + 1 :])
+        bytes_for_this_rule = max(
+            self.minimum_sizes[index],
+            self.byte_limit - self.byte_count - future_minimum,
+        )
+
+        count_for_this_rule = max(
+            1,
+            MAX_ISSUES_PER_CANDIDATE
+            - self.issue_count
+            - remaining_signatures,
+        )
+
+        best = None
+        for count in range(1, len(bounded) + 1):
+            candidate = bounded[:count]
+            if count < len(bounded):
+                candidate += (marker,)
+            if len(candidate) > count_for_this_rule:
+                break
+            size = self._record_size(identity, candidate)
+            if size > bytes_for_this_rule:
+                break
+            best = candidate
+
+        # Preserve a stable marker even for an empty or unexpectedly huge raw
+        # issue collection.  Its exact size was reserved at construction.
+        if best is None:
+            best = (marker,)
+        selected_bytes = self._record_size(identity, best)
+        self.issue_count += len(best)
+        self.byte_count += selected_bytes
+        return tuple(best)
+
+
 def _to_file_issues(raw, source_lines=None):
     source_lines = source_lines or {}
     return tuple(
@@ -1135,7 +747,7 @@ def _to_file_issues(raw, source_lines=None):
             path=path,
             line=source_line_for_path(source_lines, path),
         )
-        for code, message, path in raw
+        for code, message, path in _limit_file_issues(raw)
     )
 
 
@@ -1146,32 +758,38 @@ def _rule_identity(raw, index):
     rule_id = metadata.get("id") if isinstance(metadata, Mapping) else None
     version = metadata.get("version") if isinstance(metadata, Mapping) else None
     return (
-        name if isinstance(name, str) else "signature[{}]".format(index),
-        rule_id if _is_int(rule_id) else None,
-        version if isinstance(version, str) else "",
+        bound_identity(
+            name if isinstance(name, str) else "signature[{}]".format(index),
+            MAX_DIAGNOSTIC_IDENTITY_BYTES,
+        ),
+        rule_id if _is_rule_id(rule_id) else None,
+        bound_identity(version if isinstance(version, str) else "", 64),
     )
 
 
 def _to_broken(raw, index, raw_issues, source_lines=None):
     source_lines = source_lines or {}
     name, rule_id, version = _rule_identity(raw, index)
-    issues = tuple(
-        ValidationIssue(
-            scope="rule",
-            code=code,
-            message=message,
-            path=path,
-            rule_name=name,
-            rule_id=rule_id,
-            line=source_line_for_path(source_lines, path),
+    issues = []
+    for code, message, path in raw_issues:
+        full_path = path
+        code, message, path = _bounded_raw_issue((code, message, path))
+        issues.append(
+            ValidationIssue(
+                scope="rule",
+                code=code,
+                message=message,
+                path=path,
+                rule_name=name,
+                rule_id=rule_id,
+                line=source_line_for_path(source_lines, full_path),
+            )
         )
-        for code, message, path in raw_issues
-    )
     return BrokenRule(
         rule_name=name,
         rule_id=rule_id,
         rule_version=version,
-        issues=issues,
+        issues=tuple(issues),
     )
 
 
@@ -1215,11 +833,11 @@ def _direct_sources(event):
     return tuple(result)
 
 
-def _validate_resolved_source(source, event, registry):
+def _validate_resolved_source(source, registry):
     if source.type in registry.source_types:
         return
     raw = []
-    _validate_source_path(source.type, source.path, (), raw, "resolved.path", registry)
+    _validate_source_path(source.type, source.path, (), raw, "resolved.path")
     if raw:
         raise DSEError("; ".join(message for unused, message, unused_path in raw))
     if source.type in ("dse",):
@@ -1259,7 +877,7 @@ def materialize_signature(signature, context=None):
         else:
             sources = _direct_sources(event)
         for source in sources:
-            _validate_resolved_source(source, event, registry)
+            _validate_resolved_source(source, registry)
         for source in sources:
             if source.type in registry.source_types:
                 if registry.hook is None:
@@ -1290,6 +908,7 @@ def materialize_signature(signature, context=None):
                 match_count=event.match_count,
                 match_period=event.match_period,
                 instances=event.instances,
+                sampling_interval=event.sampling_interval,
             )
         materialized.append(
             MaterializedEvent(event=materialized_event, sources=tuple(sources))
@@ -1365,51 +984,19 @@ def materialize_signature(signature, context=None):
     )
 
 
-@dataclass(frozen=True)
-class _RuntimeSchemaContract(object):
-    """Trusted code handlers paired with one exact static schema version."""
-
-    semantic_validator: object
-    materializer: object
-
-
-_RUNTIME_SCHEMA_CONTRACTS = MappingProxyType({
-    "0.0.1": _RuntimeSchemaContract(
-        semantic_validator=_validate_signature,
-        materializer=materialize_signature,
-    ),
-})
-
-if frozenset(DEFAULT_SCHEMA_REGISTRY.versions) != frozenset(
-    _RUNTIME_SCHEMA_CONTRACTS
-):
-    raise SchemaRegistryError(
-        "installed DLDD static and runtime schema versions do not match"
-    )
-
-
-def _require_runtime_schema_contract(version):
-    try:
-        return _RUNTIME_SCHEMA_CONTRACTS[version]
-    except KeyError:
-        # A packaged static schema without its code-side semantic and
-        # materialization contract is an installation error, not bad vendor
-        # input.  Fail closed instead of interpreting it as another version.
-        raise SchemaRegistryError(
-            "no DLDD runtime validation contract is installed for schema {}".format(
-                version
-            )
-        )
-
-
 def validate_document(
     document,
     context=None,
     materialize=True,
     source_lines=None,
-    schema_registry=None,
+    contract_registry=None,
 ):
-    """Validate an already-parsed YAML/JSON rules document."""
+    """Validate a parsed document with its exact Pydantic contract.
+
+    The shallow envelope is a file-level gate.  Signature bodies are then
+    validated independently so a usable subset can activate as ``DEGRADED``.
+    Generated JSON Schema files are deliberately not read by this path.
+    """
 
     context = context or ValidationContext()
     source_lines = source_lines or {}
@@ -1429,7 +1016,7 @@ def validate_document(
             ),
             source_lines=source_lines,
         )
-    registry = schema_registry or DEFAULT_SCHEMA_REGISTRY
+    registry = contract_registry or DEFAULT_CONTRACT_REGISTRY
     file_issues = _file_gate(document, frozenset(registry.versions))
     if file_issues:
         return ValidationResult(
@@ -1438,74 +1025,112 @@ def validate_document(
             file_errors=_to_file_issues(file_issues, source_lines),
             source_lines=source_lines,
         )
-    default_timeout = document.get("local_action_default_timeout")
-    timeout_file_issue = None
-    if default_timeout is not None and (not _is_int(default_timeout) or default_timeout <= 0):
-        timeout_file_issue = ValidationIssue(
-            scope="file",
-            code="invalid_default_timeout",
-            message="local_action_default_timeout must be a positive integer",
-            path="$.local_action_default_timeout",
-            line=source_line_for_path(
-                source_lines, "$.local_action_default_timeout"
-            ),
-        )
-    if timeout_file_issue is not None:
-        return ValidationResult(
-            schema_version=version,
-            ruleset=None,
-            file_errors=(timeout_file_issue,),
-            source_lines=source_lines,
-        )
 
     contract = registry.require_exact(version)
-    runtime_contract = _require_runtime_schema_contract(version)
-    envelope_issues = contract.validate_envelope(document)
-    if envelope_issues:
-        raw_issues = tuple(
-            (issue.code, issue.message, issue.path)
-            for issue in envelope_issues
-        )
+    try:
+        envelope = contract.validate_envelope(document)
+    except ValidationError as error:
+        normalized = normalize_validation_error(error)
         return ValidationResult(
             schema_version=version,
             ruleset=None,
-            file_errors=_to_file_issues(raw_issues, source_lines),
+            file_errors=_to_file_issues(
+                tuple(
+                    (issue.code, issue.message, issue.path)
+                    for issue in normalized
+                ),
+                source_lines,
+            ),
             source_lines=source_lines,
         )
 
+    identity_issues = _duplicate_rule_identity_issues(document["signatures"])
+    if identity_issues:
+        return ValidationResult(
+            schema_version=version,
+            ruleset=None,
+            file_errors=_to_file_issues(identity_issues, source_lines),
+            source_lines=source_lines,
+        )
+
+    default_timeout = envelope.local_action_default_timeout
     signatures = []
     materialized = []
     broken = []
+    diagnostic_identities = tuple(
+        _rule_identity(raw, index)
+        for index, raw in enumerate(document["signatures"])
+    )
+    diagnostic_budget = _CandidateDiagnosticBudget(
+        diagnostic_identities, source_lines
+    )
     for index, raw in enumerate(document["signatures"]):
-        # Keep the long-standing semantic diagnostics (for example,
-        # ``invalid_operator``) while also enforcing every constraint in the
-        # versioned static schema.  The semantic pass is intentionally first:
-        # its paths are more precise than a JSON Schema ``oneOf`` failure and
-        # are part of the operator-facing telemetry contract.
-        schema_issues = tuple(
-            (issue.code, issue.message, issue.path)
-            for issue in contract.validate_signature(raw, index)
-        )
-        signature, raw_issues = runtime_contract.semantic_validator(
-            raw, index, default_timeout, context.dse_registry
-        )
-        combined_issues = tuple(raw_issues) + schema_issues
-        if combined_issues or signature is None:
+        base_path = "$.signatures[{}]".format(index)
+        remaining_signatures = len(document["signatures"]) - index - 1
+        diagnostic_identity = diagnostic_identities[index]
+        try:
+            dto = contract.validate_signature(raw)
+        except ValidationError as error:
+            normalized = normalize_validation_error(
+                error, base_path=base_path
+            )
             broken.append(
-                _to_broken(raw, index, combined_issues, source_lines)
+                _to_broken(
+                    raw,
+                    index,
+                    diagnostic_budget.limit(
+                        tuple(
+                            (issue.code, issue.message, issue.path)
+                            for issue in normalized
+                        ),
+                        base_path,
+                        remaining_signatures,
+                        diagnostic_identity,
+                    ),
+                    source_lines,
+                )
             )
             continue
+
+        try:
+            signature = contract.to_domain(
+                dto, local_action_default_timeout=default_timeout
+            )
+        except DomainConversionError as error:
+            relative_path = (
+                error.path[1:] if error.path.startswith("$") else error.path
+            )
+            broken.append(
+                _to_broken(
+                    raw,
+                    index,
+                    diagnostic_budget.limit(
+                        ((error.code, error.message, base_path + relative_path),),
+                        base_path,
+                        remaining_signatures,
+                        diagnostic_identity,
+                    ),
+                    source_lines,
+                )
+            )
+            continue
+
         if not materialize:
             signatures.append(signature)
             continue
         try:
-            result = runtime_contract.materializer(signature, context)
+            result = materialize_signature(signature, context)
         except ValueError as error:
             broken.append(
                 _to_broken(
                     raw,
                     index,
-                    (("materialization_failed", str(error), "$.signatures[{}].signature".format(index)),),
+                    diagnostic_budget.limit(
+                        (("materialization_failed", str(error), base_path + ".signature"),),
+                        base_path,
+                        remaining_signatures,
+                        diagnostic_identity,
+                    ),
                     source_lines,
                 )
             )
@@ -1612,7 +1237,7 @@ def load_document(source):
 
 
 def load_rules(
-    source, context=None, materialize=True, schema_registry=None
+    source, context=None, materialize=True, contract_registry=None
 ):
     """Parse and validate rules, returning failures as ``ValidationResult``."""
 
@@ -1647,7 +1272,7 @@ def load_rules(
         context=context,
         materialize=materialize,
         source_lines=source_lines,
-        schema_registry=schema_registry,
+        contract_registry=contract_registry,
     )
 
 
