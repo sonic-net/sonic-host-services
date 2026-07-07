@@ -70,6 +70,7 @@ class RecordingRedisClient(object):
         self.fields = fields
         self.transaction = RecordingPipeline()
         self.scan_pattern = None
+        self.deleted = []
 
     def hkeys(self, key):
         return self.fields
@@ -81,6 +82,9 @@ class RecordingRedisClient(object):
     def scan_iter(self, match):
         self.scan_pattern = match
         return iter((b"FAULT_INFO|PSU0|SYMPTOM",))
+
+    def delete(self, *keys):
+        self.deleted.append(keys)
 
 
 def fault(status="ACTIVE"):
@@ -254,6 +258,7 @@ def test_publications_floor_timestamps_and_preserve_duration_precision():
         local_action_details={"completed_at": 113.4},
     )
     published_fault = database.values[record.redis_key]
+    assert published_fault["producer"] == "dldd"
     assert published_fault["origin_time"] == "110"
     assert published_fault["last_detection_time"] == "111"
     assert json.loads(published_fault["events"])[0] == {
@@ -412,6 +417,17 @@ def test_production_status_write_sets_ttl_in_one_transaction():
         ("hset", "DLDD_STATUS|process_state", {"state": "OK"}),
         ("expire", "DLDD_STATUS|process_state", 120),
         ("execute",),
+    ]
+
+
+def test_production_bulk_delete_uses_one_redis_operation():
+    client = RecordingRedisClient()
+    database = SonicStateDB(client)
+
+    database.delete_many(("DLDD_STATUS|process_state", "DLDD_RULE_STATUS|active"))
+
+    assert client.deleted == [
+        ("DLDD_STATUS|process_state", "DLDD_RULE_STATUS|active")
     ]
 
 

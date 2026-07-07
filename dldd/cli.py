@@ -6,14 +6,18 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 
 from .adapters import VendorAdapter, adapter_map
 from .dse import DSERegistry
 from .hooks import VendorHookError
+from .lifecycle import RulePaths
 from .planner import build_plans
 from .platform import PlatformIdentity, detect_identity, load_extensions
+from .reset import clear_runtime_state
 from .service import run_service, validate_runtime_operation_hooks
+from .telemetry import SonicStateDB
 from .validation import ValidationContext, load_rules, source_line_for_path
 
 
@@ -255,11 +259,77 @@ def validate_rules(args) -> int:
     return 0 if valid else 1
 
 
+def clear_state(args) -> int:
+    """Stop DLDD if needed and clear daemon-owned runtime state."""
+
+    active = subprocess.run(
+        ["/bin/systemctl", "is-active", "--quiet", "dldd.service"],
+        shell=False,
+        check=False,
+    ).returncode == 0
+    if active:
+        try:
+            subprocess.run(
+                ["/bin/systemctl", "stop", "dldd.service"],
+                shell=False,
+                check=True,
+            )
+        except Exception as error:
+            logging.getLogger(__name__).error(
+                "unable to stop DLDD for state cleanup: %s", error
+            )
+            return 1
+    try:
+        paths = RulePaths(platform_dir="")
+        result = clear_runtime_state(
+            SonicStateDB(),
+            paths.state_file,
+            include_faults=args.all,
+            include_artifacts=args.all,
+        )
+    except Exception as error:
+        logging.getLogger(__name__).error("unable to clear DLDD state: %s", error)
+        return_code = 1
+    else:
+        print(
+            "Cleared DLDD runtime state: {} Redis key(s), {} fault(s), "
+            "{} artifact file(s).".format(
+                result.redis_keys, result.faults, result.artifacts
+            )
+        )
+        return_code = 0
+    finally:
+        if active:
+            try:
+                subprocess.run(
+                    ["/bin/systemctl", "start", "dldd.service"],
+                    shell=False,
+                    check=True,
+                )
+            except Exception as error:
+                logging.getLogger(__name__).error(
+                    "unable to restart DLDD after state cleanup: %s", error
+                )
+                return_code = 1
+    return return_code
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dldd")
     parser.add_argument("--log-level", default="INFO")
     subcommands = parser.add_subparsers(dest="command")
     subcommands.add_parser("run", help="run the Device Local Diagnosis service")
+    reset = subcommands.add_parser(
+        "clear-state", help="clear DLDD-owned runtime state"
+    )
+    reset.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "also remove DLDD-owned FAULT_INFO rows and diagnostic artifacts; "
+            "rules and configuration are preserved"
+        ),
+    )
     validation = subcommands.add_parser("validate-rules", help="validate a rules file")
     validation.add_argument("--file", required=True)
     validation.add_argument("--dse")
@@ -286,6 +356,8 @@ def main(argv=None) -> int:
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
     if args.command == "validate-rules":
         return validate_rules(args)
+    if args.command == "clear-state":
+        return clear_state(args)
     if args.command in (None, "run"):
         run_service()
         return 0

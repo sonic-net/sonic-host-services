@@ -86,6 +86,10 @@ class StateDB:
     def delete(self, key: str) -> None:
         raise NotImplementedError
 
+    def delete_many(self, keys: Iterable[str]) -> None:
+        for key in tuple(keys):
+            self.delete(key)
+
     def hgetall(self, key: str) -> Mapping[str, str]:
         raise NotImplementedError
 
@@ -181,6 +185,11 @@ class SonicStateDB(StateDB):
 
     def delete(self, key: str) -> None:
         self._db().delete(key)
+
+    def delete_many(self, keys: Iterable[str]) -> None:
+        keys = tuple(keys)
+        if keys:
+            self._db().delete(*keys)
 
     def hgetall(self, key: str) -> Mapping[str, str]:
         return self._db().hgetall(key)
@@ -384,6 +393,7 @@ class TelemetryPublisher:
                         error,
                     )
         payload = {
+            "producer": "dldd",
             "rule": fault.rule_name,
             "rule_id": fault.rule_id,
             "rule_version": fault.rule_version,

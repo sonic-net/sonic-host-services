@@ -5,11 +5,13 @@ import json
 from copy import deepcopy
 from concurrent.futures import Future
 from queue import Queue
+from types import SimpleNamespace
 
 from dldd.actions import ActionResult, ActionSequenceResult
 from dldd.artifacts import ArtifactRequest
 from dldd.config import DLDDConfig
-from dldd.correlation import CorrelationEngine
+from dldd.correlation import CorrelationEngine, SignatureExecution
+from dldd.logic import parse_logic
 from dldd.models import Operation
 from dldd.orchestrator import PrimaryOrchestrator
 from dldd.planner import build_plans
@@ -18,6 +20,7 @@ from dldd.runtime import (
     EvaluationResult,
     EvaluationResultType,
     FaultEvidenceEvent,
+    ValueConfig,
 )
 from dldd.telemetry import StateDB, TelemetryPublisher
 from dldd.validation import load_rules
@@ -165,6 +168,54 @@ def evidence(item, kind, sequence, from_recheck=False):
         ),
         from_recheck=from_recheck,
     )
+
+
+def test_zero_logic_lookback_correlates_currently_active_events():
+    """An older event remains true while its source still reports a fault."""
+
+    conditions = SimpleNamespace(
+        events=(
+            SimpleNamespace(id=1, match_count=1, match_period=0),
+            SimpleNamespace(id=2, match_count=1, match_period=0),
+        ),
+        logic_tree=parse_logic("1 AND 2"),
+        logic_lookback_time=0,
+    )
+    execution = SignatureExecution(
+        SimpleNamespace(conditions=conditions),
+        "PSU",
+        {1: ("event-a",), 2: ("event-b",)},
+        "sha256:test",
+    )
+    correlation = CorrelationEngine({(1000001, "PSU"): execution})
+    common = {
+        "rule_id": 1000001,
+        "component_name": "PSU",
+        "source_id": "STATE_DB:PSU_INFO",
+        "value_config": ValueConfig(),
+    }
+    event_b = SimpleNamespace(
+        **common, event_id=2, correlation_key="event-b"
+    )
+    event_a = SimpleNamespace(
+        **common, event_id=1, correlation_key="event-a"
+    )
+
+    first = correlation.consume(
+        evidence(event_b, EvaluationResultType.MATCH, 0)
+    )
+    combined = correlation.consume(
+        evidence(event_a, EvaluationResultType.MATCH, 300)
+    )
+    cleared = correlation.consume(
+        evidence(event_b, EvaluationResultType.NO_MATCH, 301)
+    )
+
+    assert not first.active
+    assert combined.active
+    assert combined.changed
+    assert not cleared.active
+    assert cleared.changed
 
 
 def test_local_action_holds_rechecks_and_publishes_recovered_inactive_fault():

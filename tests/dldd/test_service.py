@@ -20,7 +20,11 @@ from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
 from dldd.planner import build_plans
 from dldd.runtime import MonitorWorkState
-from dldd.service import DLDDService, validate_runtime_operation_hooks
+from dldd.service import (
+    DLDDService,
+    TelemetryUnavailable,
+    validate_runtime_operation_hooks,
+)
 from dldd.validation import ExactCompatibilityMatcher, load_rules
 
 
@@ -619,7 +623,7 @@ def test_rule_status_snapshot_reports_omitted_detail(monkeypatch):
     assert rows[0]["work_items_omitted"] == 1
 
 
-def test_rule_status_publication_failure_does_not_break_heartbeat(caplog):
+def test_rule_status_snapshot_failure_marks_heartbeat_failed(caplog):
     published = []
     service = object.__new__(DLDDService)
     service.activation = SimpleNamespace(checksum="sha256:test")
@@ -632,10 +636,72 @@ def test_rule_status_publication_failure_does_not_break_heartbeat(caplog):
         RuntimeError("snapshot failed")
     )
 
-    service._publish_rule_status()
+    published_ok = service._publish_rule_status()
 
+    assert not published_ok
     assert not published
     assert "unable to build DLDD rule status snapshot" in caplog.text
+
+
+def test_run_exits_after_bounded_telemetry_write_failures(monkeypatch):
+    service = object.__new__(DLDDService)
+    service.orchestrator = None
+    service.stop_event = SimpleNamespace(
+        is_set=lambda: False,
+        wait=lambda timeout: False,
+    )
+    service.start = lambda: None
+    service._publish_status = lambda: False
+    shutdown_modes = []
+    service.shutdown = lambda clean_shutdown=True: shutdown_modes.append(
+        clean_shutdown
+    )
+    clock = iter((0.0, 0.0, 1.0, 2.0))
+    monkeypatch.setattr(dldd_service.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(
+        TelemetryUnavailable,
+        match="failed 3 consecutive times",
+    ):
+        service.run()
+
+    assert shutdown_modes == [False]
+
+
+def test_clear_state_stops_and_restarts_active_service(monkeypatch):
+    calls = []
+    cleared = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(dldd_cli.subprocess, "run", run)
+    monkeypatch.setattr(dldd_cli, "SonicStateDB", lambda: "state-db")
+    monkeypatch.setattr(
+        dldd_cli,
+        "clear_runtime_state",
+        lambda state_db, state_file, **kwargs: (
+            cleared.append((state_db, state_file, kwargs))
+            or SimpleNamespace(redis_keys=7, faults=2, artifacts=3)
+        ),
+    )
+
+    status = dldd_cli.clear_state(SimpleNamespace(all=True))
+
+    assert status == 0
+    assert [call[0] for call in calls] == [
+        ["/bin/systemctl", "is-active", "--quiet", "dldd.service"],
+        ["/bin/systemctl", "stop", "dldd.service"],
+        ["/bin/systemctl", "start", "dldd.service"],
+    ]
+    assert cleared == [
+        (
+            "state-db",
+            "/var/lib/sonic/dld_state.json",
+            {"include_faults": True, "include_artifacts": True},
+        )
+    ]
 
 
 def test_start_does_not_repeat_candidate_adapter_preflight(

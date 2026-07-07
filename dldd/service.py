@@ -49,6 +49,15 @@ from .validation import (
 
 LOGGER = logging.getLogger(__name__)
 
+
+class TelemetryUnavailable(RuntimeError):
+    """Raised after bounded STATE_DB publication retries are exhausted."""
+
+
+TELEMETRY_FAILURE_LIMIT = 3
+TELEMETRY_RETRY_INTERVAL = 1
+
+
 _SCHEMA_ISSUE_CODES = frozenset(
     (
         "duplicate_event_id",
@@ -574,22 +583,38 @@ class DLDDService:
             monitor.source_recovery_samples = updated.source_recovery_samples
 
     def run(self) -> None:
-        self.start()
+        telemetry_failures = 0
         next_heartbeat = time.monotonic()
-        while not self.stop_event.is_set():
-            if self.orchestrator is not None:
-                processed = self.orchestrator.process_batch()
-                self._supervise_monitors()
-                if processed:
-                    self._persist_state_if_changed()
-            else:
-                processed = 0
-            now = time.monotonic()
-            if now >= next_heartbeat:
-                self._publish_status()
-                next_heartbeat = now + 30
-            self.stop_event.wait(0 if processed else 0.2)
-        self.shutdown()
+        clean_shutdown = False
+        try:
+            self.start()
+            while not self.stop_event.is_set():
+                if self.orchestrator is not None:
+                    processed = self.orchestrator.process_batch()
+                    self._supervise_monitors()
+                    if processed:
+                        self._persist_state_if_changed()
+                else:
+                    processed = 0
+                now = time.monotonic()
+                if now >= next_heartbeat:
+                    if self._publish_status():
+                        telemetry_failures = 0
+                        next_heartbeat = now + 30
+                    else:
+                        telemetry_failures += 1
+                        next_heartbeat = now + TELEMETRY_RETRY_INTERVAL
+                        if telemetry_failures >= TELEMETRY_FAILURE_LIMIT:
+                            raise TelemetryUnavailable(
+                                "STATE_DB telemetry publication failed {} "
+                                "consecutive times".format(
+                                    TELEMETRY_FAILURE_LIMIT
+                                )
+                            )
+                self.stop_event.wait(0 if processed else 0.2)
+            clean_shutdown = True
+        finally:
+            self.shutdown(clean_shutdown=clean_shutdown)
 
     def _supervise_monitors(self) -> None:
         if self.adapters is None or self.evidence_queue is None:
@@ -645,39 +670,38 @@ class DLDDService:
             self.monitors,
         )
 
-    def _publish_rule_status(self) -> None:
+    def _publish_rule_status(self) -> bool:
         if self.telemetry is None:
-            return
+            return False
         if self.activation is None:
-            self.telemetry.clear_rule_status()
-            return
+            return self.telemetry.clear_rule_status()
         try:
             rules, detail_truncated = self._rule_status_snapshot()
         except Exception:
             LOGGER.exception("unable to build DLDD rule status snapshot")
-            return
-        self.telemetry.publish_rule_status(
+            return False
+        return self.telemetry.publish_rule_status(
             self.activation.checksum,
             rules,
             detail_truncated=detail_truncated,
         )
 
-    def _publish_status(self) -> None:
+    def _publish_status(self) -> bool:
         if self.telemetry is None:
-            return
+            return False
         if self.activation is None:
-            self._publish_rule_status()
-            self.telemetry.publish_status(
+            rule_status_published = self._publish_rule_status()
+            status_published = self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 "",
                 "",
                 "",
                 reason=self.fatal_reason or "no active rules generation",
             )
-            return
+            return status_published and rule_status_published
         if self.fatal_reason:
-            self._publish_rule_status()
-            self.telemetry.publish_status(
+            rule_status_published = self._publish_rule_status()
+            status_published = self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 self.activation.schema_version,
                 self.activation.active_file,
@@ -697,7 +721,7 @@ class DLDDService:
                 activation_fallback_used=self.activation.fallback_used,
                 previous_active_rules_checksum=self.activation.previous_checksum,
             )
-            return
+            return status_published and rule_status_published
         broken = tuple(self.activation.broken_rules)
         source = ()
         inflight = ()
@@ -724,7 +748,7 @@ class DLDDService:
             ) + tuple(self.orchestrator.service_diagnostics) + tuple(
                 self.orchestrator.correlation.diagnostics
             )
-        self.telemetry.publish_status(
+        status_published = self.telemetry.publish_status(
             state,
             self.activation.schema_version,
             self.activation.active_file,
@@ -744,7 +768,7 @@ class DLDDService:
             activation_fallback_used=self.activation.fallback_used,
             previous_active_rules_checksum=self.activation.previous_checksum,
         )
-        self._publish_rule_status()
+        return status_published and self._publish_rule_status()
 
     def _inflight_status(self):
         result = []
@@ -801,7 +825,7 @@ class DLDDService:
                 result.append(status)
         return tuple(result)
 
-    def shutdown(self) -> None:
+    def shutdown(self, clean_shutdown: bool = True) -> None:
         self.stop_event.set()
         for monitor in self.monitors:
             monitor.join(timeout=5)
@@ -819,7 +843,7 @@ class DLDDService:
                     for record in self.orchestrator.broken_rules.values()
                     if record.get("state") == "BROKEN"
                 ),
-                clean_shutdown=True,
+                clean_shutdown=clean_shutdown,
             )
 
 
