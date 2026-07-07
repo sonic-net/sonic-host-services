@@ -889,3 +889,47 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
     assert database.values[key]["status"] == "ACTIVE"
     assert database.values[key]["active_rules_checksum"] == "sha256:new"
     assert "stale rule/source" not in database.values[key]["description"]
+
+
+def test_successful_active_fault_rechecks_do_not_grow_service_diagnostics():
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    item = next(iter(bundle.work_items.values()))
+    clock = [0.0]
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        bundle.monitor_plans,
+        bundle.work_items,
+        CorrelationEngine(bundle.signatures),
+        TelemetryPublisher(FakeStateDB(), DLDDConfig()),
+        DLDDConfig(active_fault_recheck_interval=60),
+        "sha256:test",
+        clock=lambda: clock[0],
+        wall_clock=lambda: 1000.0 + clock[0],
+    )
+    initial = orchestrator.correlation.consume(
+        evidence(item, EvaluationResultType.MATCH, 1)
+    )
+    orchestrator._publish_decision(initial)
+
+    for sequence in (2, 3):
+        clock[0] += 61
+        orchestrator.tick()
+        assert (item.rule_id, item.component_name) in orchestrator.reconciliation
+        orchestrator.process_event(
+            evidence(
+                item,
+                EvaluationResultType.MATCH,
+                sequence,
+                from_recheck=True,
+            )
+        )
+
+    assert not orchestrator.service_diagnostics
+    assert orchestrator.faults[
+        (item.rule_id, item.component_name)
+    ].status == "ACTIVE"

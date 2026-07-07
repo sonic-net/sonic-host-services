@@ -1230,16 +1230,6 @@ class PrimaryOrchestrator:
         self._refresh_fault_source_staleness()
         for key in self._execution_keys(reconciliation.execution):
             self._release_key(key, "{}_complete".format(reconciliation.reason))
-        self.service_diagnostics.append(
-            {
-                "reason": "{}_complete".format(reconciliation.reason),
-                "rule_id": identity[0],
-                "component": identity[1],
-                "state": "ACTIVE" if active else "INACTIVE",
-                "source_stale": uncertain,
-                "observed_at": self.wall_clock(),
-            }
-        )
         self.reconciliation.pop(identity, None)
 
     @staticmethod
