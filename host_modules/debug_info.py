@@ -47,7 +47,8 @@ class DebugArtifactCollector(host_service.HostModule):
   """DBus endpoint that collects debug artifacts."""
 
   def __init__(self, mod_name):
-    self._hostname, self._board_type = DebugArtifactCollector.get_device_metadata()
+    self._hostname = "switch"
+    self._board_type = ""
     super(DebugArtifactCollector, self).__init__(mod_name)
 
   @staticmethod

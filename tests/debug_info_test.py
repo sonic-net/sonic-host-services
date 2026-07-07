@@ -43,7 +43,18 @@ class TestDebugArtifactCollector:
 
     def teardown_method(self):
         self.tmpdir.cleanup()
-    
+
+    def test_init_does_not_read_device_metadata(self):
+        metadata_mock_path = (
+            "debug_info.DebugArtifactCollector.get_device_metadata")
+        with mock.patch(metadata_mock_path) as mock_get_metadata, \
+             mock.patch("debug_info.super"):
+            debug_info_module = DebugArtifactCollector(MOD_NAME)
+
+        assert debug_info_module._hostname == "switch"
+        assert debug_info_module._board_type == ""
+        mock_get_metadata.assert_not_called()
+
     def test_run_command_success(self):
         with mock.patch("debug_info.subprocess.Popen") as mp:
             proc = mock.Mock()
