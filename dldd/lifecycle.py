@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, List, Mapping, Optional, Tuple
 
+from .timestamps import floor_timestamp, floor_timestamp_fields
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -268,11 +270,11 @@ class RuleGenerationManager:
                         "active_source": source,
                         "previous_active_checksum": previous,
                         "platform_identity": self.platform_identity,
-                        "activated_at": self.clock(),
+                        "activated_at": floor_timestamp(self.clock()),
                         "schema_version": validation.schema_version,
                         "active_generation_path": generation_path,
                         "last_activation": {
-                            "at": self.clock(),
+                            "at": floor_timestamp(self.clock()),
                             "source": source,
                             "previous_checksum": previous or "",
                             "active_checksum": checksum,
@@ -309,7 +311,7 @@ class RuleGenerationManager:
                 )
 
             manifest["last_failure"] = {
-                "at": self.clock(),
+                "at": floor_timestamp(self.clock()),
                 "errors": failures or ["no rules candidates exist"],
             }
             _atomic_json(self.paths.manifest, manifest)
@@ -433,7 +435,7 @@ class RuleGenerationManager:
         attempt = {
             "source": source,
             "checksum": checksum,
-            "at": self.clock(),
+            "at": floor_timestamp(self.clock()),
             "file_valid": validation.file_valid,
             "usable_rule_count": validation.usable_rule_count,
             "broken_rule_count": len(validation.broken_rules),
@@ -459,7 +461,7 @@ class RuleGenerationManager:
         attempt = {
             "source": source,
             "checksum": checksum,
-            "at": self.clock(),
+            "at": floor_timestamp(self.clock()),
             "file_valid": False,
             "usable_rule_count": 0,
             "broken_rule_count": 0,
@@ -634,7 +636,7 @@ class BrokenRuleStateStore:
         broken_rules: Iterable[Mapping[str, Any]],
         clean_shutdown: bool = False,
     ) -> None:
-        rules = list(broken_rules)
+        rules = [floor_timestamp_fields(rule) for rule in broken_rules]
         _atomic_json(
             self.path,
             {
@@ -645,7 +647,7 @@ class BrokenRuleStateStore:
                     set(rule.get("rule_id", rule.get("rule")) for rule in rules)
                 ),
                 "clean_shutdown": clean_shutdown,
-                "updated_at": time.time(),
+                "updated_at": floor_timestamp(time.time()),
             },
         )
 

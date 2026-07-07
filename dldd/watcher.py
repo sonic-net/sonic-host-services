@@ -10,6 +10,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from .lifecycle import _atomic_json, sha256_file
+from .timestamps import floor_timestamp
 
 
 class RulesWatcher:
@@ -65,7 +66,7 @@ class RulesWatcher:
         with open(self.lock_path, "a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             state["last_restart_checksum"] = checksum
-            state["last_restart_requested_at"] = now
+            state["last_restart_requested_at"] = floor_timestamp(now)
             _atomic_json(self.state_path, state)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         try:

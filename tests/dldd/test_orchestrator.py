@@ -216,8 +216,8 @@ def test_local_action_holds_rechecks_and_publishes_recovered_inactive_fault():
     assert action_state["worker_id"] == "worker-1"
     assert action_state["started_at"] == 100.0
     assert action_state["completed_at"] == 101.0
-    assert database.values[fault_key]["origin_time"] == "101.0"
-    assert database.values[fault_key]["last_detection_time"] == "102.0"
+    assert database.values[fault_key]["origin_time"] == "101"
+    assert database.values[fault_key]["last_detection_time"] == "102"
     assert json.loads(database.values[fault_key]["events"])[0]["value_read"] == 51.5
     assert json.loads(database.values[fault_key]["healthz_artifact"])["state"] == "REQUESTED"
 
@@ -246,7 +246,7 @@ def test_artifact_metadata_has_timestamp_and_full_component_info():
     request = orchestrator._request_artifact(execution)
 
     assert request["state"] == "REQUESTED"
-    assert artifact_client.metadata["timestamp"] == 1234.5
+    assert artifact_client.metadata["timestamp"] == 1234
     assert artifact_client.metadata["component_info"] == {
         "component": "PSU",
         "name": execution.component_name,

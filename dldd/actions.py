@@ -12,6 +12,7 @@ from queue import Queue
 from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
 from .hooks import VendorHookRegistry
+from .timestamps import floor_timestamp_fields
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class ActionResult:
             payload["output"] = self.output
         if self.error:
             payload["error"] = self.error
-        return payload
+        return floor_timestamp_fields(payload)
 
 
 @dataclass(frozen=True)

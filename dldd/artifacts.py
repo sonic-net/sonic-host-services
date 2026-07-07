@@ -20,6 +20,7 @@ from queue import Full, Queue
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from .lifecycle import _atomic_json
+from .timestamps import floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
@@ -40,13 +41,15 @@ class ArtifactRequest:
     last_error: str = ""
 
     def as_payload(self) -> Mapping[str, Any]:
-        return {
-            "artifact_id": self.artifact_id,
-            "state": self.state,
-            "requested_at": self.requested_at,
-            "completed_at": self.completed_at,
-            "last_error": self.last_error,
-        }
+        return floor_timestamp_fields(
+            {
+                "artifact_id": self.artifact_id,
+                "state": self.state,
+                "requested_at": self.requested_at,
+                "completed_at": self.completed_at,
+                "last_error": self.last_error,
+            }
+        )
 
 
 class HealthzArtifactClient:
@@ -190,7 +193,11 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             )
             with tarfile.open(staged_archive, "w:gz") as archive:
                 bytes_added = 0
-                metadata_data = json.dumps(metadata, sort_keys=True, indent=2).encode()
+                metadata_data = json.dumps(
+                    floor_timestamp_fields(metadata),
+                    sort_keys=True,
+                    indent=2,
+                ).encode()
                 if len(metadata_data) > self.max_artifact_bytes:
                     raise RuntimeError("artifact metadata exceeds the size limit")
                 info = tarfile.TarInfo("metadata.json")

@@ -38,6 +38,7 @@ from .runtime import MonitorCommandType, MonitorWorkState
 from .rule_schema.errors import bound_diagnostic, bound_identity
 from .rule_status import build_rule_status_snapshot
 from .telemetry import SonicStateDB, TelemetryPublisher
+from .timestamps import floor_timestamp
 from .validation import (
     MAX_SERIALIZED_DIAGNOSTIC_BYTES,
     ValidationContext,
@@ -124,7 +125,7 @@ def _bounded_broken_rule_records(result, validation_time):
             "state": "BROKEN",
             "reason": _ingestion_failure_reason(item.issues),
             "failure_count": 1,
-            "last_attempt": validation_time,
+            "last_attempt": floor_timestamp(validation_time),
         }
         for item in result.broken_rules
     ]

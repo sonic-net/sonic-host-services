@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 from .config import DLDDConfig
 from .runtime import FaultRecord, ValueConfig
+from .timestamps import floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
@@ -246,6 +247,7 @@ class TelemetryPublisher:
             "service_diagnostics": list(service_diagnostics),
             "reason": reason,
         }
+        payload = floor_timestamp_fields(payload)
         try:
             self.state_db.hset_with_ttl(self.STATUS_KEY, payload, self.STATUS_TTL)
             return True
@@ -267,6 +269,7 @@ class TelemetryPublisher:
             "detail_truncated": detail_truncated,
             "published_at": time.time(),
         }
+        payload = floor_timestamp_fields(payload)
         try:
             self.state_db.hset_with_ttl(
                 self.RULE_STATUS_KEY, payload, self.STATUS_TTL
@@ -347,7 +350,7 @@ class TelemetryPublisher:
             payload["healthz_artifact"] = dict(fault.healthz_artifact)
         if fault.stale_source:
             payload["source_stale"] = True
-        payload = _json_safe(payload)
+        payload = _json_safe(floor_timestamp_fields(payload))
         try:
             ttl = (
                 None

@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from .rule_schema.errors import bound_diagnostic, bound_identity, bound_path
+from .timestamps import floor_timestamp_fields
 
 
 MAX_DETAILS = 4096
@@ -322,4 +323,7 @@ def build_rule_status_snapshot(
         )
     )
     detail_truncated = any(row["work_items_omitted"] for row in rows)
-    return tuple(rows), detail_truncated
+    return (
+        tuple(floor_timestamp_fields(row) for row in rows),
+        detail_truncated,
+    )

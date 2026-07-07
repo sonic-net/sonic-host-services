@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-from dldd.actions import ActionExecutor, ActionRunner
-from dldd.artifacts import FilesystemArtifactClient
+from dldd.actions import ActionExecutor, ActionResult, ActionRunner
+from dldd.artifacts import ArtifactRequest, FilesystemArtifactClient
 from dldd.hooks import VendorHook, VendorHookRegistry
 
 
@@ -22,6 +22,16 @@ class BlockingExecutor(ActionExecutor):
     def execute(self, action, timeout):
         self.release.wait()
         return "late"
+
+
+def test_action_and_artifact_payloads_use_whole_epoch_seconds():
+    action = ActionResult("cli", "SUCCESS", 100.9, 101.8)
+    artifact = ArtifactRequest("artifact", "COMPLETED", 102.7, 103.6)
+
+    assert action.as_payload()["started_at"] == 100
+    assert action.as_payload()["completed_at"] == 101
+    assert artifact.as_payload()["requested_at"] == 102
+    assert artifact.as_payload()["completed_at"] == 103
 
 
 def test_timed_out_vendor_call_does_not_own_a_non_daemon_worker():
@@ -58,7 +68,7 @@ def test_filesystem_artifact_worker_completes_opaque_archive(tmp_path):
     )
     try:
         request = client.request(
-            {"rule": "TEST", "component": "PSU0"},
+            {"rule": "TEST", "component": "PSU0", "timestamp": 123.9},
             (),
             ({"type": "vendor"},),
         )
@@ -71,6 +81,11 @@ def test_filesystem_artifact_worker_completes_opaque_archive(tmp_path):
         assert state.state == "COMPLETED"
         assert os.path.isfile(tmp_path / request.artifact_id)
         assert all(worker.daemon for worker in client._workers)
+        with tarfile.open(
+            str(tmp_path / request.artifact_id), "r:gz"
+        ) as archive:
+            metadata = json.load(archive.extractfile("metadata.json"))
+        assert metadata["timestamp"] == 123
     finally:
         client.shutdown(wait=True)
 

@@ -254,7 +254,7 @@ def test_ingestion_broken_rule_includes_version_and_last_attempt(
             "state": "BROKEN",
             "reason": "schema_error: $: severity is required (missing_field)",
             "failure_count": 1,
-            "last_attempt": 1234.5,
+            "last_attempt": 1234,
         },
     )
 
@@ -443,8 +443,8 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
     plan = bundle.monitor_plans["redis"]
     state = plan.state_by_key[item.correlation_key]
     state.state = MonitorWorkState.DEGRADED
-    state.last_attempt_timestamp = 1234.0
-    state.last_success_timestamp = 1200.0
+    state.last_attempt_timestamp = 1234.9
+    state.last_success_timestamp = 1200.8
     state.consecutive_failure_count = 3
     broken = {
         "rule": item.rule_name,
@@ -453,7 +453,7 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
         "correlation_key": item.correlation_key,
         "state": "DEGRADED",
         "failure_count": 3,
-        "last_attempt": 1234.0,
+        "last_attempt": 1234.7,
         "reason": "source unavailable",
     }
     ingestion_broken = {
@@ -494,8 +494,8 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
     assert active["work_items_healthy"] == 0
     assert active["work_items_total"] == 1
     assert active["active_faults"] == 1
-    assert active["last_attempt"] == 1234.0
-    assert active["last_success"] == 1200.0
+    assert active["last_attempt"] == 1234
+    assert active["last_success"] == 1200
     assert active["failure_count"] == 3
     assert active["reason"] == "source unavailable"
     assert active["work_items"][0]["state"] == "DEGRADED"

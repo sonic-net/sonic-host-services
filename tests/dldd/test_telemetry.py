@@ -147,9 +147,97 @@ def test_rule_status_uses_generation_bound_120_second_snapshot():
     assert row["active_rules_checksum"] == "sha256:test"
     assert json.loads(row["rules"]) == list(rules)
     assert row["detail_truncated"] == "True"
+    assert row["published_at"].isdigit()
 
     assert publisher.clear_rule_status()
     assert publisher.RULE_STATUS_KEY not in database.values
+
+
+def test_publications_floor_timestamps_and_preserve_duration_precision():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    publisher.publish_status(
+        "DEGRADED",
+        "0.0.1",
+        "/active",
+        "sha256:test",
+        broken_rules=({"last_attempt": 100.9},),
+        source_status=(
+            {
+                "since": 101.8,
+                "grace_deadline": 102.7,
+                "last_success": 99.6,
+            },
+        ),
+        inflight_fault_evidence=(
+            {
+                "hold_deadline": 103.6,
+                "local_action_state": {
+                    "started_at": 104.5,
+                    "wait_until": 105.4,
+                },
+            },
+        ),
+        service_diagnostics=({"observed_at": 106.3},),
+    )
+    status = database.values[publisher.STATUS_KEY]
+    assert json.loads(status["broken_rules"])[0]["last_attempt"] == 100
+    assert json.loads(status["source_status"])[0] == {
+        "since": 101,
+        "grace_deadline": 102,
+        "last_success": 99,
+    }
+    inflight = json.loads(status["inflight_fault_evidence"])[0]
+    assert inflight["hold_deadline"] == 103
+    assert inflight["local_action_state"] == {
+        "started_at": 104,
+        "wait_until": 105,
+    }
+    assert json.loads(status["service_diagnostics"])[0]["observed_at"] == 106
+
+    publisher.publish_rule_status(
+        "sha256:test",
+        (
+            {
+                "last_attempt": 107.2,
+                "last_success": 108.1,
+                "work_items": [
+                    {
+                        "next_due": 109.9,
+                        "sampling_interval": 60.25,
+                    }
+                ],
+            },
+        ),
+    )
+    rules = json.loads(database.values[publisher.RULE_STATUS_KEY]["rules"])
+    assert rules[0]["last_attempt"] == 107
+    assert rules[0]["last_success"] == 108
+    assert rules[0]["work_items"][0] == {
+        "next_due": 109,
+        "sampling_interval": 60.25,
+    }
+
+    record = fault()
+    record.origin_time = 110.8
+    record.last_detection_time = 111.7
+    record.events = (
+        {"event_timestamp": 112.6, "match_period": 5.5},
+    )
+    publisher.publish_fault(
+        record,
+        remote_action_time_window=30.5,
+        local_action_details={"completed_at": 113.4},
+    )
+    published_fault = database.values[record.redis_key]
+    assert published_fault["origin_time"] == "110"
+    assert published_fault["last_detection_time"] == "111"
+    assert json.loads(published_fault["events"])[0] == {
+        "event_timestamp": 112,
+        "match_period": 5.5,
+    }
+    assert published_fault["remote_action_time_window"] == "30.5"
+    assert json.loads(published_fault["local_action_state"])["completed_at"] == 113
 
 
 def test_active_fault_is_persistent_and_nested_fields_are_json():

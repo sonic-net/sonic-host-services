@@ -25,6 +25,7 @@ from .runtime import (
     MonitorWorkState,
 )
 from .telemetry import TelemetryPublisher
+from .timestamps import floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1401,27 +1402,31 @@ class PrimaryOrchestrator:
         try:
             requested_at = self.wall_clock()
             request = self.artifact_client.request(
-                {
-                    "rule": execution.signature.metadata.name,
-                    "rule_id": execution.signature.metadata.id,
-                    "timestamp": requested_at,
-                    "component_info": {
-                        "component": execution.signature.metadata.component,
-                        "name": execution.component_name,
-                    },
-                    "symptom": execution.signature.metadata.symptom,
-                },
+                floor_timestamp_fields(
+                    {
+                        "rule": execution.signature.metadata.name,
+                        "rule_id": execution.signature.metadata.id,
+                        "timestamp": requested_at,
+                        "component_info": {
+                            "component": execution.signature.metadata.component,
+                            "name": execution.component_name,
+                        },
+                        "symptom": execution.signature.metadata.symptom,
+                    }
+                ),
                 collection.logs,
                 tuple(self._operation_payload(item) for item in collection.queries),
             )
             return request.as_payload()
         except Exception as error:
-            return {
-                "state": "FAILED",
-                "requested_at": self.wall_clock(),
-                "completed_at": self.wall_clock(),
-                "last_error": str(error),
-            }
+            return floor_timestamp_fields(
+                {
+                    "state": "FAILED",
+                    "requested_at": self.wall_clock(),
+                    "completed_at": self.wall_clock(),
+                    "last_error": str(error),
+                }
+            )
 
     @staticmethod
     def _operation_payload(operation) -> Mapping[str, Any]:

@@ -45,12 +45,20 @@ def test_packaged_generation_is_atomically_promoted(tmp_path):
     rule_paths = paths(tmp_path)
     with open(rule_paths.packaged, "w") as stream:
         stream.write("valid")
-    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
+    result = RuleGenerationManager(
+        rule_paths,
+        validator,
+        "platform-v1",
+        clock=lambda: 1234.9,
+    ).activate()
     assert result.source == "packaged"
     assert open(rule_paths.active).read() == "valid"
     assert result.checksum == sha256_file(rule_paths.active)
     manifest = json.load(open(rule_paths.manifest))
     assert manifest["active_checksum"] == result.checksum
+    assert manifest["activated_at"] == 1234
+    assert manifest["last_activation"]["at"] == 1234
+    assert manifest["last_attempt"]["at"] == 1234
 
 
 def test_invalid_inbox_does_not_displace_active_generation(tmp_path):
@@ -271,6 +279,23 @@ def test_watcher_requires_stability_and_restarts_once(tmp_path):
     assert watcher.check_once() is True
     assert watcher.check_once() is False
     assert restarts == [True]
+    state = json.load(open(tmp_path / "watch.json"))
+    assert state["last_restart_requested_at"] == 131
+
+
+def test_broken_rule_state_floors_external_timestamps(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    store = BrokenRuleStateStore(str(state_path))
+    monkeypatch.setattr("dldd.lifecycle.time.time", lambda: 200.9)
+
+    store.save(
+        "sha256:test",
+        ({"rule_id": 1, "last_attempt": 199.8},),
+    )
+
+    state = json.load(open(state_path))
+    assert state["updated_at"] == 200
+    assert state["broken_rules"][0]["last_attempt"] == 199
 
 
 def test_watcher_queues_restart_without_waiting_on_its_partof_unit(monkeypatch):
