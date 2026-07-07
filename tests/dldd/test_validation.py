@@ -83,6 +83,77 @@ def test_valid_direct_rule_materializes_and_applies_defaults():
     assert local_action.timeout == 300
 
 
+def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
+    result = load_rules(
+        str(FIXTURES / "mixed-sensor-rules.yaml"),
+        ValidationContext(
+            product_id="8102_28fh_dpu_o",
+            software_version="grboudre_dldd-impl.0-1d85491a7",
+            require_compatibility_identity=True,
+        ),
+    )
+
+    assert result.file_valid
+    rules = {
+        rule.metadata.id: rule for rule in result.materialized_rules
+    }
+    assert set(rules) == {9999101, 9999102, 9999103}
+    assert {rule_id: rule.metadata.name for rule_id, rule in rules.items()} == {
+        9999101: "DLDD_TEMPERATURE_HIGH",
+        9999102: "DLDD_VOLTAGE_HIGH",
+        9999103: "DLDD_CURRENT_HIGH",
+    }
+    expected_counts = {9999101: 71, 9999102: 218, 9999103: 28}
+    expected_tables = {
+        9999101: ("TEMPERATURE_INFO", "temperature"),
+        9999102: ("VOLTAGE_INFO", "voltage"),
+        9999103: ("CURRENT_INFO", "current"),
+    }
+    thresholds = {}
+    for rule_id, rule in rules.items():
+        table, reading = expected_tables[rule_id]
+        assert len(rule.events) == expected_counts[rule_id]
+        assert all(len(event.sources) == 1 for event in rule.events)
+        assert all(
+            event.sources[0].path["table"] == table
+            and event.sources[0].path["key"].startswith(table + "|")
+            and event.sources[0].path["path"] == reading
+            for event in rule.events
+        )
+        keys = [event.sources[0].path["key"] for event in rule.events]
+        assert len(keys) == len(set(keys))
+        thresholds.update(
+            {
+                event.sources[0].path["key"]: event.event.evaluation.value
+                for event in rule.events
+            }
+        )
+    assert thresholds["TEMPERATURE_INFO|X86_PKG_TEMP"] == 115.0
+    assert thresholds["VOLTAGE_INFO|P12V_CPU"] == 13200.0
+    assert thresholds["CURRENT_INFO|P12V_SLED1_IIN"] == 17141.0
+
+    plans = build_plans(
+        result.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    assert len(plans.work_items) == 317
+    assert {
+        rule_id: sum(
+            item.rule_id == rule_id for item in plans.work_items.values()
+        )
+        for rule_id in rules
+    } == expected_counts
+    broken = {rule.rule_id: rule for rule in result.broken_rules}
+    assert set(broken) == {9999201, 9999202}
+    assert {issue.code for issue in broken[9999201].issues} == {
+        "missing_field"
+    }
+    assert {issue.code for issue in broken[9999202].issues} == {
+        "unsupported_value"
+    }
+
+
 def test_component_and_remote_action_identities_are_extensible():
     document = load_fixture()
     metadata = document["signatures"][0]["signature"]["metadata"]
