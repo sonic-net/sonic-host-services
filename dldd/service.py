@@ -76,6 +76,7 @@ _SCHEMA_ISSUE_CODES = frozenset(
         "invalid_type",
         "invalid_value",
         "instance_path_mismatch",
+        "instance_value_mismatch",
         "invalid_format",
         "invalid_length",
         "missing_i2c_value",

@@ -83,6 +83,68 @@ def test_valid_direct_rule_materializes_and_applies_defaults():
     assert local_action.timeout == 300
 
 
+def test_one_redis_event_expands_positionally_across_sensor_instances():
+    document = load_fixture()
+    configured = event(document)
+    configured["instances"] = [
+        "TEMP0:TEMPERATURE_INFO|TEMP0",
+        "TEMP1:TEMPERATURE_INFO|TEMP1",
+    ]
+    configured["path"]["key"] = [
+        "TEMPERATURE_INFO|TEMP0",
+        "TEMPERATURE_INFO|TEMP1",
+    ]
+    configured["evaluation"]["value"] = [75.0, 85.0]
+
+    result = validate_document(document)
+
+    assert result.activation_valid
+    rule = result.materialized_rules[0]
+    assert rule.signature.conditions.logic == "1"
+    assert len(rule.events) == 1
+    assert [source.path["key"] for source in rule.events[0].sources] == [
+        "TEMPERATURE_INFO|TEMP0",
+        "TEMPERATURE_INFO|TEMP1",
+    ]
+
+    plans = build_plans(
+        result.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    items = sorted(plans.work_items.values(), key=lambda item: item.component_name)
+    assert [item.event_id for item in items] == [1, 1]
+    assert [item.evaluation["value"] for item in items] == [75.0, 85.0]
+
+
+@pytest.mark.parametrize(
+    "field, values, expected_code",
+    (
+        ("key", ["TEMPERATURE_INFO|TEMP0"], "instance_path_mismatch"),
+        ("evaluation", [75.0], "instance_value_mismatch"),
+    ),
+)
+def test_redis_positional_values_must_match_instances(
+    field, values, expected_code
+):
+    document = load_fixture()
+    configured = event(document)
+    configured["instances"] = [
+        "TEMP0:TEMPERATURE_INFO|TEMP0",
+        "TEMP1:TEMPERATURE_INFO|TEMP1",
+    ]
+    if field == "evaluation":
+        configured["evaluation"]["value"] = values
+    else:
+        configured["path"][field] = values
+
+    result = validate_document(document)
+
+    assert expected_code in {
+        issue.code for issue in result.broken_rules[0].issues
+    }
+
+
 def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
     result = load_rules(
         str(FIXTURES / "mixed-sensor-rules.yaml"),
@@ -112,22 +174,25 @@ def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
     thresholds = {}
     for rule_id, rule in rules.items():
         table, reading = expected_tables[rule_id]
-        assert len(rule.events) == expected_counts[rule_id]
-        assert all(len(event.sources) == 1 for event in rule.events)
+        assert rule.signature.conditions.logic == "1"
+        assert len(rule.events) == 1
+        materialized_event = rule.events[0]
+        assert len(materialized_event.sources) == expected_counts[rule_id]
         assert all(
-            event.sources[0].path["table"] == table
-            and event.sources[0].path["key"].startswith(table + "|")
-            and event.sources[0].path["path"] == reading
-            for event in rule.events
+            source.path["table"] == table
+            and source.path["key"].startswith(table + "|")
+            and source.path["path"] == reading
+            for source in materialized_event.sources
         )
-        keys = [event.sources[0].path["key"] for event in rule.events]
+        keys = [source.path["key"] for source in materialized_event.sources]
         assert len(keys) == len(set(keys))
-        thresholds.update(
-            {
-                event.sources[0].path["key"]: event.event.evaluation.value
-                for event in rule.events
-            }
-        )
+        values = materialized_event.event.evaluation.value
+        assert len(values) == expected_counts[rule_id]
+        thresholds.update(dict(zip(keys, values)))
+        assert {source.instance for source in materialized_event.sources} == {
+            binding.split(":", 1)[0]
+            for binding in materialized_event.event.instances
+        }
     assert thresholds["TEMPERATURE_INFO|X86_PKG_TEMP"] == 115.0
     assert thresholds["VOLTAGE_INFO|P12V_CPU"] == 13200.0
     assert thresholds["CURRENT_INFO|P12V_SLED1_IIN"] == 17141.0
@@ -144,6 +209,11 @@ def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
         )
         for rule_id in rules
     } == expected_counts
+    assert {
+        item.event_id
+        for item in plans.work_items.values()
+        if item.rule_id in rules
+    } == {1}
     broken = {rule.rule_id: rule for rule in result.broken_rules}
     assert set(broken) == {9999201, 9999202}
     assert {issue.code for issue in broken[9999201].issues} == {

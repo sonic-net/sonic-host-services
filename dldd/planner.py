@@ -90,12 +90,15 @@ def _source_identity(source) -> str:
     return "{}:{}".format(source.type, canonical)
 
 
-def _evaluation_mapping(event) -> Mapping:
+def _evaluation_mapping(event, source_index: int) -> Mapping:
     evaluation = event.evaluation
     configs = evaluation.value_configs
+    expected_value = evaluation.value
+    if evaluation.type == "comparison" and isinstance(expected_value, tuple):
+        expected_value = expected_value[source_index]
     result = {
         "type": evaluation.type,
-        "value": evaluation.value,
+        "value": expected_value,
         "case_sensitive": evaluation.case_sensitive,
         "value_configs": {
             "type": configs.type,
@@ -143,7 +146,7 @@ def build_plans(
         items_by_instance = {instance: {} for instance in resolved_instances}
         for materialized_event in materialized.events:
             event = materialized_event.event
-            for source in materialized_event.sources:
+            for source_index, source in enumerate(materialized_event.sources):
                 targets = (
                     [_component_name(source.instance, metadata.component)]
                     if source.instance
@@ -196,7 +199,7 @@ def build_plans(
                         source_id=source_id,
                         source_type=source.type,
                         source=source_mapping,
-                        evaluation=_evaluation_mapping(event),
+                        evaluation=_evaluation_mapping(event, source_index),
                         match_count=event.match_count,
                         match_period=event.match_period,
                         value_config=value_config,

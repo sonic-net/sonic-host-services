@@ -234,6 +234,30 @@
             },
             {
               "type": "string"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "maximum": 18446744073709551615,
+                    "minimum": -9223372036854775808,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number",
+                    "x-dldd-runtime-constraint": {
+                      "authority": "pydantic-runtime-contract",
+                      "description": "The parsed value must be an actual finite Python float; an integer cannot use this union branch.",
+                      "kind": "python-float-type"
+                    }
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "minItems": 1,
+              "type": "array"
             }
           ],
           "title": "Value"
@@ -1469,24 +1493,72 @@
       "additionalProperties": false,
       "properties": {
         "database": {
-          "minLength": 1,
-          "title": "Database",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "title": "Database"
         },
         "key": {
-          "minLength": 1,
-          "title": "Key",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "title": "Key"
         },
         "path": {
-          "minLength": 1,
-          "title": "Path",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "title": "Path"
         },
         "table": {
-          "minLength": 1,
-          "title": "Table",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "title": "Table"
         }
       },
       "required": [

@@ -113,6 +113,9 @@ DSEReferenceString = Annotated[
 InstanceBinding = Annotated[StrictStr, Field(pattern=r"^[^:]+:.*$")]
 NonEmptyStringList = Annotated[List[NonEmptyString], Field(min_length=1)]
 NonEmptyInstanceList = Annotated[List[InstanceBinding], Field(min_length=1)]
+PositionalNonEmptyString = Union[NonEmptyString, NonEmptyStringList]
+ComparisonScalar = Union[FiniteNumber, StrictStr]
+ComparisonValueList = Annotated[List[ComparisonScalar], Field(min_length=1)]
 ScalingValue = Union[FiniteNumber, Literal["N/A"]]
 
 # Component types are vendor/platform identities. DLDD requires a usable
@@ -200,10 +203,10 @@ class I2CReadPathV001(ContractModel):
 
 
 class RedisPathV001(ContractModel):
-    database: NonEmptyString
-    table: NonEmptyString
-    key: NonEmptyString
-    path: NonEmptyString
+    database: PositionalNonEmptyString
+    table: PositionalNonEmptyString
+    key: PositionalNonEmptyString
+    path: PositionalNonEmptyString
 
 
 class CLIPathV001(ContractModel):
@@ -260,7 +263,7 @@ class MaskEvaluationV001(EvaluationBaseV001):
 class ComparisonEvaluationV001(EvaluationBaseV001):
     type: Literal["comparison"]
     operator: Literal[">", "<", ">=", "<=", "==", "!="]
-    value: Union[FiniteNumber, StrictStr]
+    value: Union[ComparisonScalar, ComparisonValueList]
     unit: NonEmptyString = omitted_non_null_field()
 
 
@@ -346,6 +349,20 @@ class EventBaseV001(ContractModel):
             raise PydanticCustomError(
                 "duplicate_instance", "component instances must be unique"
             )
+        if (
+            isinstance(self.evaluation, ComparisonEvaluationV001)
+            and isinstance(self.evaluation.value, list)
+        ):
+            if not self.instances:
+                raise PydanticCustomError(
+                    "instance_value_mismatch",
+                    "list-valued comparison value requires positional instances",
+                )
+            if len(self.evaluation.value) != len(self.instances):
+                raise PydanticCustomError(
+                    "instance_value_mismatch",
+                    "list-valued comparison value must match instances length",
+                )
         return self
 
 
@@ -372,6 +389,23 @@ class I2CEventV001(EventBaseV001):
 class RedisEventV001(EventBaseV001):
     type: Literal["redis"]
     path: RedisPathV001
+
+    @model_validator(mode="after")
+    def validate_positional_path(self):
+        for value in self.path.model_dump().values():
+            if not isinstance(value, list):
+                continue
+            if not self.instances:
+                raise PydanticCustomError(
+                    "instance_path_mismatch",
+                    "list-valued Redis path requires positional instances",
+                )
+            if len(value) != len(self.instances):
+                raise PydanticCustomError(
+                    "instance_path_mismatch",
+                    "list-valued path field must match instances length",
+                )
+        return self
 
 
 class DSEEventV001(EventBaseV001):
