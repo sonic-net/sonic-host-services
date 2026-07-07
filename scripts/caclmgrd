@@ -1111,7 +1111,11 @@ class ControlPlaneAclManager(logger.Logger):
             # and the owner's -C/-D could stop matching.
             try:
                 tokens = shlex.split(line)
-            except ValueError:
+            except ValueError as e:
+                # e.g. an external rule whose --comment contains a newline: iptables -S emits it
+                # raw, so splitlines() fractures the rule and shlex hits an unbalanced quote.
+                self.log_warning("Could not parse INPUT rule while preserving externally-owned "
+                                 "rules; it will NOT be preserved: {!r} ({})".format(line, e))
                 continue
             if len(tokens) < 2 or tokens[0] != '-A' or tokens[1] != 'INPUT':
                 continue
