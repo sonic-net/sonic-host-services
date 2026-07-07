@@ -209,6 +209,7 @@ def build_plans(
                         sampling_interval_is_explicit=(
                             event.sampling_interval is not None
                         ),
+                        async_collection=event.async_collection,
                     )
                     grouped[monitor_type][key] = item
                     all_items[key] = item

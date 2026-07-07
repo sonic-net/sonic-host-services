@@ -13,7 +13,13 @@ from .timestamps import floor_timestamp_fields
 MAX_DETAILS = 4096
 MAX_DETAILS_PER_RULE = 256
 HEALTHY_WORK_STATES = frozenset(
-    ("READY", "IN_FLIGHT", "HELD_BY_PRIMARY", "RECHECK_REQUESTED")
+    (
+        "READY",
+        "COLLECTING",
+        "IN_FLIGHT",
+        "HELD_BY_PRIMARY",
+        "RECHECK_REQUESTED",
+    )
 )
 
 
@@ -121,6 +127,7 @@ def _work_item_detail(
         "interval_source": (
             "event" if item.sampling_interval_is_explicit else "monitor_default"
         ),
+        "async": item.async_collection,
         "active_fault": item.component_name in active_components,
         "last_attempt": (
             state.last_attempt_timestamp if state is not None else None

@@ -26,6 +26,7 @@ class MonitorCommandType(str, Enum):
 
 class MonitorWorkState(str, Enum):
     READY = "READY"
+    COLLECTING = "COLLECTING"
     IN_FLIGHT = "IN_FLIGHT"
     HELD_BY_PRIMARY = "HELD_BY_PRIMARY"
     RECHECK_REQUESTED = "RECHECK_REQUESTED"
@@ -106,6 +107,7 @@ class MonitorWorkItem:
     common_predicate: bool = False
     sampling_interval: float = 60.0
     sampling_interval_is_explicit: bool = False
+    async_collection: bool = False
 
     def __post_init__(self) -> None:
         interval = float(self.sampling_interval)
@@ -119,6 +121,7 @@ class MonitorWorkItem:
             "sampling_interval_is_explicit",
             bool(self.sampling_interval_is_explicit),
         )
+        object.__setattr__(self, "async_collection", bool(self.async_collection))
         object.__setattr__(self, "source", MappingProxyType(dict(self.source)))
         object.__setattr__(self, "evaluation", MappingProxyType(dict(self.evaluation)))
 

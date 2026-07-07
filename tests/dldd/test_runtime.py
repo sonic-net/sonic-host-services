@@ -17,7 +17,7 @@ from dldd.adapters import (
     SysfsAdapter,
 )
 from dldd.evaluators import EvaluationContractError, evaluate
-from dldd.monitor import MonitorThread, command_for_event
+from dldd.monitor import AsyncCollectionPool, MonitorThread, command_for_event
 from dldd.hooks import VendorHook, VendorHookRegistry
 from dldd.planner import build_plans
 from dldd.runtime import (
@@ -452,11 +452,179 @@ def test_each_key_schedules_from_its_actual_attempt_time():
     assert execution_plan.state_by_key["second"].next_sample_due == 17.0
 
 
+def test_async_collection_does_not_block_other_due_work_items():
+    release = ThreadEvent()
+    started = ThreadEvent()
+    completed = ThreadEvent()
+    calls = []
+    async_item = replace(
+        work_item("async"),
+        async_collection=True,
+    )
+    inline_item = replace(
+        work_item("inline"),
+        event_id=2,
+    )
+    execution_plan = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {"async": async_item, "inline": inline_item},
+        {
+            "async": MonitorWorkStateRecord(),
+            "inline": MonitorWorkStateRecord(),
+        },
+        Queue(),
+    )
+
+    class BlockingAdapter(object):
+        def collect(self, item):
+            calls.append(item.correlation_key)
+            if item.async_collection:
+                started.set()
+                release.wait(2)
+                completed.set()
+            return result(EvaluationResultType.NO_MATCH, False)
+
+    pool = AsyncCollectionPool(max_workers=1, max_pending=1)
+    monitor = MonitorThread(
+        execution_plan,
+        {"test": BlockingAdapter()},
+        Queue(),
+        async_collection_pool=pool,
+    )
+    try:
+        before = time.monotonic()
+        monitor.poll_once()
+        elapsed = time.monotonic() - before
+
+        assert elapsed < 0.5
+        assert started.wait(1)
+        assert "inline" in calls
+        assert calls.count("async") == 1
+        assert execution_plan.state_by_key["async"].state == (
+            MonitorWorkState.COLLECTING
+        )
+
+        monitor.poll_once()
+        assert calls.count("async") == 1
+
+        release.set()
+        assert completed.wait(1)
+        deadline = time.monotonic() + 1
+        while (
+            execution_plan.state_by_key["async"].state
+            == MonitorWorkState.COLLECTING
+            and time.monotonic() < deadline
+        ):
+            monitor.drain_async_completions()
+            time.sleep(0.01)
+        assert execution_plan.state_by_key["async"].state == (
+            MonitorWorkState.READY
+        )
+    finally:
+        release.set()
+        pool.shutdown()
+
+
+def test_async_collection_pool_rejects_work_beyond_bounded_capacity():
+    release = ThreadEvent()
+    started = ThreadEvent()
+    completions = Queue()
+    pool = AsyncCollectionPool(max_workers=1, max_pending=0)
+
+    def collect():
+        started.set()
+        release.wait(2)
+        return result(EvaluationResultType.NO_MATCH, False)
+
+    try:
+        assert pool.submit("first", collect, completions)
+        assert started.wait(1)
+        assert not pool.submit("second", collect, completions)
+    finally:
+        release.set()
+        pool.shutdown()
+
+
+def test_async_pool_saturation_leaves_monitor_work_due_without_failure():
+    release = ThreadEvent()
+    started = ThreadEvent()
+    pool = AsyncCollectionPool(max_workers=1, max_pending=0)
+
+    def occupy_pool():
+        started.set()
+        release.wait(2)
+        return result(EvaluationResultType.NO_MATCH, False)
+
+    assert pool.submit("occupy", occupy_pool, Queue())
+    assert started.wait(1)
+    item = replace(work_item("waiting"), async_collection=True)
+    adapter = SequenceAdapter([result(EvaluationResultType.NO_MATCH, False)])
+    monitor = MonitorThread(
+        plan(item),
+        {"test": adapter},
+        Queue(),
+        async_collection_pool=pool,
+    )
+    try:
+        monitor.poll_once()
+
+        state = monitor.plan.state_by_key["waiting"]
+        assert state.state == MonitorWorkState.READY
+        assert state.last_attempt_timestamp is None
+        assert state.next_sample_due is None
+        assert state.consecutive_failure_count == 0
+        assert len(adapter.results) == 1
+        assert monitor.diagnostics[-1]["reason"] == (
+            "async collection capacity is exhausted"
+        )
+    finally:
+        release.set()
+        pool.shutdown()
+
+
+def test_async_collection_match_uses_normal_evidence_path():
+    item = replace(work_item("async-match"), async_collection=True)
+    evidence = Queue()
+    pool = AsyncCollectionPool(max_workers=1, max_pending=0)
+    monitor = MonitorThread(
+        plan(item),
+        {
+            "test": SequenceAdapter(
+                [result(EvaluationResultType.MATCH, True)]
+            )
+        },
+        evidence,
+        async_collection_pool=pool,
+    )
+    try:
+        monitor.poll_once()
+        deadline = time.monotonic() + 1
+        while evidence.empty() and time.monotonic() < deadline:
+            monitor.drain_async_completions()
+            time.sleep(0.01)
+
+        event = evidence.get_nowait()
+        assert event.correlation_key == "async-match"
+        assert event.result.result == EvaluationResultType.MATCH
+        assert monitor.plan.state_by_key["async-match"].state == (
+            MonitorWorkState.IN_FLIGHT
+        )
+    finally:
+        pool.shutdown()
+
+
 def test_planner_resolves_explicit_and_monitor_default_sampling_intervals():
     validated = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     original = validated.materialized_rules[0]
     original_event = original.events[0]
-    explicit_event = replace(original_event.event, sampling_interval=17)
+    explicit_event = replace(
+        original_event.event,
+        sampling_interval=17,
+        async_collection=True,
+    )
     explicit_rule = replace(
         original,
         events=(replace(original_event, event=explicit_event),),
@@ -470,6 +638,7 @@ def test_planner_resolves_explicit_and_monitor_default_sampling_intervals():
     explicit_item = next(iter(explicit_bundle.work_items.values()))
     assert explicit_item.sampling_interval == 17
     assert explicit_item.sampling_interval_is_explicit
+    assert explicit_item.async_collection
 
     inherited_bundle = build_plans(
         (original,),
@@ -479,6 +648,7 @@ def test_planner_resolves_explicit_and_monitor_default_sampling_intervals():
     inherited_item = next(iter(inherited_bundle.work_items.values()))
     assert inherited_item.sampling_interval == 41
     assert not inherited_item.sampling_interval_is_explicit
+    assert not inherited_item.async_collection
 
 
 def test_recheck_once_bypasses_cadence_without_resetting_normal_due_time():

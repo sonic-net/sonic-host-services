@@ -503,6 +503,7 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
     assert active["work_items"][0]["interval_source"] == (
         "monitor_default"
     )
+    assert not active["work_items"][0]["async"]
     assert active["work_items"][0]["active_fault"]
     assert rows[1]["health"] == "BROKEN"
     assert rows[1]["work_items_total"] == 0
@@ -512,6 +513,7 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
     "work_state,expected_health",
     (
         (MonitorWorkState.READY, "OK"),
+        (MonitorWorkState.COLLECTING, "OK"),
         (MonitorWorkState.SUSPENDED, "SUSPENDED"),
         (MonitorWorkState.BROKEN, "BROKEN"),
         (MonitorWorkState.DEGRADED, "DEGRADED"),

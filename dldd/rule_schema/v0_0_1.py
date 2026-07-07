@@ -329,6 +329,7 @@ class EventBaseV001(ContractModel):
     match_count: MatchCount
     match_period: MatchPeriod
     sampling_interval: SamplingInterval = omitted_non_null_field()
+    async_collection: bool = Field(default=False, alias="async")
 
     @model_validator(mode="after")
     def validate_common_event_contract(self):
@@ -777,6 +778,7 @@ def _event_to_domain(event) -> DomainEvent:
         match_period=event.match_period,
         instances=tuple(event.instances),
         sampling_interval=event.sampling_interval,
+        async_collection=event.async_collection,
     )
 
 

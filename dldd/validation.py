@@ -909,6 +909,7 @@ def materialize_signature(signature, context=None):
                 match_period=event.match_period,
                 instances=event.instances,
                 sampling_interval=event.sampling_interval,
+                async_collection=event.async_collection,
             )
         materialized.append(
             MaterializedEvent(event=materialized_event, sources=tuple(sources))

@@ -42,6 +42,11 @@
     "CLIEventV001": {
       "additionalProperties": false,
       "properties": {
+        "async": {
+          "default": false,
+          "title": "Async",
+          "type": "boolean"
+        },
         "evaluation": {
           "discriminator": {
             "mapping": {
@@ -318,6 +323,11 @@
     "DSEEventV001": {
       "additionalProperties": false,
       "properties": {
+        "async": {
+          "default": false,
+          "title": "Async",
+          "type": "boolean"
+        },
         "evaluation": {
           "discriminator": {
             "mapping": {
@@ -481,6 +491,11 @@
     "FileEventV001": {
       "additionalProperties": false,
       "properties": {
+        "async": {
+          "default": false,
+          "title": "Async",
+          "type": "boolean"
+        },
         "evaluation": {
           "discriminator": {
             "mapping": {
@@ -695,6 +710,11 @@
     "I2CEventV001": {
       "additionalProperties": false,
       "properties": {
+        "async": {
+          "default": false,
+          "title": "Async",
+          "type": "boolean"
+        },
         "evaluation": {
           "discriminator": {
             "mapping": {
@@ -1212,6 +1232,11 @@
     "PlatformAPIEventV001": {
       "additionalProperties": false,
       "properties": {
+        "async": {
+          "default": false,
+          "title": "Async",
+          "type": "boolean"
+        },
         "evaluation": {
           "discriminator": {
             "mapping": {
@@ -1352,6 +1377,11 @@
     "RedisEventV001": {
       "additionalProperties": false,
       "properties": {
+        "async": {
+          "default": false,
+          "title": "Async",
+          "type": "boolean"
+        },
         "evaluation": {
           "discriminator": {
             "mapping": {
@@ -1585,6 +1615,11 @@
     "SysfsEventV001": {
       "additionalProperties": false,
       "properties": {
+        "async": {
+          "default": false,
+          "title": "Async",
+          "type": "boolean"
+        },
         "evaluation": {
           "discriminator": {
             "mapping": {

@@ -100,10 +100,12 @@ class Event(object):
     match_period: int
     instances: Tuple[str, ...] = ()
     sampling_interval: Optional[int] = None
+    async_collection: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "path", freeze_value(self.path))
         object.__setattr__(self, "instances", tuple(self.instances))
+        object.__setattr__(self, "async_collection", bool(self.async_collection))
 
     @property
     def source_type(self):

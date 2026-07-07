@@ -28,7 +28,7 @@ from .lifecycle import (
     RuleGenerationManager,
     RulePaths,
 )
-from .monitor import MonitorThread
+from .monitor import AsyncCollectionPool, MonitorThread
 from .models import BrokenRule, ValidationIssue
 from .hooks import VendorHookError
 from .orchestrator import PrimaryOrchestrator
@@ -199,6 +199,7 @@ class DLDDService:
         self.monitors = []
         self.orchestrator = None
         self.action_runner = None
+        self.async_collection_pool = None
         self.artifact_client = None
         self.adapters = None
         self.evidence_queue = None
@@ -417,6 +418,8 @@ class DLDDService:
         self.action_runner = ActionRunner(
             ActionExecutor(hooks=self.extensions.vendor_hooks)
         )
+        if any(item.async_collection for item in bundle.work_items.values()):
+            self.async_collection_pool = AsyncCollectionPool()
         self.artifact_client = artifact_client
         correlation = CorrelationEngine(bundle.signatures)
         self.orchestrator = PrimaryOrchestrator(
@@ -469,6 +472,7 @@ class DLDDService:
                 evidence_queue,
                 fault_evidence_ack_timeout=self.config.fault_evidence_ack_timeout,
                 source_recovery_samples=self.config.source_recovery_samples,
+                async_collection_pool=self.async_collection_pool,
                 stop_event=self.stop_event,
             )
             monitor.start()
@@ -600,6 +604,7 @@ class DLDDService:
                 self.evidence_queue,
                 fault_evidence_ack_timeout=self.config.fault_evidence_ack_timeout,
                 source_recovery_samples=self.config.source_recovery_samples,
+                async_collection_pool=self.async_collection_pool,
                 stop_event=self.stop_event,
             )
             replacement.diagnostics.extend(monitor.diagnostics)
@@ -802,6 +807,8 @@ class DLDDService:
             monitor.join(timeout=5)
         if self.action_runner is not None:
             self.action_runner.shutdown(wait=False)
+        if self.async_collection_pool is not None:
+            self.async_collection_pool.shutdown(wait=False)
         if self.artifact_client is not None:
             self.artifact_client.shutdown(wait=False)
         if self.activation is not None and self.orchestrator is not None:

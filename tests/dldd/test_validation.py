@@ -260,6 +260,39 @@ def test_event_sampling_interval_is_optional_and_strictly_materialized():
     )
 
 
+def test_event_async_collection_is_optional_strict_and_materialized():
+    document = load_fixture()
+
+    omitted = validate_document(document)
+    assert omitted.activation_valid
+    assert not omitted.ruleset.signatures[0].conditions.events[0].async_collection
+    assert not omitted.materialized_rules[0].events[0].event.async_collection
+
+    event(document)["async"] = True
+    enabled = validate_document(document)
+    assert enabled.activation_valid
+    assert enabled.ruleset.signatures[0].conditions.events[0].async_collection
+    assert enabled.materialized_rules[0].events[0].event.async_collection
+
+
+@pytest.mark.parametrize("value", (None, 0, 1, "true", 0.0))
+def test_event_async_collection_rejects_non_boolean_values(value):
+    document = load_fixture()
+    event(document)["async"] = value
+
+    result = validate_document(document)
+
+    assert not result.activation_valid
+    assert {
+        (issue.code, issue.path) for issue in result.broken_rules[0].issues
+    } == {
+        (
+            "invalid_type",
+            "$.signatures[0].signature.conditions.events[0].event.async",
+        )
+    }
+
+
 @pytest.mark.parametrize(
     "value, expected_code",
     (

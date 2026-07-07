@@ -7,8 +7,9 @@ import threading
 import time
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from queue import Empty, Full, Queue
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from .adapters import DataSourceAdapter
 from .runtime import (
@@ -27,6 +28,87 @@ from .runtime import (
 
 LOGGER = logging.getLogger(__name__)
 
+DEFAULT_ASYNC_COLLECTION_WORKERS = 4
+DEFAULT_ASYNC_COLLECTION_PENDING = 256
+
+
+@dataclass(frozen=True)
+class AsyncCollectionCompletion:
+    token: str
+    result: EvaluationResult
+
+
+class AsyncCollectionPool:
+    """Run opted-in single-item collection without blocking monitor threads."""
+
+    def __init__(
+        self,
+        max_workers: int = DEFAULT_ASYNC_COLLECTION_WORKERS,
+        max_pending: int = DEFAULT_ASYNC_COLLECTION_PENDING,
+    ) -> None:
+        max_workers = max(1, int(max_workers))
+        max_pending = max(0, int(max_pending))
+        self._jobs = Queue()
+        self._slots = threading.BoundedSemaphore(max_workers + max_pending)
+        self._closed = False
+        self._workers = tuple(
+            threading.Thread(
+                target=self._worker,
+                name="dldd-async-collection-{}".format(index),
+                daemon=True,
+            )
+            for index in range(max_workers)
+        )
+        for worker in self._workers:
+            worker.start()
+
+    def submit(
+        self,
+        token: str,
+        collector: Callable[[], EvaluationResult],
+        completion_queue: Queue,
+    ) -> bool:
+        if self._closed or not self._slots.acquire(False):
+            return False
+        self._jobs.put_nowait((token, collector, completion_queue))
+        return True
+
+    def _worker(self) -> None:
+        while True:
+            job = self._jobs.get()
+            try:
+                if job is None:
+                    return
+                token, collector, completion_queue = job
+                if self._closed:
+                    continue
+                try:
+                    result = collector()
+                except Exception as error:
+                    result = EvaluationResult(
+                        EvaluationResultType.COLLECTION_ERROR,
+                        completed_at=time.time(),
+                        error_category="MONITOR_ERROR",
+                        error=str(error),
+                        retryable=True,
+                    )
+                completion_queue.put_nowait(
+                    AsyncCollectionCompletion(token, result)
+                )
+            finally:
+                if job is not None:
+                    self._slots.release()
+                self._jobs.task_done()
+
+    def shutdown(self, wait: bool = True) -> None:
+        if not self._closed:
+            self._closed = True
+            for unused_worker in self._workers:
+                self._jobs.put_nowait(None)
+        if wait:
+            for worker in self._workers:
+                worker.join()
+
 
 class MonitorThread(threading.Thread):
     """Poll one immutable plan and own all writes to its state map."""
@@ -38,6 +120,7 @@ class MonitorThread(threading.Thread):
         evidence_queue: Queue,
         fault_evidence_ack_timeout: float = 120.0,
         source_recovery_samples: int = 1,
+        async_collection_pool: Optional[AsyncCollectionPool] = None,
         stop_event: Optional[threading.Event] = None,
         clock=time.monotonic,
         wall_clock=time.time,
@@ -48,12 +131,24 @@ class MonitorThread(threading.Thread):
         self.evidence_queue = evidence_queue
         self.fault_evidence_ack_timeout = fault_evidence_ack_timeout
         self.source_recovery_samples = max(1, source_recovery_samples)
+        self.async_collection_pool = async_collection_pool
         self.stop_event = stop_event or threading.Event()
         self.clock = clock
         self.wall_clock = wall_clock
         self._sequence = 0
         self._next_poll = self.clock()
+        self._async_completions = Queue()
+        self._async_jobs = {}
         self.diagnostics = deque(maxlen=32)
+        if any(item.async_collection for item in self.plan.items_by_key.values()):
+            if self.async_collection_pool is None:
+                raise ValueError(
+                    "async collection work requires a shared collection pool"
+                )
+        for state in self.plan.state_by_key.values():
+            if state.state == MonitorWorkState.COLLECTING:
+                self._transition(state, MonitorWorkState.READY)
+                state.next_sample_due = None
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -101,6 +196,7 @@ class MonitorThread(threading.Thread):
             self.stop_event.wait(0.2)
 
     def run_once(self) -> None:
+        self.drain_async_completions()
         self.drain_interval_update_queue()
         self.drain_control_queue()
         now = self.clock()
@@ -261,6 +357,7 @@ class MonitorThread(threading.Thread):
         include_normal: bool = True,
         respect_schedule: bool = False,
     ) -> None:
+        self.drain_async_completions()
         cycle_now = self.clock() if now is None else now
         for key in sorted(self.plan.items_by_key):
             state = self.plan.state_by_key[key]
@@ -295,24 +392,113 @@ class MonitorThread(threading.Thread):
                     if item.sampling_interval_is_explicit
                     else self.plan.polling_interval
                 )
+            if item.async_collection:
+                if self._submit_async_collection(key, state, item):
+                    if not recheck:
+                        state.next_sample_due = attempt_time + interval
+                continue
+            if not recheck:
                 state.next_sample_due = attempt_time + interval
             self._collect_key(key, state, item=item)
+        self.drain_async_completions()
 
-    def _collect_key(self, key: str, state: MonitorWorkStateRecord, item=None) -> None:
-        item = item or self.plan.items_by_key[key]
+    def _submit_async_collection(self, key, state, item) -> bool:
         from_recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
+        previous_state = state.state
+        adapter = self.adapters[item.source_type]
+        token = uuid.uuid4().hex
+        submitted = self.async_collection_pool.submit(
+            token,
+            lambda: self._collect_result(adapter, item),
+            self._async_completions,
+        )
+        if not submitted:
+            self.diagnostics.append(
+                {
+                    "monitor": self.plan.monitor_id,
+                    "correlation_key": key,
+                    "state": previous_state.value,
+                    "reason": "async collection capacity is exhausted",
+                    "observed_at": self.wall_clock(),
+                }
+            )
+            return False
         state.last_attempt_timestamp = self.wall_clock()
+        self._transition(state, MonitorWorkState.COLLECTING)
+        self._async_jobs[token] = (
+            key,
+            previous_state,
+            from_recheck,
+            state.work_state_generation,
+        )
+        return True
+
+    def drain_async_completions(self) -> None:
+        while True:
+            try:
+                completion = self._async_completions.get_nowait()
+            except Empty:
+                return
+            try:
+                pending = self._async_jobs.pop(completion.token, None)
+                if pending is None:
+                    continue
+                key, previous_state, from_recheck, generation = pending
+                state = self.plan.state_by_key.get(key)
+                if (
+                    state is None
+                    or state.state != MonitorWorkState.COLLECTING
+                    or state.work_state_generation != generation
+                ):
+                    self.diagnostics.append(
+                        {
+                            "monitor": self.plan.monitor_id,
+                            "correlation_key": key,
+                            "state": "COLLECTING",
+                            "reason": "discarded stale async collection result",
+                            "observed_at": self.wall_clock(),
+                        }
+                    )
+                    continue
+                self._transition(state, previous_state)
+                self._handle_result(
+                    key,
+                    state,
+                    self.plan.items_by_key[key],
+                    completion.result,
+                    from_recheck,
+                )
+            finally:
+                self._async_completions.task_done()
+
+    def _collect_result(self, adapter, item) -> EvaluationResult:
         try:
-            adapter = self.adapters[item.source_type]
-            result = adapter.collect(item)
+            return adapter.collect(item)
         except Exception as error:
-            result = EvaluationResult(
+            return EvaluationResult(
                 EvaluationResultType.COLLECTION_ERROR,
                 completed_at=self.wall_clock(),
                 error_category="MONITOR_ERROR",
                 error=str(error),
                 retryable=True,
             )
+
+    def _collect_key(self, key: str, state: MonitorWorkStateRecord, item=None) -> None:
+        item = item or self.plan.items_by_key[key]
+        from_recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
+        state.last_attempt_timestamp = self.wall_clock()
+        adapter = self.adapters[item.source_type]
+        result = self._collect_result(adapter, item)
+        self._handle_result(key, state, item, result, from_recheck)
+
+    def _handle_result(
+        self,
+        key: str,
+        state: MonitorWorkStateRecord,
+        item,
+        result: EvaluationResult,
+        from_recheck: bool,
+    ) -> None:
         previous_sample = state.last_sample_state
         previous_source = state.source_status
 
