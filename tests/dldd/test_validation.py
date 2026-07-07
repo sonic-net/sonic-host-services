@@ -85,12 +85,12 @@ def test_exact_pydantic_contract_is_the_runtime_authority():
     "source_reference,evaluation_reference",
     (
         (
-            "sensor:redis_sensor_value()",
-            "{sensor*}:{redis_high_threshold()}",
+            "sensor:get_value()",
+            "{sensor*}:{get_high_threshold()}",
         ),
         (
-            "{sensor*}:{redis_sensor_value()}",
-            "{other*}:{redis_high_threshold()}",
+            "{sensor*}:{get_value()}",
+            "{other*}:{get_high_threshold()}",
         ),
     ),
 )

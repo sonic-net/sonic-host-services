@@ -1158,10 +1158,10 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
     configured.update(
         {
             "type": "dse",
-            "path": "{sensor*}:{redis_sensor_value()}",
+            "path": "{sensor*}:{get_value()}",
             "evaluation": {
                 "type": "dse",
-                "value": "{sensor*}:{redis_high_threshold()}",
+                "value": "{sensor*}:{get_high_threshold()}",
             },
             "sampling_interval": 1,
         }
@@ -1229,10 +1229,10 @@ def test_runtime_dse_does_not_publish_children_before_expansion_registration():
     configured.update(
         {
             "type": "dse",
-            "path": "{sensor*}:{redis_sensor_value()}",
+            "path": "{sensor*}:{get_value()}",
             "evaluation": {
                 "type": "dse",
-                "value": "{sensor*}:{redis_high_threshold()}",
+                "value": "{sensor*}:{get_high_threshold()}",
             },
             "sampling_interval": 1,
         }
@@ -1283,10 +1283,10 @@ def test_runtime_dse_clones_common_predicates_for_each_discovered_instance():
     configured.update(
         {
             "type": "dse",
-            "path": "{sensor*}:{redis_sensor_value()}",
+            "path": "{sensor*}:{get_value()}",
             "evaluation": {
                 "type": "dse",
-                "value": "{sensor*}:{redis_high_threshold()}",
+                "value": "{sensor*}:{get_high_threshold()}",
             },
         }
     )

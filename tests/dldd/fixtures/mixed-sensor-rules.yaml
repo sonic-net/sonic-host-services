@@ -1105,10 +1105,10 @@ signatures:
       - event:
           id: 1
           type: dse
-          path: "{temperature*}:{redis_sensor_value()}"
+          path: "{temperature*}:{get_value()}"
           evaluation:
             type: dse
-            value: "{temperature*}:{redis_high_threshold()}"
+            value: "{temperature*}:{get_high_threshold()}"
           match_count: 1
           match_period: 0
           sampling_interval: 5
@@ -1139,10 +1139,10 @@ signatures:
       - event:
           id: 1
           type: dse
-          path: "{voltage*}:{redis_sensor_value()}"
+          path: "{voltage*}:{get_value()}"
           evaluation:
             type: dse
-            value: "{voltage*}:{redis_high_threshold()}"
+            value: "{voltage*}:{get_high_threshold()}"
           match_count: 1
           match_period: 0
           sampling_interval: 5
@@ -1173,10 +1173,10 @@ signatures:
       - event:
           id: 1
           type: dse
-          path: "{current*}:{redis_sensor_value()}"
+          path: "{current*}:{get_value()}"
           evaluation:
             type: dse
-            value: "{current*}:{redis_high_threshold()}"
+            value: "{current*}:{get_high_threshold()}"
           match_count: 1
           match_period: 0
           sampling_interval: 5
