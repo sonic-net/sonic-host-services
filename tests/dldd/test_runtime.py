@@ -585,6 +585,68 @@ def test_async_pool_saturation_leaves_monitor_work_due_without_failure():
         pool.shutdown()
 
 
+def test_queued_async_work_is_not_duplicated_when_cadence_circles():
+    release_worker = ThreadEvent()
+    worker_occupied = ThreadEvent()
+    async_collected = ThreadEvent()
+    calls = []
+    pool = AsyncCollectionPool(max_workers=1, max_pending=1)
+
+    def occupy_worker():
+        worker_occupied.set()
+        release_worker.wait(2)
+        return result(EvaluationResultType.NO_MATCH, False)
+
+    assert pool.submit("occupy", occupy_worker, Queue())
+    assert worker_occupied.wait(1)
+    item = replace(
+        work_item("queued"),
+        sampling_interval=1,
+        sampling_interval_is_explicit=True,
+        async_collection=True,
+    )
+
+    class RecordingAdapter(object):
+        def collect(self, unused_item):
+            calls.append("queued")
+            async_collected.set()
+            return result(EvaluationResultType.NO_MATCH, False)
+
+    monitor = MonitorThread(
+        plan(item),
+        {"test": RecordingAdapter()},
+        Queue(),
+        async_collection_pool=pool,
+    )
+    try:
+        monitor.poll_once(now=0)
+        assert monitor.plan.state_by_key["queued"].state == (
+            MonitorWorkState.COLLECTING
+        )
+        assert calls == []
+
+        monitor.poll_once(now=10)
+        assert calls == []
+
+        release_worker.set()
+        assert async_collected.wait(1)
+        deadline = time.monotonic() + 1
+        while (
+            monitor.plan.state_by_key["queued"].state
+            == MonitorWorkState.COLLECTING
+            and time.monotonic() < deadline
+        ):
+            monitor.drain_async_completions()
+            time.sleep(0.01)
+        assert calls == ["queued"]
+        assert monitor.plan.state_by_key["queued"].state == (
+            MonitorWorkState.READY
+        )
+    finally:
+        release_worker.set()
+        pool.shutdown()
+
+
 def test_async_collection_match_uses_normal_evidence_path():
     item = replace(work_item("async-match"), async_collection=True)
     evidence = Queue()
