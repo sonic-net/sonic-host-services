@@ -125,6 +125,33 @@ def test_status_uses_120_second_atomic_ttl_contract():
     assert database.values[publisher.STATUS_KEY]["previous_active_rules_checksum"] == "sha256:old"
 
 
+def test_rule_status_uses_generation_bound_120_second_snapshot():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    rules = (
+        {
+            "rule_id": 1000001,
+            "rule": "PSU_FAULT",
+            "health": "OK",
+            "active_faults": 0,
+            "work_items": [],
+        },
+    )
+
+    assert publisher.publish_rule_status(
+        "sha256:test", rules, detail_truncated=True
+    )
+
+    row = database.values[publisher.RULE_STATUS_KEY]
+    assert database.ttls[publisher.RULE_STATUS_KEY] == 120
+    assert row["active_rules_checksum"] == "sha256:test"
+    assert json.loads(row["rules"]) == list(rules)
+    assert row["detail_truncated"] == "True"
+
+    assert publisher.clear_rule_status()
+    assert publisher.RULE_STATUS_KEY not in database.values
+
+
 def test_active_fault_is_persistent_and_nested_fields_are_json():
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())

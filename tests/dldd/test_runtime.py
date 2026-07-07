@@ -380,12 +380,15 @@ def test_per_key_sampling_intervals_start_due_and_coalesce_missed_cycles():
         {"test": RecordingAdapter()},
         Queue(),
         clock=lambda: clock[0],
+        wall_clock=lambda: 1000.0 + clock[0],
     )
 
     monitor.run_once()
     assert calls == [(0.0, "fast"), (0.0, "slow")]
     assert execution_plan.state_by_key["fast"].next_sample_due == 10.0
     assert execution_plan.state_by_key["slow"].next_sample_due == 30.0
+    assert execution_plan.state_by_key["fast"].last_attempt_timestamp == 1000.0
+    assert execution_plan.state_by_key["slow"].last_attempt_timestamp == 1000.0
 
     clock[0] = 9.0
     monitor.run_once()

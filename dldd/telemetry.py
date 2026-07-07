@@ -189,6 +189,7 @@ class SonicStateDB(StateDB):
 
 class TelemetryPublisher:
     STATUS_KEY = "DLDD_STATUS|process_state"
+    RULE_STATUS_KEY = "DLDD_RULE_STATUS|active"
     STATUS_TTL = 120
 
     def __init__(
@@ -250,6 +251,37 @@ class TelemetryPublisher:
             return True
         except Exception as error:
             LOGGER.error("unable to publish DLDD_STATUS: %s", error)
+            return False
+
+    def publish_rule_status(
+        self,
+        active_rules_checksum: str,
+        rules=(),
+        detail_truncated: bool = False,
+    ) -> bool:
+        """Publish one generation-consistent rule inventory snapshot."""
+
+        payload = {
+            "active_rules_checksum": active_rules_checksum,
+            "rules": list(rules),
+            "detail_truncated": detail_truncated,
+            "published_at": time.time(),
+        }
+        try:
+            self.state_db.hset_with_ttl(
+                self.RULE_STATUS_KEY, payload, self.STATUS_TTL
+            )
+            return True
+        except Exception as error:
+            LOGGER.error("unable to publish DLDD_RULE_STATUS: %s", error)
+            return False
+
+    def clear_rule_status(self) -> bool:
+        try:
+            self.state_db.delete(self.RULE_STATUS_KEY)
+            return True
+        except Exception as error:
+            LOGGER.error("unable to clear DLDD_RULE_STATUS: %s", error)
             return False
 
     def publish_fault(

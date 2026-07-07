@@ -36,6 +36,7 @@ from .planner import build_plans
 from .platform import PlatformExtensions, detect_identity, load_extensions
 from .runtime import MonitorCommandType, MonitorWorkState
 from .rule_schema.errors import bound_diagnostic, bound_identity
+from .rule_status import build_rule_status_snapshot
 from .telemetry import SonicStateDB, TelemetryPublisher
 from .validation import (
     MAX_SERIALIZED_DIAGNOSTIC_BYTES,
@@ -46,7 +47,6 @@ from .validation import (
 
 
 LOGGER = logging.getLogger(__name__)
-
 
 _SCHEMA_ISSUE_CODES = frozenset(
     (
@@ -631,10 +631,36 @@ class DLDDService:
         )
         self._state_fingerprint = fingerprint
 
+    def _rule_status_snapshot(self):
+        """Aggregate the active generation into bounded operator-facing rows."""
+        return build_rule_status_snapshot(
+            self.activation,
+            self.orchestrator,
+            self.monitors,
+        )
+
+    def _publish_rule_status(self) -> None:
+        if self.telemetry is None:
+            return
+        if self.activation is None:
+            self.telemetry.clear_rule_status()
+            return
+        try:
+            rules, detail_truncated = self._rule_status_snapshot()
+        except Exception:
+            LOGGER.exception("unable to build DLDD rule status snapshot")
+            return
+        self.telemetry.publish_rule_status(
+            self.activation.checksum,
+            rules,
+            detail_truncated=detail_truncated,
+        )
+
     def _publish_status(self) -> None:
         if self.telemetry is None:
             return
         if self.activation is None:
+            self._publish_rule_status()
             self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 "",
@@ -644,6 +670,7 @@ class DLDDService:
             )
             return
         if self.fatal_reason:
+            self._publish_rule_status()
             self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 self.activation.schema_version,
@@ -711,6 +738,7 @@ class DLDDService:
             activation_fallback_used=self.activation.fallback_used,
             previous_active_rules_checksum=self.activation.previous_checksum,
         )
+        self._publish_rule_status()
 
     def _inflight_status(self):
         result = []

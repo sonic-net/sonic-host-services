@@ -18,8 +18,10 @@ from dldd.hooks import VendorHook, VendorHookError, VendorHookRegistry
 from dldd.lifecycle import RulePaths
 from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
+from dldd.planner import build_plans
+from dldd.runtime import MonitorWorkState
 from dldd.service import DLDDService, validate_runtime_operation_hooks
-from dldd.validation import ExactCompatibilityMatcher
+from dldd.validation import ExactCompatibilityMatcher, load_rules
 
 
 class VendorArtifactClient(HealthzArtifactClient):
@@ -428,6 +430,210 @@ def test_service_candidate_records_remain_within_external_byte_cap():
     assert len(serialized) <= dldd_service.MAX_SERIALIZED_DIAGNOSTIC_BYTES
     assert len({record["rule"] for record in records}) == 1024
     assert all("\0" not in record["rule"] for record in records)
+
+
+def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
+    result = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        result.materialized_rules,
+        "sha256:test",
+        {"redis": 41, "file": 42, "common": 43},
+    )
+    item = next(iter(bundle.work_items.values()))
+    plan = bundle.monitor_plans["redis"]
+    state = plan.state_by_key[item.correlation_key]
+    state.state = MonitorWorkState.DEGRADED
+    state.last_attempt_timestamp = 1234.0
+    state.last_success_timestamp = 1200.0
+    state.consecutive_failure_count = 3
+    broken = {
+        "rule": item.rule_name,
+        "rule_id": item.rule_id,
+        "version": item.rule_version,
+        "correlation_key": item.correlation_key,
+        "state": "DEGRADED",
+        "failure_count": 3,
+        "last_attempt": 1234.0,
+        "reason": "source unavailable",
+    }
+    ingestion_broken = {
+        "rule": "SCHEMA_BAD",
+        "rule_id": 1000002,
+        "version": "1.0.0",
+        "state": "BROKEN",
+        "failure_count": 1,
+        "last_attempt": 1000.0,
+        "reason": "schema_error: field is required",
+    }
+    service = object.__new__(DLDDService)
+    service.activation = SimpleNamespace(
+        payload=result,
+        broken_rules=(ingestion_broken,),
+        checksum="sha256:test",
+    )
+    service.orchestrator = SimpleNamespace(
+        work_items=bundle.work_items,
+        broken_rules={item.correlation_key: broken},
+        faults={
+            (item.rule_id, item.component_name): SimpleNamespace(
+                rule_id=item.rule_id,
+                component_name=item.component_name,
+                status="ACTIVE",
+            )
+        },
+    )
+    service.monitors = [SimpleNamespace(plan=plan)]
+
+    rows, truncated = service._rule_status_snapshot()
+
+    assert not truncated
+    assert len(rows) == 2
+    active = rows[0]
+    assert active["rule_id"] == item.rule_id
+    assert active["health"] == "DEGRADED"
+    assert active["work_items_healthy"] == 0
+    assert active["work_items_total"] == 1
+    assert active["active_faults"] == 1
+    assert active["last_attempt"] == 1234.0
+    assert active["last_success"] == 1200.0
+    assert active["failure_count"] == 3
+    assert active["reason"] == "source unavailable"
+    assert active["work_items"][0]["state"] == "DEGRADED"
+    assert active["work_items"][0]["sampling_interval"] == 41
+    assert active["work_items"][0]["interval_source"] == (
+        "monitor_default"
+    )
+    assert active["work_items"][0]["active_fault"]
+    assert rows[1]["health"] == "BROKEN"
+    assert rows[1]["work_items_total"] == 0
+
+
+@pytest.mark.parametrize(
+    "work_state,expected_health",
+    (
+        (MonitorWorkState.READY, "OK"),
+        (MonitorWorkState.SUSPENDED, "SUSPENDED"),
+        (MonitorWorkState.BROKEN, "BROKEN"),
+        (MonitorWorkState.DEGRADED, "DEGRADED"),
+    ),
+)
+def test_rule_status_snapshot_classifies_work_state(
+    work_state, expected_health
+):
+    result = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        result.materialized_rules,
+        "sha256:test",
+        {"redis": 41, "file": 42, "common": 43},
+    )
+    item = next(iter(bundle.work_items.values()))
+    plan = bundle.monitor_plans["redis"]
+    plan.state_by_key[item.correlation_key].state = work_state
+    service = object.__new__(DLDDService)
+    service.activation = SimpleNamespace(
+        payload=result,
+        broken_rules=(),
+        checksum="sha256:test",
+    )
+    service.orchestrator = SimpleNamespace(
+        work_items=bundle.work_items,
+        broken_rules={},
+        faults={},
+    )
+    service.monitors = [SimpleNamespace(plan=plan)]
+
+    rows, truncated = service._rule_status_snapshot()
+
+    assert not truncated
+    assert rows[0]["health"] == expected_health
+
+
+def test_rule_status_snapshot_groups_ingestion_failures_by_rule():
+    failures = (
+        {
+            "rule": "BAD_RULE",
+            "rule_id": 1000002,
+            "version": "1.0.0",
+            "failure_count": 1,
+            "last_attempt": 1000.0,
+            "reason": "first problem",
+        },
+        {
+            "rule": "BAD_RULE",
+            "rule_id": 1000002,
+            "version": "1.0.0",
+            "failure_count": 2,
+            "last_attempt": 1001.0,
+            "reason": "second problem",
+        },
+    )
+    service = object.__new__(DLDDService)
+    service.activation = SimpleNamespace(
+        payload=SimpleNamespace(materialized_rules=()),
+        broken_rules=failures,
+        checksum="sha256:test",
+    )
+    service.orchestrator = None
+    service.monitors = []
+
+    rows, truncated = service._rule_status_snapshot()
+
+    assert not truncated
+    assert len(rows) == 1
+    assert rows[0]["rule"] == "BAD_RULE"
+    assert rows[0]["health"] == "BROKEN"
+    assert rows[0]["failure_count"] == 2
+    assert rows[0]["last_attempt"] == 1001.0
+    assert rows[0]["reason"] == "first problem (+1 more)"
+
+
+def test_rule_status_snapshot_reports_omitted_detail(monkeypatch):
+    result = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        result.materialized_rules,
+        "sha256:test",
+        {"redis": 41, "file": 42, "common": 43},
+    )
+    service = object.__new__(DLDDService)
+    service.activation = SimpleNamespace(
+        payload=result,
+        broken_rules=(),
+        checksum="sha256:test",
+    )
+    service.orchestrator = SimpleNamespace(
+        work_items=bundle.work_items,
+        broken_rules={},
+        faults={},
+    )
+    service.monitors = [
+        SimpleNamespace(plan=bundle.monitor_plans["redis"])
+    ]
+    monkeypatch.setattr("dldd.rule_status.MAX_DETAILS_PER_RULE", 0)
+
+    rows, truncated = service._rule_status_snapshot()
+
+    assert truncated
+    assert rows[0]["work_items"] == []
+    assert rows[0]["work_items_omitted"] == 1
+
+
+def test_rule_status_publication_failure_does_not_break_heartbeat(caplog):
+    published = []
+    service = object.__new__(DLDDService)
+    service.activation = SimpleNamespace(checksum="sha256:test")
+    service.telemetry = SimpleNamespace(
+        publish_rule_status=lambda *args, **kwargs: published.append(
+            (args, kwargs)
+        )
+    )
+    service._rule_status_snapshot = lambda: (_ for _ in ()).throw(
+        RuntimeError("snapshot failed")
+    )
+
+    service._publish_rule_status()
+
+    assert not published
+    assert "unable to build DLDD rule status snapshot" in caplog.text
 
 
 def test_start_does_not_repeat_candidate_adapter_preflight(

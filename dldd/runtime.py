@@ -133,6 +133,7 @@ class MonitorWorkStateRecord:
     hold_deadline: Optional[float] = None
     recheck_not_before: Optional[float] = None
     last_sample_state: Optional[str] = None
+    last_attempt_timestamp: Optional[float] = None
     last_success_timestamp: Optional[float] = None
     consecutive_failure_count: int = 0
     recovery_success_count: int = 0

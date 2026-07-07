@@ -301,6 +301,7 @@ class MonitorThread(threading.Thread):
     def _collect_key(self, key: str, state: MonitorWorkStateRecord, item=None) -> None:
         item = item or self.plan.items_by_key[key]
         from_recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
+        state.last_attempt_timestamp = self.wall_clock()
         try:
             adapter = self.adapters[item.source_type]
             result = adapter.collect(item)
