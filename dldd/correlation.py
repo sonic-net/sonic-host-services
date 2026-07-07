@@ -58,6 +58,53 @@ class CorrelationEngine:
         self.late_events_discarded = 0
         self.diagnostics = deque(maxlen=64)
 
+    def register_work_item(self, signature, item, plan_generation: str) -> None:
+        """Register one monitor-expanded key before its evidence is consumed."""
+
+        identity = (item.rule_id, item.component_name)
+        execution = self.executions.get(identity)
+        event_keys = (
+            {key: tuple(value) for key, value in execution.event_keys.items()}
+            if execution is not None
+            else {}
+        )
+        keys = list(event_keys.get(item.event_id, ()))
+        if item.correlation_key not in keys:
+            keys.append(item.correlation_key)
+        event_keys[item.event_id] = tuple(sorted(keys))
+        self.executions[identity] = SignatureExecution(
+            signature=signature,
+            component_name=item.component_name,
+            event_keys=event_keys,
+            plan_generation=plan_generation,
+        )
+
+    def unregister_work_item(self, item) -> None:
+        identity = (item.rule_id, item.component_name)
+        execution = self.executions.get(identity)
+        if execution is None:
+            return
+        event_keys = {
+            event_id: tuple(
+                key
+                for key in keys
+                if key != item.correlation_key
+            )
+            for event_id, keys in execution.event_keys.items()
+        }
+        event_keys = {
+            event_id: keys for event_id, keys in event_keys.items() if keys
+        }
+        if event_keys:
+            self.executions[identity] = SignatureExecution(
+                signature=execution.signature,
+                component_name=execution.component_name,
+                event_keys=event_keys,
+                plan_generation=execution.plan_generation,
+            )
+        else:
+            self.executions.pop(identity, None)
+
     def consume(self, event: FaultEvidenceEvent) -> Optional[CorrelationDecision]:
         execution = self.executions.get((event.signature_id, event.component_name))
         if execution is None:

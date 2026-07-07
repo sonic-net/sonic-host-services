@@ -10,6 +10,12 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
+from .dse import (
+    DSEBinding,
+    DSEExpansionResult,
+    DSEInvocationContext,
+    ResolvedEvaluation,
+)
 from .evaluators import EvaluationContractError, evaluate, parse_integer
 from .hooks import VendorHookRegistry
 from .runtime import (
@@ -113,6 +119,45 @@ class DataSourceAdapter(ABC):
         raise NotImplementedError
 
     def get_evaluator(self, item: MonitorWorkItem) -> Mapping[str, Any]:
+        handle = item.dse_evaluation_handle
+        if handle is not None:
+            binding = item.dse_binding or DSEBinding(
+                instance=item.component_name,
+                source_id=item.source_id,
+                data=item.source,
+            )
+            resolved = handle.get_evaluator(
+                DSEInvocationContext(item.dse_context, binding)
+            )
+            if isinstance(resolved, ResolvedEvaluation):
+                config = resolved.value_configs
+                evaluator = {
+                    "type": "dse",
+                    "value": resolved.expected_value,
+                    "value_configs": {
+                        "type": config.type,
+                        "unit": config.unit,
+                        "scaling": config.scaling,
+                        "encoding": config.encoding,
+                    },
+                }
+                if resolved.operator is not None:
+                    evaluator["operator"] = resolved.operator
+                if resolved.comparator is not None:
+                    evaluator["comparator"] = resolved.comparator
+            elif isinstance(resolved, Mapping):
+                evaluator = dict(resolved)
+            else:
+                raise EvaluationContractError(
+                    "DSE evaluator must return a mapping or ResolvedEvaluation"
+                )
+            if "operator" not in evaluator and item.evaluation.get("operator"):
+                evaluator["operator"] = item.evaluation["operator"]
+            if "value_configs" not in evaluator:
+                evaluator["value_configs"] = item.evaluation.get(
+                    "value_configs", {}
+                )
+            return evaluator
         return item.evaluation
 
     def run_evaluation(self, value: CollectedValue, evaluator: Mapping[str, Any]) -> bool:
@@ -151,8 +196,9 @@ class DataSourceAdapter(ABC):
                 retryable=True,
             )
 
-        evaluator = self.get_evaluator(item)
+        evaluator = item.evaluation
         try:
+            evaluator = self.get_evaluator(item)
             matched = self.run_evaluation(value, evaluator)
         except Exception as error:
             contract_error = isinstance(
@@ -425,6 +471,33 @@ class VendorAdapter(PlatformAPIAdapter):
         return hook.collect(item.source)
 
 
+class DSEAdapter(DataSourceAdapter):
+    """Invoke already-resolved vendor handles only from monitor context."""
+
+    source_type = "dse"
+
+    def validate(self, item: MonitorWorkItem) -> None:
+        super().validate(item)
+        if item.dse_source_handle is None:
+            raise ValueError("DSE source requires a resolved source handle")
+        if item.dse_binding is None:
+            raise ValueError("DSE source requires an expanded instance binding")
+
+    def expand(self, template) -> DSEExpansionResult:
+        result = template.source_handle.expand(template.item.dse_context)
+        if not isinstance(result, DSEExpansionResult):
+            raise AdapterError(
+                "DSE source expansion must return DSEExpansionResult"
+            )
+        return result
+
+    def get_value(self, item: MonitorWorkItem) -> Any:
+        self.validate(item)
+        return item.dse_source_handle.get_value(
+            DSEInvocationContext(item.dse_context, item.dse_binding)
+        )
+
+
 def adapter_map(
     hooks: Optional[VendorHookRegistry] = None,
     redis_reader: Optional[Callable[[str, str, str], Any]] = None,
@@ -437,4 +510,5 @@ def adapter_map(
         "cli": CLIAdapter(),
         "i2c": I2CAdapter(hooks=hooks),
         "platform_api": PlatformAPIAdapter(hooks),
+        "dse": DSEAdapter(),
     }

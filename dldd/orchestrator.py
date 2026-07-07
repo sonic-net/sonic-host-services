@@ -16,6 +16,7 @@ from .artifacts import HealthzArtifactClient
 from .config import DLDDConfig
 from .correlation import CorrelationDecision, CorrelationEngine, FaultArbiter, SignatureExecution
 from .runtime import (
+    DSEExpansionEvent,
     EvaluationResultType,
     FaultEvidenceEvent,
     FaultRecord,
@@ -84,6 +85,11 @@ class PrimaryOrchestrator:
         self.evidence_queue = evidence_queue
         self.plans = dict(plans)
         self.work_items = dict(work_items)
+        self.dynamic_signatures = {
+            template.item.rule_id: template.signature
+            for plan in self.plans.values()
+            for template in plan.templates_by_key.values()
+        }
         self.correlation = correlation
         self.telemetry = telemetry
         self.config = config
@@ -105,6 +111,9 @@ class PrimaryOrchestrator:
         self._suspended_sources: Dict[str, Set[str]] = {}
         self._next_source_lifecycle_probe = 0.0
         self.reconciliation: Dict[Tuple[int, str], Reconciliation] = {}
+        self.pending_dynamic_faults: Dict[
+            Tuple[int, str], FaultRecord
+        ] = {}
         self.next_active_recheck: Dict[Tuple[int, str], float] = {}
         self.uncertain_faults: Set[Tuple[int, str]] = set()
         self.dirty_faults: Set[Tuple[int, str]] = set()
@@ -154,17 +163,86 @@ class PrimaryOrchestrator:
                 break
             try:
                 try:
-                    self.process_event(event)
-                    self._primary_processing_failures.pop(
-                        event.correlation_key, None
-                    )
+                    if isinstance(event, DSEExpansionEvent):
+                        self.process_expansion(event)
+                    else:
+                        self.process_event(event)
+                        self._primary_processing_failures.pop(
+                            event.correlation_key, None
+                        )
                 except Exception as error:
-                    self._handle_processing_failure(event, error)
+                    if isinstance(event, DSEExpansionEvent):
+                        LOGGER.exception(
+                            "unable to apply DSE expansion %s",
+                            event.template_id,
+                        )
+                        self.service_diagnostics.append(
+                            {
+                                "reason": "dse_expansion_registration_failed",
+                                "template_id": event.template_id,
+                                "error": str(error),
+                                "observed_at": self.wall_clock(),
+                            }
+                        )
+                    else:
+                        self._handle_processing_failure(event, error)
             finally:
                 self.evidence_queue.task_done()
             processed += 1
         self.tick()
         return processed
+
+    def process_expansion(self, event: DSEExpansionEvent) -> None:
+        plan = self.plans.get("common")
+        if (
+            plan is None
+            or event.monitor_id != plan.monitor_id
+            or event.plan_generation != plan.plan_generation
+        ):
+            raise ValueError("DSE expansion belongs to an unknown plan")
+        added_identities = set()
+        for item in event.added_items:
+            self.work_items[item.correlation_key] = item
+            self.correlation.register_work_item(
+                event.signature, item, event.plan_generation
+            )
+            added_identities.add((item.rule_id, item.component_name))
+        for key in event.removed_keys:
+            item = self.work_items.pop(key, None)
+            if item is None:
+                continue
+            self.correlation.unregister_work_item(item)
+            self.broken_rules.pop(key, None)
+            self.source_status.pop(item.source_id, None)
+        for identity in added_identities:
+            record = self.pending_dynamic_faults.get(identity)
+            execution = self.correlation.executions.get(identity)
+            if (
+                record is None
+                or execution is None
+                or not self._execution_has_all_events(execution)
+            ):
+                continue
+            self.pending_dynamic_faults.pop(identity, None)
+            self.uncertain_faults.discard(identity)
+            self._start_reconciliation(
+                execution, record, "runtime_expansion_fault_reconciliation"
+            )
+            self.service_diagnostics.append(
+                {
+                    "reason": "dynamic_fault_reconciliation_started",
+                    "rule_id": identity[0],
+                    "component": identity[1],
+                    "observed_at": self.wall_clock(),
+                }
+            )
+
+    @staticmethod
+    def _execution_has_all_events(execution: SignatureExecution) -> bool:
+        required = {
+            event.id for event in execution.signature.conditions.events
+        }
+        return required.issubset(execution.event_keys)
 
     def _handle_processing_failure(
         self, event: FaultEvidenceEvent, error: Exception
@@ -1002,11 +1080,20 @@ class PrimaryOrchestrator:
                 continue
             identity = (record.rule_id, record.component_name)
             execution = self.correlation.executions.get(identity)
+            dynamic_signature = self.dynamic_signatures.get(record.rule_id)
             current = (
                 execution is not None
+                and self._execution_has_all_events(execution)
                 and record.schema_version == "0.0.1"
                 and record.active_rules_checksum == self.active_rules_checksum
                 and execution.signature.metadata.symptom == record.symptom
+            )
+            pending_dynamic = (
+                (execution is None or not self._execution_has_all_events(execution))
+                and dynamic_signature is not None
+                and record.schema_version == "0.0.1"
+                and record.active_rules_checksum == self.active_rules_checksum
+                and dynamic_signature.metadata.symptom == record.symptom
             )
             if record.status != "ACTIVE":
                 # Retained inactive rows own occurrence history even if a new
@@ -1015,6 +1102,26 @@ class PrimaryOrchestrator:
                 self.published_by_key[
                     (record.component_name, record.symptom)
                 ] = record.rule_id
+                continue
+            if pending_dynamic:
+                # Runtime-expanded instances do not exist when startup fault
+                # reconciliation first runs. Preserve current-generation fault
+                # ownership until discovery recreates the matching execution;
+                # retiring it here would create a false clear on every restart.
+                self.faults[identity] = record
+                self.published_by_key[
+                    (record.component_name, record.symptom)
+                ] = record.rule_id
+                self.pending_dynamic_faults[identity] = record
+                self.uncertain_faults.add(identity)
+                self.service_diagnostics.append(
+                    {
+                        "reason": "dynamic_fault_waiting_for_expansion",
+                        "rule_id": identity[0],
+                        "component": identity[1],
+                        "observed_at": self.wall_clock(),
+                    }
+                )
                 continue
             if not current:
                 record.status = "INACTIVE"
@@ -1232,6 +1339,19 @@ class PrimaryOrchestrator:
         elif existing.status == "INACTIVE" and status == "ACTIVE":
             existing.occurrences += 1
             existing.origin_time = now
+        # A stale record can become active again under a newly selected rules
+        # generation. Refresh all rule-owned metadata so the new active fault
+        # does not retain the previous checksum or stale-source description.
+        existing.rule_name = metadata.name
+        existing.rule_version = metadata.version
+        existing.schema_version = "0.0.1"
+        existing.active_rules_checksum = self.active_rules_checksum
+        existing.component_type = metadata.component
+        existing.symptom = metadata.symptom
+        existing.severity = metadata.severity
+        existing.priority = metadata.priority
+        existing.error_type = metadata.error_type
+        existing.description = metadata.description
         preserve_action_history = (
             status == "INACTIVE"
             and existing.local_action_state not in ("", "IDLE")

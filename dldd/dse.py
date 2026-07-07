@@ -11,7 +11,7 @@ from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
 
 from .models import (
     ResolvedSource,
@@ -52,6 +52,113 @@ class DSEContext(object):
     component: Optional[str] = None
     rule_name: Optional[str] = None
     event_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class DSEExpansionPolicy(object):
+    """Vendor-selected scheduling policy executed by the monitor thread."""
+
+    bootstrap_scans: int = 2
+    bootstrap_interval: float = 5.0
+    warmup_cycles: int = 3
+    stable_interval: float = 300.0
+
+    def __post_init__(self):
+        if self.bootstrap_scans < 1:
+            raise ValueError("bootstrap_scans must be positive")
+        if self.bootstrap_interval <= 0:
+            raise ValueError("bootstrap_interval must be positive")
+        if self.warmup_cycles < 1:
+            raise ValueError("warmup_cycles must be positive")
+        if self.stable_interval <= 0:
+            raise ValueError("stable_interval must be positive")
+
+
+@dataclass(frozen=True)
+class DSEBinding(object):
+    """One runtime instance returned by a DSE source expander."""
+
+    instance: str
+    source_id: str
+    data: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    value_configs: ValueConfig = field(default_factory=ValueConfig)
+
+    def __post_init__(self):
+        if not isinstance(self.instance, str) or not self.instance:
+            raise ValueError("DSE binding instance must be a non-empty string")
+        if not isinstance(self.source_id, str) or not self.source_id:
+            raise ValueError("DSE binding source_id must be a non-empty string")
+        object.__setattr__(self, "data", frozen_mapping(self.data))
+        errors = value_config_contract_errors(self.value_configs)
+        if errors:
+            raise ValueError(
+                "invalid DSE binding value_configs: {}".format(
+                    "; ".join(errors)
+                )
+            )
+
+
+@dataclass(frozen=True)
+class DSEExpansionResult(object):
+    """Runtime source expansion returned by a trusted vendor handle."""
+
+    bindings: Tuple[DSEBinding, ...]
+    authoritative: bool = False
+
+    def __post_init__(self):
+        bindings = tuple(self.bindings)
+        if any(not isinstance(item, DSEBinding) for item in bindings):
+            raise TypeError("DSE expansion bindings must be DSEBinding objects")
+        identities = [(item.instance, item.source_id) for item in bindings]
+        if len(identities) != len(set(identities)):
+            raise ValueError("DSE expansion bindings must be unique")
+        object.__setattr__(self, "bindings", bindings)
+        object.__setattr__(self, "authoritative", bool(self.authoritative))
+
+
+@dataclass(frozen=True)
+class DSEInvocationContext(object):
+    """Runtime-only context passed to vendor collection/evaluation handles."""
+
+    rule: DSEContext
+    binding: DSEBinding
+    cycle_id: int = 0
+
+
+@dataclass(frozen=True)
+class DSESourceHandle(object):
+    """Resolved source functions retained without invocation in the plan."""
+
+    reference: DSEReference
+    expand: Callable[[DSEContext], DSEExpansionResult]
+    get_value: Callable[[DSEInvocationContext], Any]
+    policy: DSEExpansionPolicy = field(default_factory=DSEExpansionPolicy)
+
+    def __post_init__(self):
+        if not isinstance(self.reference, DSEReference):
+            raise TypeError("DSE source handle requires a DSEReference")
+        if not callable(self.expand) or not callable(self.get_value):
+            raise TypeError("DSE source handle functions must be callable")
+        if not isinstance(self.policy, DSEExpansionPolicy):
+            raise TypeError("DSE source handle requires DSEExpansionPolicy")
+
+
+@dataclass(frozen=True)
+class DSEEvaluationHandle(object):
+    """Resolved evaluator function retained for monitor-time invocation."""
+
+    reference: DSEReference
+    get_evaluator: Callable[
+        [DSEInvocationContext], Union[Mapping[str, Any], "ResolvedEvaluation"]
+    ]
+
+    def __post_init__(self):
+        if not isinstance(self.reference, DSEReference):
+            raise TypeError("DSE evaluation handle requires a DSEReference")
+        if not callable(self.get_evaluator):
+            raise TypeError("DSE evaluation handle function must be callable")
 
 
 @dataclass(frozen=True)
@@ -216,8 +323,16 @@ class DSERegistry(object):
     def resolve_source(self, value, context):
         reference = parse_reference(value)
         sources = self._require_hook().resolve_source(reference, context)
+        if isinstance(sources, DSESourceHandle):
+            if sources.reference != reference:
+                raise DSEError(
+                    "DSE source handle reference does not match requested reference"
+                )
+            return sources
         if not isinstance(sources, Sequence) or isinstance(sources, (str, bytes)):
-            raise DSEError("DSE source resolver must return a sequence")
+            raise DSEError(
+                "DSE source resolver must return DSESourceHandle or a sequence"
+            )
         resolved = tuple(sources)
         if not resolved:
             raise DSEUnresolvedError(
@@ -261,9 +376,16 @@ class DSERegistry(object):
     def resolve_evaluation(self, value, context, rule_operator=None):
         reference = parse_reference(value)
         resolved = self._require_hook().resolve_evaluation(reference, context)
+        if isinstance(resolved, DSEEvaluationHandle):
+            if resolved.reference != reference:
+                raise DSEError(
+                    "DSE evaluation handle reference does not match requested reference"
+                )
+            return resolved
         if not isinstance(resolved, ResolvedEvaluation):
             raise DSEError(
-                "DSE evaluation resolver must return ResolvedEvaluation"
+                "DSE evaluation resolver must return DSEEvaluationHandle or "
+                "ResolvedEvaluation"
             )
         value_config_errors = value_config_contract_errors(
             resolved.value_configs

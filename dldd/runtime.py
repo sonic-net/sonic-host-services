@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from queue import Queue
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Set, Tuple
 from urllib.parse import quote
 
 
@@ -108,6 +108,10 @@ class MonitorWorkItem:
     sampling_interval: float = 60.0
     sampling_interval_is_explicit: bool = False
     async_collection: bool = False
+    dse_context: Any = None
+    dse_binding: Any = None
+    dse_source_handle: Any = None
+    dse_evaluation_handle: Any = None
 
     def __post_init__(self) -> None:
         interval = float(self.sampling_interval)
@@ -124,6 +128,45 @@ class MonitorWorkItem:
         object.__setattr__(self, "async_collection", bool(self.async_collection))
         object.__setattr__(self, "source", MappingProxyType(dict(self.source)))
         object.__setattr__(self, "evaluation", MappingProxyType(dict(self.evaluation)))
+
+
+@dataclass(frozen=True)
+class DSEWorkTemplate:
+    template_id: str
+    item: MonitorWorkItem
+    signature: Any
+    source_handle: Any
+    evaluation_handle: Any = None
+    common_items: Tuple[MonitorWorkItem, ...] = ()
+
+
+@dataclass
+class DSEExpansionState:
+    phase: str = "BOOTSTRAP"
+    bootstrap_scans_completed: int = 0
+    warmup_cycles_completed: int = 0
+    cycle_id: int = 0
+    binding_fingerprint: Tuple[Tuple[str, str], ...] = ()
+    child_keys: Set[str] = field(default_factory=set)
+    pending_cycle_keys: Set[str] = field(default_factory=set)
+    next_expansion_due: Optional[float] = None
+    last_expansion_timestamp: Optional[float] = None
+    last_complete_cycle_timestamp: Optional[float] = None
+    last_error: str = ""
+    authoritative: bool = False
+
+
+@dataclass(frozen=True)
+class DSEExpansionEvent:
+    monitor_id: str
+    plan_generation: str
+    template_id: str
+    signature: Any
+    added_items: Tuple[MonitorWorkItem, ...] = ()
+    removed_keys: Tuple[str, ...] = ()
+    phase: str = "BOOTSTRAP"
+    authoritative: bool = False
+    observed_at: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -170,6 +213,15 @@ class MonitorExecutionPlan:
     state_by_key: Dict[str, MonitorWorkStateRecord]
     control_queue: Queue
     interval_update_queue: Queue = field(default_factory=Queue)
+    templates_by_key: Mapping[str, DSEWorkTemplate] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    expansion_state_by_key: Dict[str, DSEExpansionState] = field(
+        default_factory=dict
+    )
+    expanded_items_by_key: Dict[str, MonitorWorkItem] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         self.polling_interval = self.validated_polling_interval(self.polling_interval)
@@ -178,9 +230,30 @@ class MonitorExecutionPlan:
         # ``polling_interval`` by the owning monitor thread; CONFIG_DB updates
         # therefore never replace work-item objects behind other consumers.
         self.items_by_key = MappingProxyType(dict(self.items_by_key))
+        self.templates_by_key = MappingProxyType(dict(self.templates_by_key))
+        for key in self.templates_by_key:
+            self.expansion_state_by_key.setdefault(key, DSEExpansionState())
         missing = set(self.items_by_key) - set(self.state_by_key)
         for key in missing:
             self.state_by_key[key] = MonitorWorkStateRecord()
+
+    def item(self, key: str) -> Optional[MonitorWorkItem]:
+        return self.items_by_key.get(key) or self.expanded_items_by_key.get(key)
+
+    def item_snapshot(self) -> Dict[str, MonitorWorkItem]:
+        result = dict(self.items_by_key)
+        result.update(self.expanded_items_by_key)
+        return result
+
+    def add_expanded_item(self, item: MonitorWorkItem) -> None:
+        self.expanded_items_by_key[item.correlation_key] = item
+        self.state_by_key.setdefault(
+            item.correlation_key, MonitorWorkStateRecord()
+        )
+
+    def remove_expanded_item(self, key: str) -> None:
+        self.expanded_items_by_key.pop(key, None)
+        self.state_by_key.pop(key, None)
 
     @staticmethod
     def validated_polling_interval(interval: float) -> float:

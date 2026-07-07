@@ -46,6 +46,20 @@ def _monitor_indexes(monitors):
     return state_by_key, plan_by_key
 
 
+def _templates_by_rule(monitors):
+    result = defaultdict(list)
+    for monitor in tuple(monitors):
+        plan = monitor.plan
+        for template_id, template in tuple(plan.templates_by_key.items()):
+            result[template.item.rule_id].append(
+                (
+                    template,
+                    plan.expansion_state_by_key.get(template_id),
+                )
+            )
+    return result
+
+
 def _active_components_by_rule(orchestrator):
     result = defaultdict(set)
     if orchestrator is None:
@@ -157,6 +171,7 @@ def _materialized_row(
     detail_budget,
     monotonic_now,
     wall_now,
+    templates=(),
 ):
     state_names = []
     last_attempts = []
@@ -198,12 +213,32 @@ def _materialized_row(
         if record.get("last_attempt") is not None
     ]
     metadata = rule.signature.metadata
+    expansion_errors = [
+        state.last_error
+        for unused_template, state in templates
+        if state is not None and state.last_error
+    ]
+    expansion_phases = [
+        state.phase
+        for unused_template, state in templates
+        if state is not None
+    ]
+    health = _health(state_names, bool(records) or bool(expansion_errors))
+    reason = _reason(records)
+    if not state_names and templates:
+        health = "DEGRADED"
+        reason = "dse_discovery_{}".format(
+            expansion_phases[0].lower() if expansion_phases else "pending"
+        )
+    elif expansion_errors:
+        health = "DEGRADED"
+        reason = bound_diagnostic(expansion_errors[0], 512)
     return {
         "rule_id": metadata.id,
         "rule": bound_identity(metadata.name, 128),
         "version": bound_identity(metadata.version, 64),
         "component": bound_identity(metadata.component, 128),
-        "health": _health(state_names, bool(records)),
+        "health": health,
         "work_items_healthy": healthy_count,
         "work_items_total": len(items),
         "work_items_omitted": len(items) - len(details),
@@ -211,7 +246,7 @@ def _materialized_row(
         "last_attempt": max(last_attempts + record_attempts, default=None),
         "last_success": max(last_successes, default=None),
         "failure_count": max(failure_counts, default=0),
-        "reason": _reason(records),
+        "reason": reason,
         "work_items": details,
     }
 
@@ -286,6 +321,7 @@ def build_rule_status_snapshot(
         else ()
     )
     state_by_key, plan_by_key = _monitor_indexes(monitors)
+    templates_by_rule = _templates_by_rule(monitors)
     items_by_rule = _group_by_rule(work_items)
     broken_by_rule = _group_broken_by_rule(runtime_broken)
     active_by_rule = _active_components_by_rule(orchestrator)
@@ -312,6 +348,7 @@ def build_rule_status_snapshot(
             MAX_DETAILS - detail_count,
             monotonic_now,
             wall_now,
+            templates_by_rule.get(rule_id, ()),
         )
         rows.append(row)
         detail_count += len(row["work_items"])

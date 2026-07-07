@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import count
 from queue import Empty, Full, PriorityQueue, Queue
 from typing import Callable, Dict, Optional
@@ -16,6 +16,7 @@ from .adapters import DataSourceAdapter
 from .runtime import (
     EvaluationResult,
     EvaluationResultType,
+    DSEExpansionEvent,
     FaultEvidenceEvent,
     MonitorCommandType,
     MonitorControlCommand,
@@ -24,6 +25,8 @@ from .runtime import (
     MonitorWorkStateRecord,
     RuleRuntimeStatus,
     SourceAvailability,
+    ValueConfig,
+    make_correlation_key,
 )
 
 
@@ -168,8 +171,15 @@ class MonitorThread(threading.Thread):
         self._next_poll = self.clock()
         self._async_completions = Queue()
         self._async_jobs = {}
+        self._dse_templates_by_child = {}
         self.diagnostics = deque(maxlen=32)
-        if any(item.async_collection for item in self.plan.items_by_key.values()):
+        if any(
+            item.async_collection
+            for item in self.plan.items_by_key.values()
+        ) or any(
+            template.item.async_collection
+            for template in self.plan.templates_by_key.values()
+        ):
             if self.async_collection_pool is None:
                 raise ValueError(
                     "async collection work requires a shared collection pool"
@@ -204,7 +214,7 @@ class MonitorThread(threading.Thread):
         interval = self.plan.validated_polling_interval(interval)
         now = self.clock()
         self.plan.polling_interval = interval
-        for key, item in self.plan.items_by_key.items():
+        for key, item in self.plan.item_snapshot().items():
             if item.sampling_interval_is_explicit:
                 continue
             state = self.plan.state_by_key[key]
@@ -230,6 +240,7 @@ class MonitorThread(threading.Thread):
         self.drain_control_queue()
         now = self.clock()
         self._recover_expired_ownership(now)
+        self._expand_due_templates(now)
         normal_poll_due = now >= self._next_poll
         recheck_due = any(
             state.state == MonitorWorkState.RECHECK_REQUESTED
@@ -254,6 +265,14 @@ class MonitorThread(threading.Thread):
                 continue
             due_times.append(
                 now if state.next_sample_due is None else state.next_sample_due
+            )
+        for state in self.plan.expansion_state_by_key.values():
+            if state.pending_cycle_keys:
+                continue
+            due_times.append(
+                now
+                if state.next_expansion_due is None
+                else state.next_expansion_due
             )
         self._next_poll = (
             min(due_times)
@@ -368,6 +387,259 @@ class MonitorThread(threading.Thread):
                 state.recheck_not_before = None
                 self._make_normal_work_due(state)
 
+    def _expand_due_templates(self, now: float) -> None:
+        adapter = self.adapters.get("dse")
+        if adapter is None:
+            return
+        for template_id in sorted(self.plan.templates_by_key):
+            state = self.plan.expansion_state_by_key[template_id]
+            if state.pending_cycle_keys:
+                continue
+            if (
+                state.next_expansion_due is not None
+                and now < state.next_expansion_due
+            ):
+                continue
+            self._expand_template(
+                template_id,
+                self.plan.templates_by_key[template_id],
+                state,
+                adapter,
+                now,
+            )
+
+    def _expanded_item(self, template, binding):
+        base = template.item
+        source_id = "dse:{}:{}".format(
+            template.source_handle.reference.canonical,
+            binding.source_id,
+        )
+        key = make_correlation_key(
+            base.rule_id,
+            base.event_id,
+            binding.instance,
+            base.symptom,
+            source_id,
+        )
+        config = binding.value_configs
+        value_config = (
+            base.value_config
+            if config.type == "N/A" and base.value_config.type != "N/A"
+            else ValueConfig(
+                type=config.type,
+                unit=config.unit,
+                scaling=config.scaling,
+                encoding=config.encoding,
+            )
+        )
+        source = dict(binding.data)
+        source["dse_reference"] = (
+            template.source_handle.reference.canonical
+        )
+        return replace(
+            base,
+            component_name=binding.instance,
+            correlation_key=key,
+            source_id=source_id,
+            source=source,
+            value_config=value_config,
+            dse_binding=binding,
+        )
+
+    def _common_items(self, template, binding):
+        """Clone common predicates for a newly discovered component instance."""
+
+        result = []
+        for item in template.common_items:
+            key = make_correlation_key(
+                item.rule_id,
+                item.event_id,
+                binding.instance,
+                item.symptom,
+                item.source_id,
+            )
+            result.append(
+                replace(
+                    item,
+                    component_name=binding.instance,
+                    correlation_key=key,
+                )
+            )
+        return tuple(result)
+
+    def _warmup_keys(self, keys):
+        return {
+            key
+            for key in keys
+            if self.plan.state_by_key[key].state
+            not in (MonitorWorkState.BROKEN, MonitorWorkState.SUSPENDED)
+        }
+
+    def _expand_template(
+        self, template_id, template, state, adapter, now
+    ) -> None:
+        policy = template.source_handle.policy
+        previous_phase = state.phase
+        try:
+            result = adapter.expand(template)
+            expanded = []
+            for binding in result.bindings:
+                expanded.append(self._expanded_item(template, binding))
+                expanded.extend(self._common_items(template, binding))
+            items = tuple(expanded)
+        except Exception as error:
+            state.last_error = str(error)
+            state.next_expansion_due = now + policy.bootstrap_interval
+            if state.phase == "STABLE":
+                state.phase = "WARMUP"
+                state.warmup_cycles_completed = 0
+            self.diagnostics.append(
+                {
+                    "monitor": self.plan.monitor_id,
+                    "template_id": template_id,
+                    "state": state.phase,
+                    "reason": "DSE expansion failed: {}".format(error),
+                    "observed_at": self.wall_clock(),
+                }
+            )
+            return
+
+        fingerprint = tuple(
+            sorted(
+                (item.dse_binding.instance, item.dse_binding.source_id)
+                for item in items
+                if item.dse_binding is not None
+            )
+        )
+        changed = bool(state.binding_fingerprint) and (
+            fingerprint != state.binding_fingerprint
+        )
+        desired = {item.correlation_key: item for item in items}
+        added = []
+        for key, item in desired.items():
+            existing = self.plan.expanded_items_by_key.get(key)
+            if existing == item:
+                continue
+            added.append(item)
+
+        relinquished = []
+        removed = []
+        if result.authoritative:
+            for key in tuple(state.child_keys - set(desired)):
+                child_state = self.plan.state_by_key.get(key)
+                if child_state is None or child_state.state not in (
+                    MonitorWorkState.READY,
+                    MonitorWorkState.DEGRADED,
+                    MonitorWorkState.SUSPENDED,
+                    MonitorWorkState.BROKEN,
+                ):
+                    continue
+                relinquished.append(key)
+                owners = self._dse_templates_by_child.get(key, set())
+                if not (owners - {template_id}):
+                    removed.append(key)
+
+        if added or removed:
+            event = DSEExpansionEvent(
+                monitor_id=self.plan.monitor_id,
+                plan_generation=self.plan.plan_generation,
+                template_id=template_id,
+                signature=template.signature,
+                added_items=tuple(added),
+                removed_keys=tuple(removed),
+                phase=state.phase,
+                authoritative=result.authoritative,
+                observed_at=self.wall_clock(),
+            )
+            try:
+                # Registration is queued before children can be sampled. FIFO
+                # ordering then guarantees the primary correlation table sees
+                # the expansion before any evidence from those children.
+                self.evidence_queue.put_nowait(event)
+            except Full:
+                state.last_error = "primary evidence queue is full"
+                state.next_expansion_due = now + policy.bootstrap_interval
+                self.diagnostics.append(
+                    {
+                        "monitor": self.plan.monitor_id,
+                        "template_id": template_id,
+                        "state": state.phase,
+                        "reason": "DSE expansion registration queue is full",
+                        "observed_at": self.wall_clock(),
+                    }
+                )
+                return
+
+        for key, item in desired.items():
+            self.plan.add_expanded_item(item)
+            self._dse_templates_by_child.setdefault(key, set()).add(
+                template_id
+            )
+        for key in relinquished:
+            owners = self._dse_templates_by_child.get(key, set())
+            owners.discard(template_id)
+            if owners:
+                continue
+            self._dse_templates_by_child.pop(key, None)
+            self.plan.remove_expanded_item(key)
+
+        retained = state.child_keys - set(relinquished)
+        state.child_keys = retained | set(desired)
+        state.binding_fingerprint = fingerprint
+        state.last_expansion_timestamp = self.wall_clock()
+        state.last_error = ""
+        state.authoritative = result.authoritative
+        state.cycle_id += 1
+
+        if state.phase == "BOOTSTRAP":
+            state.bootstrap_scans_completed += 1
+            if (
+                state.bootstrap_scans_completed
+                >= policy.bootstrap_scans
+                and state.child_keys
+            ):
+                state.phase = "WARMUP"
+                state.warmup_cycles_completed = 0
+                state.pending_cycle_keys = self._warmup_keys(state.child_keys)
+                state.next_expansion_due = None
+            else:
+                state.next_expansion_due = now + policy.bootstrap_interval
+        elif state.phase == "WARMUP":
+            if changed:
+                state.warmup_cycles_completed = 0
+            else:
+                state.warmup_cycles_completed += 1
+            if (
+                state.warmup_cycles_completed >= policy.warmup_cycles
+                and state.child_keys
+            ):
+                state.phase = "STABLE"
+                state.pending_cycle_keys.clear()
+                state.next_expansion_due = now + policy.stable_interval
+            else:
+                state.pending_cycle_keys = self._warmup_keys(state.child_keys)
+                state.next_expansion_due = (
+                    None
+                    if state.pending_cycle_keys
+                    else now + policy.bootstrap_interval
+                )
+        else:
+            if changed:
+                state.phase = "WARMUP"
+                state.warmup_cycles_completed = 0
+                state.pending_cycle_keys = self._warmup_keys(state.child_keys)
+                state.next_expansion_due = None
+            else:
+                state.next_expansion_due = now + policy.stable_interval
+
+        if state.phase != previous_phase:
+            LOGGER.info(
+                "DSE template %s discovery phase changed from %s to %s",
+                template_id,
+                previous_phase,
+                state.phase,
+            )
+
     def _record_lease_expiry(self, key: str, state: str, now: float) -> None:
         self.diagnostics.append(
             {
@@ -388,7 +660,8 @@ class MonitorThread(threading.Thread):
     ) -> None:
         self.drain_async_completions()
         cycle_now = self.clock() if now is None else now
-        for key in sorted(self.plan.items_by_key):
+        items = self.plan.item_snapshot()
+        for key in sorted(items):
             state = self.plan.state_by_key[key]
             recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
             key_now = self.clock() if respect_schedule else cycle_now
@@ -404,7 +677,7 @@ class MonitorThread(threading.Thread):
                 and key_now < state.recheck_not_before
             ):
                 continue
-            item = self.plan.items_by_key[key]
+            item = items[key]
             if not recheck:
                 attempt_time = key_now
                 if (
@@ -494,10 +767,11 @@ class MonitorThread(threading.Thread):
                 self._handle_result(
                     key,
                     state,
-                    self.plan.items_by_key[key],
+                    self.plan.item(key),
                     completion.result,
                     from_recheck,
                 )
+                self._mark_dse_cycle_attempt(key)
             finally:
                 self._async_completions.task_done()
 
@@ -514,12 +788,29 @@ class MonitorThread(threading.Thread):
             )
 
     def _collect_key(self, key: str, state: MonitorWorkStateRecord, item=None) -> None:
-        item = item or self.plan.items_by_key[key]
+        item = item or self.plan.item(key)
         from_recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
         state.last_attempt_timestamp = self.wall_clock()
         adapter = self.adapters[item.source_type]
         result = self._collect_result(adapter, item)
         self._handle_result(key, state, item, result, from_recheck)
+        self._mark_dse_cycle_attempt(key)
+
+    def _mark_dse_cycle_attempt(self, key: str) -> None:
+        template_ids = self._dse_templates_by_child.get(key, ())
+        if not template_ids:
+            return
+        for template_id in tuple(template_ids):
+            state = self.plan.expansion_state_by_key[template_id]
+            if state.phase != "WARMUP":
+                continue
+            state.pending_cycle_keys.discard(key)
+            if not state.pending_cycle_keys:
+                state.last_complete_cycle_timestamp = self.wall_clock()
+                state.next_expansion_due = self.clock()
+                self._next_poll = min(
+                    self._next_poll, state.next_expansion_due
+                )
 
     def _handle_result(
         self,

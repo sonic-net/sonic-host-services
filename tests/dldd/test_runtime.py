@@ -1,6 +1,8 @@
 from __future__ import absolute_import
 
 from dataclasses import replace
+from copy import deepcopy
+import json
 from queue import Empty, Queue
 import subprocess
 from threading import Event as ThreadEvent, Thread
@@ -10,18 +12,32 @@ import pytest
 
 from dldd.adapters import (
     CLIAdapter,
+    DSEAdapter,
     FileAdapter,
     I2CAdapter,
     PlatformAPIAdapter,
     RedisAdapter,
     SysfsAdapter,
+    adapter_map,
+)
+from dldd.correlation import CorrelationEngine
+from dldd.dse import (
+    DSEBinding,
+    DSEEvaluationHandle,
+    DSEExpansionPolicy,
+    DSEExpansionResult,
+    DSEHook,
+    DSERegistry,
+    DSESourceHandle,
 )
 from dldd.evaluators import EvaluationContractError, evaluate
 from dldd.monitor import AsyncCollectionPool, MonitorThread, command_for_event
 from dldd.hooks import VendorHook, VendorHookRegistry
+from dldd.models import ValueConfig as ModelValueConfig
 from dldd.planner import build_plans
 from dldd.runtime import (
     CollectedValue,
+    DSEExpansionEvent,
     EvaluationResult,
     EvaluationResultType,
     MonitorCommandType,
@@ -32,7 +48,7 @@ from dldd.runtime import (
     SourceAvailability,
     ValueConfig,
 )
-from dldd.validation import load_rules
+from dldd.validation import ValidationContext, load_rules, validate_document
 
 
 class SequenceAdapter(object):
@@ -1064,6 +1080,254 @@ def test_redis_adapter_uses_full_key_and_slash_value_path():
     assert collected.result == EvaluationResultType.MATCH
     assert collected.value.normalized == 51.5
     assert calls == [("STATE_DB", "PSU_INFO", "PSU_INFO|PSU0")]
+
+
+class _Clock:
+    def __init__(self, value=0.0):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+
+class RuntimeDSEHook(DSEHook):
+    def __init__(self):
+        self.values = {"SENSOR0": 10.0}
+        self.thresholds = {"SENSOR0": 20.0}
+        self.expansions = 0
+        self.collections = 0
+        self.evaluations = 0
+
+    def resolve_source(self, reference, context):
+        def expand(unused_context):
+            self.expansions += 1
+            return DSEExpansionResult(
+                tuple(
+                    DSEBinding(
+                        instance=name,
+                        source_id="SENSOR_INFO|{}".format(name),
+                        data={"name": name},
+                        value_configs=ModelValueConfig(
+                            type="float", unit="units"
+                        ),
+                    )
+                    for name in sorted(self.values)
+                )
+            )
+
+        def get_value(invocation):
+            self.collections += 1
+            return self.values[invocation.binding.instance]
+
+        return DSESourceHandle(
+            reference,
+            expand,
+            get_value,
+            DSEExpansionPolicy(
+                bootstrap_scans=2,
+                bootstrap_interval=1,
+                warmup_cycles=2,
+                stable_interval=10,
+            ),
+        )
+
+    def resolve_evaluation(self, reference, context):
+        def get_evaluator(invocation):
+            self.evaluations += 1
+            return {
+                "type": "dse",
+                "operator": ">=",
+                "value": self.thresholds[invocation.binding.instance],
+                "value_configs": {
+                    "type": "float",
+                    "unit": "units",
+                    "scaling": "N/A",
+                    "encoding": "N/A",
+                },
+            }
+
+        return DSEEvaluationHandle(reference, get_evaluator)
+
+
+def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
+    with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
+        document = json.load(stream)
+    configured = document["signatures"][0]["signature"]["conditions"][
+        "events"
+    ][0]["event"]
+    configured.update(
+        {
+            "type": "dse",
+            "path": "{sensor*}:{redis_sensor_value()}",
+            "evaluation": {
+                "type": "dse",
+                "value": "{sensor*}:{redis_high_threshold()}",
+            },
+            "sampling_interval": 1,
+        }
+    )
+    hook = RuntimeDSEHook()
+    validated = validate_document(
+        document,
+        ValidationContext(dse_registry=DSERegistry(hook=hook)),
+    )
+    assert validated.activation_valid
+    bundle = build_plans(
+        validated.materialized_rules,
+        "generation",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    assert not bundle.work_items
+    assert len(bundle.templates) == 1
+
+    clock = _Clock()
+    evidence = Queue()
+    monitor = MonitorThread(
+        bundle.monitor_plans["common"],
+        adapter_map(),
+        evidence,
+        clock=clock,
+        wall_clock=lambda: 1000.0 + clock.value,
+    )
+
+    for value in (0.0, 1.0, 2.0, 3.0):
+        clock.value = value
+        monitor.run_once()
+
+    expansion = evidence.get_nowait()
+    assert isinstance(expansion, DSEExpansionEvent)
+    assert len(expansion.added_items) == 1
+    state = next(iter(monitor.plan.expansion_state_by_key.values()))
+    assert state.phase == "STABLE"
+    assert hook.expansions == 4
+    assert hook.collections == 4
+    assert hook.evaluations == 4
+
+    hook.thresholds["SENSOR0"] = 5.0
+    clock.value = 4.0
+    monitor.run_once()
+
+    matched = evidence.get_nowait()
+    assert matched.result.result == EvaluationResultType.MATCH
+    assert matched.result.expected == 5.0
+    assert hook.expansions == 4
+    assert hook.evaluations == 5
+
+    hook.thresholds.clear()
+    child = next(iter(monitor.plan.expanded_items_by_key.values()))
+    failed = adapter_map()["dse"].collect(child)
+    assert failed.result == EvaluationResultType.EVALUATION_ERROR
+    assert failed.error_category == "EVALUATION_ERROR"
+
+
+def test_runtime_dse_does_not_publish_children_before_expansion_registration():
+    with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
+        document = json.load(stream)
+    configured = document["signatures"][0]["signature"]["conditions"][
+        "events"
+    ][0]["event"]
+    configured.update(
+        {
+            "type": "dse",
+            "path": "{sensor*}:{redis_sensor_value()}",
+            "evaluation": {
+                "type": "dse",
+                "value": "{sensor*}:{redis_high_threshold()}",
+            },
+            "sampling_interval": 1,
+        }
+    )
+    hook = RuntimeDSEHook()
+    validated = validate_document(
+        document,
+        ValidationContext(dse_registry=DSERegistry(hook=hook)),
+    )
+    bundle = build_plans(
+        validated.materialized_rules,
+        "generation",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    clock = _Clock()
+    evidence = Queue(maxsize=1)
+    evidence.put_nowait("occupied")
+    monitor = MonitorThread(
+        bundle.monitor_plans["common"],
+        adapter_map(),
+        evidence,
+        clock=clock,
+    )
+
+    monitor.run_once()
+
+    assert not monitor.plan.expanded_items_by_key
+    assert "queue is full" in next(
+        iter(monitor.plan.expansion_state_by_key.values())
+    ).last_error
+
+    evidence.get_nowait()
+    evidence.task_done()
+    clock.value = 1.0
+    monitor.run_once()
+
+    assert len(monitor.plan.expanded_items_by_key) == 1
+    assert isinstance(evidence.get_nowait(), DSEExpansionEvent)
+
+
+def test_runtime_dse_clones_common_predicates_for_each_discovered_instance():
+    with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
+        document = json.load(stream)
+    conditions = document["signatures"][0]["signature"]["conditions"]
+    direct = deepcopy(conditions["events"][0])
+    direct["event"]["id"] = 2
+    configured = conditions["events"][0]["event"]
+    configured.update(
+        {
+            "type": "dse",
+            "path": "{sensor*}:{redis_sensor_value()}",
+            "evaluation": {
+                "type": "dse",
+                "value": "{sensor*}:{redis_high_threshold()}",
+            },
+        }
+    )
+    conditions["events"].append(direct)
+    conditions["logic"] = "1 AND 2"
+    validated = validate_document(
+        document,
+        ValidationContext(
+            dse_registry=DSERegistry(hook=RuntimeDSEHook())
+        ),
+    )
+    bundle = build_plans(
+        validated.materialized_rules,
+        "generation",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    evidence = Queue()
+    monitor = MonitorThread(
+        bundle.monitor_plans["common"],
+        adapter_map(),
+        evidence,
+        clock=_Clock(),
+    )
+
+    monitor._expand_due_templates(0.0)
+
+    registration = evidence.get_nowait()
+    assert {
+        (item.event_id, item.component_name, item.common_predicate)
+        for item in registration.added_items
+    } == {
+        (1, "SENSOR0", False),
+        (2, "SENSOR0", True),
+    }
+    correlation = CorrelationEngine(bundle.signatures)
+    for item in registration.added_items:
+        correlation.register_work_item(
+            registration.signature, item, registration.plan_generation
+        )
+    execution = correlation.executions[(1000001, "SENSOR0")]
+    assert set(execution.event_keys) == {1, 2}
 
 
 class CollectingHook(VendorHook):

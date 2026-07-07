@@ -239,6 +239,9 @@ class ResolvedSource(object):
 class MaterializedEvent(object):
     event: Event
     sources: Tuple[ResolvedSource, ...]
+    dse_context: Any = None
+    dse_source_handle: Any = None
+    dse_evaluation_handle: Any = None
 
     def __post_init__(self):
         object.__setattr__(self, "sources", tuple(self.sources))

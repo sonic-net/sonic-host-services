@@ -4,6 +4,7 @@ import fnmatch
 import json
 from copy import deepcopy
 from concurrent.futures import Future
+from dataclasses import replace
 from queue import Queue
 from types import SimpleNamespace
 
@@ -17,9 +18,13 @@ from dldd.orchestrator import PrimaryOrchestrator
 from dldd.planner import build_plans
 from dldd.runtime import (
     CollectedValue,
+    DSEExpansionEvent,
+    DSEWorkTemplate,
     EvaluationResult,
     EvaluationResultType,
     FaultEvidenceEvent,
+    MonitorExecutionPlan,
+    MonitorWorkStateRecord,
     ValueConfig,
 )
 from dldd.telemetry import StateDB, TelemetryPublisher
@@ -99,6 +104,146 @@ class NeverCompletingActionRunner(object):
         future = Future()
         future.dldd_worker_id = "stuck-worker"
         return future
+
+
+def test_primary_registers_expanded_dse_item_before_processing_evidence():
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    static_bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    base = next(iter(static_bundle.work_items.values()))
+    item = replace(
+        base,
+        component_name="DYNAMIC0",
+        source_type="dse",
+        source_id="dse:dynamic0",
+        correlation_key=(
+            "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:dse:dynamic0"
+        ),
+    )
+    common = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {},
+        {item.correlation_key: MonitorWorkStateRecord()},
+        Queue(),
+    )
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        {"common": common},
+        {},
+        CorrelationEngine({}),
+        TelemetryPublisher(FakeStateDB(), DLDDConfig()),
+        DLDDConfig(),
+        "sha256:test",
+    )
+    expansion = DSEExpansionEvent(
+        monitor_id="common",
+        plan_generation="sha256:test",
+        template_id="template",
+        signature=rules.materialized_rules[0].signature,
+        added_items=(item,),
+    )
+
+    orchestrator.process_expansion(expansion)
+    orchestrator.process_event(
+        evidence(item, EvaluationResultType.NO_MATCH, 1)
+    )
+
+    assert orchestrator.work_items[item.correlation_key] == item
+    execution = orchestrator.correlation.executions[(1000001, "DYNAMIC0")]
+    assert execution.event_keys == {1: (item.correlation_key,)}
+    assert common.control_queue.get_nowait().correlation_key == item.correlation_key
+
+
+def test_active_dynamic_fault_waits_for_expansion_before_reconciliation():
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    static_bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    base = next(iter(static_bundle.work_items.values()))
+    item = replace(
+        base,
+        component_name="DYNAMIC0",
+        source_type="dse",
+        source_id="dse:dynamic0",
+        correlation_key=(
+            "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:dse:dynamic0"
+        ),
+    )
+    template = DSEWorkTemplate(
+        "template",
+        replace(item, correlation_key="template:1000001:1"),
+        rules.materialized_rules[0].signature,
+        SimpleNamespace(),
+    )
+    common = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {},
+        {},
+        Queue(),
+        templates_by_key={"template": template},
+    )
+    database = FakeStateDB()
+    fault_key = "FAULT_INFO|DYNAMIC0|SYMPTOM_OVER_THRESHOLD"
+    database.hset(
+        fault_key,
+        {
+            "rule": item.rule_name,
+            "rule_id": item.rule_id,
+            "rule_version": item.rule_version,
+            "schema_version": "0.0.1",
+            "active_rules_checksum": "sha256:test",
+            "component_type": item.component_type,
+            "component_name": item.component_name,
+            "symptom": item.symptom,
+            "status": "ACTIVE",
+            "origin_time": 10,
+            "last_detection_time": 11,
+        },
+    )
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        {"common": common},
+        {},
+        CorrelationEngine({}),
+        TelemetryPublisher(database, DLDDConfig()),
+        DLDDConfig(),
+        "sha256:test",
+    )
+
+    orchestrator.reconcile_existing_faults()
+
+    identity = (item.rule_id, item.component_name)
+    assert database.values[fault_key]["status"] == "ACTIVE"
+    assert identity in orchestrator.pending_dynamic_faults
+    assert identity not in orchestrator.reconciliation
+
+    # The owning monitor installs its local child before the FIFO registration
+    # event is consumed by the primary thread.
+    common.add_expanded_item(item)
+    orchestrator.process_expansion(
+        DSEExpansionEvent(
+            monitor_id="common",
+            plan_generation="sha256:test",
+            template_id="template",
+            signature=rules.materialized_rules[0].signature,
+            added_items=(item,),
+        )
+    )
+
+    assert identity not in orchestrator.pending_dynamic_faults
+    assert identity in orchestrator.reconciliation
+    assert common.control_queue.get_nowait().correlation_key == item.correlation_key
 
 
 def test_action_payload_vendor_data_cannot_override_typed_dispatch_fields():
@@ -735,3 +880,12 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
     assert database.values[key]["status"] == "INACTIVE"
     assert json.loads(database.values[key]["repair_actions"]) == []
     assert database.values[key]["remote_action_time_window"] == "77"
+
+    decision = orchestrator.correlation.consume(
+        evidence(item, EvaluationResultType.MATCH, 1)
+    )
+    orchestrator._publish_decision(decision)
+
+    assert database.values[key]["status"] == "ACTIVE"
+    assert database.values[key]["active_rules_checksum"] == "sha256:new"
+    assert "stale rule/source" not in database.values[key]["description"]

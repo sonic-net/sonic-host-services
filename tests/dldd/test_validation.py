@@ -10,9 +10,12 @@ import pytest
 
 from dldd.dse import (
     DSEContext,
+    DSEEvaluationHandle,
+    DSEExpansionResult,
     DSEHook,
     DSEReferenceError,
     DSERegistry,
+    DSESourceHandle,
     DSEUnresolvedError,
     ResolvedCommand,
     ResolvedEvaluation,
@@ -49,6 +52,25 @@ def event(document, signature=0, index=0):
     return document["signatures"][signature]["signature"]["conditions"]["events"][index]["event"]
 
 
+class SensorDSEHook(DSEHook):
+    def resolve_source(self, reference, context):
+        return DSESourceHandle(
+            reference,
+            lambda unused_context: DSEExpansionResult(()),
+            lambda unused_invocation: None,
+        )
+
+    def resolve_evaluation(self, reference, context):
+        return DSEEvaluationHandle(
+            reference,
+            lambda unused_invocation: {
+                "type": "dse",
+                "operator": ">=",
+                "value": 0,
+            },
+        )
+
+
 def test_exact_pydantic_contract_is_the_runtime_authority():
     assert DEFAULT_CONTRACT_REGISTRY.versions == ("0.0.1",)
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
@@ -57,6 +79,43 @@ def test_exact_pydantic_contract_is_the_runtime_authority():
 
     assert envelope.schema_version == "0.0.1"
     assert len(envelope.signatures) == 1
+
+
+@pytest.mark.parametrize(
+    "source_reference,evaluation_reference",
+    (
+        (
+            "sensor:redis_sensor_value()",
+            "{sensor*}:{redis_high_threshold()}",
+        ),
+        (
+            "{sensor*}:{redis_sensor_value()}",
+            "{other*}:{redis_high_threshold()}",
+        ),
+    ),
+)
+def test_instanced_dse_evaluator_requires_matching_instanced_source(
+    source_reference, evaluation_reference
+):
+    document = load_fixture()
+    configured = event(document)
+    configured["type"] = "dse"
+    configured["path"] = source_reference
+    configured["evaluation"] = {
+        "type": "dse",
+        "value": evaluation_reference,
+    }
+
+    result = validate_document(
+        document,
+        ValidationContext(dse_registry=DSERegistry(hook=SensorDSEHook())),
+    )
+
+    assert result.file_valid
+    assert not result.materialized_rules
+    issue = result.broken_rules[0].issues[0]
+    assert issue.code == "materialization_failed"
+    assert "instanced DSE" in issue.message
 
 
 def test_generated_json_schema_is_a_current_derivative():
@@ -152,12 +211,26 @@ def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
             product_id="8102_28fh_dpu_o",
             software_version="grboudre_dldd-impl.0-1d85491a7",
             require_compatibility_identity=True,
+            dse_registry=DSERegistry(hook=SensorDSEHook()),
         ),
     )
 
     assert result.file_valid
-    rules = {
+    all_rules = {
         rule.metadata.id: rule for rule in result.materialized_rules
+    }
+    rules = {
+        rule_id: rule
+        for rule_id, rule in all_rules.items()
+        if rule_id in (9999101, 9999102, 9999103)
+    }
+    assert set(all_rules) == {
+        9999101,
+        9999102,
+        9999103,
+        9999401,
+        9999402,
+        9999403,
     }
     assert set(rules) == {9999101, 9999102, 9999103}
     assert {rule_id: rule.metadata.name for rule_id, rule in rules.items()} == {
@@ -203,6 +276,7 @@ def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
         {"redis": 60, "file": 60, "common": 60},
     )
     assert len(plans.work_items) == 317
+    assert len(plans.templates) == 3
     assert {
         rule_id: sum(
             item.rule_id == rule_id for item in plans.work_items.values()

@@ -20,8 +20,10 @@ except ImportError:  # pragma: no cover - SONiC images provide PyYAML
 from .dse import (
     DSEContext,
     DSEError,
+    DSEEvaluationHandle,
     DSEReferenceError,
     DSERegistry,
+    DSESourceHandle,
     EMPTY_DSE_REGISTRY,
     parse_reference,
 )
@@ -845,11 +847,12 @@ def _validate_resolved_source(source, registry):
 
 
 def materialize_signature(signature, context=None):
-    """Resolve a validated signature into concrete monitor inputs.
+    """Resolve a validated signature into monitor inputs and DSE handles.
 
     This function deliberately performs no hardware probing.  It validates
-    bindings and hook contracts needed to construct a deterministic execution
-    plan, which is the remote-activation requirement in schema 0.0.1.
+    direct bindings and resolves DSE function references to callable handles.
+    Runtime DSE expansion, collection, and evaluator reads remain owned by the
+    monitor thread.
     """
 
     context = context or ValidationContext()
@@ -870,10 +873,16 @@ def materialize_signature(signature, context=None):
     materialized = []
     for event in signature.conditions.events:
         dse_context = _context_for(signature, context, event.id)
+        dse_source_handle = None
         if event.type == "dse" or (
             event.type == "platform_api" and isinstance(event.path, str)
         ):
-            sources = registry.resolve_source(event.path, dse_context)
+            resolved_source = registry.resolve_source(event.path, dse_context)
+            if isinstance(resolved_source, DSESourceHandle):
+                dse_source_handle = resolved_source
+                sources = ()
+            else:
+                sources = resolved_source
         else:
             sources = _direct_sources(event)
         for source in sources:
@@ -884,35 +893,73 @@ def materialize_signature(signature, context=None):
                     raise DSEError("vendor source requires an installed DSE hook")
                 registry.hook.validate_resolved_source(source, dse_context)
         materialized_event = event
+        dse_evaluation_handle = None
         if event.evaluation.type == "dse":
             resolved_evaluation = registry.resolve_evaluation(
                 event.evaluation.value,
                 dse_context,
                 rule_operator=event.evaluation.operator,
             )
-            value_configs = event.evaluation.value_configs
-            if value_configs == ValueConfig():
-                value_configs = resolved_evaluation.value_configs
-            evaluation = Evaluation(
-                type="dse",
-                value=resolved_evaluation.expected_value,
-                operator=event.evaluation.operator or resolved_evaluation.operator,
-                value_configs=value_configs,
-                comparator=resolved_evaluation.comparator,
-            )
-            materialized_event = Event(
-                id=event.id,
-                type=event.type,
-                path=event.path,
-                evaluation=evaluation,
-                match_count=event.match_count,
-                match_period=event.match_period,
-                instances=event.instances,
-                sampling_interval=event.sampling_interval,
-                async_collection=event.async_collection,
-            )
+            if isinstance(resolved_evaluation, DSEEvaluationHandle):
+                dse_evaluation_handle = resolved_evaluation
+                evaluation_is_instanced = any(
+                    token in resolved_evaluation.reference.selector
+                    for token in ("*", "?")
+                )
+                if dse_source_handle is not None:
+                    source_is_instanced = any(
+                        token in dse_source_handle.reference.selector
+                        for token in ("*", "?")
+                    )
+                    if evaluation_is_instanced and not source_is_instanced:
+                        raise DSEError(
+                            "an instanced DSE evaluator requires an instanced source"
+                        )
+                    if (
+                        evaluation_is_instanced
+                        and resolved_evaluation.reference.selector
+                        != dse_source_handle.reference.selector
+                    ):
+                        raise DSEError(
+                            "instanced DSE source and evaluator selectors must match"
+                        )
+                elif evaluation_is_instanced and (
+                    not sources
+                    or any(source.instance is None for source in sources)
+                ):
+                    raise DSEError(
+                        "an instanced DSE evaluator requires instanced source bindings"
+                    )
+            else:
+                value_configs = event.evaluation.value_configs
+                if value_configs == ValueConfig():
+                    value_configs = resolved_evaluation.value_configs
+                evaluation = Evaluation(
+                    type="dse",
+                    value=resolved_evaluation.expected_value,
+                    operator=event.evaluation.operator or resolved_evaluation.operator,
+                    value_configs=value_configs,
+                    comparator=resolved_evaluation.comparator,
+                )
+                materialized_event = Event(
+                    id=event.id,
+                    type=event.type,
+                    path=event.path,
+                    evaluation=evaluation,
+                    match_count=event.match_count,
+                    match_period=event.match_period,
+                    instances=event.instances,
+                    sampling_interval=event.sampling_interval,
+                    async_collection=event.async_collection,
+                )
         materialized.append(
-            MaterializedEvent(event=materialized_event, sources=tuple(sources))
+            MaterializedEvent(
+                event=materialized_event,
+                sources=tuple(sources),
+                dse_context=dse_context,
+                dse_source_handle=dse_source_handle,
+                dse_evaluation_handle=dse_evaluation_handle,
+            )
         )
 
     local = signature.actions.repair_actions.local_actions

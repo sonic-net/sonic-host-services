@@ -1,6 +1,7 @@
-# DUT-generated validation rules. Each working rule contains one logical
-# event expanded positionally across all sensor instances. Redis keys and
-# comparison values preserve each row's snapshotted high_threshold.
+# DUT-generated validation rules. The direct rules use one logical event
+# expanded positionally across all sensor instances and preserve each row's
+# snapshotted high_threshold. The DSE versions discover the same instances at
+# runtime and reread each sensor value and high_threshold for every sample.
 schema_version: 0.0.1
 signatures:
 - signature:
@@ -1077,6 +1078,108 @@ signatures:
               unit: mA
           match_count: 1
           match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_TEMPERATURE_HIGH_DSE
+      id: 9999401
+      version: 1.0.0
+      description: Any temperature sensor reached its live Redis high threshold through Cisco DSE.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: TEMPERATURE_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: TEMPERATURE
+      severity: WARNING
+    conditions:
+      logic: '1'
+      logic_lookback_time: 120
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: "{temperature*}:{redis_sensor_value()}"
+          evaluation:
+            type: dse
+            value: "{temperature*}:{redis_high_threshold()}"
+          match_count: 1
+          match_period: 0
+          sampling_interval: 5
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_VOLTAGE_HIGH_DSE
+      id: 9999402
+      version: 1.0.0
+      description: Any voltage sensor reached its live Redis high threshold through Cisco DSE.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: VOLTAGE_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+    conditions:
+      logic: '1'
+      logic_lookback_time: 120
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: "{voltage*}:{redis_sensor_value()}"
+          evaluation:
+            type: dse
+            value: "{voltage*}:{redis_high_threshold()}"
+          match_count: 1
+          match_period: 0
+          sampling_interval: 5
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_CURRENT_HIGH_DSE
+      id: 9999403
+      version: 1.0.0
+      description: Any current sensor reached its live Redis high threshold through Cisco DSE.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+    conditions:
+      logic: '1'
+      logic_lookback_time: 120
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: "{current*}:{redis_sensor_value()}"
+          evaluation:
+            type: dse
+            value: "{current*}:{redis_high_threshold()}"
+          match_count: 1
+          match_period: 0
+          sampling_interval: 5
     actions:
       repair_actions:
         remote_actions:

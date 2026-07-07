@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 from queue import Queue
 from typing import Dict, Iterable, Mapping, Tuple
@@ -13,6 +13,7 @@ from .runtime import (
     MonitorExecutionPlan,
     MonitorWorkItem,
     MonitorWorkStateRecord,
+    DSEWorkTemplate,
     ValueConfig,
     make_correlation_key,
 )
@@ -33,6 +34,7 @@ class PlanBundle:
     monitor_plans: Mapping[str, MonitorExecutionPlan]
     signatures: Mapping[Tuple[int, str], SignatureExecution]
     work_items: Mapping[str, MonitorWorkItem]
+    templates: Mapping[str, DSEWorkTemplate]
 
 
 def _component_name(instance, fallback: str) -> str:
@@ -130,6 +132,12 @@ def build_plans(
         "common": {},
     }
     signatures: Dict[Tuple[int, str], SignatureExecution] = {}
+    templates: Dict[str, DSEWorkTemplate] = {}
+    grouped_templates: Dict[str, Dict[str, DSEWorkTemplate]] = {
+        "redis": {},
+        "file": {},
+        "common": {},
+    }
 
     for materialized in materialized_rules:
         signature = materialized.signature
@@ -146,6 +154,65 @@ def build_plans(
         items_by_instance = {instance: {} for instance in resolved_instances}
         for materialized_event in materialized.events:
             event = materialized_event.event
+            dse_context = materialized_event.dse_context
+            if materialized_event.dse_source_handle is not None:
+                handle = materialized_event.dse_source_handle
+                template_id = "{}:{}:{}".format(
+                    metadata.id, event.id, handle.reference.canonical
+                )
+                interval = float(
+                    event.sampling_interval
+                    if event.sampling_interval is not None
+                    else polling_intervals["common"]
+                )
+                base_item = MonitorWorkItem(
+                    rule_id=metadata.id,
+                    rule_name=metadata.name,
+                    rule_version=metadata.version,
+                    schema_version="0.0.1",
+                    severity=metadata.severity,
+                    priority=metadata.priority,
+                    symptom=metadata.symptom,
+                    error_type=metadata.error_type,
+                    component_type=metadata.component,
+                    component_name=metadata.component,
+                    event_id=event.id,
+                    correlation_key="template:" + template_id,
+                    source_id=handle.reference.canonical,
+                    source_type="dse",
+                    source={"reference": handle.reference.canonical},
+                    evaluation=_evaluation_mapping(event, 0),
+                    match_count=event.match_count,
+                    match_period=event.match_period,
+                    value_config=ValueConfig(
+                        type=event.evaluation.value_configs.type,
+                        unit=event.evaluation.value_configs.unit,
+                        scaling=event.evaluation.value_configs.scaling,
+                        encoding=event.evaluation.value_configs.encoding,
+                    ),
+                    sampling_interval=interval,
+                    sampling_interval_is_explicit=(
+                        event.sampling_interval is not None
+                    ),
+                    async_collection=event.async_collection,
+                    dse_context=dse_context,
+                    dse_source_handle=handle,
+                    dse_evaluation_handle=(
+                        materialized_event.dse_evaluation_handle
+                    ),
+                )
+                template = DSEWorkTemplate(
+                    template_id=template_id,
+                    item=base_item,
+                    signature=signature,
+                    source_handle=handle,
+                    evaluation_handle=(
+                        materialized_event.dse_evaluation_handle
+                    ),
+                )
+                templates[template_id] = template
+                grouped_templates["common"][template_id] = template
+                continue
             for source_index, source in enumerate(materialized_event.sources):
                 targets = (
                     [_component_name(source.instance, metadata.component)]
@@ -213,12 +280,18 @@ def build_plans(
                             event.sampling_interval is not None
                         ),
                         async_collection=event.async_collection,
+                        dse_context=dse_context,
+                        dse_evaluation_handle=(
+                            materialized_event.dse_evaluation_handle
+                        ),
                     )
                     grouped[monitor_type][key] = item
                     all_items[key] = item
                     items_by_instance[instance].setdefault(event.id, []).append(key)
 
         for instance, event_keys in items_by_instance.items():
+            if not event_keys:
+                continue
             signatures[(metadata.id, instance)] = SignatureExecution(
                 signature=signature,
                 component_name=instance,
@@ -226,9 +299,20 @@ def build_plans(
                 plan_generation=plan_generation,
             )
 
+    for template_id, template in tuple(templates.items()):
+        common = {}
+        for item in all_items.values():
+            if item.rule_id != template.item.rule_id or not item.common_predicate:
+                continue
+            common.setdefault((item.event_id, item.source_id), item)
+        enriched = replace(template, common_items=tuple(common.values()))
+        templates[template_id] = enriched
+        grouped_templates["common"][template_id] = enriched
+
     plans = {}
     for monitor_type, items in grouped.items():
-        if not items:
+        monitor_templates = grouped_templates[monitor_type]
+        if not items and not monitor_templates:
             continue
         monitor_id = monitor_type
         plans[monitor_type] = MonitorExecutionPlan(
@@ -239,5 +323,6 @@ def build_plans(
             items_by_key=items,
             state_by_key={key: MonitorWorkStateRecord() for key in items},
             control_queue=Queue(),
+            templates_by_key=monitor_templates,
         )
-    return PlanBundle(plans, signatures, all_items)
+    return PlanBundle(plans, signatures, all_items, templates)

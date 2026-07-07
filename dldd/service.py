@@ -392,7 +392,7 @@ class DLDDService:
             intervals,
         )
         adapters = self._adapters()
-        if not bundle.work_items:
+        if not bundle.work_items and not bundle.templates:
             self.fatal_reason = "zero usable monitor work items after activation"
             self.startup_broken = tuple(self.activation.broken_rules)
             self.telemetry.publish_status(
@@ -428,7 +428,12 @@ class DLDDService:
         self.action_runner = ActionRunner(
             ActionExecutor(hooks=self.extensions.vendor_hooks)
         )
-        if any(item.async_collection for item in bundle.work_items.values()):
+        if any(
+            item.async_collection for item in bundle.work_items.values()
+        ) or any(
+            template.item.async_collection
+            for template in bundle.templates.values()
+        ):
             self.async_collection_pool = AsyncCollectionPool()
         self.artifact_client = artifact_client
         correlation = CorrelationEngine(bundle.signatures)
