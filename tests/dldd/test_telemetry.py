@@ -145,12 +145,31 @@ def test_rule_status_uses_generation_bound_120_second_snapshot():
     row = database.values[publisher.RULE_STATUS_KEY]
     assert database.ttls[publisher.RULE_STATUS_KEY] == 120
     assert row["active_rules_checksum"] == "sha256:test"
-    assert json.loads(row["rules"]) == list(rules)
+    assert json.loads(row["rule_keys"]) == [
+        "DLDD_RULE_STATUS|rule|PSU_FAULT"
+    ]
+    assert row["rule_count"] == "1"
     assert row["detail_truncated"] == "True"
     assert row["published_at"].isdigit()
+    summary = database.values["DLDD_RULE_STATUS|rule|PSU_FAULT"]
+    detail = database.values["DLDD_RULE_DETAIL|rule|PSU_FAULT"]
+    assert summary["rule_id"] == "1000001"
+    assert summary["health"] == "OK"
+    assert "work_items" not in summary
+    assert json.loads(detail["work_items"]) == []
+    assert all(
+        database.ttls[key] == 120
+        for key in (
+            publisher.RULE_STATUS_KEY,
+            "DLDD_RULE_STATUS|rule|PSU_FAULT",
+            "DLDD_RULE_DETAIL|rule|PSU_FAULT",
+        )
+    )
 
     assert publisher.clear_rule_status()
     assert publisher.RULE_STATUS_KEY not in database.values
+    assert "DLDD_RULE_STATUS|rule|PSU_FAULT" not in database.values
+    assert "DLDD_RULE_DETAIL|rule|PSU_FAULT" not in database.values
 
 
 def test_publications_floor_timestamps_and_preserve_duration_precision():
@@ -199,6 +218,8 @@ def test_publications_floor_timestamps_and_preserve_duration_precision():
         "sha256:test",
         (
             {
+                "rule_id": 1000001,
+                "rule": "TIMESTAMP_RULE",
                 "last_attempt": 107.2,
                 "last_success": 108.1,
                 "work_items": [
@@ -210,10 +231,13 @@ def test_publications_floor_timestamps_and_preserve_duration_precision():
             },
         ),
     )
-    rules = json.loads(database.values[publisher.RULE_STATUS_KEY]["rules"])
-    assert rules[0]["last_attempt"] == 107
-    assert rules[0]["last_success"] == 108
-    assert rules[0]["work_items"][0] == {
+    summary = database.values["DLDD_RULE_STATUS|rule|TIMESTAMP_RULE"]
+    detail = json.loads(
+        database.values["DLDD_RULE_DETAIL|rule|TIMESTAMP_RULE"]["work_items"]
+    )
+    assert summary["last_attempt"] == "107"
+    assert summary["last_success"] == "108"
+    assert detail[0] == {
         "next_due": 109,
         "sampling_interval": 60.25,
     }
@@ -240,13 +264,64 @@ def test_publications_floor_timestamps_and_preserve_duration_precision():
     assert json.loads(published_fault["local_action_state"])["completed_at"] == 113
 
 
+def test_rule_status_replaces_index_and_removes_stale_rule_keys():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    database.hset(
+        publisher.RULE_STATUS_KEY,
+        {"rules": [{"rule": "legacy-monolith"}]},
+    )
+    publisher.publish_rule_status(
+        "sha256:first",
+        (
+            {"rule_id": 1, "rule": "RULE_ONE", "work_items": []},
+            {"rule_id": 2, "rule": "RULE_TWO", "work_items": []},
+        ),
+    )
+
+    assert "rules" not in database.values[publisher.RULE_STATUS_KEY]
+    assert "DLDD_RULE_STATUS|rule|RULE_TWO" in database.values
+    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" in database.values
+
+    publisher.publish_rule_status(
+        "sha256:second",
+        ({"rule_id": 1, "rule": "RULE_ONE", "work_items": []},),
+    )
+
+    assert json.loads(
+        database.values[publisher.RULE_STATUS_KEY]["rule_keys"]
+    ) == ["DLDD_RULE_STATUS|rule|RULE_ONE"]
+    assert "DLDD_RULE_STATUS|rule|RULE_TWO" not in database.values
+    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" not in database.values
+
+
+def test_rule_named_active_cannot_collide_with_rule_index():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+
+    assert publisher.publish_rule_status(
+        "sha256:test",
+        ({"rule_id": 1, "rule": "active", "work_items": []},),
+    )
+
+    assert publisher.RULE_STATUS_KEY in database.values
+    assert "DLDD_RULE_STATUS|rule|active" in database.values
+    assert json.loads(
+        database.values[publisher.RULE_STATUS_KEY]["rule_keys"]
+    ) == ["DLDD_RULE_STATUS|rule|active"]
+
+
 def test_active_fault_is_persistent_and_nested_fields_are_json():
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
     record = fault()
     publisher.publish_fault(record, serial_number="serial")
     assert record.redis_key not in database.ttls
-    assert json.loads(database.values[record.redis_key]["component_info"])["name"] == "PSU0"
+    payload = database.values[record.redis_key]
+    assert payload["component_type"] == "PSU"
+    assert payload["component_name"] == "PSU0"
+    assert payload["component_serial_number"] == "serial"
+    assert "component_info" not in payload
     assert json.loads(database.values[record.redis_key]["repair_actions"])[0]["action"] == "ACTION_RESEAT"
 
 
@@ -262,9 +337,8 @@ def test_vendor_component_and_remote_action_identities_are_preserved():
     publisher.publish_fault(record)
 
     payload = database.values[record.redis_key]
-    component = json.loads(payload["component_info"])
     actions = json.loads(payload["repair_actions"])
-    assert component["component"] == "VENDOR_FABRIC_MODULE"
+    assert payload["component_type"] == "VENDOR_FABRIC_MODULE"
     assert actions == [
         {"action": "vendor-healthz:ACTION_REPAIR_FABRIC_MODULE"}
     ]
@@ -279,8 +353,8 @@ def test_fault_serial_can_be_supplied_by_platform_metadata_hook():
     )
     record = fault()
     publisher.publish_fault(record)
-    component = json.loads(database.values[record.redis_key]["component_info"])
-    assert component["serial_number"] == "SERIAL-1"
+    payload = database.values[record.redis_key]
+    assert payload["component_serial_number"] == "SERIAL-1"
     assert record.serial_number == "SERIAL-1"
 
 

@@ -600,7 +600,11 @@ def test_reconciliation_ignores_foreign_and_malformed_fault_rows():
     database = FakeStateDB()
     database.hset(
         "FAULT_INFO|FOREIGN|SYMPTOM_UNKNOWN",
-        {"status": "ACTIVE", "component_info": {"name": "FOREIGN"}},
+        {
+            "status": "ACTIVE",
+            "component_type": "FOREIGN",
+            "component_name": "FOREIGN",
+        },
     )
     database.hset(
         "FAULT_INFO|BROKEN|SYMPTOM_UNKNOWN",
@@ -609,7 +613,8 @@ def test_reconciliation_ignores_foreign_and_malformed_fault_rows():
             "rule_id": 1000001,
             "schema_version": "0.0.1",
             "active_rules_checksum": "sha256:test",
-            "component_info": "not-an-object",
+            "component_type": "BROKEN",
+            "component_name": "",
             "status": "ACTIVE",
         },
     )
@@ -651,11 +656,9 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
             "rule_version": item.rule_version,
             "schema_version": "0.0.1",
             "active_rules_checksum": "sha256:old",
-            "component_info": {
-                "component": item.component_type,
-                "name": item.component_name,
-                "serial_number": "",
-            },
+            "component_type": item.component_type,
+            "component_name": item.component_name,
+            "component_serial_number": "",
             "symptom": item.symptom,
             "status": "ACTIVE",
             "origin_time": 10,

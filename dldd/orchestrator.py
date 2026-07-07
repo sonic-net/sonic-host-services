@@ -1152,7 +1152,12 @@ class PrimaryOrchestrator:
 
     @staticmethod
     def _fault_from_payload(payload: Mapping[str, Any]) -> FaultRecord:
-        component = payload.get("component_info") or {}
+        component_type = str(payload.get("component_type", "")).strip()
+        component_name = str(payload.get("component_name", "")).strip()
+        if not component_type or not component_name:
+            raise ValueError(
+                "component_type and component_name must be non-empty"
+            )
         local = payload.get("local_action_state") or {}
         repairs = payload.get("repair_actions") or []
         return FaultRecord(
@@ -1161,8 +1166,8 @@ class PrimaryOrchestrator:
             rule_version=str(payload.get("rule_version", "")),
             schema_version=str(payload.get("schema_version", "")),
             active_rules_checksum=str(payload.get("active_rules_checksum", "")),
-            component_type=str(component.get("component", "")),
-            component_name=str(component.get("name", "")),
+            component_type=component_type,
+            component_name=component_name,
             symptom=str(payload.get("symptom", "")),
             severity=str(payload.get("severity", "UNKNOWN")),
             priority=int(payload.get("priority", 5)),
@@ -1184,7 +1189,7 @@ class PrimaryOrchestrator:
             local_action_details=dict(local),
             action_suppressed=bool(local.get("action_suppressed", False)),
             healthz_artifact=payload.get("healthz_artifact"),
-            serial_number=str(component.get("serial_number", "")),
+            serial_number=str(payload.get("component_serial_number", "")),
             stale_source=bool(payload.get("source_stale", False)),
         )
 

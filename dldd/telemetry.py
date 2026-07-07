@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import asdict
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
+from urllib.parse import quote
 
 from .config import DLDDConfig
 from .runtime import FaultRecord, ValueConfig
@@ -191,6 +192,8 @@ class SonicStateDB(StateDB):
 class TelemetryPublisher:
     STATUS_KEY = "DLDD_STATUS|process_state"
     RULE_STATUS_KEY = "DLDD_RULE_STATUS|active"
+    RULE_STATUS_PREFIX = "DLDD_RULE_STATUS|rule|"
+    RULE_DETAIL_PREFIX = "DLDD_RULE_DETAIL|rule|"
     STATUS_TTL = 120
 
     def __init__(
@@ -261,19 +264,76 @@ class TelemetryPublisher:
         rules=(),
         detail_truncated: bool = False,
     ) -> bool:
-        """Publish one generation-consistent rule inventory snapshot."""
+        """Publish one bounded hash per rule plus a small active index."""
 
-        payload = {
-            "active_rules_checksum": active_rules_checksum,
-            "rules": list(rules),
-            "detail_truncated": detail_truncated,
-            "published_at": time.time(),
-        }
-        payload = floor_timestamp_fields(payload)
+        published_at = floor_timestamp_fields(
+            {"published_at": time.time()}
+        )["published_at"]
+        status_keys = []
+        detail_keys = []
         try:
-            self.state_db.hset_with_ttl(
-                self.RULE_STATUS_KEY, payload, self.STATUS_TTL
+            for index, rule_value in enumerate(rules):
+                rule = dict(rule_value)
+                identity = str(
+                    rule.get("rule")
+                    or rule.get("rule_id")
+                    or "unknown-{}".format(index)
+                )
+                suffix = quote(identity, safe="")
+                status_key = self.RULE_STATUS_PREFIX + suffix
+                detail_key = self.RULE_DETAIL_PREFIX + suffix
+                work_items = list(rule.pop("work_items", ()) or ())
+                summary = {
+                    **rule,
+                    "active_rules_checksum": active_rules_checksum,
+                    "detail_key": detail_key,
+                    "published_at": published_at,
+                }
+                detail = {
+                    "active_rules_checksum": active_rules_checksum,
+                    "rule_id": rule.get("rule_id"),
+                    "rule": rule.get("rule", ""),
+                    "work_items": work_items,
+                    "published_at": published_at,
+                }
+                self.state_db.replace_hash(
+                    detail_key,
+                    floor_timestamp_fields(detail),
+                    self.STATUS_TTL,
+                )
+                self.state_db.replace_hash(
+                    status_key,
+                    floor_timestamp_fields(summary),
+                    self.STATUS_TTL,
+                )
+                status_keys.append(status_key)
+                detail_keys.append(detail_key)
+
+            index_payload = {
+                "active_rules_checksum": active_rules_checksum,
+                "rule_keys": status_keys,
+                "rule_count": len(status_keys),
+                "detail_truncated": detail_truncated,
+                "published_at": published_at,
+            }
+            self.state_db.replace_hash(
+                self.RULE_STATUS_KEY,
+                index_payload,
+                self.STATUS_TTL,
             )
+            keep = set(status_keys + detail_keys + [self.RULE_STATUS_KEY])
+            for pattern in (
+                self.RULE_STATUS_PREFIX + "*",
+                self.RULE_DETAIL_PREFIX + "*",
+            ):
+                for raw_key in tuple(self.state_db.keys(pattern)):
+                    key = (
+                        raw_key.decode()
+                        if isinstance(raw_key, bytes)
+                        else raw_key
+                    )
+                    if key not in keep:
+                        self.state_db.delete(key)
             return True
         except Exception as error:
             LOGGER.error("unable to publish DLDD_RULE_STATUS: %s", error)
@@ -281,7 +341,19 @@ class TelemetryPublisher:
 
     def clear_rule_status(self) -> bool:
         try:
-            self.state_db.delete(self.RULE_STATUS_KEY)
+            keys = {self.RULE_STATUS_KEY}
+            for pattern in (
+                self.RULE_STATUS_PREFIX + "*",
+                self.RULE_DETAIL_PREFIX + "*",
+            ):
+                keys.update(
+                    raw_key.decode()
+                    if isinstance(raw_key, bytes)
+                    else raw_key
+                    for raw_key in self.state_db.keys(pattern)
+                )
+            for key in keys:
+                self.state_db.delete(key)
             return True
         except Exception as error:
             LOGGER.error("unable to clear DLDD_RULE_STATUS: %s", error)
@@ -317,11 +389,9 @@ class TelemetryPublisher:
             "rule_version": fault.rule_version,
             "schema_version": fault.schema_version,
             "active_rules_checksum": fault.active_rules_checksum,
-            "component_info": {
-                "component": fault.component_type,
-                "name": fault.component_name,
-                "serial_number": serial_number,
-            },
+            "component_type": fault.component_type,
+            "component_name": fault.component_name,
+            "component_serial_number": serial_number,
             "error_type": fault.error_type,
             "events": list(fault.events),
             "remote_action_time_window": remote_action_time_window,
@@ -381,7 +451,6 @@ class TelemetryPublisher:
                 name = raw_name.decode() if isinstance(raw_name, bytes) else raw_name
                 value = raw_value.decode() if isinstance(raw_value, bytes) else raw_value
                 if name in (
-                    "component_info",
                     "events",
                     "repair_actions",
                     "actions_taken",
