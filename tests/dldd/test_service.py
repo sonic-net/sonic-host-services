@@ -19,7 +19,7 @@ from dldd.lifecycle import RulePaths
 from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
 from dldd.planner import build_plans
-from dldd.runtime import MonitorWorkState
+from dldd.runtime import MonitorWorkState, MonitorWorkStateRecord
 from dldd.service import (
     DLDDService,
     TelemetryUnavailable,
@@ -666,6 +666,62 @@ def test_run_exits_after_bounded_telemetry_write_failures(monkeypatch):
         service.run()
 
     assert shutdown_modes == [False]
+
+
+def test_inflight_status_reports_only_durable_structured_work():
+    transient = MonitorWorkStateRecord(
+        state=MonitorWorkState.IN_FLIGHT,
+        last_enqueue_timestamp=100.0,
+    )
+    held = MonitorWorkStateRecord(
+        state=MonitorWorkState.HELD_BY_PRIMARY,
+        last_enqueue_timestamp=101.0,
+    )
+    items = {
+        "transient-key": SimpleNamespace(
+            rule_name="TRANSIENT_RULE",
+            rule_id=1000001,
+            event_id=1,
+            component_name="PSU0",
+        ),
+        "held-key": SimpleNamespace(
+            rule_name="HELD_RULE",
+            rule_id=1000002,
+            event_id=2,
+            component_name="PSU1",
+        ),
+    }
+    service = object.__new__(DLDDService)
+    service.monitors = [
+        SimpleNamespace(
+            plan=SimpleNamespace(
+                monitor_id="redis",
+                items_by_key=items,
+                state_by_key={
+                    "transient-key": transient,
+                    "held-key": held,
+                },
+            )
+        )
+    ]
+    service.orchestrator = SimpleNamespace(pending={})
+
+    statuses = service._inflight_status()
+
+    assert statuses == (
+        {
+            "correlation_key": "held-key",
+            "rule": "HELD_RULE",
+            "rule_id": 1000002,
+            "event_id": 2,
+            "component": "PSU1",
+            "state": "HELD_BY_PRIMARY",
+            "reason": "primary_owned",
+            "since": 101.0,
+            "hold_deadline": None,
+            "owning_monitor": "redis",
+        },
+    )
 
 
 def test_clear_state_stops_and_restarts_active_service(monkeypatch):

@@ -771,15 +771,32 @@ class DLDDService:
         return status_published and self._publish_rule_status()
 
     def _inflight_status(self):
+        """Return durable primary-owned work, not transient queue handoffs.
+
+        Process status is refreshed every 30 seconds.  Publishing a normal
+        COLLECTING or IN_FLIGHT handoff can therefore make a sub-second state
+        look stuck for an entire heartbeat interval.  Lease failures already
+        surface through service diagnostics, so this operator view is limited
+        to intentional holds and requested rechecks.
+        """
+
         result = []
         monotonic_now = time.monotonic()
         wall_now = time.time()
         for monitor in self.monitors:
             for key, state in monitor.plan.state_by_key.items():
-                if state.state.value in ("READY", "DEGRADED"):
+                if state.state.value not in (
+                    "HELD_BY_PRIMARY",
+                    "RECHECK_REQUESTED",
+                ):
                     continue
+                item = monitor.plan.items_by_key[key]
                 status = {
                     "correlation_key": key,
+                    "rule": item.rule_name,
+                    "rule_id": item.rule_id,
+                    "event_id": item.event_id,
+                    "component": item.component_name,
                     "state": state.state.value,
                     "reason": "primary_owned",
                     "since": state.last_enqueue_timestamp,
