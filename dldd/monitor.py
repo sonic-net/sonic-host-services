@@ -8,7 +8,8 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from queue import Empty, Full, Queue
+from itertools import count
+from queue import Empty, Full, PriorityQueue, Queue
 from typing import Callable, Dict, Optional
 
 from .adapters import DataSourceAdapter
@@ -30,6 +31,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_ASYNC_COLLECTION_WORKERS = 8
 DEFAULT_ASYNC_COLLECTION_PENDING = 256
+DEFAULT_ASYNC_RECHECK_RESERVE = 8
 
 
 @dataclass(frozen=True)
@@ -45,11 +47,19 @@ class AsyncCollectionPool:
         self,
         max_workers: int = DEFAULT_ASYNC_COLLECTION_WORKERS,
         max_pending: int = DEFAULT_ASYNC_COLLECTION_PENDING,
+        recheck_reserve: int = DEFAULT_ASYNC_RECHECK_RESERVE,
     ) -> None:
         max_workers = max(1, int(max_workers))
         max_pending = max(0, int(max_pending))
-        self._jobs = Queue()
-        self._slots = threading.BoundedSemaphore(max_workers + max_pending)
+        recheck_reserve = min(max(0, int(recheck_reserve)), max_pending)
+        self._jobs = PriorityQueue()
+        self._sequence = count()
+        self._total_slots = threading.BoundedSemaphore(
+            max_workers + max_pending
+        )
+        self._normal_slots = threading.BoundedSemaphore(
+            max_workers + max_pending - recheck_reserve
+        )
         self._closed = False
         self._workers = tuple(
             threading.Thread(
@@ -67,19 +77,34 @@ class AsyncCollectionPool:
         token: str,
         collector: Callable[[], EvaluationResult],
         completion_queue: Queue,
+        high_priority: bool = False,
     ) -> bool:
-        if self._closed or not self._slots.acquire(False):
+        normal_slot = not high_priority
+        if self._closed:
             return False
-        self._jobs.put_nowait((token, collector, completion_queue))
+        if normal_slot and not self._normal_slots.acquire(False):
+            return False
+        if not self._total_slots.acquire(False):
+            if normal_slot:
+                self._normal_slots.release()
+            return False
+        priority = 0 if high_priority else 1
+        self._jobs.put_nowait(
+            (
+                priority,
+                next(self._sequence),
+                (token, collector, completion_queue, normal_slot),
+            )
+        )
         return True
 
     def _worker(self) -> None:
         while True:
-            job = self._jobs.get()
+            unused_priority, unused_sequence, job = self._jobs.get()
             try:
                 if job is None:
                     return
-                token, collector, completion_queue = job
+                token, collector, completion_queue, normal_slot = job
                 if self._closed:
                     continue
                 try:
@@ -97,14 +122,18 @@ class AsyncCollectionPool:
                 )
             finally:
                 if job is not None:
-                    self._slots.release()
+                    self._total_slots.release()
+                    if normal_slot:
+                        self._normal_slots.release()
                 self._jobs.task_done()
 
     def shutdown(self, wait: bool = True) -> None:
         if not self._closed:
             self._closed = True
             for unused_worker in self._workers:
-                self._jobs.put_nowait(None)
+                self._jobs.put_nowait(
+                    (2, next(self._sequence), None)
+                )
         if wait:
             for worker in self._workers:
                 worker.join()
@@ -411,6 +440,7 @@ class MonitorThread(threading.Thread):
             token,
             lambda: self._collect_result(adapter, item),
             self._async_completions,
+            high_priority=from_recheck,
         )
         if not submitted:
             self.diagnostics.append(

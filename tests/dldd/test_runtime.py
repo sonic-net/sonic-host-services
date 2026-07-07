@@ -487,7 +487,11 @@ def test_async_collection_does_not_block_other_due_work_items():
                 completed.set()
             return result(EvaluationResultType.NO_MATCH, False)
 
-    pool = AsyncCollectionPool(max_workers=1, max_pending=1)
+    pool = AsyncCollectionPool(
+        max_workers=1,
+        max_pending=1,
+        recheck_reserve=0,
+    )
     monitor = MonitorThread(
         execution_plan,
         {"test": BlockingAdapter()},
@@ -590,7 +594,11 @@ def test_queued_async_work_is_not_duplicated_when_cadence_circles():
     worker_occupied = ThreadEvent()
     async_collected = ThreadEvent()
     calls = []
-    pool = AsyncCollectionPool(max_workers=1, max_pending=1)
+    pool = AsyncCollectionPool(
+        max_workers=1,
+        max_pending=1,
+        recheck_reserve=0,
+    )
 
     def occupy_worker():
         worker_occupied.set()
@@ -645,6 +653,88 @@ def test_queued_async_work_is_not_duplicated_when_cadence_circles():
     finally:
         release_worker.set()
         pool.shutdown()
+
+
+def test_async_recheck_jumps_ahead_of_normal_queued_work():
+    release_worker = ThreadEvent()
+    worker_occupied = ThreadEvent()
+    all_collected = ThreadEvent()
+    order = []
+    pool = AsyncCollectionPool(
+        max_workers=1,
+        max_pending=3,
+        recheck_reserve=1,
+    )
+
+    def occupy_worker():
+        worker_occupied.set()
+        release_worker.wait(2)
+        return result(EvaluationResultType.NO_MATCH, False)
+
+    def collect(name):
+        def run():
+            order.append(name)
+            if len(order) == 3:
+                all_collected.set()
+            return result(EvaluationResultType.NO_MATCH, False)
+
+        return run
+
+    try:
+        assert pool.submit("occupy", occupy_worker, Queue())
+        assert worker_occupied.wait(1)
+        assert pool.submit("normal-one", collect("normal-one"), Queue())
+        assert pool.submit("normal-two", collect("normal-two"), Queue())
+        assert not pool.submit("normal-three", collect("normal-three"), Queue())
+        assert pool.submit(
+            "recheck",
+            collect("recheck"),
+            Queue(),
+            high_priority=True,
+        )
+
+        release_worker.set()
+        assert all_collected.wait(1)
+        assert order == ["recheck", "normal-one", "normal-two"]
+    finally:
+        release_worker.set()
+        pool.shutdown()
+
+
+def test_async_recheck_submission_uses_high_priority():
+    class RecordingPool(object):
+        def __init__(self):
+            self.high_priority = None
+
+        def submit(
+            self,
+            unused_token,
+            unused_collector,
+            unused_completion_queue,
+            high_priority=False,
+        ):
+            self.high_priority = high_priority
+            return False
+
+    item = replace(work_item("recheck"), async_collection=True)
+    execution_plan = plan(item)
+    execution_plan.state_by_key["recheck"].state = (
+        MonitorWorkState.RECHECK_REQUESTED
+    )
+    pool = RecordingPool()
+    monitor = MonitorThread(
+        execution_plan,
+        {"test": SequenceAdapter([])},
+        Queue(),
+        async_collection_pool=pool,
+    )
+
+    monitor.poll_once(include_normal=False)
+
+    assert pool.high_priority is True
+    assert execution_plan.state_by_key["recheck"].state == (
+        MonitorWorkState.RECHECK_REQUESTED
+    )
 
 
 def test_async_collection_match_uses_normal_evidence_path():
