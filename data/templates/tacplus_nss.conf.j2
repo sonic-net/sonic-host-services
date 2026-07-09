@@ -34,6 +34,13 @@ local_authorization
 {% if tacacs_authorization %}
 tacacs_authorization
 {% endif %}
+{% if traceid_authorization %}
+
+# traceid_authorization - If you want to send SSH TraceId in TACACS+ authorization, set it
+# Default: on
+# traceid_authorization
+traceid_authorization
+{% endif %}
 
 # src_ip - set source address of TACACS+ protocol packets
 # Default: None (auto source ip address)
