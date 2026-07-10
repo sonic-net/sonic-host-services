@@ -1,6 +1,6 @@
 """Parser and evaluator for DLDD signature Boolean expressions.
 
-Schema 0.0.1 intentionally has a very small language: positive integer event
+The initial rule contract intentionally has a very small language: positive integer event
 IDs, ``AND``, ``OR``, and parentheses.  Keeping the parser here avoids using
 Python expression evaluation for vendor supplied input.
 """

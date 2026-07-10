@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 import json
 from queue import Queue
 from typing import Dict, Iterable, Mapping, Tuple
@@ -14,7 +14,6 @@ from .runtime import (
     MonitorWorkItem,
     MonitorWorkStateRecord,
     DSEWorkTemplate,
-    ValueConfig,
     make_correlation_key,
 )
 
@@ -27,6 +26,12 @@ _MONITOR_BY_SOURCE = {
     "cli": "common",
     "sysfs": "common",
 }
+
+
+def monitor_type_for_source(source_type: str) -> str:
+    """Return the single monitor routing decision for a source type."""
+
+    return _MONITOR_BY_SOURCE.get(source_type, "common")
 
 
 @dataclass(frozen=True)
@@ -102,12 +107,7 @@ def _evaluation_mapping(event, source_index: int) -> Mapping:
         "type": evaluation.type,
         "value": expected_value,
         "case_sensitive": evaluation.case_sensitive,
-        "value_configs": {
-            "type": configs.type,
-            "unit": configs.unit,
-            "scaling": configs.scaling,
-            "encoding": configs.encoding,
-        },
+        "value_configs": configs.as_payload(),
     }
     if evaluation.operator is not None:
         result["operator"] = evaluation.operator
@@ -120,11 +120,73 @@ def _evaluation_mapping(event, source_index: int) -> Mapping:
     return result
 
 
+def _build_work_item(
+    signature,
+    event,
+    *,
+    component_name,
+    correlation_key,
+    source_id,
+    source_type,
+    source,
+    source_index,
+    value_config,
+    sampling_interval,
+    common_predicate=False,
+    dse_context=None,
+    dse_binding=None,
+    dse_source_handle=None,
+    dse_evaluation_handle=None,
+):
+    """Build one work item from the shared signature/event fields."""
+
+    metadata = signature.metadata
+    return MonitorWorkItem(
+        rule_id=metadata.id,
+        rule_name=metadata.name,
+        rule_version=metadata.version,
+        schema_version=signature.schema_version,
+        severity=metadata.severity,
+        priority=metadata.priority,
+        symptom=metadata.symptom,
+        error_type=metadata.error_type,
+        component_type=metadata.component,
+        component_name=component_name,
+        event_id=event.id,
+        correlation_key=correlation_key,
+        source_id=source_id,
+        source_type=source_type,
+        source=source,
+        evaluation=_evaluation_mapping(event, source_index),
+        match_count=event.match_count,
+        match_period=event.match_period,
+        value_config=value_config,
+        common_predicate=common_predicate,
+        sampling_interval=sampling_interval,
+        sampling_interval_is_explicit=event.sampling_interval is not None,
+        async_collection=event.async_collection,
+        dse_context=dse_context,
+        dse_binding=dse_binding,
+        dse_source_handle=dse_source_handle,
+        dse_evaluation_handle=dse_evaluation_handle,
+    )
+
+
 def build_plans(
     materialized_rules: Iterable[MaterializedRule],
     plan_generation: str,
     polling_intervals: Mapping[str, float],
 ) -> PlanBundle:
+    materialized_rules = tuple(materialized_rules)
+    if not materialized_rules:
+        raise ValueError("materialized rules cannot be empty")
+    schema_versions = {
+        rule.signature.schema_version for rule in materialized_rules
+    }
+    if len(schema_versions) > 1:
+        raise ValueError(
+            "materialized rules from different schema versions cannot share a plan"
+        )
     all_items: Dict[str, MonitorWorkItem] = {}
     grouped: Dict[str, Dict[str, MonitorWorkItem]] = {
         "redis": {},
@@ -165,36 +227,17 @@ def build_plans(
                     if event.sampling_interval is not None
                     else polling_intervals["common"]
                 )
-                base_item = MonitorWorkItem(
-                    rule_id=metadata.id,
-                    rule_name=metadata.name,
-                    rule_version=metadata.version,
-                    schema_version="0.0.1",
-                    severity=metadata.severity,
-                    priority=metadata.priority,
-                    symptom=metadata.symptom,
-                    error_type=metadata.error_type,
-                    component_type=metadata.component,
+                base_item = _build_work_item(
+                    signature,
+                    event,
                     component_name=metadata.component,
-                    event_id=event.id,
                     correlation_key="template:" + template_id,
                     source_id=handle.reference.canonical,
                     source_type="dse",
                     source={"reference": handle.reference.canonical},
-                    evaluation=_evaluation_mapping(event, 0),
-                    match_count=event.match_count,
-                    match_period=event.match_period,
-                    value_config=ValueConfig(
-                        type=event.evaluation.value_configs.type,
-                        unit=event.evaluation.value_configs.unit,
-                        scaling=event.evaluation.value_configs.scaling,
-                        encoding=event.evaluation.value_configs.encoding,
-                    ),
+                    source_index=0,
+                    value_config=event.evaluation.value_configs,
                     sampling_interval=interval,
-                    sampling_interval_is_explicit=(
-                        event.sampling_interval is not None
-                    ),
-                    async_collection=event.async_collection,
                     dse_context=dse_context,
                     dse_source_handle=handle,
                     dse_evaluation_handle=(
@@ -222,11 +265,7 @@ def build_plans(
                 for instance in targets:
                     source_mapping = _source_mapping(source)
                     source_id = _source_identity(source)
-                    monitor_type = _MONITOR_BY_SOURCE.get(source.type)
-                    if monitor_type is None:
-                        # Vendor sources must materialize to an advertised adapter
-                        # type before planning; they run in the common monitor.
-                        monitor_type = "common"
+                    monitor_type = monitor_type_for_source(source.type)
                     key = make_correlation_key(
                         metadata.id, event.id, instance, metadata.symptom, source_id
                     )
@@ -244,31 +283,16 @@ def build_plans(
                             scaling=source_mapping["scaling"],
                             encoding="N/A",
                         )
-                    value_config = ValueConfig(
-                        type=config.type,
-                        unit=config.unit,
-                        scaling=config.scaling,
-                        encoding=config.encoding,
-                    )
-                    item = MonitorWorkItem(
-                        rule_id=metadata.id,
-                        rule_name=metadata.name,
-                        rule_version=metadata.version,
-                        schema_version="0.0.1",
-                        severity=metadata.severity,
-                        priority=metadata.priority,
-                        symptom=metadata.symptom,
-                        error_type=metadata.error_type,
-                        component_type=metadata.component,
+                    value_config = config
+                    item = _build_work_item(
+                        signature,
+                        event,
                         component_name=instance,
-                        event_id=event.id,
                         correlation_key=key,
                         source_id=source_id,
                         source_type=source.type,
                         source=source_mapping,
-                        evaluation=_evaluation_mapping(event, source_index),
-                        match_count=event.match_count,
-                        match_period=event.match_period,
+                        source_index=source_index,
                         value_config=value_config,
                         common_predicate=source.instance is None,
                         sampling_interval=float(
@@ -276,10 +300,6 @@ def build_plans(
                             if event.sampling_interval is not None
                             else polling_intervals[monitor_type]
                         ),
-                        sampling_interval_is_explicit=(
-                            event.sampling_interval is not None
-                        ),
-                        async_collection=event.async_collection,
                         dse_context=dse_context,
                         dse_evaluation_handle=(
                             materialized_event.dse_evaluation_handle

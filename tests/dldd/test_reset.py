@@ -1,25 +1,9 @@
 from __future__ import absolute_import
 
-import fnmatch
-
+from dldd.ownership import is_dldd_fault_payload
 from dldd.reset import clear_runtime_state
-from dldd.telemetry import StateDB, TelemetryPublisher
-
-
-class FakeStateDB(StateDB):
-    def __init__(self, values):
-        self.values = values
-
-    def delete(self, key):
-        self.values.pop(key, None)
-
-    def hgetall(self, key):
-        return self.values.get(key, {})
-
-    def keys(self, pattern):
-        return [
-            key for key in self.values if fnmatch.fnmatch(key, pattern)
-        ]
+from dldd.telemetry import TelemetryPublisher
+from tests.dldd_fakes import FakeStateDB
 
 
 def _runtime_values():
@@ -38,6 +22,15 @@ def _runtime_values():
         "FAULT_INFO|PSU0|FOREIGN": {"producer": "another-service"},
         "UNRELATED|key": {"value": "preserve"},
     }
+
+
+def test_fault_ownership_marker_accepts_text_and_redis_bytes_only():
+    assert is_dldd_fault_payload({"producer": "dldd"})
+    assert is_dldd_fault_payload({b"producer": b"dldd"})
+    assert not is_dldd_fault_payload({"producer": "another-service"})
+    assert not is_dldd_fault_payload(
+        {"rule_id": "1000001", "active_rules_checksum": "sha256:test"}
+    )
 
 
 def test_default_cleanup_preserves_faults_and_artifacts(tmp_path):

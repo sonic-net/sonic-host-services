@@ -16,6 +16,8 @@ from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Set, Tuple
 from urllib.parse import quote
 
+from .models import ValueConfig
+
 
 class MonitorCommandType(str, Enum):
     RESUME = "RESUME"
@@ -49,14 +51,6 @@ class SourceAvailability(str, Enum):
     SUSPENDED = "SUSPENDED"
     UNAVAILABLE = "UNAVAILABLE"
     RECOVERED = "RECOVERED"
-
-
-@dataclass(frozen=True)
-class ValueConfig:
-    type: str = "N/A"
-    unit: str = "N/A"
-    scaling: Any = "N/A"
-    encoding: str = "N/A"
 
 
 @dataclass(frozen=True)

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 import logging
 import time
-from dataclasses import asdict
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 from urllib.parse import quote
 
 from .config import DLDDConfig
-from .runtime import FaultRecord, ValueConfig
+from .models import ValueConfig
+from .ownership import DLDD_FAULT_PRODUCER
+from .runtime import FaultRecord
+from .sonic_hash import SonicHashReader
 from .timestamps import floor_timestamp_fields
 
 
@@ -98,8 +101,11 @@ class StateDB:
 
 
 class SonicStateDB(StateDB):
-    def __init__(self, redis_client=None) -> None:
+    def __init__(self, redis_client=None, hash_reader=None) -> None:
         self._redis_client = redis_client
+        self._hash_reader = hash_reader or (
+            SonicHashReader() if redis_client is None else None
+        )
 
     def _db(self):
         if self._redis_client is None:
@@ -192,6 +198,8 @@ class SonicStateDB(StateDB):
             self._db().delete(*keys)
 
     def hgetall(self, key: str) -> Mapping[str, str]:
+        if self._hash_reader is not None:
+            return self._hash_reader.read("STATE_DB", key)
         return self._db().hgetall(key)
 
     def keys(self, pattern: str) -> Iterable[str]:
@@ -241,17 +249,7 @@ class TelemetryPublisher:
             "activation_result": activation_result,
             "activation_fallback_used": activation_fallback_used,
             "previous_active_rules_checksum": previous_active_rules_checksum,
-            "individual_max_failure_threshold": self.config.individual_max_failure_threshold,
-            "broken_rules_max_threshold": self.config.broken_rules_max_threshold,
-            "redis_monitor_polling_interval": self.config.redis_monitor_polling_interval,
-            "file_monitor_polling_interval": self.config.file_monitor_polling_interval,
-            "common_monitor_polling_interval": self.config.common_monitor_polling_interval,
-            "source_unavailable_grace_period": self.config.source_unavailable_grace_period,
-            "source_recovery_samples": self.config.source_recovery_samples,
-            "inactive_fault_retention_period": self.config.inactive_fault_retention_period,
-            "fault_evidence_ack_timeout": self.config.fault_evidence_ack_timeout,
-            "active_fault_recheck_interval": self.config.active_fault_recheck_interval,
-            "rules_inbox_settle_time": self.config.rules_inbox_settle_time,
+            **asdict(self.config),
             "local_action_default_timeout": local_action_default_timeout,
             "broken_rules": list(broken_rules),
             "source_status": list(source_status),
@@ -393,7 +391,7 @@ class TelemetryPublisher:
                         error,
                     )
         payload = {
-            "producer": "dldd",
+            "producer": DLDD_FAULT_PRODUCER,
             "rule": fault.rule_name,
             "rule_id": fault.rule_id,
             "rule_version": fault.rule_version,
@@ -477,4 +475,4 @@ class TelemetryPublisher:
 
 
 def value_config_payload(config: ValueConfig) -> Mapping[str, Any]:
-    return asdict(config)
+    return config.as_payload()

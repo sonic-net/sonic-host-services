@@ -1,6 +1,5 @@
 from __future__ import absolute_import
 
-import fnmatch
 import json
 from queue import Queue
 
@@ -9,40 +8,10 @@ from dldd.correlation import CorrelationEngine
 from dldd.orchestrator import PrimaryOrchestrator
 from dldd.planner import build_plans
 from dldd.runtime import FaultRecord
-from dldd.telemetry import SonicStateDB, StateDB, TelemetryPublisher
+from dldd.sonic_hash import SonicHashReader
+from dldd.telemetry import SonicStateDB, TelemetryPublisher
 from dldd.validation import load_rules
-
-
-class FakeStateDB(StateDB):
-    def __init__(self):
-        self.values = {}
-        self.ttls = {}
-        self.delete_calls = 0
-
-    def hset(self, key, values):
-        current = self.values.setdefault(key, {})
-        for name, value in values.items():
-            current[name] = json.dumps(value) if isinstance(value, (dict, list, tuple)) else str(value)
-
-    def expire(self, key, seconds):
-        self.ttls[key] = seconds
-
-    def persist(self, key):
-        self.ttls.pop(key, None)
-
-    def hdel(self, key, fields):
-        for field in fields:
-            self.values.get(key, {}).pop(field, None)
-
-    def delete(self, key):
-        self.delete_calls += 1
-        self.values.pop(key, None)
-
-    def hgetall(self, key):
-        return self.values.get(key, {})
-
-    def keys(self, pattern):
-        return [key for key in self.values if fnmatch.fnmatch(key, pattern)]
+from tests.dldd_fakes import FakeStateDB
 
 
 class RecordingPipeline(object):
@@ -87,6 +56,19 @@ class RecordingRedisClient(object):
         self.deleted.append(keys)
 
 
+class RecordingSonicConnector(object):
+    def __init__(self):
+        self.connections = []
+        self.reads = []
+
+    def connect(self, database, wait_for_init):
+        self.connections.append((database, wait_for_init))
+
+    def get_all(self, database, key):
+        self.reads.append((database, key))
+        return {"status": "ACTIVE"}
+
+
 def fault(status="ACTIVE"):
     return FaultRecord(
         rule_id=1000001,
@@ -125,7 +107,7 @@ def test_status_uses_120_second_atomic_ttl_contract():
     assert database.values[publisher.STATUS_KEY]["rules_inbox_settle_time"] == "30"
     assert database.values[publisher.STATUS_KEY]["active_rules_source"] == "inbox"
     assert database.values[publisher.STATUS_KEY]["activation_result"] == "DEGRADED"
-    assert database.values[publisher.STATUS_KEY]["activation_fallback_used"] == "True"
+    assert database.values[publisher.STATUS_KEY]["activation_fallback_used"] == "true"
     assert database.values[publisher.STATUS_KEY]["previous_active_rules_checksum"] == "sha256:old"
 
 
@@ -153,7 +135,7 @@ def test_rule_status_uses_generation_bound_120_second_snapshot():
         "DLDD_RULE_STATUS|rule|PSU_FAULT"
     ]
     assert row["rule_count"] == "1"
-    assert row["detail_truncated"] == "True"
+    assert row["detail_truncated"] == "true"
     assert row["published_at"].isdigit()
     summary = database.values["DLDD_RULE_STATUS|rule|PSU_FAULT"]
     detail = database.values["DLDD_RULE_DETAIL|rule|PSU_FAULT"]
@@ -405,6 +387,39 @@ def test_production_hash_replacement_never_deletes_whole_fault_key():
     names = [operation[0] for operation in client.transaction.operations]
     assert names == ["hset", "hdel", "persist", "execute"]
     assert "delete" not in names
+
+
+def test_sonic_hash_reader_connects_lazily_once_per_database():
+    connector = RecordingSonicConnector()
+    reader = SonicHashReader(connector=connector)
+
+    assert connector.connections == []
+    assert reader.read("STATE_DB", "FAULT_INFO|A") == {"status": "ACTIVE"}
+    reader.read("STATE_DB", "FAULT_INFO|B")
+    reader.read("APPL_DB", "TABLE|KEY")
+
+    assert connector.connections == [
+        ("STATE_DB", False),
+        ("APPL_DB", False),
+    ]
+    assert connector.reads == [
+        ("STATE_DB", "FAULT_INFO|A"),
+        ("STATE_DB", "FAULT_INFO|B"),
+        ("APPL_DB", "TABLE|KEY"),
+    ]
+
+
+def test_state_db_can_share_the_read_only_hash_reader():
+    connector = RecordingSonicConnector()
+    database = SonicStateDB(
+        redis_client=RecordingRedisClient(),
+        hash_reader=SonicHashReader(connector=connector),
+    )
+
+    assert database.hgetall("FAULT_INFO|PSU0|SYMPTOM") == {
+        "status": "ACTIVE"
+    }
+    assert connector.connections == [("STATE_DB", False)]
 
 
 def test_production_status_write_sets_ttl_in_one_transaction():

@@ -14,12 +14,15 @@ import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import Future, TimeoutError
+from concurrent.futures import TimeoutError
 from dataclasses import dataclass
 from queue import Full, Queue
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from .lifecycle import _atomic_json
+from .bounded_calls import BoundedCallGate
+from .command_execution import run_shell_free
+from .filesystem import atomic_write_json
+from .models import Operation
 from .timestamps import floor_timestamp_fields
 
 
@@ -85,7 +88,9 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         self.max_artifact_bytes = max(1024, max_artifact_bytes)
         max_workers = max(1, int(max_workers))
         self._jobs = Queue(maxsize=self.max_artifacts)
-        self._query_slots = threading.BoundedSemaphore(max_workers)
+        self._query_gate = BoundedCallGate(
+            max_workers, "dldd-artifact-query"
+        )
         self._store_lock = threading.RLock()
         self._active = set()
         self._closed = False
@@ -133,7 +138,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                 )
             self._active.add(artifact_base)
             try:
-                _atomic_json(state_path, request.as_payload())
+                atomic_write_json(state_path, request.as_payload())
                 self._jobs.put_nowait(job)
             except Exception:
                 self._active.discard(artifact_base)
@@ -254,7 +259,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
 
     def _record_state(self, artifact_base: str, request: ArtifactRequest) -> None:
         with self._store_lock:
-            _atomic_json(
+            atomic_write_json(
                 os.path.join(self.directory, artifact_base + ".json"),
                 request.as_payload(),
             )
@@ -264,7 +269,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
     ) -> None:
         with self._store_lock:
             try:
-                _atomic_json(
+                atomic_write_json(
                     os.path.join(self.directory, artifact_base + ".json"),
                     request.as_payload(),
                 )
@@ -306,29 +311,10 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         timeout = float(timeout)
         if timeout <= 0:
             raise ValueError("artifact query timeout must be positive")
-        if not self._query_slots.acquire(False):
-            raise RuntimeError(
-                "artifact query capacity is exhausted by timed-out vendor calls"
-            )
-        result = Future()
-
-        def invoke():
-            try:
-                value = self.query_runner(query)
-                if not result.cancelled():
-                    result.set_result(value)
-            except BaseException as error:
-                if not result.cancelled():
-                    result.set_exception(error)
-            finally:
-                self._query_slots.release()
-
-        thread = threading.Thread(
-            target=invoke,
-            name="dldd-artifact-query",
-            daemon=True,
+        result = self._query_gate.start(
+            lambda: self.query_runner(query),
+            "artifact query capacity is exhausted by timed-out vendor calls",
         )
-        thread.start()
         try:
             return result.result(timeout=timeout)
         except TimeoutError:
@@ -491,7 +477,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                         requested_at = float(state.get("requested_at", requested_at))
                     except (TypeError, ValueError):
                         pass
-                _atomic_json(
+                atomic_write_json(
                     manifest_path,
                     ArtifactRequest(
                         artifact_base + ".tar.gz",
@@ -517,7 +503,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                     requested_at = float(state.get("requested_at", now))
                 except (TypeError, ValueError):
                     requested_at = now
-                _atomic_json(
+                atomic_write_json(
                     manifest_path,
                     ArtifactRequest(
                         artifact_base + ".tar.gz",
@@ -532,19 +518,21 @@ class FilesystemArtifactClient(HealthzArtifactClient):
     def _run_query(query: Mapping[str, Any]) -> Any:
         resolved_executor = query.get("executor")
         if callable(resolved_executor):
-            return resolved_executor(query)
+            operation = query.get("materialized_operation")
+            if not isinstance(operation, Operation):
+                raise ValueError(
+                    "resolved query executor requires its materialized operation"
+                )
+            return resolved_executor(operation)
         if query.get("type") != "cli":
             raise RuntimeError("a query runner must be registered for non-CLI queries")
-        import subprocess
-
-        result = subprocess.run(
+        result = run_shell_free(
             list(query["argv"]),
-            shell=False,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             timeout=query.get("timeout"),
+            max_output_bytes=int(
+                query.get("max_output_bytes", 1024 * 1024)
+            ),
         )
         if result.returncode:
-            raise RuntimeError(result.stderr.decode("utf-8", "replace"))
-        return result.stdout.decode("utf-8", "replace")
+            raise RuntimeError(result.stderr_text())
+        return result.stdout_text()

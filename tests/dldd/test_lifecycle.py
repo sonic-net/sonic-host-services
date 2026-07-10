@@ -61,6 +61,24 @@ def test_packaged_generation_is_atomically_promoted(tmp_path):
     assert manifest["last_attempt"]["at"] == 1234
 
 
+def test_malformed_activation_manifest_is_treated_as_empty(tmp_path):
+    rule_paths = paths(tmp_path)
+    os.makedirs(rule_paths.rules_dir)
+    with open(rule_paths.packaged, "w") as stream:
+        stream.write("valid")
+    with open(rule_paths.manifest, "w") as stream:
+        stream.write("{")
+
+    result = RuleGenerationManager(
+        rule_paths, validator, "platform-v1", clock=lambda: 1234
+    ).activate()
+
+    assert result.source == "packaged"
+    with open(rule_paths.manifest) as stream:
+        manifest = json.load(stream)
+    assert manifest["active_checksum"] == result.checksum
+
+
 def test_invalid_inbox_does_not_displace_active_generation(tmp_path):
     rule_paths = paths(tmp_path)
     os.makedirs(os.path.dirname(rule_paths.inbox))
@@ -281,6 +299,28 @@ def test_watcher_requires_stability_and_restarts_once(tmp_path):
     assert restarts == [True]
     state = json.load(open(tmp_path / "watch.json"))
     assert state["last_restart_requested_at"] == 131
+
+
+def test_watcher_replaces_malformed_state_with_observation(tmp_path):
+    rule_paths = paths(tmp_path)
+    os.makedirs(os.path.dirname(rule_paths.inbox))
+    with open(rule_paths.inbox, "w") as stream:
+        stream.write("rules")
+    state_path = tmp_path / "watch.json"
+    state_path.write_text("{")
+    watcher = RulesWatcher(
+        rule_paths.inbox,
+        rule_paths.lock,
+        str(state_path),
+        clock=lambda: 100.0,
+    )
+
+    assert watcher.check_once() is False
+
+    with open(state_path) as stream:
+        state = json.load(stream)
+    assert state["observation"]["size"] == 5
+    assert state["first_seen"] == 100.0
 
 
 def test_broken_rule_state_floors_external_timestamps(tmp_path, monkeypatch):

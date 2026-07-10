@@ -1,6 +1,5 @@
 from __future__ import absolute_import
 
-import fnmatch
 import json
 from copy import deepcopy
 from concurrent.futures import Future
@@ -8,8 +7,8 @@ from dataclasses import replace
 from queue import Queue
 from types import SimpleNamespace
 
-from dldd.actions import ActionResult, ActionSequenceResult
-from dldd.artifacts import ArtifactRequest
+from dldd.actions import ActionExecutor, ActionResult, ActionSequenceResult
+from dldd.artifacts import ArtifactRequest, FilesystemArtifactClient
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine, SignatureExecution
 from dldd.logic import parse_logic
@@ -27,39 +26,9 @@ from dldd.runtime import (
     MonitorWorkStateRecord,
     ValueConfig,
 )
-from dldd.telemetry import StateDB, TelemetryPublisher
+from dldd.telemetry import TelemetryPublisher
 from dldd.validation import load_rules
-
-
-class FakeStateDB(StateDB):
-    def __init__(self):
-        self.values = {}
-        self.ttls = {}
-
-    def hset(self, key, values):
-        self.values[key] = {
-            name: json.dumps(value) if isinstance(value, (dict, list, tuple)) else str(value)
-            for name, value in values.items()
-        }
-
-    def expire(self, key, seconds):
-        self.ttls[key] = seconds
-
-    def persist(self, key):
-        self.ttls.pop(key, None)
-
-    def hdel(self, key, fields):
-        for field in fields:
-            self.values.get(key, {}).pop(field, None)
-
-    def delete(self, key):
-        self.values.pop(key, None)
-
-    def hgetall(self, key):
-        return self.values.get(key, {})
-
-    def keys(self, pattern):
-        return [key for key in self.values if fnmatch.fnmatch(key, pattern)]
+from tests.dldd_fakes import FakeStateDB
 
 
 class CompletedActionRunner(object):
@@ -156,6 +125,7 @@ def test_primary_registers_expanded_dse_item_before_processing_evidence():
 
     assert orchestrator.work_items[item.correlation_key] == item
     execution = orchestrator.correlation.executions[(1000001, "DYNAMIC0")]
+    assert execution.signature.schema_version == item.schema_version
     assert execution.event_keys == {1: (item.correlation_key,)}
     assert common.control_queue.get_nowait().correlation_key == item.correlation_key
 
@@ -198,10 +168,11 @@ def test_active_dynamic_fault_waits_for_expansion_before_reconciliation():
     database.hset(
         fault_key,
         {
+            "producer": "dldd",
             "rule": item.rule_name,
             "rule_id": item.rule_id,
             "rule_version": item.rule_version,
-            "schema_version": "0.0.1",
+            "schema_version": rules.schema_version,
             "active_rules_checksum": "sha256:test",
             "component_type": item.component_type,
             "component_name": item.component_name,
@@ -270,7 +241,28 @@ def test_action_payload_vendor_data_cannot_override_typed_dispatch_fields():
     assert payload["command"] == "PSU:reset()"
     assert payload["timeout"] == 10
     assert payload["executor"] is executor
+    assert payload["materialized_operation"] is operation
     assert payload["token"] == "vendor-data"
+    assert ActionExecutor().execute(payload, timeout=1) is operation
+
+
+def test_resolved_query_executor_receives_immutable_materialized_operation():
+    received = []
+
+    def executor(operation):
+        received.append(operation)
+        return "collected"
+
+    operation = Operation(
+        type="dse",
+        command="SYSTEM:collect()",
+        executor=executor,
+        options={"token": "vendor-data"},
+    )
+    payload = PrimaryOrchestrator._operation_payload(operation)
+
+    assert FilesystemArtifactClient._run_query(payload) == "collected"
+    assert received == [operation]
 
 
 def test_query_payload_drops_reserved_vendor_data_without_canonical_values():
@@ -797,6 +789,7 @@ def test_reconciliation_ignores_foreign_and_malformed_fault_rows():
     database.hset(
         "FAULT_INFO|FOREIGN|SYMPTOM_UNKNOWN",
         {
+            "producer": "another-service",
             "status": "ACTIVE",
             "component_type": "FOREIGN",
             "component_name": "FOREIGN",
@@ -805,9 +798,10 @@ def test_reconciliation_ignores_foreign_and_malformed_fault_rows():
     database.hset(
         "FAULT_INFO|BROKEN|SYMPTOM_UNKNOWN",
         {
+            "producer": "dldd",
             "rule": "BROKEN",
             "rule_id": 1000001,
-            "schema_version": "0.0.1",
+            "schema_version": rules.schema_version,
             "active_rules_checksum": "sha256:test",
             "component_type": "BROKEN",
             "component_name": "",
@@ -847,10 +841,11 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
     database.hset(
         key,
         {
+            "producer": "dldd",
             "rule": item.rule_name,
             "rule_id": item.rule_id,
             "rule_version": item.rule_version,
-            "schema_version": "0.0.1",
+            "schema_version": item.schema_version,
             "active_rules_checksum": "sha256:old",
             "component_type": item.component_type,
             "component_name": item.component_name,
@@ -888,6 +883,7 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
 
     assert database.values[key]["status"] == "ACTIVE"
     assert database.values[key]["active_rules_checksum"] == "sha256:new"
+    assert database.values[key]["schema_version"] == item.schema_version
     assert "stale rule/source" not in database.values[key]["description"]
 
 

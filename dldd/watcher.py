@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import fcntl
-import json
 import os
 import subprocess
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
-from .lifecycle import _atomic_json, sha256_file
+from .filesystem import atomic_write_json, load_json_object
+from .lifecycle import sha256_file
 from .timestamps import floor_timestamp
 
 
@@ -45,13 +45,13 @@ class RulesWatcher:
         if stat.st_size <= 0:
             return False
         now = self.clock()
-        state = self._load_state()
+        state = load_json_object(self.state_path)
         observation = {"size": stat.st_size, "mtime": stat.st_mtime}
         previous = state.get("observation", {})
         first_seen = state.get("first_seen", now)
         if previous != observation:
             state.update({"observation": observation, "first_seen": now})
-            _atomic_json(self.state_path, state)
+            atomic_write_json(self.state_path, state)
             return False
         if now - first_seen < self.settle_time:
             return False
@@ -67,21 +67,13 @@ class RulesWatcher:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             state["last_restart_checksum"] = checksum
             state["last_restart_requested_at"] = floor_timestamp(now)
-            _atomic_json(self.state_path, state)
+            atomic_write_json(self.state_path, state)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         try:
             self.restart()
         except Exception as error:
             state.pop("last_restart_checksum", None)
             state["last_restart_error"] = str(error)
-            _atomic_json(self.state_path, state)
+            atomic_write_json(self.state_path, state)
             raise
         return True
-
-    def _load_state(self) -> Mapping[str, Any]:
-        try:
-            with open(self.state_path, "r", encoding="utf-8") as stream:
-                document = json.load(stream)
-            return document if isinstance(document, dict) else {}
-        except (OSError, ValueError):
-            return {}

@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Deque, Dict, Mapping, Optional, Tuple
 
 from .logic import evaluate_logic
-from .runtime import EvaluationResultType, FaultEvidenceEvent, ValueConfig
+from .models import ValueConfig
+from .runtime import EvaluationResultType, FaultEvidenceEvent
 
 
 _SEVERITY = {
@@ -222,19 +223,9 @@ class CorrelationEngine:
             if result.value is not None
             else ValueConfig()
         )
-        value_configs = {
-            "type": config.type,
-            "unit": config.unit,
-            "scaling": config.scaling,
-            "encoding": config.encoding,
-        }
+        value_configs = config.as_payload()
         condition_config = result.condition_config
-        condition_value_configs = {
-            "type": condition_config.type,
-            "unit": condition_config.unit,
-            "scaling": condition_config.scaling,
-            "encoding": condition_config.encoding,
-        }
+        condition_value_configs = condition_config.as_payload()
         return {
             "id": event.event_id,
             "value_read": CorrelationEngine._format_value(

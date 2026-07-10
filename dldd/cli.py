@@ -7,16 +7,15 @@ import json
 import logging
 import os
 import subprocess
-import sys
 
-from .adapters import VendorAdapter, adapter_map
+from .config import DLDDConfig
 from .dse import DSERegistry
 from .hooks import VendorHookError
 from .lifecycle import RulePaths
-from .planner import build_plans
 from .platform import PlatformIdentity, detect_identity, load_extensions
+from .preflight import preflight_activation
 from .reset import clear_runtime_state
-from .service import run_service, validate_runtime_operation_hooks
+from .service import run_service
 from .telemetry import SonicStateDB
 from .validation import ValidationContext, load_rules, source_line_for_path
 
@@ -59,7 +58,7 @@ def validate_rules(args) -> int:
         dse_registry=(
             extensions.dse_registry
             if extensions
-            else DSERegistry(allow_unadvertised_operations=True)
+            else DSERegistry()
         ),
         compatibility_matcher=(
             extensions.compatibility_matcher
@@ -101,45 +100,34 @@ def validate_rules(args) -> int:
         "hardware-probe",
         "e2e-execute",
     ) and result.activation_valid:
-        adapters = adapter_map(hooks=extensions.vendor_hooks)
-        for source_type in extensions.dse_registry.source_types:
-            adapters[source_type] = VendorAdapter(
-                source_type, extensions.vendor_hooks
-            )
-        bundle = build_plans(
-            result.materialized_rules,
-            "validation",
-            {"redis": 60, "file": 60, "common": 60},
+        preflight = preflight_activation(
+            result,
+            extensions,
+            DLDDConfig().polling_intervals,
         )
+        adapters = preflight.adapters
+        bundle = preflight.plan
         probe_results = []
-        invalid_rule_ids = set()
-        invalid_reasons = {}
-        for rule in result.materialized_rules:
-            try:
-                validate_runtime_operation_hooks(
-                    rule, extensions.vendor_hooks
-                )
-            except (ValueError, VendorHookError) as error:
-                rule_id = rule.signature.metadata.id
-                invalid_rule_ids.add(rule_id)
-                invalid_reasons.setdefault(
-                    rule_id, ("activation_preflight_failed", str(error))
-                )
-                probe_results.append(
-                    {
-                        "correlation_key": "rule:{}".format(
-                            rule.signature.metadata.id
-                        ),
-                        "state": "FAILED",
-                        "error": str(error),
-                    }
-                )
+        invalid_rule_ids = set(preflight.invalid_rule_ids)
+        invalid_reasons = {
+            failure.rule_id: (failure.code, failure.message)
+            for failure in preflight.failures
+        }
+        probe_results.extend(
+            {
+                "correlation_key": failure.correlation_key,
+                "state": "FAILED",
+                "error": failure.message,
+            }
+            for failure in preflight.failures
+        )
+        if args.mode in ("hardware-probe", "e2e-execute"):
+            probe_failed = bool(preflight.failures)
         for item in bundle.work_items.values():
             if item.rule_id in invalid_rule_ids:
                 continue
             try:
                 adapter = adapters[item.source_type]
-                adapter.validate(item)
                 if args.mode == "activation-dry-run":
                     state = "VALID"
                 elif args.mode == "hardware-probe":

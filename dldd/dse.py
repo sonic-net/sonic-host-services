@@ -11,14 +11,16 @@ from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 from .models import (
+    Operation,
     ResolvedSource,
     ValueConfig,
     frozen_mapping,
     value_config_contract_errors,
 )
+from .evaluators import COMPARISON_OPERATORS
 
 
 class DSEError(ValueError):
@@ -147,18 +149,16 @@ class DSESourceHandle(object):
 
 @dataclass(frozen=True)
 class DSEEvaluationHandle(object):
-    """Resolved evaluator function retained for monitor-time invocation."""
+    """Resolved comparator function retained for monitor-time invocation."""
 
     reference: DSEReference
-    get_evaluator: Callable[
-        [DSEInvocationContext], Union[Mapping[str, Any], "ResolvedEvaluation"]
-    ]
+    get_comparator: Callable[[DSEInvocationContext], "ResolvedEvaluation"]
 
     def __post_init__(self):
         if not isinstance(self.reference, DSEReference):
             raise TypeError("DSE evaluation handle requires a DSEReference")
-        if not callable(self.get_evaluator):
-            raise TypeError("DSE evaluation handle function must be callable")
+        if not callable(self.get_comparator):
+            raise TypeError("DSE comparator handle function must be callable")
 
 
 @dataclass(frozen=True)
@@ -175,11 +175,67 @@ class ResolvedEvaluation(object):
         return self.comparator is not None or self.operator is not None
 
 
+_ORDERING_OPERATORS = frozenset((">", "<", ">=", "<="))
+
+
+def validate_resolved_evaluation(
+    resolved, rule_operator=None, reference=None
+):
+    """Validate one typed activation- or monitor-time DSE comparator result."""
+
+    if not isinstance(resolved, ResolvedEvaluation):
+        raise DSEError("DSE comparator must return ResolvedEvaluation")
+    value_config_errors = value_config_contract_errors(resolved.value_configs)
+    if value_config_errors:
+        raise DSEError(
+            "invalid DSE resolved evaluation value_configs: {}".format(
+                "; ".join(value_config_errors)
+            )
+        )
+    if resolved.comparator is not None and not callable(resolved.comparator):
+        raise DSEError("DSE evaluation comparator must be callable")
+    if (
+        resolved.operator is not None
+        and resolved.operator not in COMPARISON_OPERATORS
+    ):
+        raise DSEError(
+            "DSE evaluation resolver returned unsupported operator {!r}".format(
+                resolved.operator
+            )
+        )
+    effective_operator = rule_operator or resolved.operator
+    if effective_operator is not None and resolved.expected_value is None:
+        raise DSEError(
+            "DSE operator {!r} requires a resolved expected value".format(
+                effective_operator
+            )
+        )
+    if effective_operator in _ORDERING_OPERATORS:
+        if not isinstance(
+            resolved.expected_value, (int, float, str)
+        ) or isinstance(resolved.expected_value, bool):
+            raise DSEError(
+                "DSE ordering operator requires a numeric or string expected value"
+            )
+    if rule_operator is None and not resolved.complete:
+        label = (
+            reference.canonical
+            if isinstance(reference, DSEReference)
+            else str(reference or "")
+        )
+        raise DSEError(
+            "DSE evaluation {} does not provide comparator semantics".format(
+                label
+            )
+        )
+    return resolved
+
+
 @dataclass(frozen=True)
 class ResolvedCommand(object):
-    """Opaque typed binding returned for DSE actions and queries."""
+    """Runtime command whose executor accepts one immutable Operation."""
 
-    executor: Callable[..., Any]
+    executor: Callable[[Operation], Any]
     vendor_data: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -283,11 +339,6 @@ class DSEHook(object, metaclass=ABCMeta):
 
         return None
 
-    def validate_vendor_source(self, event, context):
-        """Validate source configuration without sampling the source."""
-
-        return None
-
     def validate_resolved_source(self, source, context):
         """Validate a resolved source binding without sampling its value."""
 
@@ -303,13 +354,11 @@ class DSERegistry(object):
         source_types=(),
         action_types=(),
         query_types=(),
-        allow_unadvertised_operations=False,
     ):
         self._hook = hook
         self.source_types = frozenset(source_types)
         self.action_types = frozenset(action_types)
         self.query_types = frozenset(query_types)
-        self.allow_unadvertised_operations = allow_unadvertised_operations
 
     @property
     def hook(self):
@@ -382,51 +431,11 @@ class DSERegistry(object):
                     "DSE evaluation handle reference does not match requested reference"
                 )
             return resolved
-        if not isinstance(resolved, ResolvedEvaluation):
-            raise DSEError(
-                "DSE evaluation resolver must return DSEEvaluationHandle or "
-                "ResolvedEvaluation"
-            )
-        value_config_errors = value_config_contract_errors(
-            resolved.value_configs
+        return validate_resolved_evaluation(
+            resolved,
+            rule_operator=rule_operator,
+            reference=reference,
         )
-        if value_config_errors:
-            raise DSEError(
-                "invalid DSE resolved evaluation value_configs: {}".format(
-                    "; ".join(value_config_errors)
-                )
-            )
-        if resolved.comparator is not None and not callable(resolved.comparator):
-            raise DSEError("DSE evaluation comparator must be callable")
-        if resolved.operator is not None and resolved.operator not in (
-            ">", "<", ">=", "<=", "==", "!=", "equals", "not_equals"
-        ):
-            raise DSEError(
-                "DSE evaluation resolver returned unsupported operator {!r}".format(
-                    resolved.operator
-                )
-            )
-        effective_operator = rule_operator or resolved.operator
-        if effective_operator is not None and resolved.expected_value is None:
-            raise DSEError(
-                "DSE operator {!r} requires a resolved expected value".format(
-                    effective_operator
-                )
-            )
-        if effective_operator in (">", "<", ">=", "<="):
-            if not isinstance(resolved.expected_value, (int, float, str)) or isinstance(
-                resolved.expected_value, bool
-            ):
-                raise DSEError(
-                    "DSE ordering operator requires a numeric or string expected value"
-                )
-        if rule_operator is None and not resolved.complete:
-            raise DSEError(
-                "DSE evaluation {} does not provide comparator semantics".format(
-                    reference.canonical
-                )
-            )
-        return resolved
 
     def resolve_action(self, value, context):
         command = _operation_command(value)

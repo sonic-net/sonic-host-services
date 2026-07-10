@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -15,13 +14,15 @@ from .actions import ActionRunner, ActionSequenceResult
 from .artifacts import HealthzArtifactClient
 from .config import DLDDConfig
 from .correlation import CorrelationDecision, CorrelationEngine, FaultArbiter, SignatureExecution
+from .monitor import command_for_plan
+from .ownership import is_dldd_fault_payload
+from .planner import monitor_type_for_source
 from .runtime import (
     DSEExpansionEvent,
     EvaluationResultType,
     FaultEvidenceEvent,
     FaultRecord,
     MonitorCommandType,
-    MonitorControlCommand,
     MonitorExecutionPlan,
     MonitorWorkState,
 )
@@ -30,6 +31,18 @@ from .timestamps import floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+_DECISIVE_RECHECK_RESULTS = frozenset(
+    (EvaluationResultType.MATCH, EvaluationResultType.NO_MATCH)
+)
+_SOURCE_FAILURE_RESULTS = frozenset(
+    (
+        EvaluationResultType.SOURCE_UNAVAILABLE,
+        EvaluationResultType.COLLECTION_ERROR,
+    )
+)
+_MAX_RECHECK_ATTEMPTS = 2
 
 
 @dataclass
@@ -295,116 +308,39 @@ class PrimaryOrchestrator:
         identity = (event.signature_id, event.component_name)
         reconciliation = self.reconciliation.get(identity)
         if reconciliation is not None and not event.from_recheck:
-            self._command_event(
+            self._hold_owned_evidence(
                 event,
-                MonitorCommandType.HOLD,
-                MonitorWorkState.HELD_BY_PRIMARY,
                 "reconciliation_evidence_quarantined",
                 hold_deadline=self.clock() + self.config.fault_evidence_ack_timeout,
             )
             return
         if reconciliation is not None and event.from_recheck:
-            if result_type == EvaluationResultType.SOURCE_RECOVERED:
-                self._process_runtime_status(event, release=False)
-                reconciliation.recheck_deadline = (
-                    self.clock() + self.config.fault_evidence_ack_timeout
-                )
-                self._command_event(
-                    event,
-                    MonitorCommandType.RECHECK_ONCE,
-                    MonitorWorkState.RECHECK_REQUESTED,
-                    "source_recovered_recheck_required",
-                    hold_deadline=self.clock()
-                    + self.config.fault_evidence_ack_timeout,
-                )
-                return
-            if result_type not in (
-                EvaluationResultType.MATCH,
-                EvaluationResultType.NO_MATCH,
-            ):
-                self._process_runtime_status(event, release=False)
-            decision = self.correlation.consume(event)
-            reconciliation.outstanding_rechecks.discard(event.correlation_key)
-            if decision is not None:
-                reconciliation.last_decision = decision
-            if result_type not in (
-                EvaluationResultType.MATCH,
-                EvaluationResultType.NO_MATCH,
-            ):
-                reconciliation.recheck_failed = True
-                reconciliation.source_failed = (
-                    reconciliation.source_failed
-                    or result_type
-                    in (
-                        EvaluationResultType.SOURCE_UNAVAILABLE,
-                        EvaluationResultType.COLLECTION_ERROR,
-                    )
-                )
-            self._command_event(
+            self._process_owned_recheck_evidence(
                 event,
-                MonitorCommandType.HOLD,
-                MonitorWorkState.HELD_BY_PRIMARY,
-                "bootstrap_reconciliation_pending",
-                hold_deadline=self.clock() + self.config.fault_evidence_ack_timeout,
+                identity,
+                reconciliation,
+                pending_reason="bootstrap_reconciliation_pending",
+                hold_deadline=None,
+                complete=self._complete_reconciliation,
             )
-            if not reconciliation.outstanding_rechecks:
-                self._complete_reconciliation(identity, reconciliation)
             return
         pending = self.pending.get(identity)
         if pending is not None and not event.from_recheck:
-            self._command_event(
+            self._hold_owned_evidence(
                 event,
-                MonitorCommandType.HOLD,
-                MonitorWorkState.HELD_BY_PRIMARY,
                 "local_action_evidence_quarantined",
                 hold_deadline=pending.hold_deadline,
             )
             return
         if pending is not None and event.from_recheck:
-            if result_type == EvaluationResultType.SOURCE_RECOVERED:
-                self._process_runtime_status(event, release=False)
-                pending.recheck_deadline = (
-                    self.clock() + self.config.fault_evidence_ack_timeout
-                )
-                self._command_event(
-                    event,
-                    MonitorCommandType.RECHECK_ONCE,
-                    MonitorWorkState.RECHECK_REQUESTED,
-                    "source_recovered_recheck_required",
-                    hold_deadline=pending.hold_deadline,
-                )
-                return
-            if result_type not in (
-                EvaluationResultType.MATCH,
-                EvaluationResultType.NO_MATCH,
-            ):
-                self._process_runtime_status(event, release=False)
-            decision = self.correlation.consume(event)
-            pending.outstanding_rechecks.discard(event.correlation_key)
-            if decision is not None:
-                pending.last_decision = decision
-            if result_type not in (
-                EvaluationResultType.MATCH,
-                EvaluationResultType.NO_MATCH,
-            ):
-                pending.recheck_failed = True
-                pending.source_failed = (
-                    pending.source_failed
-                    or result_type
-                    in (
-                        EvaluationResultType.SOURCE_UNAVAILABLE,
-                        EvaluationResultType.COLLECTION_ERROR,
-                    )
-                )
-            self._command_event(
+            self._process_owned_recheck_evidence(
                 event,
-                MonitorCommandType.HOLD,
-                MonitorWorkState.HELD_BY_PRIMARY,
-                "post_action_recheck_pending",
+                identity,
+                pending,
+                pending_reason="post_action_recheck_pending",
                 hold_deadline=pending.hold_deadline,
+                complete=self._complete_pending,
             )
-            if not pending.outstanding_rechecks:
-                self._complete_pending(identity, pending)
             return
 
         if result_type in (
@@ -461,6 +397,77 @@ class PrimaryOrchestrator:
             )
             self._publish_decision(decision, artifact=artifact)
         self._resume(event, "evidence processed")
+
+    def _hold_owned_evidence(
+        self,
+        event: FaultEvidenceEvent,
+        reason: str,
+        hold_deadline: float,
+    ) -> None:
+        self._command_event(
+            event,
+            MonitorCommandType.HOLD,
+            MonitorWorkState.HELD_BY_PRIMARY,
+            reason,
+            hold_deadline=hold_deadline,
+        )
+
+    def _process_owned_recheck_evidence(
+        self,
+        event: FaultEvidenceEvent,
+        identity: Tuple[int, str],
+        state: Any,
+        *,
+        pending_reason: str,
+        hold_deadline: Optional[float],
+        complete,
+    ) -> None:
+        """Apply one recheck result to a pending or reconciliation record."""
+
+        result_type = event.result.result
+        if result_type == EvaluationResultType.SOURCE_RECOVERED:
+            self._process_runtime_status(event, release=False)
+            state.recheck_deadline = (
+                self.clock() + self.config.fault_evidence_ack_timeout
+            )
+            event_hold_deadline = hold_deadline
+            if event_hold_deadline is None:
+                event_hold_deadline = (
+                    self.clock() + self.config.fault_evidence_ack_timeout
+                )
+            self._command_event(
+                event,
+                MonitorCommandType.RECHECK_ONCE,
+                MonitorWorkState.RECHECK_REQUESTED,
+                "source_recovered_recheck_required",
+                hold_deadline=event_hold_deadline,
+            )
+            return
+
+        decisive = result_type in _DECISIVE_RECHECK_RESULTS
+        if not decisive:
+            self._process_runtime_status(event, release=False)
+        decision = self.correlation.consume(event)
+        state.outstanding_rechecks.discard(event.correlation_key)
+        if decision is not None:
+            state.last_decision = decision
+        if not decisive:
+            state.recheck_failed = True
+            state.source_failed = (
+                state.source_failed or result_type in _SOURCE_FAILURE_RESULTS
+            )
+        event_hold_deadline = hold_deadline
+        if event_hold_deadline is None:
+            event_hold_deadline = (
+                self.clock() + self.config.fault_evidence_ack_timeout
+            )
+        self._hold_owned_evidence(
+            event,
+            pending_reason,
+            hold_deadline=event_hold_deadline,
+        )
+        if not state.outstanding_rechecks:
+            complete(identity, state)
 
     def _process_runtime_status(
         self, event: FaultEvidenceEvent, release: bool = True
@@ -773,11 +780,35 @@ class PrimaryOrchestrator:
             "action_suppressed": True,
             "last_error": "",
         }
-        self.faults[identity] = FaultRecord(
+        record = self._new_fault_record(
+            execution,
+            status="CANDIDATE",
+            observed_at=decision.event.event_timestamp,
+            occurrences=occurrences,
+            events=decision.event_snapshots,
+        )
+        record.local_action_state = "RUNNING"
+        record.local_action_details = details
+        record.action_suppressed = True
+        self.faults[identity] = record
+
+    def _new_fault_record(
+        self,
+        execution: SignatureExecution,
+        *,
+        status: str,
+        observed_at: float,
+        occurrences: int = 1,
+        events=(),
+    ) -> FaultRecord:
+        """Build the rule-owned fields shared by candidate and fault records."""
+
+        metadata = execution.signature.metadata
+        return FaultRecord(
             rule_id=metadata.id,
             rule_name=metadata.name,
             rule_version=metadata.version,
-            schema_version="0.0.1",
+            schema_version=execution.signature.schema_version,
             active_rules_checksum=self.active_rules_checksum,
             component_type=metadata.component,
             component_name=execution.component_name,
@@ -786,15 +817,73 @@ class PrimaryOrchestrator:
             priority=metadata.priority,
             error_type=metadata.error_type,
             description=metadata.description,
-            status="CANDIDATE",
-            origin_time=decision.event.event_timestamp,
-            last_detection_time=decision.event.event_timestamp,
+            status=status,
+            origin_time=observed_at,
+            last_detection_time=observed_at,
             occurrences=occurrences,
-            events=decision.event_snapshots,
-            local_action_state="RUNNING",
-            local_action_details=details,
-            action_suppressed=True,
+            events=tuple(events),
         )
+
+    def _request_rechecks(
+        self,
+        keys,
+        reason: str,
+        hold_deadline: float,
+    ) -> None:
+        for key in keys:
+            self._command_key(
+                key,
+                MonitorCommandType.RECHECK_ONCE,
+                MonitorWorkState.RECHECK_REQUESTED,
+                reason,
+                hold_deadline=hold_deadline,
+            )
+
+    def _retry_or_timeout_rechecks(
+        self,
+        identity: Tuple[int, str],
+        state: Any,
+        now: float,
+        *,
+        retry_reason: str,
+        timeout_reason: str,
+        complete,
+    ) -> None:
+        """Retry an owned recheck once, then complete it conservatively."""
+
+        if (
+            not state.outstanding_rechecks
+            or state.recheck_deadline is None
+            or now < state.recheck_deadline
+        ):
+            return
+        if (
+            state.recheck_attempts < _MAX_RECHECK_ATTEMPTS
+            and now < state.hold_deadline
+        ):
+            state.recheck_attempts += 1
+            state.recheck_deadline = (
+                now + self.config.fault_evidence_ack_timeout
+            )
+            self._request_rechecks(
+                state.outstanding_rechecks,
+                retry_reason,
+                state.hold_deadline,
+            )
+            return
+
+        state.recheck_failed = True
+        state.source_failed = True
+        self.service_diagnostics.append(
+            {
+                "reason": timeout_reason,
+                "rule_id": identity[0],
+                "component": identity[1],
+                "state": "ACTIVE",
+                "observed_at": self.wall_clock(),
+            }
+        )
+        complete(identity, state)
 
     def tick(self) -> None:
         self._apply_queued_config_updates()
@@ -859,83 +948,30 @@ class PrimaryOrchestrator:
                 pending.recheck_deadline = (
                     now + self.config.fault_evidence_ack_timeout
                 )
-                for key in pending.outstanding_rechecks:
-                    self._command_key(
-                        key,
-                        MonitorCommandType.RECHECK_ONCE,
-                        MonitorWorkState.RECHECK_REQUESTED,
-                        "post_action_recheck",
-                        hold_deadline=pending.hold_deadline,
-                    )
-            if (
-                pending.phase == "RECHECKING"
-                and pending.outstanding_rechecks
-                and pending.recheck_deadline is not None
-                and now >= pending.recheck_deadline
-            ):
-                if pending.recheck_attempts < 2 and now < pending.hold_deadline:
-                    pending.recheck_attempts += 1
-                    pending.recheck_deadline = (
-                        now + self.config.fault_evidence_ack_timeout
-                    )
-                    for key in pending.outstanding_rechecks:
-                        self._command_key(
-                            key,
-                            MonitorCommandType.RECHECK_ONCE,
-                            MonitorWorkState.RECHECK_REQUESTED,
-                            "post_action_recheck_retry",
-                            hold_deadline=pending.hold_deadline,
-                        )
-                else:
-                    pending.recheck_failed = True
-                    pending.source_failed = True
-                    self.service_diagnostics.append(
-                        {
-                            "reason": "post_action_recheck_timed_out",
-                            "rule_id": identity[0],
-                            "component": identity[1],
-                            "state": "ACTIVE",
-                            "observed_at": self.wall_clock(),
-                        }
-                    )
-                    self._complete_pending(identity, pending)
+                self._request_rechecks(
+                    pending.outstanding_rechecks,
+                    "post_action_recheck",
+                    pending.hold_deadline,
+                )
+            if pending.phase == "RECHECKING":
+                self._retry_or_timeout_rechecks(
+                    identity,
+                    pending,
+                    now,
+                    retry_reason="post_action_recheck_retry",
+                    timeout_reason="post_action_recheck_timed_out",
+                    complete=self._complete_pending,
+                )
 
         for identity, reconciliation in list(self.reconciliation.items()):
-            if (
-                reconciliation.outstanding_rechecks
-                and now >= reconciliation.recheck_deadline
-            ):
-                if (
-                    reconciliation.recheck_attempts < 2
-                    and now < reconciliation.hold_deadline
-                ):
-                    reconciliation.recheck_attempts += 1
-                    reconciliation.recheck_deadline = (
-                        now + self.config.fault_evidence_ack_timeout
-                    )
-                    for key in reconciliation.outstanding_rechecks:
-                        self._command_key(
-                            key,
-                            MonitorCommandType.RECHECK_ONCE,
-                            MonitorWorkState.RECHECK_REQUESTED,
-                            "{}_retry".format(reconciliation.reason),
-                            hold_deadline=reconciliation.hold_deadline,
-                        )
-                else:
-                    reconciliation.recheck_failed = True
-                    reconciliation.source_failed = True
-                    self.service_diagnostics.append(
-                        {
-                            "reason": "{}_timed_out".format(
-                                reconciliation.reason
-                            ),
-                            "rule_id": identity[0],
-                            "component": identity[1],
-                            "state": "ACTIVE",
-                            "observed_at": self.wall_clock(),
-                        }
-                    )
-                    self._complete_reconciliation(identity, reconciliation)
+            self._retry_or_timeout_rechecks(
+                identity,
+                reconciliation,
+                now,
+                retry_reason="{}_retry".format(reconciliation.reason),
+                timeout_reason="{}_timed_out".format(reconciliation.reason),
+                complete=self._complete_reconciliation,
+            )
 
         for identity, deadline in list(self.next_active_recheck.items()):
             if now < deadline or identity in self.pending or identity in self.reconciliation:
@@ -966,13 +1002,11 @@ class PrimaryOrchestrator:
             if current == artifact:
                 continue
             record.healthz_artifact = current
-            execution = self.correlation.executions.get(identity)
-            remote_window = record.remote_action_time_window
-            if execution is not None:
-                remote_window = (
-                    execution.signature.actions.repair_actions.remote_actions.time_window
-                )
-            self._publish_fault_record(identity, record, remote_window)
+            self._publish_fault_record(
+                identity,
+                record,
+                self._remote_action_window(identity, record),
+            )
 
     def _complete_pending(self, identity, pending: PendingFault) -> None:
         decision = pending.last_decision or pending.first_decision
@@ -1064,7 +1098,7 @@ class PrimaryOrchestrator:
         """Recheck current-generation active records before normal publication."""
 
         for payload in self.telemetry.read_faults():
-            if not self._is_dldd_fault_payload(payload):
+            if not is_dldd_fault_payload(payload):
                 continue
             try:
                 record = self._fault_from_payload(payload)
@@ -1084,14 +1118,14 @@ class PrimaryOrchestrator:
             current = (
                 execution is not None
                 and self._execution_has_all_events(execution)
-                and record.schema_version == "0.0.1"
+                and record.schema_version == execution.signature.schema_version
                 and record.active_rules_checksum == self.active_rules_checksum
                 and execution.signature.metadata.symptom == record.symptom
             )
             pending_dynamic = (
                 (execution is None or not self._execution_has_all_events(execution))
                 and dynamic_signature is not None
-                and record.schema_version == "0.0.1"
+                and record.schema_version == dynamic_signature.schema_version
                 and record.active_rules_checksum == self.active_rules_checksum
                 and dynamic_signature.metadata.symptom == record.symptom
             )
@@ -1162,14 +1196,7 @@ class PrimaryOrchestrator:
             hold_deadline=hold_deadline,
             recheck_deadline=deadline,
         )
-        for key in keys:
-            self._command_key(
-                key,
-                MonitorCommandType.RECHECK_ONCE,
-                MonitorWorkState.RECHECK_REQUESTED,
-                reason,
-                hold_deadline=hold_deadline,
-            )
+        self._request_rechecks(keys, reason, hold_deadline)
 
     def _complete_reconciliation(self, identity, reconciliation) -> None:
         decision = reconciliation.last_decision
@@ -1233,21 +1260,6 @@ class PrimaryOrchestrator:
         self.reconciliation.pop(identity, None)
 
     @staticmethod
-    def _is_dldd_fault_payload(payload: Mapping[str, Any]) -> bool:
-        """Do not reconcile or rewrite FAULT_INFO rows owned by another agent."""
-
-        try:
-            rule_id = int(payload.get("rule_id", 0))
-        except (TypeError, ValueError):
-            return False
-        return bool(
-            rule_id
-            and payload.get("rule")
-            and payload.get("schema_version")
-            and payload.get("active_rules_checksum")
-        )
-
-    @staticmethod
     def _fault_from_payload(payload: Mapping[str, Any]) -> FaultRecord:
         component_type = str(payload.get("component_type", "")).strip()
         component_name = str(payload.get("component_name", "")).strip()
@@ -1308,22 +1320,10 @@ class PrimaryOrchestrator:
         status = "ACTIVE" if decision.active else "INACTIVE"
         state_changed = existing is None or existing.status != status
         if existing is None:
-            existing = FaultRecord(
-                rule_id=metadata.id,
-                rule_name=metadata.name,
-                rule_version=metadata.version,
-                schema_version="0.0.1",
-                active_rules_checksum=self.active_rules_checksum,
-                component_type=metadata.component,
-                component_name=execution.component_name,
-                symptom=metadata.symptom,
-                severity=metadata.severity,
-                priority=metadata.priority,
-                error_type=metadata.error_type,
-                description=metadata.description,
+            existing = self._new_fault_record(
+                execution,
                 status=status,
-                origin_time=now,
-                last_detection_time=now,
+                observed_at=now,
             )
             self.faults[identity] = existing
         elif existing.status == "INACTIVE" and status == "ACTIVE":
@@ -1334,7 +1334,7 @@ class PrimaryOrchestrator:
         # does not retain the previous checksum or stale-source description.
         existing.rule_name = metadata.name
         existing.rule_version = metadata.version
-        existing.schema_version = "0.0.1"
+        existing.schema_version = execution.signature.schema_version
         existing.active_rules_checksum = self.active_rules_checksum
         existing.component_type = metadata.component
         existing.symptom = metadata.symptom
@@ -1368,13 +1368,8 @@ class PrimaryOrchestrator:
             existing.action_suppressed = action_suppressed
         if artifact is not None:
             existing.healthz_artifact = artifact
-        failed_keys = {
-            key
-            for source_keys in self._source_failure_keys.values()
-            for key in source_keys
-        }
-        existing.stale_source = stale_source or bool(
-            failed_keys.intersection(self._execution_keys(execution))
+        existing.stale_source = (
+            stale_source or self._execution_has_failed_source(execution)
         )
         remote = execution.signature.actions.repair_actions.remote_actions
         existing.repair_actions = remote.action_list if status == "ACTIVE" else ()
@@ -1431,11 +1426,7 @@ class PrimaryOrchestrator:
         self._publish_fault_record(identity, existing, remote.time_window)
 
     def _refresh_fault_source_staleness(self) -> None:
-        failed_keys = {
-            key
-            for source_keys in self._source_failure_keys.values()
-            for key in source_keys
-        }
+        failed_keys = self._failed_correlation_keys()
         for identity, record in self.faults.items():
             if record.status != "ACTIVE":
                 continue
@@ -1450,20 +1441,35 @@ class PrimaryOrchestrator:
             if record.stale_source == stale:
                 continue
             record.stale_source = stale
-            remote_window = record.remote_action_time_window
-            if execution is not None:
-                remote_window = (
-                    execution.signature.actions.repair_actions.remote_actions.time_window
-                )
-            self._publish_fault_record(identity, record, remote_window)
+            self._publish_fault_record(
+                identity,
+                record,
+                self._remote_action_window(identity, record),
+            )
 
-    def _execution_has_failed_source(self, execution: SignatureExecution) -> bool:
-        failed_keys = {
+    def _failed_correlation_keys(self) -> Set[str]:
+        return {
             key
             for source_keys in self._source_failure_keys.values()
             for key in source_keys
         }
-        return bool(failed_keys.intersection(self._execution_keys(execution)))
+
+    def _execution_has_failed_source(self, execution: SignatureExecution) -> bool:
+        return bool(
+            self._failed_correlation_keys().intersection(
+                self._execution_keys(execution)
+            )
+        )
+
+    def _remote_action_window(
+        self,
+        identity: Tuple[int, str],
+        record: FaultRecord,
+    ) -> int:
+        execution = self.correlation.executions.get(identity)
+        if execution is None:
+            return record.remote_action_time_window
+        return execution.signature.actions.repair_actions.remote_actions.time_window
 
     def _publish_fault_record(
         self,
@@ -1502,13 +1508,11 @@ class PrimaryOrchestrator:
             if record is None or record.status == "CANDIDATE":
                 self.dirty_faults.discard(identity)
                 continue
-            execution = self.correlation.executions.get(identity)
-            remote_window = record.remote_action_time_window
-            if execution is not None:
-                remote_window = (
-                    execution.signature.actions.repair_actions.remote_actions.time_window
-                )
-            self._publish_fault_record(identity, record, remote_window)
+            self._publish_fault_record(
+                identity,
+                record,
+                self._remote_action_window(identity, record),
+            )
 
     def _request_artifact(self, execution: SignatureExecution):
         collection = execution.signature.actions.log_collection
@@ -1555,6 +1559,7 @@ class PrimaryOrchestrator:
             "timeout",
             "max_output_bytes",
             "executor",
+            "materialized_operation",
         }
         payload = {
             key: value
@@ -1574,6 +1579,7 @@ class PrimaryOrchestrator:
             payload["max_output_bytes"] = operation.max_output_bytes
         if operation.executor is not None:
             payload["executor"] = operation.executor
+            payload["materialized_operation"] = operation
         return payload
 
     @staticmethod
@@ -1640,29 +1646,17 @@ class PrimaryOrchestrator:
         **kwargs
     ) -> None:
         item = self.work_items[key]
-        monitor_type = (
-            "redis"
-            if item.source_type == "redis"
-            else "file"
-            if item.source_type == "file"
-            else "common"
-        )
+        monitor_type = monitor_type_for_source(item.source_type)
         plan = self.plans[monitor_type]
         plan.control_queue.put(
-            MonitorControlCommand(
-                command_id=str(uuid.uuid4()),
-                monitor_id=plan.monitor_id,
-                plan_generation=plan.plan_generation,
-                correlation_key=key,
-                command=command,
-                target_state=target,
-                reason=reason,
-                expected_work_state_generation=(
-                    evidence.work_state_generation if evidence is not None else None
-                ),
-                evidence_sequence=evidence.sequence if evidence is not None else None,
-                recheck_not_before=kwargs.get("recheck_not_before"),
-                hold_deadline=kwargs.get("hold_deadline"),
+            command_for_plan(
+                plan,
+                key,
+                command,
+                target,
+                reason,
+                evidence=evidence,
+                **kwargs
             )
         )
 

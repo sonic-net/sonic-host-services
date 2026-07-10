@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from threading import RLock
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional
 
 
 class VendorHookError(RuntimeError):
@@ -34,9 +34,6 @@ class VendorHook(ABC):
 
     def collect_query(self, query: Mapping[str, Any]) -> Any:
         return self.collect(query)
-
-    def supported_action_types(self) -> Iterable[str]:
-        return ()
 
     def resolve_i2c_bus(
         self, bus: Any, operation: Mapping[str, Any]
@@ -71,13 +68,6 @@ class VendorHookRegistry:
     def get_optional(self, name: str) -> Optional[VendorHook]:
         with self._lock:
             return self._hooks.get(name)
-
-    def supported_action_types(self) -> Iterable[str]:
-        with self._lock:
-            result = set()
-            for hook in self._hooks.values():
-                result.update(hook.supported_action_types())
-            return tuple(sorted(result))
 
     def resolve_i2c_bus(
         self, bus: Any, operation: Mapping[str, Any]

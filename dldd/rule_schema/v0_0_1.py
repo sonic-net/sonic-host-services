@@ -973,6 +973,7 @@ def signature_v001_to_domain(
         events=events,
     )
     return DomainSignature(
+        schema_version=SCHEMA_VERSION,
         metadata=domain_metadata,
         conditions=conditions,
         actions=_actions_to_domain(

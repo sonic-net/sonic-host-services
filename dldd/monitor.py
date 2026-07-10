@@ -25,7 +25,6 @@ from .runtime import (
     MonitorWorkStateRecord,
     RuleRuntimeStatus,
     SourceAvailability,
-    ValueConfig,
     make_correlation_key,
 )
 
@@ -425,12 +424,7 @@ class MonitorThread(threading.Thread):
         value_config = (
             base.value_config
             if config.type == "N/A" and base.value_config.type != "N/A"
-            else ValueConfig(
-                type=config.type,
-                unit=config.unit,
-                scaling=config.scaling,
-                encoding=config.encoding,
-            )
+            else config
         )
         source = dict(binding.data)
         source["dse_reference"] = (
@@ -945,16 +939,65 @@ def command_for_event(
     reason: str,
     **kwargs
 ) -> MonitorControlCommand:
-    return MonitorControlCommand(
-        command_id=str(uuid.uuid4()),
+    return _new_monitor_command(
         monitor_id=event.monitor_id,
         plan_generation=event.plan_generation,
         correlation_key=event.correlation_key,
         command=command,
-        target_state=target,
+        target=target,
         reason=reason,
         expected_work_state_generation=event.work_state_generation,
         evidence_sequence=event.sequence,
+        **kwargs
+    )
+
+
+def command_for_plan(
+    plan: MonitorExecutionPlan,
+    correlation_key: str,
+    command: MonitorCommandType,
+    target: MonitorWorkState,
+    reason: str,
+    evidence: Optional[FaultEvidenceEvent] = None,
+    **kwargs
+) -> MonitorControlCommand:
+    return _new_monitor_command(
+        monitor_id=plan.monitor_id,
+        plan_generation=plan.plan_generation,
+        correlation_key=correlation_key,
+        command=command,
+        target=target,
+        reason=reason,
+        expected_work_state_generation=(
+            evidence.work_state_generation if evidence is not None else None
+        ),
+        evidence_sequence=evidence.sequence if evidence is not None else None,
+        **kwargs
+    )
+
+
+def _new_monitor_command(
+    *,
+    monitor_id,
+    plan_generation,
+    correlation_key,
+    command,
+    target,
+    reason,
+    expected_work_state_generation,
+    evidence_sequence,
+    **kwargs
+) -> MonitorControlCommand:
+    return MonitorControlCommand(
+        command_id=str(uuid.uuid4()),
+        monitor_id=monitor_id,
+        plan_generation=plan_generation,
+        correlation_key=correlation_key,
+        command=command,
+        target_state=target,
+        reason=reason,
+        expected_work_state_generation=expected_work_state_generation,
+        evidence_sequence=evidence_sequence,
         recheck_not_before=kwargs.get("recheck_not_before"),
         hold_deadline=kwargs.get("hold_deadline"),
     )

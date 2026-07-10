@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import operator
-from typing import Any, Callable, Dict, Mapping
+from types import MappingProxyType
+from typing import Any, Callable, Mapping
 
 import regex as bounded_regex
 
@@ -15,7 +16,7 @@ class EvaluationContractError(ValueError):
     pass
 
 
-_COMPARATORS: Dict[str, Callable[[Any, Any], bool]] = {
+COMPARATORS: Mapping[str, Callable[[Any, Any], bool]] = MappingProxyType({
     ">": operator.gt,
     "<": operator.lt,
     ">=": operator.ge,
@@ -24,7 +25,8 @@ _COMPARATORS: Dict[str, Callable[[Any, Any], bool]] = {
     "!=": operator.ne,
     "equals": operator.eq,
     "not_equals": operator.ne,
-}
+})
+COMPARISON_OPERATORS = frozenset(COMPARATORS)
 
 
 def parse_integer(value: Any) -> int:
@@ -67,10 +69,10 @@ def evaluate(specification: Mapping[str, Any], actual: Any) -> bool:
 
     if evaluator_type == "comparison":
         op = specification.get("operator")
-        if op not in _COMPARATORS:
+        if op not in COMPARATORS:
             raise EvaluationContractError("unsupported comparison operator: {}".format(op))
         left, right = _coerce_pair(actual, expected)
-        return _COMPARATORS[op](left, right)
+        return COMPARATORS[op](left, right)
 
     if evaluator_type == "string":
         op = specification.get("operator")
@@ -114,10 +116,10 @@ def evaluate(specification: Mapping[str, Any], actual: Any) -> bool:
                     "DSE evaluation requires an operator or resolved comparator"
                 )
             return bool(comparator(actual))
-        if op not in _COMPARATORS:
+        if op not in COMPARATORS:
             raise EvaluationContractError("unsupported DSE operator: {}".format(op))
         left, right = _coerce_pair(actual, expected)
-        return _COMPARATORS[op](left, right)
+        return COMPARATORS[op](left, right)
 
     raise EvaluationContractError(
         "unsupported evaluation type: {}".format(evaluator_type)

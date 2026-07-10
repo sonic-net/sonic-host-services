@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass, fields
-from typing import Any, Dict, Mapping, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -52,8 +52,13 @@ class DLDDConfig:
             if values[key] < 1:
                 raise ValueError("{} must be at least 1".format(key))
 
-    def as_redis_fields(self) -> Dict[str, str]:
-        return {key: str(value) for key, value in asdict(self).items()}
+    @property
+    def polling_intervals(self) -> Mapping[str, int]:
+        return {
+            "redis": self.redis_monitor_polling_interval,
+            "file": self.file_monitor_polling_interval,
+            "common": self.common_monitor_polling_interval,
+        }
 
 
 def load_vendor_defaults(path: str) -> Mapping[str, Any]:

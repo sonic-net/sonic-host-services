@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from dldd import cli as dldd_cli
+from dldd import preflight as dldd_preflight
 from dldd import service as dldd_service
 from dldd.artifacts import (
     DEFAULT_ARTIFACT_DIRECTORY,
@@ -19,11 +20,11 @@ from dldd.lifecycle import RulePaths
 from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
 from dldd.planner import build_plans
+from dldd.preflight import validate_runtime_operation_hooks
 from dldd.runtime import MonitorWorkState, MonitorWorkStateRecord
 from dldd.service import (
     DLDDService,
     TelemetryUnavailable,
-    validate_runtime_operation_hooks,
 )
 from dldd.validation import ExactCompatibilityMatcher, load_rules
 
@@ -316,14 +317,16 @@ def test_service_candidate_preflight_validates_without_reading(
 
     monkeypatch.setattr(dldd_service, "load_rules", lambda *args: validation)
     monkeypatch.setattr(
-        dldd_service,
+        dldd_preflight,
         "build_plans",
         lambda *args, **kwargs: SimpleNamespace(
             work_items={item.correlation_key: item}
         ),
     )
     monkeypatch.setattr(
-        service, "_adapters", lambda: {"redis": NoReadAdapter()}
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: {"redis": NoReadAdapter()},
     )
 
     candidate = service._validate_candidate("rules.yaml", "dse.yaml")
@@ -331,6 +334,37 @@ def test_service_candidate_preflight_validates_without_reading(
     assert candidate.activatable
     assert candidate.usable_rule_count == 1
     assert calls == [("validate", item.correlation_key)]
+
+
+def test_shared_activation_preflight_returns_validation_plan_and_adapters(
+    monkeypatch,
+):
+    validation = SimpleNamespace(materialized_rules=())
+    plan = SimpleNamespace(work_items={})
+    adapters = {"redis": object()}
+    extensions = SimpleNamespace(
+        vendor_hooks=VendorHookRegistry(),
+        dse_registry=SimpleNamespace(source_types=()),
+    )
+    monkeypatch.setattr(
+        dldd_preflight, "build_plans", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: adapters,
+    )
+
+    result = dldd_preflight.preflight_activation(
+        validation,
+        extensions,
+        {"redis": 60, "file": 60, "common": 60},
+    )
+
+    assert result.validation is validation
+    assert result.plan is plan
+    assert result.adapters is adapters
+    assert result.failures == ()
 
 
 def test_service_candidate_preflight_propagates_adapter_programming_error(
@@ -377,14 +411,16 @@ def test_service_candidate_preflight_propagates_adapter_programming_error(
 
     monkeypatch.setattr(dldd_service, "load_rules", lambda *args: validation)
     monkeypatch.setattr(
-        dldd_service,
+        dldd_preflight,
         "build_plans",
         lambda *args, **kwargs: SimpleNamespace(
             work_items={item.correlation_key: item}
         ),
     )
     monkeypatch.setattr(
-        service, "_adapters", lambda: {"redis": BuggyAdapter()}
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: {"redis": BuggyAdapter()},
     )
 
     with pytest.raises(RuntimeError, match="adapter implementation bug"):
@@ -395,7 +431,9 @@ def test_service_candidate_preflight_propagates_adapter_programming_error(
             raise ValueError("unsupported source binding")
 
     monkeypatch.setattr(
-        service, "_adapters", lambda: {"redis": RejectingAdapter()}
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: {"redis": RejectingAdapter()},
     )
     monkeypatch.setattr(dldd_service.time, "time", lambda: 6789.0)
 
@@ -1117,7 +1155,9 @@ def test_activation_dry_run_validates_adapter_without_reading(
 
     materialized = SimpleNamespace(
         signature=SimpleNamespace(
-            metadata=SimpleNamespace(id=1000001, name="NO_READ"),
+            metadata=SimpleNamespace(
+                id=1000001, name="NO_READ", version="1.0.0"
+            ),
             actions=SimpleNamespace(
                 repair_actions=SimpleNamespace(local_actions=None),
                 log_collection=None,
@@ -1152,14 +1192,16 @@ def test_activation_dry_run_validates_adapter_without_reading(
     monkeypatch.setattr(dldd_cli, "load_extensions", lambda *args: extensions)
     monkeypatch.setattr(dldd_cli, "load_rules", lambda *args, **kwargs: result)
     monkeypatch.setattr(
-        dldd_cli,
+        dldd_preflight,
         "build_plans",
         lambda *args, **kwargs: SimpleNamespace(
             work_items={item.correlation_key: item}
         ),
     )
     monkeypatch.setattr(
-        dldd_cli, "adapter_map", lambda **kwargs: {"redis": NoReadAdapter()}
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: {"redis": NoReadAdapter()},
     )
     args = SimpleNamespace(
         mode="activation-dry-run",
@@ -1182,12 +1224,23 @@ def test_activation_dry_run_validates_adapter_without_reading(
             raise RuntimeError("adapter implementation bug")
 
     monkeypatch.setattr(
-        dldd_cli,
-        "adapter_map",
-        lambda **kwargs: {"redis": BuggyAdapter()},
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: {"redis": BuggyAdapter()},
     )
     with pytest.raises(RuntimeError, match="adapter implementation bug"):
         dldd_cli.validate_rules(args)
+
+    monkeypatch.setattr(
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: {},
+    )
+    assert dldd_cli.validate_rules(args) == 1
+    payload = json.loads(capsys.readouterr().out)
+    issue = payload["broken_rules"][0]["issues"][0]
+    assert issue["code"] == "activation_preflight_failed"
+    assert "no adapter is registered" in issue["message"]
 
 
 def test_activation_dry_run_reports_missing_runtime_operation_hook(
@@ -1198,7 +1251,9 @@ def test_activation_dry_run_reports_missing_runtime_operation_hook(
     )
     materialized = SimpleNamespace(
         signature=SimpleNamespace(
-            metadata=SimpleNamespace(id=1000001, name="VENDOR_RESET"),
+            metadata=SimpleNamespace(
+                id=1000001, name="VENDOR_RESET", version="1.0.0"
+            ),
             actions=SimpleNamespace(
                 repair_actions=SimpleNamespace(
                     local_actions=SimpleNamespace(action_list=(operation,))
@@ -1230,11 +1285,15 @@ def test_activation_dry_run_reports_missing_runtime_operation_hook(
     monkeypatch.setattr(dldd_cli, "load_extensions", lambda *args: extensions)
     monkeypatch.setattr(dldd_cli, "load_rules", lambda *args, **kwargs: result)
     monkeypatch.setattr(
-        dldd_cli,
+        dldd_preflight,
         "build_plans",
         lambda *args, **kwargs: SimpleNamespace(work_items={}),
     )
-    monkeypatch.setattr(dldd_cli, "adapter_map", lambda **kwargs: {})
+    monkeypatch.setattr(
+        dldd_preflight,
+        "build_adapter_registry",
+        lambda unused_extensions: {},
+    )
     args = SimpleNamespace(
         mode="activation-dry-run",
         platform_dir=None,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import json
 from dataclasses import replace
-import os
 import signal
 import threading
 import time
@@ -13,7 +12,6 @@ from queue import Queue
 from typing import Mapping, Optional
 
 from .actions import ActionExecutor, ActionRunner
-from .adapters import VendorAdapter, adapter_map
 from .artifacts import (
     DEFAULT_ARTIFACT_DIRECTORY,
     FilesystemArtifactClient,
@@ -22,7 +20,6 @@ from .artifacts import (
 from .config import ConfigDBProvider, DLDDConfig, load_vendor_defaults
 from .correlation import CorrelationEngine
 from .lifecycle import (
-    ActivationResult,
     BrokenRuleStateStore,
     CandidateValidation,
     RuleGenerationManager,
@@ -30,10 +27,10 @@ from .lifecycle import (
 )
 from .monitor import AsyncCollectionPool, MonitorThread
 from .models import BrokenRule, ValidationIssue
-from .hooks import VendorHookError
 from .orchestrator import PrimaryOrchestrator
 from .planner import build_plans
 from .platform import PlatformExtensions, detect_identity, load_extensions
+from .preflight import build_adapter_registry, preflight_activation
 from .runtime import MonitorCommandType, MonitorWorkState
 from .rule_schema.errors import bound_diagnostic, bound_identity
 from .rule_status import build_rule_status_snapshot
@@ -165,28 +162,6 @@ def _bounded_file_error_strings(issues):
     return tuple(selected)
 
 
-def validate_runtime_operation_hooks(materialized_rule, vendor_hooks) -> None:
-    """Ensure every materialized non-built-in operation has a runtime target."""
-
-    actions = materialized_rule.signature.actions
-    local = actions.repair_actions.local_actions
-    if local is not None:
-        for operation in local.action_list:
-            if operation.type == "i2c":
-                vendor_hooks.validate_i2c_source(operation.path)
-                continue
-            if callable(operation.executor) or operation.type == "cli":
-                continue
-            hook_name = str(operation.options.get("hook", operation.type))
-            vendor_hooks.get(hook_name)
-    if actions.log_collection is not None:
-        for query in actions.log_collection.queries:
-            if callable(query.executor) or query.type == "cli":
-                continue
-            hook_name = str(query.options.get("hook", query.type))
-            vendor_hooks.get(hook_name)
-
-
 class DLDDService:
     def __init__(
         self,
@@ -243,38 +218,18 @@ class DLDDService:
         )
         result = load_rules(path, context)
         if result.materialized_rules:
-            invalid = {}
-            for rule in result.materialized_rules:
-                try:
-                    validate_runtime_operation_hooks(
-                        rule, self.extensions.vendor_hooks
-                    )
-                except (ValueError, VendorHookError) as error:
-                    metadata = rule.signature.metadata
-                    invalid.setdefault(
-                        metadata.id,
-                        (
-                            bound_identity(metadata.name, 128),
-                            bound_diagnostic(str(error), 256),
-                        ),
-                    )
-            validation_bundle = build_plans(
-                result.materialized_rules,
-                "validation",
-                {"redis": 60, "file": 60, "common": 60},
+            preflight = preflight_activation(
+                result,
+                self.extensions,
+                DLDDConfig().polling_intervals,
             )
-            adapters = self._adapters()
-            for item in validation_bundle.work_items.values():
-                try:
-                    adapters[item.source_type].validate(item)
-                except (ValueError, VendorHookError) as error:
-                    invalid.setdefault(
-                        item.rule_id,
-                        (
-                            bound_identity(item.rule_name, 128),
-                            bound_diagnostic(str(error), 256),
-                        ),
-                    )
+            invalid = {
+                failure.rule_id: (
+                    bound_identity(failure.rule_name, 128),
+                    bound_diagnostic(failure.message, 256),
+                )
+                for failure in preflight.failures
+            }
             if invalid:
                 materialized = tuple(
                     rule
@@ -333,12 +288,53 @@ class DLDDService:
         )
 
     def _adapters(self):
-        adapters = adapter_map(hooks=self.extensions.vendor_hooks)
-        for source_type in self.extensions.dse_registry.source_types:
-            adapters[source_type] = VendorAdapter(
-                source_type, self.extensions.vendor_hooks
-            )
-        return adapters
+        return build_adapter_registry(self.extensions)
+
+    def _fail_start(self, reason: str) -> None:
+        """Record and publish one fatal startup outcome."""
+
+        self.fatal_reason = str(reason)
+        if self.activation is not None:
+            self.startup_broken = tuple(self.activation.broken_rules)
+        self._publish_status()
+
+    def _new_monitor(self, plan) -> MonitorThread:
+        """Construct a monitor using the active shared runtime dependencies."""
+
+        return MonitorThread(
+            plan,
+            self.adapters,
+            self.evidence_queue,
+            fault_evidence_ack_timeout=self.config.fault_evidence_ack_timeout,
+            source_recovery_samples=self.config.source_recovery_samples,
+            async_collection_pool=self.async_collection_pool,
+            stop_event=self.stop_event,
+        )
+
+    def _activation_status_fields(self):
+        """Return status fields owned by the selected rules generation."""
+
+        if self.activation is None:
+            return {}
+        payload = getattr(self.activation, "payload", None)
+        ruleset = getattr(payload, "ruleset", None)
+        return {
+            "local_action_default_timeout": (
+                ruleset.local_action_default_timeout
+                if ruleset is not None
+                else None
+            ),
+            "active_rules_source": getattr(self.activation, "source", ""),
+            "activation_result": getattr(
+                self.activation, "validation_result", ""
+            ),
+            "activation_fallback_used": getattr(
+                self.activation, "fallback_used", False
+            ),
+            "previous_active_rules_checksum": getattr(
+                self.activation, "previous_checksum", ""
+            ),
+        }
 
     def _create_artifact_client(self) -> HealthzArtifactClient:
         factory = getattr(self.extensions, "artifact_client_factory", None)
@@ -374,35 +370,18 @@ class DLDDService:
             self.activation = manager.activate()
         except Exception as error:
             LOGGER.exception("DLDD activation failed")
-            self.fatal_reason = str(error)
-            self.telemetry.publish_status(
-                "BROKEN|FATAL", "", "", "", reason=str(error)
-            )
+            self._fail_start(str(error))
             return
 
         validation = self.activation.payload
-        intervals = {
-            "redis": self.config.redis_monitor_polling_interval,
-            "file": self.config.file_monitor_polling_interval,
-            "common": self.config.common_monitor_polling_interval,
-        }
         bundle = build_plans(
             validation.materialized_rules,
             self.activation.checksum,
-            intervals,
+            self.config.polling_intervals,
         )
         adapters = self._adapters()
         if not bundle.work_items and not bundle.templates:
-            self.fatal_reason = "zero usable monitor work items after activation"
-            self.startup_broken = tuple(self.activation.broken_rules)
-            self.telemetry.publish_status(
-                "BROKEN|FATAL",
-                self.activation.schema_version,
-                self.activation.active_file,
-                self.activation.checksum,
-                broken_rules=self.startup_broken,
-                reason=self.fatal_reason,
-            )
+            self._fail_start("zero usable monitor work items after activation")
             return
 
         evidence_queue = Queue(maxsize=4096)
@@ -410,17 +389,8 @@ class DLDDService:
             artifact_client = self._create_artifact_client()
         except Exception as error:
             LOGGER.exception("DLDD artifact client initialization failed")
-            self.fatal_reason = "artifact client initialization failed: {}".format(
-                error
-            )
-            self.startup_broken = tuple(self.activation.broken_rules)
-            self.telemetry.publish_status(
-                "BROKEN|FATAL",
-                self.activation.schema_version,
-                self.activation.active_file,
-                self.activation.checksum,
-                broken_rules=self.startup_broken,
-                reason=self.fatal_reason,
+            self._fail_start(
+                "artifact client initialization failed: {}".format(error)
             )
             return
         self.adapters = adapters
@@ -481,15 +451,7 @@ class DLDDService:
                 )
         self.orchestrator.reconcile_existing_faults()
         for plan in bundle.monitor_plans.values():
-            monitor = MonitorThread(
-                plan,
-                adapters,
-                evidence_queue,
-                fault_evidence_ack_timeout=self.config.fault_evidence_ack_timeout,
-                source_recovery_samples=self.config.source_recovery_samples,
-                async_collection_pool=self.async_collection_pool,
-                stop_event=self.stop_event,
-            )
+            monitor = self._new_monitor(plan)
             monitor.start()
             self.monitors.append(monitor)
         self.config_thread = threading.Thread(
@@ -575,12 +537,7 @@ class DLDDService:
         # stable snapshot prevents list compaction from skipping another plan;
         # replacements reuse the same plan-owned update queue.
         for monitor in tuple(self.monitors):
-            if monitor.plan.monitor_type == "redis":
-                interval = updated.redis_monitor_polling_interval
-            elif monitor.plan.monitor_type == "file":
-                interval = updated.file_monitor_polling_interval
-            else:
-                interval = updated.common_monitor_polling_interval
+            interval = updated.polling_intervals[monitor.plan.monitor_type]
             if hasattr(monitor, "update_polling_interval"):
                 monitor.update_polling_interval(interval)
             else:  # lightweight test doubles
@@ -629,15 +586,7 @@ class DLDDService:
             if monitor.is_alive() or self.stop_event.is_set():
                 continue
             LOGGER.error("restarting stopped DLDD monitor %s", monitor.plan.monitor_id)
-            replacement = MonitorThread(
-                monitor.plan,
-                self.adapters,
-                self.evidence_queue,
-                fault_evidence_ack_timeout=self.config.fault_evidence_ack_timeout,
-                source_recovery_samples=self.config.source_recovery_samples,
-                async_collection_pool=self.async_collection_pool,
-                stop_event=self.stop_event,
-            )
+            replacement = self._new_monitor(monitor.plan)
             replacement.diagnostics.extend(monitor.diagnostics)
             replacement.diagnostics.append(
                 {
@@ -717,15 +666,7 @@ class DLDDService:
                     or tuple(self.activation.broken_rules)
                 ),
                 reason=self.fatal_reason,
-                local_action_default_timeout=(
-                    self.activation.payload.ruleset.local_action_default_timeout
-                    if self.activation.payload.ruleset
-                    else None
-                ),
-                active_rules_source=self.activation.source,
-                activation_result=self.activation.validation_result,
-                activation_fallback_used=self.activation.fallback_used,
-                previous_active_rules_checksum=self.activation.previous_checksum,
+                **self._activation_status_fields(),
             )
             return status_published and rule_status_published
         broken = tuple(self.activation.broken_rules)
@@ -764,15 +705,7 @@ class DLDDService:
             inflight_fault_evidence=inflight,
             service_diagnostics=diagnostics,
             reason="" if state == "OK" else "DLDD has degraded or broken rules/sources",
-            local_action_default_timeout=(
-                self.activation.payload.ruleset.local_action_default_timeout
-                if self.activation.payload.ruleset
-                else None
-            ),
-            active_rules_source=self.activation.source,
-            activation_result=self.activation.validation_result,
-            activation_fallback_used=self.activation.fallback_used,
-            previous_active_rules_checksum=self.activation.previous_checksum,
+            **self._activation_status_fields(),
         )
         return status_published and self._publish_rule_status()
 

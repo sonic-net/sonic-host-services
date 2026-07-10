@@ -12,8 +12,9 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Iterable, List, Mapping, Tuple
 
+from .filesystem import atomic_copy, atomic_write_json, load_json_object
 from .timestamps import floor_timestamp, floor_timestamp_fields
 
 
@@ -98,26 +99,6 @@ def sha256_file(path: str) -> str:
     return "sha256:{}".format(digest.hexdigest())
 
 
-def _atomic_json(path: str, document: Mapping[str, Any]) -> None:
-    directory = os.path.dirname(path)
-    os.makedirs(directory, mode=0o755, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".dldd-", dir=directory)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(document, stream, sort_keys=True, indent=2)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        directory_fd = os.open(directory, os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
 class RuleGenerationManager:
     """Choose, validate, and atomically promote one rules generation."""
 
@@ -174,7 +155,7 @@ class RuleGenerationManager:
                     # inbox and then copy different bytes into the active file.
                     checksum = sha256_file(staged)
                     if source == "inbox":
-                        accepted_checksum = self._load_json(
+                        accepted_checksum = load_json_object(
                             self.paths.watcher_state
                         ).get("last_restart_checksum")
                         if checksum != accepted_checksum:
@@ -288,7 +269,7 @@ class RuleGenerationManager:
                 )
                 if previous and previous != checksum:
                     manifest["previous_active_generation_path"] = previous_generation
-                _atomic_json(self.paths.manifest, manifest)
+                atomic_write_json(self.paths.manifest, manifest)
                 self._prune_generations(manifest)
                 LOGGER.info(
                     "activated DLDD rules source=%s checksum=%s previous=%s fallback=%s validation=%s",
@@ -314,7 +295,7 @@ class RuleGenerationManager:
                 "at": floor_timestamp(self.clock()),
                 "errors": failures or ["no rules candidates exist"],
             }
-            _atomic_json(self.paths.manifest, manifest)
+            atomic_write_json(self.paths.manifest, manifest)
             self._prune_generations(manifest)
             raise RuntimeError("no candidate produced a usable rules generation: {}".format(
                 "; ".join(failures or ["no candidate exists"])
@@ -370,7 +351,7 @@ class RuleGenerationManager:
         candidates: List[Tuple[str, str]] = []
         if os.path.isfile(self.paths.inbox):
             checksum = sha256_file(self.paths.inbox)
-            watcher = self._load_json(self.paths.watcher_state)
+            watcher = load_json_object(self.paths.watcher_state)
             if (
                 checksum == watcher.get("last_restart_checksum")
                 and checksum != manifest.get("last_attempted_inbox_checksum")
@@ -396,16 +377,7 @@ class RuleGenerationManager:
         return unique
 
     def _load_manifest(self) -> Mapping[str, Any]:
-        return self._load_json(self.paths.manifest)
-
-    @staticmethod
-    def _load_json(path: str) -> Mapping[str, Any]:
-        try:
-            with open(path, "r", encoding="utf-8") as stream:
-                document = json.load(stream)
-            return document if isinstance(document, dict) else {}
-        except (OSError, ValueError):
-            return {}
+        return load_json_object(self.paths.manifest)
 
     def _record_attempt(
         self,
@@ -493,37 +465,9 @@ class RuleGenerationManager:
         versioned = os.path.join(
             self.paths.rules_dir, "dld_rules.{}.yaml".format(generation)
         )
-        descriptor, staged = tempfile.mkstemp(
-            prefix=".dld_rules.", suffix=".yaml", dir=self.paths.rules_dir
-        )
-        os.close(descriptor)
-        try:
-            shutil.copyfile(source_path, staged)
-            with open(staged, "rb") as stream:
-                os.fsync(stream.fileno())
-            os.replace(staged, versioned)
-
-            descriptor, active_staged = tempfile.mkstemp(
-                prefix=".dld_rules.active.", suffix=".yaml", dir=self.paths.rules_dir
-            )
-            os.close(descriptor)
-            try:
-                shutil.copyfile(versioned, active_staged)
-                with open(active_staged, "rb") as stream:
-                    os.fsync(stream.fileno())
-                os.replace(active_staged, self.paths.active)
-            finally:
-                if os.path.exists(active_staged):
-                    os.unlink(active_staged)
-            directory_fd = os.open(self.paths.rules_dir, os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-            return versioned
-        finally:
-            if os.path.exists(staged):
-                os.unlink(staged)
+        atomic_copy(source_path, versioned)
+        atomic_copy(versioned, self.paths.active)
+        return versioned
 
     def _archive_failed(self, source_path: str, checksum: str, source: str) -> None:
         suffix = "-{}-{}.yaml".format(
@@ -538,18 +482,7 @@ class RuleGenerationManager:
             int(self.clock()), source, checksum.split(":", 1)[-1][:12]
         )
         destination = os.path.join(self.paths.rules_dir, name)
-        descriptor, staged = tempfile.mkstemp(
-            prefix=".dld_rules.failed.", suffix=".yaml", dir=self.paths.rules_dir
-        )
-        os.close(descriptor)
-        try:
-            shutil.copyfile(source_path, staged)
-            with open(staged, "rb") as stream:
-                os.fsync(stream.fileno())
-            os.replace(staged, destination)
-        finally:
-            if os.path.exists(staged):
-                os.unlink(staged)
+        atomic_copy(source_path, destination)
 
     def _prune_generations(self, manifest: Mapping[str, Any]) -> None:
         prefix = "dld_rules."
@@ -637,7 +570,7 @@ class BrokenRuleStateStore:
         clean_shutdown: bool = False,
     ) -> None:
         rules = [floor_timestamp_fields(rule) for rule in broken_rules]
-        _atomic_json(
+        atomic_write_json(
             self.path,
             {
                 "state_schema": self.STATE_SCHEMA,

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import glob
 import json
-import os
-import subprocess
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
@@ -14,18 +12,20 @@ from .dse import (
     DSEBinding,
     DSEExpansionResult,
     DSEInvocationContext,
-    ResolvedEvaluation,
+    validate_resolved_evaluation,
 )
+from .command_execution import build_i2c_argv, run_shell_free
 from .evaluators import EvaluationContractError, evaluate, parse_integer
 from .hooks import VendorHookRegistry
+from .models import ValueConfig
 from .runtime import (
     CollectedValue,
     EvaluationResult,
     EvaluationResultType,
     MonitorWorkItem,
     SourceAvailability,
-    ValueConfig,
 )
+from .sonic_hash import SonicHashReader, SonicHashReaderError
 
 
 class AdapterError(RuntimeError):
@@ -96,13 +96,7 @@ def _normalize(raw: Any, config: ValueConfig) -> Any:
 
 
 def _condition_config(evaluator: Mapping[str, Any]) -> ValueConfig:
-    values = evaluator.get("value_configs") or {}
-    return ValueConfig(
-        type=str(values.get("type", "N/A")),
-        unit=str(values.get("unit", "N/A")),
-        scaling=values.get("scaling", "N/A"),
-        encoding=str(values.get("encoding", "N/A")),
-    )
+    return ValueConfig.from_mapping(evaluator.get("value_configs") or {})
 
 
 class DataSourceAdapter(ABC):
@@ -126,37 +120,33 @@ class DataSourceAdapter(ABC):
                 source_id=item.source_id,
                 data=item.source,
             )
-            resolved = handle.get_evaluator(
-                DSEInvocationContext(item.dse_context, binding)
+            rule_operator = item.evaluation.get("operator")
+            resolved = validate_resolved_evaluation(
+                handle.get_comparator(
+                    DSEInvocationContext(item.dse_context, binding)
+                ),
+                rule_operator=rule_operator,
+                reference=handle.reference,
             )
-            if isinstance(resolved, ResolvedEvaluation):
-                config = resolved.value_configs
-                evaluator = {
-                    "type": "dse",
-                    "value": resolved.expected_value,
-                    "value_configs": {
-                        "type": config.type,
-                        "unit": config.unit,
-                        "scaling": config.scaling,
-                        "encoding": config.encoding,
-                    },
-                }
-                if resolved.operator is not None:
-                    evaluator["operator"] = resolved.operator
-                if resolved.comparator is not None:
-                    evaluator["comparator"] = resolved.comparator
-            elif isinstance(resolved, Mapping):
-                evaluator = dict(resolved)
-            else:
-                raise EvaluationContractError(
-                    "DSE evaluator must return a mapping or ResolvedEvaluation"
-                )
-            if "operator" not in evaluator and item.evaluation.get("operator"):
-                evaluator["operator"] = item.evaluation["operator"]
-            if "value_configs" not in evaluator:
-                evaluator["value_configs"] = item.evaluation.get(
-                    "value_configs", {}
-                )
+            rule_config = ValueConfig.from_mapping(
+                item.evaluation.get("value_configs") or {}
+            )
+            config = (
+                rule_config
+                if rule_config != ValueConfig()
+                else resolved.value_configs
+            )
+            config_values = config.as_payload()
+            evaluator = {
+                "type": "dse",
+                "value": resolved.expected_value,
+                "value_configs": config_values,
+            }
+            effective_operator = rule_operator or resolved.operator
+            if effective_operator is not None:
+                evaluator["operator"] = effective_operator
+            if resolved.comparator is not None:
+                evaluator["comparator"] = resolved.comparator
             return evaluator
         return item.evaluation
 
@@ -234,22 +224,17 @@ class DataSourceAdapter(ABC):
 class RedisAdapter(DataSourceAdapter):
     source_type = "redis"
 
-    def __init__(self, reader: Optional[Callable[[str, str, str], Any]] = None) -> None:
-        self._reader = reader or self._sonic_read
-
-    @staticmethod
-    def _sonic_read(database: str, table: str, key: str) -> Any:
-        try:
-            from swsscommon import swsscommon
-        except ImportError as error:
-            raise SourceUnavailable("swsscommon is unavailable: {}".format(error))
-        connector = swsscommon.SonicV2Connector(host="127.0.0.1")
-        connector.connect(database, False)
-        redis_key = key or table
-        result = connector.get_all(database, redis_key)
-        if not result:
-            raise SourceUnavailable("Redis key is unavailable: {}".format(redis_key))
-        return result
+    def __init__(
+        self,
+        reader: Optional[Callable[[str, str, str], Any]] = None,
+        hash_reader: Optional[SonicHashReader] = None,
+    ) -> None:
+        if reader is not None and hash_reader is not None:
+            raise ValueError("provide either reader or hash_reader")
+        self._reader = reader
+        self._hash_reader = hash_reader or (
+            SonicHashReader() if reader is None else None
+        )
 
     def validate(self, item: MonitorWorkItem) -> None:
         super().validate(item)
@@ -263,7 +248,20 @@ class RedisAdapter(DataSourceAdapter):
 
     def get_value(self, item: MonitorWorkItem) -> Any:
         source = item.source
-        value = self._reader(source["database"], source["table"], source["key"])
+        if self._reader is not None:
+            value = self._reader(
+                source["database"], source["table"], source["key"]
+            )
+        else:
+            redis_key = source["key"] or source["table"]
+            try:
+                value = self._hash_reader.read(source["database"], redis_key)
+            except SonicHashReaderError as error:
+                raise SourceUnavailable(str(error))
+            if not value:
+                raise SourceUnavailable(
+                    "Redis key is unavailable: {}".format(redis_key)
+                )
         return _extract_path(value, source.get("path"))
 
 
@@ -328,8 +326,8 @@ class SysfsAdapter(FileAdapter):
 class CLIAdapter(DataSourceAdapter):
     source_type = "cli"
 
-    def __init__(self, runner: Optional[Callable[..., subprocess.CompletedProcess]] = None) -> None:
-        self._runner = runner or subprocess.run
+    def __init__(self, runner: Optional[Callable[..., Any]] = None) -> None:
+        self._runner = runner
 
     def validate(self, item: MonitorWorkItem) -> None:
         super().validate(item)
@@ -349,26 +347,21 @@ class CLIAdapter(DataSourceAdapter):
         argv = list(item.source["argv"])
         timeout = item.source.get("timeout", 30)
         max_output = int(item.source.get("max_output_bytes", 1024 * 1024))
-        result = self._runner(
+        result = run_shell_free(
             argv,
-            shell=False,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             timeout=timeout,
+            max_output_bytes=max_output,
+            runner=self._runner,
         )
         if result.returncode != 0:
-            stderr = (
-                result.stderr.decode("utf-8", "replace")
-                if isinstance(result.stderr, bytes)
-                else str(result.stderr)
-            )
             raise AdapterError(
-                "CLI source exited {}: {}".format(result.returncode, stderr[:max_output])
+                "CLI source exited {}: {}".format(
+                    result.returncode, result.stderr_text()
+                )
             )
-        stdout = result.stdout[:max_output]
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode(item.source.get("encoding", "utf-8"), "replace")
+        stdout = result.stdout_text(
+            item.source.get("encoding", "utf-8"), "replace"
+        )
         return _extract_path(stdout.strip(), item.source.get("path"))
 
 
@@ -385,27 +378,13 @@ class I2CAdapter(DataSourceAdapter):
 
     @staticmethod
     def _i2cget(source: Mapping[str, Any]) -> Any:
-        argv = [
-            source.get("executable", "/usr/sbin/i2cget"),
-            "-f",
-            "-y",
-            str(source["bus"]),
-            str(source["chip_addr"]),
-            str(source["command"]),
-        ]
-        if source.get("size") not in (None, "", "N/A"):
-            argv.append(str(source["size"]))
-        result = subprocess.run(
-            argv,
-            shell=False,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        result = run_shell_free(
+            build_i2c_argv(source, operation="get"),
             timeout=float(source.get("timeout", 10)),
         )
         if result.returncode != 0:
-            raise SourceUnavailable(result.stderr.decode("utf-8", "replace").strip())
-        return result.stdout.decode("ascii", "strict").strip()
+            raise SourceUnavailable(result.stderr_text().strip())
+        return result.stdout_text("ascii", "strict").strip()
 
     def validate(self, item: MonitorWorkItem) -> None:
         super().validate(item)

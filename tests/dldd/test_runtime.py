@@ -29,11 +29,13 @@ from dldd.dse import (
     DSEHook,
     DSERegistry,
     DSESourceHandle,
+    ResolvedEvaluation,
+    parse_reference,
 )
 from dldd.evaluators import EvaluationContractError, evaluate
 from dldd.monitor import AsyncCollectionPool, MonitorThread, command_for_event
 from dldd.hooks import VendorHook, VendorHookRegistry
-from dldd.models import ValueConfig as ModelValueConfig
+from dldd.models import ValueConfig
 from dldd.planner import build_plans
 from dldd.runtime import (
     CollectedValue,
@@ -46,7 +48,7 @@ from dldd.runtime import (
     MonitorWorkState,
     MonitorWorkStateRecord,
     SourceAvailability,
-    ValueConfig,
+    ValueConfig as RuntimeValueConfig,
 )
 from dldd.validation import ValidationContext, load_rules, validate_document
 
@@ -110,6 +112,26 @@ def test_evaluators_cover_schema_contracts():
     assert evaluate({"type": "boolean", "value": True}, "true")
     with pytest.raises(EvaluationContractError):
         evaluate({"type": "comparison", "operator": "bad", "value": 3}, 4)
+
+
+def test_runtime_uses_the_canonical_value_config_type():
+    assert RuntimeValueConfig is ValueConfig
+    config = ValueConfig.from_mapping(
+        {"type": "float", "unit": "volts", "scaling": 2, "encoding": "N/A"}
+    )
+    assert config.as_payload() == {
+        "type": "float",
+        "unit": "volts",
+        "scaling": 2,
+        "encoding": "N/A",
+    }
+    with pytest.raises(ValueError, match="unknown value config fields"):
+        ValueConfig.from_mapping({"type": "float", "extra": True})
+    with pytest.raises(ValueError, match="canonical value"):
+        ValueConfig(type=[])
+    for scaling in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="scaling must be numeric"):
+            ValueConfig(scaling=scaling)
 
 
 def test_regex_evaluation_times_out_catastrophic_backtracking():
@@ -1082,6 +1104,56 @@ def test_redis_adapter_uses_full_key_and_slash_value_path():
     assert calls == [("STATE_DB", "PSU_INFO", "PSU_INFO|PSU0")]
 
 
+def test_redis_adapter_uses_injected_hash_reader_and_component_path():
+    calls = []
+
+    class HashReader(object):
+        def read(self, database, key):
+            calls.append((database, key))
+            return {"value": {"rails": [{"voltage": "51.5"}]}}
+
+    item = replace(
+        work_item(),
+        source_type="redis",
+        source={
+            "database": "STATE_DB",
+            "table": "PSU_INFO",
+            "key": "PSU_INFO|PSU0",
+            "path": ("value", "rails", "0", "voltage"),
+        },
+        evaluation={"type": "comparison", "operator": ">", "value": 50.0},
+        value_config=ValueConfig(type="float", unit="volts"),
+    )
+
+    collected = RedisAdapter(hash_reader=HashReader()).collect(item)
+
+    assert collected.result == EvaluationResultType.MATCH
+    assert collected.value.normalized == 51.5
+    assert calls == [("STATE_DB", "PSU_INFO|PSU0")]
+
+
+def test_redis_adapter_empty_hash_is_source_unavailable():
+    class EmptyHashReader(object):
+        def read(self, unused_database, unused_key):
+            return {}
+
+    item = replace(
+        work_item(),
+        source_type="redis",
+        source={
+            "database": "STATE_DB",
+            "table": "PSU_INFO",
+            "key": "PSU_INFO|PSU0",
+            "path": None,
+        },
+    )
+
+    assert (
+        RedisAdapter(hash_reader=EmptyHashReader()).collect(item).result
+        == EvaluationResultType.SOURCE_UNAVAILABLE
+    )
+
+
 class _Clock:
     def __init__(self, value=0.0):
         self.value = value
@@ -1107,7 +1179,7 @@ class RuntimeDSEHook(DSEHook):
                         instance=name,
                         source_id="SENSOR_INFO|{}".format(name),
                         data={"name": name},
-                        value_configs=ModelValueConfig(
+                        value_configs=ValueConfig(
                             type="float", unit="units"
                         ),
                     )
@@ -1132,21 +1204,15 @@ class RuntimeDSEHook(DSEHook):
         )
 
     def resolve_evaluation(self, reference, context):
-        def get_evaluator(invocation):
+        def get_comparator(invocation):
             self.evaluations += 1
-            return {
-                "type": "dse",
-                "operator": ">=",
-                "value": self.thresholds[invocation.binding.instance],
-                "value_configs": {
-                    "type": "float",
-                    "unit": "units",
-                    "scaling": "N/A",
-                    "encoding": "N/A",
-                },
-            }
+            return ResolvedEvaluation(
+                expected_value=self.thresholds[invocation.binding.instance],
+                operator=">=",
+                value_configs=ValueConfig(type="float", unit="units"),
+            )
 
-        return DSEEvaluationHandle(reference, get_evaluator)
+        return DSEEvaluationHandle(reference, get_comparator)
 
 
 def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
@@ -1179,6 +1245,8 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
     )
     assert not bundle.work_items
     assert len(bundle.templates) == 1
+    template = next(iter(bundle.templates.values()))
+    assert template.item.schema_version == validated.schema_version
 
     clock = _Clock()
     evidence = Queue()
@@ -1197,6 +1265,7 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
     expansion = evidence.get_nowait()
     assert isinstance(expansion, DSEExpansionEvent)
     assert len(expansion.added_items) == 1
+    assert expansion.added_items[0].schema_version == validated.schema_version
     state = next(iter(monitor.plan.expansion_state_by_key.values()))
     assert state.phase == "STABLE"
     assert hook.expansions == 4
@@ -1218,6 +1287,93 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
     failed = adapter_map()["dse"].collect(child)
     assert failed.result == EvaluationResultType.EVALUATION_ERROR
     assert failed.error_category == "EVALUATION_ERROR"
+
+
+def test_runtime_dse_rejects_legacy_mapping_comparator_results():
+    reference = parse_reference("sensor:get_value()")
+    evaluation_reference = parse_reference("sensor:get_threshold()")
+    binding = DSEBinding(
+        instance="SENSOR0",
+        source_id="SENSOR_INFO|SENSOR0",
+    )
+    item = replace(
+        work_item(),
+        source_type="dse",
+        source={},
+        evaluation={"type": "dse"},
+        dse_binding=binding,
+        dse_source_handle=DSESourceHandle(
+            reference,
+            lambda unused_context: DSEExpansionResult((binding,)),
+            lambda unused_invocation: 10,
+        ),
+        dse_evaluation_handle=DSEEvaluationHandle(
+            evaluation_reference,
+            lambda unused_invocation: {
+                "type": "dse",
+                "operator": ">=",
+                "value": 5,
+            },
+        ),
+    )
+
+    result = DSEAdapter().collect(item)
+
+    assert result.result == EvaluationResultType.EVALUATION_ERROR
+    assert result.retryable is False
+    assert "must return ResolvedEvaluation" in result.error
+
+
+def test_runtime_dse_value_config_precedence_matches_activation_resolution():
+    reference = parse_reference("sensor:get_value()")
+    evaluation_reference = parse_reference("sensor:get_threshold()")
+    binding = DSEBinding(
+        instance="SENSOR0",
+        source_id="SENSOR_INFO|SENSOR0",
+    )
+    vendor_config = ValueConfig(type="float", unit="vendor-units")
+    adapter = DSEAdapter()
+    item = replace(
+        work_item(),
+        source_type="dse",
+        source={},
+        evaluation={
+            "type": "dse",
+            "operator": ">=",
+            "value_configs": ValueConfig(
+                type="int", unit="rule-units"
+            ).as_payload(),
+        },
+        dse_binding=binding,
+        dse_source_handle=DSESourceHandle(
+            reference,
+            lambda unused_context: DSEExpansionResult((binding,)),
+            lambda unused_invocation: 10,
+        ),
+        dse_evaluation_handle=DSEEvaluationHandle(
+            evaluation_reference,
+            lambda unused_invocation: ResolvedEvaluation(
+                expected_value=5,
+                operator=">=",
+                value_configs=vendor_config,
+            ),
+        ),
+    )
+
+    explicit = adapter.get_evaluator(item)
+    implicit = adapter.get_evaluator(
+        replace(
+            item,
+            evaluation={
+                "type": "dse",
+                "operator": ">=",
+                "value_configs": ValueConfig().as_payload(),
+            },
+        )
+    )
+
+    assert explicit["value_configs"]["unit"] == "rule-units"
+    assert implicit["value_configs"] == vendor_config.as_payload()
 
 
 def test_runtime_dse_does_not_publish_children_before_expansion_registration():

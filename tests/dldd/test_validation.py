@@ -1,13 +1,14 @@
 from __future__ import absolute_import
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from dldd.adapters import RedisAdapter
 from dldd.dse import (
     DSEContext,
     DSEEvaluationHandle,
@@ -63,11 +64,10 @@ class SensorDSEHook(DSEHook):
     def resolve_evaluation(self, reference, context):
         return DSEEvaluationHandle(
             reference,
-            lambda unused_invocation: {
-                "type": "dse",
-                "operator": ">=",
-                "value": 0,
-            },
+            lambda unused_invocation: ResolvedEvaluation(
+                expected_value=0,
+                operator=">=",
+            ),
         )
 
 
@@ -136,10 +136,44 @@ def test_valid_direct_rule_materializes_and_applies_defaults():
     assert result.activation_valid
     assert not result.broken_rules
     rule = result.materialized_rules[0]
+    assert result.ruleset.schema_version == result.schema_version
+    assert result.ruleset.signatures[0].schema_version == result.schema_version
+    assert rule.signature.schema_version == result.schema_version
     assert rule.metadata.priority == 5
     assert rule.events[0].sources[0].type == "redis"
     local_action = rule.signature.actions.repair_actions.local_actions.action_list[0]
     assert local_action.timeout == 300
+
+
+def test_planner_propagates_signature_schema_version_and_rejects_mixing():
+    result = validate_document(load_fixture())
+    materialized = result.materialized_rules[0]
+    alternate = replace(
+        materialized,
+        signature=replace(materialized.signature, schema_version="test-version"),
+    )
+
+    plans = build_plans(
+        (alternate,),
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+
+    assert {
+        item.schema_version for item in plans.work_items.values()
+    } == {"test-version"}
+    with pytest.raises(ValueError, match="cannot be empty"):
+        build_plans(
+            (),
+            "sha256:test",
+            {"redis": 60, "file": 60, "common": 60},
+        )
+    with pytest.raises(ValueError, match="different schema versions"):
+        build_plans(
+            (materialized, alternate),
+            "sha256:test",
+            {"redis": 60, "file": 60, "common": 60},
+        )
 
 
 def test_one_redis_event_expands_positionally_across_sensor_instances():
@@ -950,6 +984,49 @@ class MultiOperationHook(FakeHook):
         )
 
 
+class FlexibleRedisPathHook(FakeHook):
+    def __init__(self, value_path):
+        self.value_path = value_path
+
+    def resolve_source(self, reference, context):
+        return (
+            ResolvedSource(
+                type="redis",
+                path={
+                    "database": "STATE_DB",
+                    "table": "PSU_INFO",
+                    "key": "PSU_INFO|PSU0",
+                    "path": self.value_path,
+                },
+                instance="PSU0",
+            ),
+        )
+
+
+@pytest.mark.parametrize("value_path", (None, ("value", "fault")))
+def test_dse_resolved_redis_path_is_owned_by_adapter_preflight(value_path):
+    document = load_fixture()
+    event(document).update({"type": "dse", "path": "PSU:get_fault()"})
+    result = validate_document(
+        document,
+        context=ValidationContext(
+            dse_registry=DSERegistry(
+                hook=FlexibleRedisPathHook(value_path)
+            )
+        ),
+    )
+
+    assert result.activation_valid
+    bundle = build_plans(
+        result.materialized_rules,
+        "generation",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    item = next(iter(bundle.work_items.values()))
+    RedisAdapter(lambda *unused: {}).validate(item)
+    assert item.source["path"] == value_path
+
+
 def test_distinct_dse_operations_for_one_instance_survive_planning():
     document = load_fixture()
     event(document).update({"type": "dse", "path": "PSU:get_fault()"})
@@ -1141,7 +1218,7 @@ def test_dse_evaluation_value_config_uses_canonical_contract():
     )
 
     assert not result.activation_valid
-    assert "evaluation value_configs" in (
+    assert "invalid value config" in (
         result.broken_rules[0].issues[0].message
     )
     assert "type must use a canonical value" in (

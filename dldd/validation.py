@@ -3,7 +3,7 @@
 from __future__ import absolute_import
 
 from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import math
 import os
@@ -40,7 +40,6 @@ from .models import (
     RepairActions,
     ResolvedSource,
     RuleSet,
-    Signature,
     ValidationIssue,
     ValidationResult,
     ValueConfig,
@@ -835,17 +834,6 @@ def _direct_sources(event):
     return tuple(result)
 
 
-def _validate_resolved_source(source, registry):
-    if source.type in registry.source_types:
-        return
-    raw = []
-    _validate_source_path(source.type, source.path, (), raw, "resolved.path")
-    if raw:
-        raise DSEError("; ".join(message for unused, message, unused_path in raw))
-    if source.type in ("dse",):
-        raise DSEError("DSE source must resolve to a concrete source type")
-
-
 def materialize_signature(signature, context=None):
     """Resolve a validated signature into monitor inputs and DSE handles.
 
@@ -885,8 +873,6 @@ def materialize_signature(signature, context=None):
                 sources = resolved_source
         else:
             sources = _direct_sources(event)
-        for source in sources:
-            _validate_resolved_source(source, registry)
         for source in sources:
             if source.type in registry.source_types:
                 if registry.hook is None:
@@ -1016,9 +1002,8 @@ def materialize_signature(signature, context=None):
             logs=log_collection.logs,
             queries=tuple(queries),
         )
-    materialized_signature = Signature(
-        metadata=signature.metadata,
-        conditions=signature.conditions,
+    materialized_signature = replace(
+        signature,
         actions=Actions(
             repair_actions=RepairActions(
                 remote_actions=signature.actions.repair_actions.remote_actions,
@@ -1075,12 +1060,13 @@ def validate_document(
         )
 
     contract = registry.require_exact(version)
+    canonical_version = contract.version
     try:
         envelope = contract.validate_envelope(document)
     except ValidationError as error:
         normalized = normalize_validation_error(error)
         return ValidationResult(
-            schema_version=version,
+            schema_version=canonical_version,
             ruleset=None,
             file_errors=_to_file_issues(
                 tuple(
@@ -1095,7 +1081,7 @@ def validate_document(
     identity_issues = _duplicate_rule_identity_issues(document["signatures"])
     if identity_issues:
         return ValidationResult(
-            schema_version=version,
+            schema_version=canonical_version,
             ruleset=None,
             file_errors=_to_file_issues(identity_issues, source_lines),
             source_lines=source_lines,
@@ -1187,12 +1173,12 @@ def validate_document(
         materialized.append(result)
 
     ruleset = RuleSet(
-        schema_version=version,
+        schema_version=canonical_version,
         signatures=tuple(signatures),
         local_action_default_timeout=default_timeout,
     )
     return ValidationResult(
-        schema_version=version,
+        schema_version=canonical_version,
         ruleset=ruleset,
         materialized_rules=tuple(materialized),
         broken_rules=tuple(broken),

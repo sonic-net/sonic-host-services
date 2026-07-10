@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from queue import Queue
 from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
+from .bounded_calls import BoundedCallGate
+from .command_execution import build_i2c_argv, run_shell_free
 from .hooks import VendorHookRegistry
+from .models import Operation
 from .timestamps import floor_timestamp_fields
 
 
@@ -63,26 +66,31 @@ class ActionExecutor:
     def execute(self, action: Mapping[str, Any], timeout: float) -> Any:
         resolved_executor = action.get("executor")
         if callable(resolved_executor):
-            return resolved_executor(action)
+            operation = action.get("materialized_operation")
+            if not isinstance(operation, Operation):
+                raise ValueError(
+                    "resolved action executor requires its materialized operation"
+                )
+            return resolved_executor(operation)
         action_type = action.get("type")
         if action_type == "cli":
             argv = action.get("argv")
             if not isinstance(argv, (list, tuple)) or not argv:
                 raise ValueError("CLI action requires argv")
-            result = subprocess.run(
+            result = run_shell_free(
                 list(argv),
-                shell=False,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 timeout=timeout,
+                max_output_bytes=int(
+                    action.get("max_output_bytes", 1024 * 1024)
+                ),
             )
-            max_output = int(action.get("max_output_bytes", 1024 * 1024))
-            stdout = result.stdout[:max_output].decode("utf-8", "replace")
             if result.returncode:
-                stderr = result.stderr[:max_output].decode("utf-8", "replace")
-                raise RuntimeError("CLI action exited {}: {}".format(result.returncode, stderr))
-            return stdout
+                raise RuntimeError(
+                    "CLI action exited {}: {}".format(
+                        result.returncode, result.stderr_text()
+                    )
+                )
+            return result.stdout_text()
         if action_type == "i2c":
             return (
                 self.i2c_action(action)
@@ -129,30 +137,13 @@ class ActionExecutor:
     def _execute_i2c_bus(
         path: Mapping[str, Any], operation: str, bus: Any, timeout: float
     ) -> str:
-        executable = "/usr/sbin/i2c{}".format(operation)
-        argv = [
-            executable,
-            "-f",
-            "-y",
-            str(bus),
-            str(path["chip_addr"]),
-            str(path["command"]),
-        ]
-        if operation == "set":
-            argv.append(str(path["value"]))
-        if path.get("size") not in (None, "", "N/A"):
-            argv.append(str(path["size"]))
-        result = subprocess.run(
-            argv,
-            shell=False,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        result = run_shell_free(
+            build_i2c_argv(path, operation=operation, bus=bus),
             timeout=timeout,
         )
         if result.returncode:
-            raise RuntimeError(result.stderr.decode("utf-8", "replace"))
-        return result.stdout.decode("utf-8", "replace").strip()
+            raise RuntimeError(result.stderr_text())
+        return result.stdout_text().strip()
 
 
 class ActionRunner:
@@ -163,7 +154,7 @@ class ActionRunner:
         max_workers = max(1, int(max_workers))
         self._jobs = Queue()
         self._sequence_slots = threading.BoundedSemaphore(max_workers)
-        self._call_slots = threading.BoundedSemaphore(max_workers)
+        self._call_gate = BoundedCallGate(max_workers, "dldd-action-call")
         self._closed = False
         self._workers = tuple(
             threading.Thread(
@@ -231,33 +222,10 @@ class ActionRunner:
                 self._jobs.task_done()
 
     def _start_call(self, action: Mapping[str, Any], timeout: float) -> Future:
-        if not self._call_slots.acquire(False):
-            raise RuntimeError(
-                "action execution capacity is exhausted by timed-out vendor calls"
-            )
-        result = Future()
-
-        def invoke():
-            try:
-                value = self.executor.execute(action, timeout)
-                if not result.cancelled():
-                    result.set_result(value)
-            except Exception as error:
-                if not result.cancelled():
-                    result.set_exception(error)
-            except BaseException as error:
-                if not result.cancelled():
-                    result.set_exception(error)
-            finally:
-                self._call_slots.release()
-
-        thread = threading.Thread(
-            target=invoke,
-            name="dldd-action-call",
-            daemon=True,
+        return self._call_gate.start(
+            lambda: self.executor.execute(action, timeout),
+            "action execution capacity is exhausted by timed-out vendor calls",
         )
-        thread.start()
-        return result
 
     def _run_sequence(
         self,

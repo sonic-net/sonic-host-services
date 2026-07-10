@@ -1,5 +1,6 @@
 from __future__ import absolute_import
 
+import ast
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import date
@@ -8,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import pkgutil
+from typing import Literal
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -19,10 +21,12 @@ from dldd.lifecycle import (
     sha256_file,
 )
 from dldd.logic import MAX_LOGIC_NESTING
+from dldd.planner import build_plans
 from dldd.rule_schema import (
     DEFAULT_CONTRACT_REGISTRY,
     ContractRegistry,
     ContractRegistryError,
+    RuleContract,
     normalize_validation_error,
 )
 from dldd.rule_schema.generate import (
@@ -31,7 +35,13 @@ from dldd.rule_schema.generate import (
     generate_schema,
     render_schema,
 )
-from dldd.rule_schema.v0_0_1 import MAX_REGEX_NESTING
+from dldd.rule_schema.v0_0_1 import (
+    EnvelopeV001,
+    MAX_REGEX_NESTING,
+    RulesDocumentV001,
+    SignatureWrapperV001,
+    signature_v001_to_domain,
+)
 from dldd.validation import (
     MAX_COLLECTION_ITEMS,
     MAX_DOCUMENT_DEPTH,
@@ -195,6 +205,74 @@ def test_registry_dispatches_only_exact_installed_versions(version):
     assert [(issue.code, issue.path) for issue in result.file_errors] == [
         ("unsupported_schema_version", "$.schema_version")
     ]
+
+
+def test_registry_dispatch_drives_domain_and_plan_schema_provenance():
+    test_version = "9.9.9"
+
+    class TestEnvelope(EnvelopeV001):
+        schema_version: Literal["9.9.9"]
+
+    class TestDocument(RulesDocumentV001):
+        schema_version: Literal["9.9.9"]
+
+    def to_test_domain(dto, **kwargs):
+        return replace(
+            signature_v001_to_domain(dto, **kwargs),
+            schema_version=test_version,
+        )
+
+    contract = RuleContract(
+        version=test_version,
+        envelope=TypeAdapter(TestEnvelope),
+        signature=TypeAdapter(SignatureWrapperV001),
+        document=TypeAdapter(TestDocument),
+        envelope_model=TestEnvelope,
+        signature_model=SignatureWrapperV001,
+        document_model=TestDocument,
+        to_domain=to_test_domain,
+    )
+    registry = ContractRegistry({test_version: contract})
+    document = _document()
+    document["schema_version"] = test_version
+
+    result = validate_document(document, contract_registry=registry)
+    bundle = build_plans(
+        result.materialized_rules,
+        "sha256:test-version",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+
+    assert result.activation_valid
+    assert result.schema_version == test_version
+    assert result.ruleset.signatures[0].schema_version == test_version
+    assert result.materialized_rules[0].signature.schema_version == test_version
+    assert {
+        item.schema_version for item in bundle.work_items.values()
+    } == {test_version}
+
+
+def test_installed_schema_versions_are_owned_only_by_version_modules():
+    installed_versions = frozenset(DEFAULT_CONTRACT_REGISTRY.versions)
+    package_root = Path(__file__).parents[2] / "dldd"
+    offenders = []
+
+    for path in package_root.rglob("*.py"):
+        relative = path.relative_to(package_root)
+        if (
+            relative.parts
+            and relative.parts[0] == "rule_schema"
+            and path.name.startswith("v")
+        ):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if (
+                isinstance(node, ast.Constant)
+                and node.value in installed_versions
+            ):
+                offenders.append("{}:{}".format(relative, node.lineno))
+
+    assert offenders == []
 
 
 def test_registry_rejects_empty_and_inconsistent_code_contracts():

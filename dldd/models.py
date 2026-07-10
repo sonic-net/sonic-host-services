@@ -3,6 +3,7 @@
 from __future__ import absolute_import
 
 from dataclasses import dataclass, field, fields, is_dataclass
+import math
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Tuple, Union
 
@@ -54,6 +55,45 @@ class ValueConfig(object):
     scaling: Union[int, float, str] = "N/A"
     encoding: str = "N/A"
 
+    def __post_init__(self):
+        errors = value_config_contract_errors(self)
+        if errors:
+            raise ValueError(
+                "invalid value config: {}".format("; ".join(errors))
+            )
+
+    @classmethod
+    def from_mapping(cls, value):
+        """Build validated value metadata from its wire representation."""
+
+        if isinstance(value, cls):
+            config = value
+        else:
+            if not isinstance(value, Mapping):
+                raise TypeError("value config must be a mapping")
+            unknown = set(value) - {"type", "unit", "scaling", "encoding"}
+            if unknown:
+                raise ValueError(
+                    "unknown value config fields: {}".format(
+                        ", ".join(sorted(str(item) for item in unknown))
+                    )
+                )
+            config = cls(**dict(value))
+        errors = value_config_contract_errors(config)
+        if errors:
+            raise ValueError(
+                "invalid value config: {}".format("; ".join(errors))
+            )
+        return config
+
+    def as_payload(self):
+        return {
+            "type": self.type,
+            "unit": self.unit,
+            "scaling": self.scaling,
+            "encoding": self.encoding,
+        }
+
 
 def value_config_contract_errors(config):
     """Return canonical contract errors for typed rule or DSE value metadata."""
@@ -61,14 +101,17 @@ def value_config_contract_errors(config):
     if not isinstance(config, ValueConfig):
         return ("must be ValueConfig",)
     errors = []
-    if config.type not in VALUE_CONFIG_TYPES:
+    if not isinstance(config.type, str) or config.type not in VALUE_CONFIG_TYPES:
         errors.append("type must use a canonical value")
     if not isinstance(config.unit, str) or not config.unit:
         errors.append("unit must be a non-empty string")
-    if not (
-        (isinstance(config.scaling, (int, float)) and not isinstance(config.scaling, bool))
-        or config.scaling == "N/A"
-    ):
+    numeric_scaling = (
+        isinstance(config.scaling, int)
+        and not isinstance(config.scaling, bool)
+    ) or (
+        isinstance(config.scaling, float) and math.isfinite(config.scaling)
+    )
+    if not (numeric_scaling or config.scaling == "N/A"):
         errors.append("scaling must be numeric or 'N/A'")
     if not isinstance(config.encoding, str) or not config.encoding:
         errors.append("encoding must be a non-empty string")
@@ -205,9 +248,14 @@ class Actions(object):
 
 @dataclass(frozen=True)
 class Signature(object):
+    schema_version: str
     metadata: Metadata
     conditions: Conditions
     actions: Actions
+
+    def __post_init__(self):
+        if not isinstance(self.schema_version, str) or not self.schema_version:
+            raise ValueError("signature schema_version must be a non-empty string")
 
 
 @dataclass(frozen=True)
@@ -217,7 +265,17 @@ class RuleSet(object):
     local_action_default_timeout: Optional[int] = None
 
     def __post_init__(self):
-        object.__setattr__(self, "signatures", tuple(self.signatures))
+        signatures = tuple(self.signatures)
+        if not isinstance(self.schema_version, str) or not self.schema_version:
+            raise ValueError("ruleset schema_version must be a non-empty string")
+        if any(
+            signature.schema_version != self.schema_version
+            for signature in signatures
+        ):
+            raise ValueError(
+                "ruleset signatures must match the ruleset schema_version"
+            )
+        object.__setattr__(self, "signatures", signatures)
 
 
 @dataclass(frozen=True)

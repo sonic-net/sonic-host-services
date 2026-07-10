@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Iterable
 
 from .artifacts import DEFAULT_ARTIFACT_DIRECTORY
+from .ownership import is_dldd_fault_payload
 from .telemetry import StateDB, TelemetryPublisher
 
 
@@ -26,11 +27,6 @@ def _text(value) -> str:
 
 def _keys(state_db: StateDB, pattern: str) -> Iterable[str]:
     return tuple(_text(key) for key in state_db.keys(pattern))
-
-
-def _is_dldd_fault(values: Mapping) -> bool:
-    decoded = {_text(key): _text(value) for key, value in values.items()}
-    return decoded.get("producer") == "dldd"
 
 
 def _clear_artifacts(directory: str) -> int:
@@ -81,7 +77,7 @@ def clear_runtime_state(
     fault_keys = set()
     if include_faults:
         for key in _keys(state_db, "FAULT_INFO|*"):
-            if _is_dldd_fault(state_db.hgetall(key)):
+            if is_dldd_fault_payload(state_db.hgetall(key)):
                 fault_keys.add(key)
         keys.update(fault_keys)
 
