@@ -12,6 +12,7 @@ from urllib.parse import quote
 from .config import DLDDConfig
 from .models import ValueConfig
 from .ownership import DLDD_FAULT_PRODUCER
+from .rule_schema.errors import bound_diagnostic
 from .runtime import FaultRecord
 from .sonic_hash import SonicHashReader
 from .timestamps import floor_timestamp_fields
@@ -423,6 +424,7 @@ class TelemetryPublisher:
             "last_detection_time": fault.last_detection_time,
             "occurrences": fault.occurrences,
             "description": fault.description,
+            "reason": bound_diagnostic(str(fault.reason), 512),
         }
         if fault.healthz_artifact is not None:
             payload["healthz_artifact"] = dict(fault.healthz_artifact)
@@ -442,18 +444,14 @@ class TelemetryPublisher:
             return False
 
     def read_faults(self) -> Iterable[Mapping[str, Any]]:
-        try:
-            keys = tuple(self.state_db.keys("FAULT_INFO|*"))
-        except Exception as error:
-            LOGGER.error("unable to read existing FAULT_INFO records: %s", error)
-            return
+        # Startup reconciliation needs one complete view of retained faults.
+        # Let scan or row-read failures reach the service retry boundary rather
+        # than silently starting monitors from a partial snapshot.
+        keys = tuple(self.state_db.keys("FAULT_INFO|*"))
+        rows = []
         for raw_key in keys:
             key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
-            try:
-                raw = self.state_db.hgetall(key)
-            except Exception as error:
-                LOGGER.error("unable to read %s: %s", key, error)
-                continue
+            raw = self.state_db.hgetall(key)
             decoded: Dict[str, Any] = {}
             for raw_name, raw_value in raw.items():
                 name = raw_name.decode() if isinstance(raw_name, bytes) else raw_name
@@ -471,7 +469,8 @@ class TelemetryPublisher:
                         pass
                 decoded[name] = value
             decoded["redis_key"] = key
-            yield decoded
+            rows.append(decoded)
+        return tuple(rows)
 
 
 def value_config_payload(config: ValueConfig) -> Mapping[str, Any]:

@@ -28,19 +28,73 @@ def _number_branches(value, path="$"):
     return branches
 
 
-def test_generated_float_branches_publish_runtime_type_limitation():
-    branches = _number_branches(generate_schema("0.0.1"))
+def test_generated_schema_and_runtime_numeric_authority_are_aligned():
+    """Keep authoring annotations aligned with Pydantic numeric execution."""
+
+    schema = generate_schema("0.0.1")
+    branches = _number_branches(schema)
 
     assert branches
-    for unused_path, branch in branches:
-        assert "not" not in branch
+    for path, branch in branches:
+        assert "not" not in branch, "numeric branch {}".format(path)
         constraint = branch["x-dldd-runtime-constraint"]
-        assert constraint["authority"] == "pydantic-runtime-contract"
-        assert constraint["kind"] == "python-float-type"
+        assert constraint["authority"] == "pydantic-runtime-contract", path
+        assert constraint["kind"] == "python-float-type", path
 
+    for kind, value in (
+        ("comparison", INT64_MIN - 1),
+        ("comparison", UINT64_MAX + 1),
+        ("mask", str(INT64_MIN - 1)),
+        ("mask", str(UINT64_MAX + 1)),
+        ("mask", "0x10000000000000000"),
+    ):
+        if kind == "comparison":
+            with pytest.raises(ValidationError):
+                ComparisonEvaluationV001.model_validate(
+                    {"type": "comparison", "operator": "==", "value": value}
+                )
+        else:
+            schema = generate_schema("0.0.1")
+            options = schema["$defs"]["MaskEvaluationV001"]["properties"][
+                "value"
+            ]["anyOf"]
+            string_branch = next(
+                option for option in options if option["type"] == "string"
+            )
+            assert re.fullmatch(string_branch["pattern"], value)
+            with pytest.raises(ValidationError):
+                MaskEvaluationV001.model_validate(
+                    {"type": "mask", "logic": "&", "value": value}
+                )
 
-def test_draft_2020_derivative_accepts_integral_valued_float_fixture():
+    assert ComparisonEvaluationV001.model_validate(
+        {"type": "comparison", "operator": "==", "value": 1.5}
+    ).value == 1.5
+    for value in (str(INT64_MIN), str(UINT64_MAX)):
+        validated = MaskEvaluationV001.model_validate(
+            {"type": "mask", "logic": "&", "value": value}
+        )
+        assert validated.value == value
+
+    # Optional authoring-schema validation runs only after runtime parity, so a
+    # missing jsonschema dependency cannot skip the executable contract checks.
     jsonschema = pytest.importorskip("jsonschema")
+    options = schema["$defs"]["MaskEvaluationV001"]["properties"]["value"][
+        "anyOf"
+    ]
+    string_branch = next(
+        option for option in options if option["type"] == "string"
+    )
+    constraint = string_branch["x-dldd-runtime-constraint"]
+    assert {
+        key: constraint[key]
+        for key in ("authority", "kind", "minimum", "maximum")
+    } == {
+        "authority": "pydantic-runtime-contract",
+        "kind": "parsed-integer-range",
+        "minimum": INT64_MIN,
+        "maximum": UINT64_MAX,
+    }
     fixture = json.loads(
         (
             Path(__file__).parent
@@ -56,57 +110,4 @@ def test_draft_2020_derivative_accepts_integral_valued_float_fixture():
         "operator": "==",
         "value": 50.0,
     }
-
-    jsonschema.Draft202012Validator(generate_schema("0.0.1")).validate(
-        fixture
-    )
-
-
-@pytest.mark.parametrize("value", [INT64_MIN - 1, UINT64_MAX + 1])
-def test_out_of_range_integer_cannot_fall_through_float_branch(value):
-    with pytest.raises(ValidationError):
-        ComparisonEvaluationV001.model_validate(
-            {"type": "comparison", "operator": "==", "value": value}
-        )
-
-    assert ComparisonEvaluationV001.model_validate(
-        {"type": "comparison", "operator": "==", "value": 1.5}
-    ).value == 1.5
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        str(INT64_MIN - 1),
-        str(UINT64_MAX + 1),
-        "0x10000000000000000",
-    ],
-)
-def test_mask_string_range_annotation_defers_to_runtime_authority(value):
-    schema = generate_schema("0.0.1")
-    options = schema["$defs"]["MaskEvaluationV001"]["properties"]["value"][
-        "anyOf"
-    ]
-    string_branch = next(option for option in options if option["type"] == "string")
-    constraint = string_branch["x-dldd-runtime-constraint"]
-
-    assert constraint["authority"] == "pydantic-runtime-contract"
-    assert constraint["kind"] == "parsed-integer-range"
-    assert constraint["minimum"] == INT64_MIN
-    assert constraint["maximum"] == UINT64_MAX
-    # JSON Schema cannot apply numeric bounds after parsing a string.  The
-    # derivative publishes the syntactic pattern plus an explicit semantic
-    # annotation, while the installed Pydantic validator remains authoritative.
-    assert re.fullmatch(string_branch["pattern"], value)
-    with pytest.raises(ValidationError):
-        MaskEvaluationV001.model_validate(
-            {"type": "mask", "logic": "&", "value": value}
-        )
-
-
-def test_mask_string_runtime_accepts_published_range_boundaries():
-    for value in (str(INT64_MIN), str(UINT64_MAX)):
-        validated = MaskEvaluationV001.model_validate(
-            {"type": "mask", "logic": "&", "value": value}
-        )
-        assert validated.value == value
+    jsonschema.Draft202012Validator(schema).validate(fixture)

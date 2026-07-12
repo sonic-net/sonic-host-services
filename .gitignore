@@ -17,6 +17,7 @@ dist/
 coverage.xml
 htmlcov/
 test-results.xml
+dldd-integration-results.xml
 
 # Unit test scratchpad
 tests/hostcfgd/output/*

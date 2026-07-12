@@ -7,6 +7,8 @@ from dataclasses import replace
 from queue import Queue
 from types import SimpleNamespace
 
+import pytest
+
 from dldd.actions import ActionExecutor, ActionResult, ActionSequenceResult
 from dldd.artifacts import ArtifactRequest, FilesystemArtifactClient
 from dldd.config import DLDDConfig
@@ -22,6 +24,7 @@ from dldd.runtime import (
     EvaluationResult,
     EvaluationResultType,
     FaultEvidenceEvent,
+    FaultRecord,
     MonitorExecutionPlan,
     MonitorWorkStateRecord,
     ValueConfig,
@@ -75,7 +78,9 @@ class NeverCompletingActionRunner(object):
         return future
 
 
-def test_primary_registers_expanded_dse_item_before_processing_evidence():
+def test_dynamic_expansion_registration_and_fault_reconciliation():
+    """Register an expanded item before evidence and reconcile retained faults."""
+
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     static_bundle = build_plans(
         rules.materialized_rules,
@@ -88,6 +93,7 @@ def test_primary_registers_expanded_dse_item_before_processing_evidence():
         component_name="DYNAMIC0",
         source_type="dse",
         source_id="dse:dynamic0",
+        dse_binding=SimpleNamespace(instance="DYNAMIC0"),
         correlation_key=(
             "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:dse:dynamic0"
         ),
@@ -129,8 +135,7 @@ def test_primary_registers_expanded_dse_item_before_processing_evidence():
     assert execution.event_keys == {1: (item.correlation_key,)}
     assert common.control_queue.get_nowait().correlation_key == item.correlation_key
 
-
-def test_active_dynamic_fault_waits_for_expansion_before_reconciliation():
+    # A retained dynamic fault waits for its owning expansion before recheck.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     static_bundle = build_plans(
         rules.materialized_rules,
@@ -143,6 +148,7 @@ def test_active_dynamic_fault_waits_for_expansion_before_reconciliation():
         component_name="DYNAMIC0",
         source_type="dse",
         source_id="dse:dynamic0",
+        dse_binding=SimpleNamespace(instance="DYNAMIC0"),
         correlation_key=(
             "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:dse:dynamic0"
         ),
@@ -217,7 +223,9 @@ def test_active_dynamic_fault_waits_for_expansion_before_reconciliation():
     assert common.control_queue.get_nowait().correlation_key == item.correlation_key
 
 
-def test_action_payload_vendor_data_cannot_override_typed_dispatch_fields():
+def test_materialized_operation_dispatch_payload_contract():
+    """Preserve typed dispatch, immutable execution, and safe query data."""
+
     def executor(operation):
         return operation
 
@@ -245,8 +253,7 @@ def test_action_payload_vendor_data_cannot_override_typed_dispatch_fields():
     assert payload["token"] == "vendor-data"
     assert ActionExecutor().execute(payload, timeout=1) is operation
 
-
-def test_resolved_query_executor_receives_immutable_materialized_operation():
+    # Resolved executors receive the immutable materialized operation itself.
     received = []
 
     def executor(operation):
@@ -264,8 +271,7 @@ def test_resolved_query_executor_receives_immutable_materialized_operation():
     assert FilesystemArtifactClient._run_query(payload) == "collected"
     assert received == [operation]
 
-
-def test_query_payload_drops_reserved_vendor_data_without_canonical_values():
+    # Reserved vendor fields are dropped without matching canonical query data.
     operation = Operation(
         type="vendor_dump",
         options={
@@ -305,6 +311,396 @@ def evidence(item, kind, sequence, from_recheck=False):
         ),
         from_recheck=from_recheck,
     )
+
+
+def dse_retirement_fixture(
+    template_ids=("template",), runtime_item=True, record_status="ACTIVE"
+):
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    static_bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    base = next(iter(static_bundle.work_items.values()))
+    item = replace(
+        base,
+        component_name="DYNAMIC0",
+        source_type="dse",
+        source_id="dse:dynamic0",
+        dse_binding=SimpleNamespace(instance="DYNAMIC0"),
+        correlation_key=(
+            "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:dse:dynamic0"
+        ),
+    )
+    signature = rules.materialized_rules[0].signature
+    templates = {
+        template_id: DSEWorkTemplate(
+            template_id,
+            replace(item, correlation_key="template:" + template_id),
+            signature,
+            SimpleNamespace(),
+        )
+        for template_id in template_ids
+    }
+    common = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {},
+        {},
+        Queue(),
+        templates_by_key=templates,
+    )
+    database = FakeStateDB()
+    config = DLDDConfig(inactive_fault_retention_period=42)
+    correlation = CorrelationEngine({})
+    work_items = {item.correlation_key: item} if runtime_item else {}
+    if runtime_item:
+        correlation.register_work_item(signature, item, "sha256:test")
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        {"common": common},
+        work_items,
+        correlation,
+        TelemetryPublisher(database, config),
+        config,
+        "sha256:test",
+    )
+    record = FaultRecord(
+        rule_id=item.rule_id,
+        rule_name=item.rule_name,
+        rule_version=item.rule_version,
+        schema_version=item.schema_version,
+        active_rules_checksum="sha256:test",
+        component_type=item.component_type,
+        component_name=item.component_name,
+        symptom=item.symptom,
+        severity=item.severity,
+        priority=item.priority,
+        error_type=item.error_type,
+        description="Dynamic sensor fault.",
+        status=record_status,
+        origin_time=10,
+        last_detection_time=11,
+        repair_actions=("ACTION_REPLACE",),
+        remote_action_time_window=77,
+    )
+    orchestrator.telemetry.publish_fault(record)
+    if runtime_item:
+        identity = (item.rule_id, item.component_name)
+        orchestrator.faults[identity] = record
+        orchestrator.published_by_key[
+            (record.component_name, record.symptom)
+        ] = record.rule_id
+    else:
+        orchestrator.reconcile_existing_faults()
+    return orchestrator, database, common, item, signature, record
+
+
+def dse_expansion_event(
+    signature,
+    template_id="template",
+    *,
+    authoritative,
+    present_instances=(),
+    added_items=(),
+    removed_keys=(),
+    observed_at=1234.9,
+):
+    return DSEExpansionEvent(
+        monitor_id="common",
+        plan_generation="sha256:test",
+        template_id=template_id,
+        signature=signature,
+        added_items=tuple(added_items),
+        removed_keys=tuple(removed_keys),
+        present_instances=tuple(present_instances),
+        authoritative=authoritative,
+        observed_at=observed_at,
+    )
+
+
+def test_authoritative_dse_retirement_ownership_lifecycle():
+    """Retire only after authoritative discovery releases every live owner."""
+
+    orchestrator, database, plan, item, signature, record = (
+        dse_retirement_fixture()
+    )
+
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            authoritative=True,
+            removed_keys=(item.correlation_key,),
+        )
+    )
+
+    payload = database.values[record.redis_key]
+    assert payload["status"] == "INACTIVE"
+    assert payload["reason"] == (
+        "authoritative DSE discovery no longer reports instance 'DYNAMIC0'"
+    )
+    assert payload["last_detection_time"] == "1234"
+    assert json.loads(payload["repair_actions"]) == []
+    assert database.ttls[record.redis_key] == 42
+    assert record.inactive_deadline == 1276.9
+    assert database.delete_calls == 0
+    assert orchestrator.faults[(item.rule_id, "DYNAMIC0")].status == "INACTIVE"
+    assert not orchestrator.service_diagnostics
+
+    plan.add_expanded_item(item)
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            authoritative=True,
+            present_instances=("DYNAMIC0",),
+            added_items=(item,),
+        )
+    )
+    decision = orchestrator.correlation.consume(
+        evidence(item, EvaluationResultType.MATCH, 2)
+    )
+    orchestrator._publish_decision(decision)
+    assert database.values[record.redis_key]["status"] == "ACTIVE"
+    assert database.values[record.redis_key]["reason"] == ""
+    assert database.values[record.redis_key]["occurrences"] == "2"
+
+    # FIFO registration permits retirement before the exact child is dropped.
+    orchestrator, database, plan, item, signature, record = (
+        dse_retirement_fixture()
+    )
+    # Reproduce the intentional queue ordering: the monitor publishes removal
+    # before physically dropping the exact child so registration events remain
+    # FIFO ahead of child evidence.
+    plan.add_expanded_item(item)
+
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            authoritative=True,
+            removed_keys=(item.correlation_key,),
+        )
+    )
+
+    assert item.correlation_key in plan.expanded_item_snapshot()
+    assert database.values[record.redis_key]["status"] == "INACTIVE"
+    assert database.delete_calls == 0
+
+    # A different live child for the scope still blocks retirement.
+    orchestrator, database, plan, item, signature, record = (
+        dse_retirement_fixture()
+    )
+    another = replace(
+        item,
+        source_id="dse:dynamic0:other",
+        correlation_key=(
+            "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:dse:dynamic0:other"
+        ),
+    )
+    plan.add_expanded_item(item)
+    plan.add_expanded_item(another)
+    orchestrator.work_items[another.correlation_key] = another
+
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            authoritative=True,
+            removed_keys=(item.correlation_key,),
+        )
+    )
+
+    assert database.values[record.redis_key]["status"] == "ACTIVE"
+
+    # Non-authoritative discovery cannot issue removals.
+    orchestrator, database, unused_plan, item, signature, record = (
+        dse_retirement_fixture()
+    )
+
+    with pytest.raises(ValueError, match="non-authoritative"):
+        orchestrator.process_expansion(
+            dse_expansion_event(
+                signature,
+                authoritative=False,
+                removed_keys=(item.correlation_key,),
+            )
+        )
+
+    assert item.correlation_key in orchestrator.work_items
+    assert database.values[record.redis_key]["status"] == "ACTIVE"
+    assert "reason" not in database.values[record.redis_key] or not database.values[
+        record.redis_key
+    ]["reason"]
+
+    # Multiple templates must all relinquish the instance before retirement.
+    orchestrator, database, plan, item, signature, record = (
+        dse_retirement_fixture(("template-a", "template-b"))
+    )
+
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            "template-a",
+            authoritative=True,
+            removed_keys=(item.correlation_key,),
+        )
+    )
+    assert database.values[record.redis_key]["status"] == "ACTIVE"
+
+    second = replace(
+        item,
+        source_id="dse:dynamic0:second",
+        correlation_key=(
+            "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:dse:dynamic0:second"
+        ),
+    )
+    plan.add_expanded_item(second)
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            "template-b",
+            authoritative=True,
+            present_instances=("DYNAMIC0",),
+            added_items=(second,),
+        )
+    )
+    assert database.values[record.redis_key]["status"] == "ACTIVE"
+
+    plan.remove_expanded_item(second.correlation_key)
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            "template-b",
+            authoritative=True,
+            removed_keys=(second.correlation_key,),
+        )
+    )
+    assert database.values[record.redis_key]["status"] == "INACTIVE"
+    assert database.delete_calls == 0
+
+
+def test_dse_restart_reconciliation_retry_and_rediscovery():
+    """Reconcile retained DSE faults, retry writes, and clear retired history."""
+
+    orchestrator, database, unused_plan, unused_item, signature, record = (
+        dse_retirement_fixture(runtime_item=False)
+    )
+    identity = (record.rule_id, record.component_name)
+    assert identity in orchestrator.pending_dynamic_faults
+
+    orchestrator.process_expansion(
+        dse_expansion_event(signature, authoritative=False)
+    )
+    assert identity in orchestrator.pending_dynamic_faults
+    assert database.values[record.redis_key]["status"] == "ACTIVE"
+
+    orchestrator.process_expansion(
+        dse_expansion_event(signature, authoritative=True)
+    )
+    assert identity not in orchestrator.pending_dynamic_faults
+    assert database.values[record.redis_key]["status"] == "INACTIVE"
+    assert "authoritative DSE discovery" in database.values[record.redis_key][
+        "reason"
+    ]
+
+    # An unchanged authoritative inventory still reconciles a retained fault.
+    orchestrator, unused_database, plan, item, signature, record = (
+        dse_retirement_fixture(runtime_item=False)
+    )
+    identity = (record.rule_id, record.component_name)
+    # Model a child already registered before the retained fault was loaded.
+    # The next complete inventory snapshot has no added_items delta.
+    plan.add_expanded_item(item)
+    orchestrator.work_items[item.correlation_key] = item
+    orchestrator.correlation.register_work_item(
+        signature, item, "sha256:test"
+    )
+
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            authoritative=True,
+            present_instances=(record.component_name,),
+        )
+    )
+
+    assert identity not in orchestrator.pending_dynamic_faults
+    assert identity in orchestrator.reconciliation
+    assert plan.control_queue.get_nowait().correlation_key == item.correlation_key
+
+    # Database write failure leaves a dirty retained row which can be retried.
+    orchestrator, database, unused_plan, item, signature, record = (
+        dse_retirement_fixture()
+    )
+    database.fail_writes_with(RuntimeError("STATE_DB unavailable"))
+
+    orchestrator.process_expansion(
+        dse_expansion_event(
+            signature,
+            authoritative=True,
+            removed_keys=(item.correlation_key,),
+        )
+    )
+
+    identity = (item.rule_id, item.component_name)
+    assert orchestrator.faults[identity].status == "INACTIVE"
+    assert identity in orchestrator.dirty_faults
+    assert database.values[record.redis_key]["status"] == "ACTIVE"
+
+    database.clear_failures()
+    orchestrator._retry_dirty_faults()
+    assert identity not in orchestrator.dirty_faults
+    assert database.values[record.redis_key]["status"] == "INACTIVE"
+    assert database.delete_calls == 0
+
+    # Rediscovery begins with empty correlation history for every event.
+    conditions = SimpleNamespace(
+        events=(
+            SimpleNamespace(id=1, match_count=1, match_period=0),
+            SimpleNamespace(id=2, match_count=1, match_period=0),
+        ),
+        logic_tree=parse_logic("1 AND 2"),
+        logic_lookback_time=0,
+    )
+    signature = SimpleNamespace(
+        metadata=SimpleNamespace(id=1000001),
+        conditions=conditions,
+    )
+    event_a = SimpleNamespace(
+        rule_id=1000001,
+        component_name="DYNAMIC0",
+        event_id=1,
+        correlation_key="event-a",
+        source_id="source-a",
+        value_config=ValueConfig(),
+    )
+    event_b = SimpleNamespace(
+        rule_id=1000001,
+        component_name="DYNAMIC0",
+        event_id=2,
+        correlation_key="event-b",
+        source_id="source-b",
+        value_config=ValueConfig(),
+    )
+    correlation = CorrelationEngine({})
+    correlation.register_work_item(signature, event_a, "sha256:test")
+    correlation.register_work_item(signature, event_b, "sha256:test")
+    assert not correlation.consume(
+        evidence(event_b, EvaluationResultType.MATCH, 1)
+    ).active
+
+    correlation.retire(1000001, "DYNAMIC0")
+    correlation.unregister_work_item(event_a)
+    correlation.unregister_work_item(event_b)
+    correlation.register_work_item(signature, event_a, "sha256:test")
+    correlation.register_work_item(signature, event_b, "sha256:test")
+
+    # Event B must be sampled again after rediscovery. Its old match must not
+    # combine with the new Event A sample.
+    assert not correlation.consume(
+        evidence(event_a, EvaluationResultType.MATCH, 2)
+    ).active
 
 
 def test_zero_logic_lookback_correlates_currently_active_events():
@@ -355,7 +751,9 @@ def test_zero_logic_lookback_correlates_currently_active_events():
     assert cleared.changed
 
 
-def test_local_action_holds_rechecks_and_publishes_recovered_inactive_fault():
+def test_local_action_recheck_and_artifact_lifecycle():
+    """Run successful, quarantined, arbitrated, and timed-out action paths."""
+
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -382,7 +780,10 @@ def test_local_action_holds_rechecks_and_publishes_recovered_inactive_fault():
 
     orchestrator.process_event(evidence(item, EvaluationResultType.MATCH, 1))
     assert (item.rule_id, item.component_name) in orchestrator.pending
-    assert orchestrator.faults[(item.rule_id, item.component_name)].status == "CANDIDATE"
+    assert (
+        orchestrator.faults[(item.rule_id, item.component_name)].status
+        == "CANDIDATE"
+    )
     assert "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD" not in database.values
     hold = bundle.monitor_plans["redis"].control_queue.get_nowait()
     assert hold.command.value == "HOLD"
@@ -407,10 +808,12 @@ def test_local_action_holds_rechecks_and_publishes_recovered_inactive_fault():
     assert database.values[fault_key]["origin_time"] == "101"
     assert database.values[fault_key]["last_detection_time"] == "102"
     assert json.loads(database.values[fault_key]["events"])[0]["value_read"] == 51.5
-    assert json.loads(database.values[fault_key]["healthz_artifact"])["state"] == "REQUESTED"
+    assert (
+        json.loads(database.values[fault_key]["healthz_artifact"])["state"]
+        == "REQUESTED"
+    )
 
-
-def test_artifact_metadata_has_timestamp_and_full_component_info():
+    # Artifact requests receive floored time and complete component identity.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -440,8 +843,7 @@ def test_artifact_metadata_has_timestamp_and_full_component_info():
         "name": execution.component_name,
     }
 
-
-def test_normal_evidence_is_quarantined_while_local_action_owns_signature():
+    # Ordinary evidence cannot race the mandatory post-action recheck.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -473,8 +875,7 @@ def test_normal_evidence_is_quarantined_while_local_action_owns_signature():
     assert (item.rule_id, item.component_name) in orchestrator.pending
     assert not database.values
 
-
-def test_action_gated_high_severity_candidate_blocks_lower_fault_owner():
+    # A higher-severity action candidate reserves publication ownership.
     with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
         document = json.load(stream)
     lower = deepcopy(document["signatures"][0])
@@ -512,8 +913,7 @@ def test_action_gated_high_severity_candidate_blocks_lower_fault_owner():
     assert (high.rule_id, high.component_name) in orchestrator.pending
     assert not database.values
 
-
-def test_missing_post_action_recheck_retries_then_publishes_conservatively():
+    # Missing recheck evidence retries, then preserves the active fault.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -672,7 +1072,9 @@ def test_republishing_same_active_state_does_not_change_last_detection_time():
     assert record.last_detection_time == 101.0
 
 
-def test_missing_action_runner_still_waits_for_mandatory_recheck():
+def test_action_runner_failure_and_deadline_still_recheck():
+    """Missing and stuck action runners cannot bypass mandatory recheck."""
+
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -703,7 +1105,10 @@ def test_missing_action_runner_still_waits_for_mandatory_recheck():
     orchestrator.tick()
     clock[0] = 61.0
     orchestrator.tick()
-    assert bundle.monitor_plans["redis"].control_queue.get_nowait().command.value == "RECHECK_ONCE"
+    assert (
+        bundle.monitor_plans["redis"].control_queue.get_nowait().command.value
+        == "RECHECK_ONCE"
+    )
     orchestrator.process_event(
         evidence(item, EvaluationResultType.NO_MATCH, 2, from_recheck=True)
     )
@@ -712,8 +1117,7 @@ def test_missing_action_runner_still_waits_for_mandatory_recheck():
     assert fault["status"] == "INACTIVE"
     assert json.loads(fault["local_action_state"])["state"] == "FAILED"
 
-
-def test_stuck_action_future_advances_to_recheck_instead_of_holding_forever():
+    # A future which misses its action deadline also advances to recheck.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -778,7 +1182,9 @@ def test_primary_processing_exception_isolated_to_work_key():
     assert orchestrator.broken_rules[item.correlation_key]["state"] == "DEGRADED"
 
 
-def test_reconciliation_ignores_foreign_and_malformed_fault_rows():
+def test_restart_and_periodic_fault_reconciliation_lifecycle():
+    """Handle foreign, malformed, stale, and healthy retained fault rows."""
+
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -827,8 +1233,7 @@ def test_reconciliation_ignores_foreign_and_malformed_fault_rows():
         for item in orchestrator.service_diagnostics
     )
 
-
-def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
+    # Stale owned rows become inactive but preserve their wire history.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -855,6 +1260,7 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
             "origin_time": 10,
             "last_detection_time": 11,
             "occurrences": 2,
+            "description": "Vendor-authored PSU fault description.",
             "repair_actions": [{"action": "ACTION_REPLACE"}],
             "remote_action_time_window": 77,
         },
@@ -875,6 +1281,12 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
     assert database.values[key]["status"] == "INACTIVE"
     assert json.loads(database.values[key]["repair_actions"]) == []
     assert database.values[key]["remote_action_time_window"] == "77"
+    assert database.values[key]["description"] == (
+        "Vendor-authored PSU fault description."
+    )
+    assert database.values[key]["reason"] == (
+        "stale rule/source after DLDD restart"
+    )
 
     decision = orchestrator.correlation.consume(
         evidence(item, EvaluationResultType.MATCH, 1)
@@ -884,10 +1296,9 @@ def test_stale_fault_reconciliation_clears_actions_and_preserves_time_window():
     assert database.values[key]["status"] == "ACTIVE"
     assert database.values[key]["active_rules_checksum"] == "sha256:new"
     assert database.values[key]["schema_version"] == item.schema_version
-    assert "stale rule/source" not in database.values[key]["description"]
+    assert database.values[key]["reason"] == ""
 
-
-def test_successful_active_fault_rechecks_do_not_grow_service_diagnostics():
+    # Normal periodic confirmation is operational work, not a diagnostic.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,

@@ -8,6 +8,7 @@ boundary.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -132,6 +133,7 @@ class DSEWorkTemplate:
     source_handle: Any
     evaluation_handle: Any = None
     common_items: Tuple[MonitorWorkItem, ...] = ()
+    static_work_keys: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -158,6 +160,7 @@ class DSEExpansionEvent:
     signature: Any
     added_items: Tuple[MonitorWorkItem, ...] = ()
     removed_keys: Tuple[str, ...] = ()
+    present_instances: Tuple[str, ...] = ()
     phase: str = "BOOTSTRAP"
     authoritative: bool = False
     observed_at: float = field(default_factory=time.time)
@@ -216,13 +219,27 @@ class MonitorExecutionPlan:
     expanded_items_by_key: Dict[str, MonitorWorkItem] = field(
         default_factory=dict
     )
+    polling_intervals: Mapping[str, float] = field(default_factory=dict)
+    _structure_lock: Any = field(
+        default_factory=threading.RLock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
-        self.polling_interval = self.validated_polling_interval(self.polling_interval)
-        # Work assignments are immutable for the lifetime of a plan.  An
-        # inherited item's current effective interval is read from
-        # ``polling_interval`` by the owning monitor thread; CONFIG_DB updates
-        # therefore never replace work-item objects behind other consumers.
+        defaults = self.polling_intervals or {
+            source_group: self.polling_interval
+            for source_group in ("redis", "file", "common")
+        }
+        self.polling_intervals = MappingProxyType(
+            self.validated_polling_intervals(defaults)
+        )
+        self.polling_interval = self.polling_intervals[self.monitor_type]
+        # Work assignments are immutable for the lifetime of a plan. An
+        # inherited item's effective interval is selected from the atomic
+        # source-group defaults; updates never replace work-item objects behind
+        # other consumers.
         self.items_by_key = MappingProxyType(dict(self.items_by_key))
         self.templates_by_key = MappingProxyType(dict(self.templates_by_key))
         for key in self.templates_by_key:
@@ -232,22 +249,47 @@ class MonitorExecutionPlan:
             self.state_by_key[key] = MonitorWorkStateRecord()
 
     def item(self, key: str) -> Optional[MonitorWorkItem]:
-        return self.items_by_key.get(key) or self.expanded_items_by_key.get(key)
+        with self._structure_lock:
+            return self.items_by_key.get(key) or self.expanded_items_by_key.get(key)
 
     def item_snapshot(self) -> Dict[str, MonitorWorkItem]:
-        result = dict(self.items_by_key)
-        result.update(self.expanded_items_by_key)
-        return result
+        with self._structure_lock:
+            items = dict(self.items_by_key)
+            items.update(self.expanded_items_by_key)
+            return items
+
+    def runtime_snapshot(
+        self,
+    ) -> Tuple[Dict[str, MonitorWorkItem], Dict[str, MonitorWorkStateRecord]]:
+        """Atomically snapshot work identities and their state records.
+
+        State-record fields remain monitor-owned and may advance after the
+        snapshot.  The lock protects the structural add/remove boundary so
+        readers never observe half of a runtime DSE child registration.
+        """
+
+        with self._structure_lock:
+            items = dict(self.items_by_key)
+            items.update(self.expanded_items_by_key)
+            return items, dict(self.state_by_key)
+
+    def expanded_item_snapshot(self) -> Dict[str, MonitorWorkItem]:
+        """Return a stable view of monitor-owned runtime DSE children."""
+
+        with self._structure_lock:
+            return dict(self.expanded_items_by_key)
 
     def add_expanded_item(self, item: MonitorWorkItem) -> None:
-        self.expanded_items_by_key[item.correlation_key] = item
-        self.state_by_key.setdefault(
-            item.correlation_key, MonitorWorkStateRecord()
-        )
+        with self._structure_lock:
+            self.expanded_items_by_key[item.correlation_key] = item
+            self.state_by_key.setdefault(
+                item.correlation_key, MonitorWorkStateRecord()
+            )
 
     def remove_expanded_item(self, key: str) -> None:
-        self.expanded_items_by_key.pop(key, None)
-        self.state_by_key.pop(key, None)
+        with self._structure_lock:
+            self.expanded_items_by_key.pop(key, None)
+            self.state_by_key.pop(key, None)
 
     @staticmethod
     def validated_polling_interval(interval: float) -> float:
@@ -258,11 +300,32 @@ class MonitorExecutionPlan:
             )
         return interval
 
-    def queue_polling_interval_update(self, interval: float) -> None:
-        """Queue a default-cadence update for the owning monitor thread."""
+    @classmethod
+    def validated_polling_intervals(
+        cls, intervals: Mapping[str, float]
+    ) -> Dict[str, float]:
+        """Validate one complete atomic source-default cadence snapshot."""
+
+        if not isinstance(intervals, Mapping):
+            raise TypeError("polling intervals must be a mapping")
+        required = ("redis", "file", "common")
+        missing = [key for key in required if key not in intervals]
+        if missing:
+            raise ValueError(
+                "polling intervals are missing {}".format(", ".join(missing))
+            )
+        return {
+            key: cls.validated_polling_interval(intervals[key])
+            for key in required
+        }
+
+    def queue_polling_interval_update(
+        self, intervals: Mapping[str, float]
+    ) -> None:
+        """Queue a complete default-cadence update for the owning monitor."""
 
         self.interval_update_queue.put_nowait(
-            self.validated_polling_interval(interval)
+            self.validated_polling_intervals(intervals)
         )
 
 
@@ -315,6 +378,7 @@ class FaultRecord:
     priority: int
     error_type: str
     description: str = ""
+    reason: str = ""
     status: str = "ACTIVE"
     origin_time: float = field(default_factory=time.time)
     last_detection_time: float = field(default_factory=time.time)

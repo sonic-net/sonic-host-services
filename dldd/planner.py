@@ -172,6 +172,74 @@ def _build_work_item(
     )
 
 
+def work_items_for_dse_expansion(template, expansion_result):
+    """Materialize one DSE expansion exactly as the runtime monitor does.
+
+    The helper is shared by the monitor and the explicit end-to-end CLI mode
+    so qualification cannot silently exercise a different binding shape from
+    the live daemon.
+    """
+
+    items = []
+    base = template.item
+    static_work_keys = frozenset(template.static_work_keys)
+    for binding in expansion_result.bindings:
+        source_id = "dse:{}:{}".format(
+            template.source_handle.reference.canonical,
+            binding.source_id,
+        )
+        key = make_correlation_key(
+            base.rule_id,
+            base.event_id,
+            binding.instance,
+            base.symptom,
+            source_id,
+        )
+        binding_config = binding.value_configs
+        value_config = (
+            base.value_config
+            if binding_config.type == "N/A" and base.value_config.type != "N/A"
+            else binding_config
+        )
+        source = dict(binding.data)
+        source["dse_reference"] = (
+            template.source_handle.reference.canonical
+        )
+        items.append(
+            replace(
+                base,
+                component_name=binding.instance,
+                correlation_key=key,
+                source_id=source_id,
+                source=source,
+                value_config=value_config,
+                dse_binding=binding,
+            )
+        )
+
+        # Common predicates are evaluated in the same component scope as the
+        # expanded DSE event at runtime.  End-to-end qualification must also
+        # exercise those concrete per-instance work items.
+        for common in template.common_items:
+            common_key = make_correlation_key(
+                common.rule_id,
+                common.event_id,
+                binding.instance,
+                common.symptom,
+                common.source_id,
+            )
+            if common_key in static_work_keys:
+                continue
+            items.append(
+                replace(
+                    common,
+                    component_name=binding.instance,
+                    correlation_key=common_key,
+                )
+            )
+    return tuple(items)
+
+
 def build_plans(
     materialized_rules: Iterable[MaterializedRule],
     plan_generation: str,
@@ -195,6 +263,13 @@ def build_plans(
     }
     signatures: Dict[Tuple[int, str], SignatureExecution] = {}
     templates: Dict[str, DSEWorkTemplate] = {}
+    common_prototypes: Dict[
+        int, Dict[Tuple[int, str], MonitorWorkItem]
+    ] = {}
+    static_common_items: Dict[
+        int, Dict[Tuple[int, str], MonitorWorkItem]
+    ] = {}
+    static_work_keys: Dict[int, list] = {}
     grouped_templates: Dict[str, Dict[str, DSEWorkTemplate]] = {
         "redis": {},
         "file": {},
@@ -204,13 +279,16 @@ def build_plans(
     for materialized in materialized_rules:
         signature = materialized.signature
         metadata = signature.metadata
+        has_runtime_dse = any(
+            event.dse_source_handle is not None for event in materialized.events
+        )
         resolved_instances = {
             _component_name(source.instance, metadata.component)
             for materialized_event in materialized.events
             for source in materialized_event.sources
             if source.instance
         }
-        if not resolved_instances:
+        if not resolved_instances and not has_runtime_dse:
             resolved_instances = {metadata.component}
 
         items_by_instance = {instance: {} for instance in resolved_instances}
@@ -262,6 +340,9 @@ def build_plans(
                     if source.instance
                     else sorted(resolved_instances)
                 )
+                prototype_only = not source.instance and not targets
+                if prototype_only:
+                    targets = [metadata.component]
                 for instance in targets:
                     source_mapping = _source_mapping(source)
                     source_id = _source_identity(source)
@@ -305,13 +386,24 @@ def build_plans(
                             materialized_event.dse_evaluation_handle
                         ),
                     )
+                    if prototype_only:
+                        common_prototypes.setdefault(metadata.id, {})[
+                            (event.id, source_id)
+                        ] = replace(
+                            item,
+                            correlation_key="prototype:" + key,
+                        )
+                        continue
                     grouped[monitor_type][key] = item
                     all_items[key] = item
+                    static_work_keys.setdefault(metadata.id, []).append(key)
+                    if item.common_predicate:
+                        static_common_items.setdefault(metadata.id, {}).setdefault(
+                            (item.event_id, item.source_id), item
+                        )
                     items_by_instance[instance].setdefault(event.id, []).append(key)
 
         for instance, event_keys in items_by_instance.items():
-            if not event_keys:
-                continue
             signatures[(metadata.id, instance)] = SignatureExecution(
                 signature=signature,
                 component_name=instance,
@@ -320,12 +412,15 @@ def build_plans(
             )
 
     for template_id, template in tuple(templates.items()):
-        common = {}
-        for item in all_items.values():
-            if item.rule_id != template.item.rule_id or not item.common_predicate:
-                continue
-            common.setdefault((item.event_id, item.source_id), item)
-        enriched = replace(template, common_items=tuple(common.values()))
+        rule_id = template.item.rule_id
+        common = dict(static_common_items.get(rule_id, {}))
+        for identity, item in common_prototypes.get(rule_id, {}).items():
+            common.setdefault(identity, item)
+        enriched = replace(
+            template,
+            common_items=tuple(common.values()),
+            static_work_keys=tuple(static_work_keys.get(rule_id, ())),
+        )
         templates[template_id] = enriched
         grouped_templates["common"][template_id] = enriched
 
@@ -344,5 +439,6 @@ def build_plans(
             state_by_key={key: MonitorWorkStateRecord() for key in items},
             control_queue=Queue(),
             templates_by_key=monitor_templates,
+            polling_intervals=polling_intervals,
         )
     return PlanBundle(plans, signatures, all_items, templates)

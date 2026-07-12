@@ -22,6 +22,7 @@ from .correlation import CorrelationEngine
 from .lifecycle import (
     BrokenRuleStateStore,
     CandidateValidation,
+    NoRulesAvailable,
     RuleGenerationManager,
     RulePaths,
 )
@@ -368,6 +369,14 @@ class DLDDService:
         )
         try:
             self.activation = manager.activate()
+        except NoRulesAvailable:
+            # An image may intentionally enable the feature before its platform
+            # supplies any rules.  With no candidate bytes to validate there is
+            # no broken generation to report or retry; exit successfully and let
+            # the normal watcher restart DLDD when a rules file arrives.
+            LOGGER.info("no DLDD rules source is present; stopping cleanly")
+            self.stop_event.set()
+            return
         except Exception as error:
             LOGGER.exception("DLDD activation failed")
             self._fail_start(str(error))
@@ -402,6 +411,7 @@ class DLDDService:
             item.async_collection for item in bundle.work_items.values()
         ) or any(
             template.item.async_collection
+            or any(item.async_collection for item in template.common_items)
             for template in bundle.templates.values()
         ):
             self.async_collection_pool = AsyncCollectionPool()
@@ -449,7 +459,8 @@ class DLDDService:
                     MonitorWorkState.BROKEN,
                     "restored broken rule after unclean restart",
                 )
-        self.orchestrator.reconcile_existing_faults()
+        if not self._reconcile_existing_faults_at_startup():
+            return
         for plan in bundle.monitor_plans.values():
             monitor = self._new_monitor(plan)
             monitor.start()
@@ -461,7 +472,30 @@ class DLDDService:
         )
         self.config_thread.start()
         self._persist_state_if_changed(force=True)
-        self._publish_status()
+
+    def _reconcile_existing_faults_at_startup(self) -> bool:
+        """Build fault state from one complete STATE_DB snapshot before polling."""
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                self.orchestrator.reconcile_existing_faults()
+                return True
+            except Exception as error:
+                LOGGER.error(
+                    "startup FAULT_INFO reconciliation failed (%s/%s): %s",
+                    attempt,
+                    TELEMETRY_FAILURE_LIMIT,
+                    error,
+                )
+                if attempt == TELEMETRY_FAILURE_LIMIT:
+                    raise TelemetryUnavailable(
+                        "STATE_DB fault reconciliation failed {} consecutive "
+                        "times".format(TELEMETRY_FAILURE_LIMIT)
+                    ) from error
+                if self.stop_event.wait(TELEMETRY_RETRY_INTERVAL):
+                    return False
 
     def _run_artifact_query(self, query):
         executor = query.get("executor")
@@ -537,11 +571,14 @@ class DLDDService:
         # stable snapshot prevents list compaction from skipping another plan;
         # replacements reuse the same plan-owned update queue.
         for monitor in tuple(self.monitors):
-            interval = updated.polling_intervals[monitor.plan.monitor_type]
-            if hasattr(monitor, "update_polling_interval"):
-                monitor.update_polling_interval(interval)
+            intervals = updated.polling_intervals
+            if hasattr(monitor, "update_polling_intervals"):
+                monitor.update_polling_intervals(intervals)
             else:  # lightweight test doubles
-                monitor.plan.polling_interval = interval
+                monitor.plan.polling_intervals = intervals
+                monitor.plan.polling_interval = intervals[
+                    monitor.plan.monitor_type
+                ]
             monitor.fault_evidence_ack_timeout = updated.fault_evidence_ack_timeout
             monitor.source_recovery_samples = updated.source_recovery_samples
 
@@ -723,13 +760,20 @@ class DLDDService:
         monotonic_now = time.monotonic()
         wall_now = time.time()
         for monitor in self.monitors:
-            for key, state in monitor.plan.state_by_key.items():
+            items, states = monitor.plan.runtime_snapshot()
+            for key, state in states.items():
                 if state.state.value not in (
                     "HELD_BY_PRIMARY",
                     "RECHECK_REQUESTED",
                 ):
                     continue
-                item = monitor.plan.items_by_key[key]
+                item = items.get(key)
+                if item is None:
+                    LOGGER.warning(
+                        "unable to publish in-flight status for missing work item %s",
+                        key,
+                    )
+                    continue
                 status = {
                     "correlation_key": key,
                     "rule": item.rule_name,

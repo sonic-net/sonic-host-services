@@ -87,7 +87,7 @@ stages:
     - script: |
         pip3 install ".[testing]"
         pip3 uninstall --yes sonic-host-services
-        pytest
+        make -C tests/dldd unit-ci PYTHON=python3
       displayName: 'Test Python 3'
 
     - task: PublishTestResults@2
@@ -97,6 +97,19 @@ stages:
         failTaskOnFailedTests: true
       condition: succeededOrFailed()
       displayName: 'Publish Python 3 test results'
+
+    - script: |
+        set -xe
+        make -C tests/dldd integration PYTHON=python3
+      displayName: 'Test DLDD runtime integration'
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '$(System.DefaultWorkingDirectory)/dldd-integration-results.xml'
+        testRunTitle: DLDD runtime integration
+        failTaskOnFailedTests: true
+      condition: succeededOrFailed()
+      displayName: 'Publish DLDD runtime integration results'
 
     - task: PublishCodeCoverageResults@1
       inputs:

@@ -136,7 +136,9 @@ _SCALAR_UNION_BRANCHES = frozenset(
     )
 )
 _MODEL_UNION_BRANCHES = frozenset(("PlatformAPIHookPathV001",))
-_UNION_VALUE_FIELDS = frozenset(("bus", "path", "scaling", "value"))
+_UNION_VALUE_FIELDS = frozenset(
+    ("bus", "database", "key", "path", "scaling", "table", "value")
+)
 _VENDOR_STANDARD_FIELDS = frozenset(("hook", "timeout", "type"))
 _PATH_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

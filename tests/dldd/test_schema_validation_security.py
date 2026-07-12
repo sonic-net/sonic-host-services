@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import pkgutil
+import sys
 from typing import Literal
 
 import pytest
@@ -55,13 +56,7 @@ from dldd.validation import (
     load_rules,
     validate_document,
 )
-
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def _document():
-    return json.loads((FIXTURES / "valid-redis-rule.json").read_text())
+from tests.dldd_fakes import load_valid_rules_document as _document
 
 
 def _unique_rule_copy(document, name="SCHEMA_BAD", rule_id=1000002):
@@ -125,7 +120,11 @@ def _accept_inbox(paths):
     )
 
 
-def test_packaged_derivative_schema_is_current_for_installed_contract():
+def test_generated_schema_and_exact_registry_dispatch_contract(
+    monkeypatch,
+):
+    """Keep generated authoring schema derivative of exact runtime contracts."""
+
     packaged = pkgutil.get_data("dldd", "schemas/dld-rules-0.0.1.json")
     assert packaged is not None
     schema = json.loads(packaged.decode("utf-8"))
@@ -175,39 +174,43 @@ def test_packaged_derivative_schema_is_current_for_installed_contract():
     assert remote_identity["minLength"] == 1
     assert "enum" not in remote_identity
 
+    redis_event = schema["$defs"]["RedisEventV001"]
+    assert "sampling_interval" not in redis_event["required"]
+    assert redis_event["properties"]["sampling_interval"]["type"] == "integer"
+    assert "local_action_default_timeout" not in schema["required"]
+    assert schema["properties"]["local_action_default_timeout"][
+        "type"
+    ] == "integer"
 
-def test_generated_schema_is_documentation_not_a_runtime_dependency(
-    monkeypatch,
-):
     document = _document()
 
     def unexpected_schema_read(*unused_args, **unused_kwargs):
         pytest.fail("runtime validation read a generated schema artifact")
 
-    monkeypatch.setattr(Path, "read_text", unexpected_schema_read)
-
-    result = validate_document(document, materialize=False)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", unexpected_schema_read)
+        result = validate_document(document, materialize=False)
 
     assert result.file_valid
     assert len(result.ruleset.signatures) == 1
 
+    # Dispatch accepts only an exact installed version string.
+    for version in ("0.0.2", "0.0", "latest", "0.0.1 "):
+        with pytest.raises(
+            ContractRegistryError, match="unsupported schema_version"
+        ):
+            DEFAULT_CONTRACT_REGISTRY.require_exact(version)
 
-@pytest.mark.parametrize("version", ("0.0.2", "0.0", "latest", "0.0.1 "))
-def test_registry_dispatches_only_exact_installed_versions(version):
-    with pytest.raises(ContractRegistryError, match="unsupported schema_version"):
-        DEFAULT_CONTRACT_REGISTRY.require_exact(version)
+        document = _document()
+        document["schema_version"] = version
+        result = validate_document(document, materialize=False)
 
-    document = _document()
-    document["schema_version"] = version
-    result = validate_document(document, materialize=False)
+        assert not result.file_valid
+        assert [(issue.code, issue.path) for issue in result.file_errors] == [
+            ("unsupported_schema_version", "$.schema_version")
+        ]
 
-    assert not result.file_valid
-    assert [(issue.code, issue.path) for issue in result.file_errors] == [
-        ("unsupported_schema_version", "$.schema_version")
-    ]
-
-
-def test_registry_dispatch_drives_domain_and_plan_schema_provenance():
+    # Registry provenance reaches every runtime object and rejects bad shapes.
     test_version = "9.9.9"
 
     class TestEnvelope(EnvelopeV001):
@@ -251,8 +254,6 @@ def test_registry_dispatch_drives_domain_and_plan_schema_provenance():
         item.schema_version for item in bundle.work_items.values()
     } == {test_version}
 
-
-def test_installed_schema_versions_are_owned_only_by_version_modules():
     installed_versions = frozenset(DEFAULT_CONTRACT_REGISTRY.versions)
     package_root = Path(__file__).parents[2] / "dldd"
     offenders = []
@@ -274,8 +275,6 @@ def test_installed_schema_versions_are_owned_only_by_version_modules():
 
     assert offenders == []
 
-
-def test_registry_rejects_empty_and_inconsistent_code_contracts():
     installed = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
 
     with pytest.raises(ContractRegistryError, match="no DLDD rule contracts"):
@@ -294,7 +293,9 @@ def test_registry_rejects_empty_and_inconsistent_code_contracts():
         )
 
 
-def test_envelope_rejects_unknown_core_fields_at_file_scope():
+def test_file_and_rule_wire_errors_are_localized_and_bounded():
+    """Localize envelope, signature, large integer, and runtime field errors."""
+
     document = _document()
     document["future_option"] = True
 
@@ -305,106 +306,91 @@ def test_envelope_rejects_unknown_core_fields_at_file_scope():
         ("unknown_field", "$.future_option")
     ]
 
-
-def test_missing_required_field_is_rule_scoped_in_mixed_generation():
-    document = _document()
-    bad = _unique_rule_copy(document)
-    del bad["signature"]["metadata"]["severity"]
-    document["signatures"].append(bad)
-
-    result = validate_document(document)
-
-    assert result.file_valid
-    assert result.activation_valid
-    assert len(result.usable_rules) == 1
-    assert len(result.broken_rules) == 1
-    contract_issue = next(
-        issue
-        for issue in result.broken_rules[0].issues
-        if issue.code == "missing_field"
-    )
-    assert contract_issue.path == (
-        "$.signatures[1].signature.metadata.severity"
-    )
-
-
-def test_yaml_specific_scalar_inside_signature_remains_rule_scoped():
-    yaml = pytest.importorskip("yaml")
-    document = _document()
-    bad = _unique_rule_copy(document, "YAML_DATE_BAD", 1000002)
-    bad["signature"]["metadata"]["description"] = date(2026, 7, 6)
-    document["signatures"].append(bad)
-
-    result = load_rules(yaml.safe_dump(document, sort_keys=False))
-
-    assert result.file_valid
-    assert result.activation_valid
-    assert len(result.usable_rules) == 1
-    assert [(issue.code, issue.path) for issue in result.broken_rules[0].issues] == [
+    # Independent signature errors preserve the valid sibling rule.
+    cases = (
         (
+            lambda wrapper: wrapper["signature"]["metadata"].pop("severity"),
+            "missing_field",
+            "$.signatures[1].signature.metadata.severity",
+            "python",
+        ),
+        (
+            lambda wrapper: wrapper["signature"]["metadata"].update(
+                {"description": date(2026, 7, 6)}
+            ),
             "invalid_type",
             "$.signatures[1].signature.metadata.description",
-        )
-    ]
-
-
-def test_unknown_signature_core_field_is_rule_scoped():
-    document = _document()
-    bad = _unique_rule_copy(document)
-    bad["signature"]["metadata"]["future_option"] = "not-installed"
-    document["signatures"].append(bad)
-
-    result = validate_document(document)
-
-    assert result.file_valid
-    assert len(result.usable_rules) == 1
-    assert [(issue.code, issue.path) for issue in result.broken_rules[0].issues] == [
+            "yaml",
+        ),
         (
+            lambda wrapper: wrapper["signature"]["metadata"].update(
+                {"future_option": "not-installed"}
+            ),
             "unknown_field",
             "$.signatures[1].signature.metadata.future_option",
-        )
-    ]
-
-
-@pytest.mark.parametrize(
-    "mutate, expected_path",
-    (
+            "python",
+        ),
         (
             lambda wrapper: wrapper["signature"]["metadata"].update(
                 {"id": "1000001"}
             ),
+            "invalid_type",
             "$.signatures[1].signature.metadata.id",
+            "python",
         ),
         (
             lambda wrapper: wrapper["signature"]["conditions"]["events"][0][
                 "event"
             ].update({"id": 1.0}),
+            "invalid_type",
             "$.signatures[1].signature.conditions.events[0].event.id",
+            "python",
         ),
         (
             lambda wrapper: wrapper["signature"]["conditions"]["events"][0][
                 "event"
             ].update({"match_count": True}),
+            "invalid_type",
             "$.signatures[1].signature.conditions.events[0].event.match_count",
+            "python",
         ),
-    ),
-)
-def test_strict_contract_does_not_coerce_rule_values(mutate, expected_path):
-    document = _document()
-    bad = _unique_rule_copy(document)
-    mutate(bad)
-    document["signatures"].append(bad)
+        (
+            _file_unit_schema_violation,
+            "invalid_length",
+            "$.signatures[1].signature.conditions.events[0].event.path.unit",
+            "python",
+        ),
+        (
+            lambda wrapper: wrapper["signature"]["conditions"]["events"][0][
+                "event"
+            ].update({"match_period": 3601}),
+            "out_of_range",
+            "$.signatures[1].signature.conditions.events[0].event.match_period",
+            "python",
+        ),
+    )
+    for mutate, expected_code, expected_path, source_format in cases:
+        document = _document()
+        bad = _unique_rule_copy(document)
+        mutate(bad)
+        document["signatures"].append(bad)
 
-    result = validate_document(document)
+        if source_format == "yaml":
+            yaml = pytest.importorskip("yaml")
+            result = load_rules(yaml.safe_dump(document, sort_keys=False))
+        else:
+            result = validate_document(document)
 
-    assert result.file_valid
-    assert len(result.usable_rules) == 1
-    assert [(issue.code, issue.path) for issue in result.broken_rules[0].issues] == [
-        ("invalid_type", expected_path)
-    ]
+        assert result.file_valid
+        assert result.activation_valid
+        assert len(result.usable_rules) == 1
+        assert len(result.broken_rules) == 1
+        assert [
+            (issue.code, issue.path)
+            for issue in result.broken_rules[0].issues
+        ] == [(expected_code, expected_path)]
 
-
-def test_huge_yaml_integer_rule_id_is_localized_without_formatting_it():
+    # Huge YAML integers fail safely without formatting their full value.
     yaml = pytest.importorskip("yaml")
     document = _document()
     source = yaml.safe_dump(document, sort_keys=False).replace(
@@ -421,8 +407,7 @@ def test_huge_yaml_integer_rule_id_is_localized_without_formatting_it():
         for issue in result.broken_rules[0].issues
     )
 
-
-def test_runtime_serialized_integer_fields_have_explicit_safe_bounds():
+    # Every runtime-serialized integer field has an explicit safe bound.
     priority_document = _document()
     priority_document["signatures"][0]["signature"]["metadata"][
         "priority"
@@ -448,45 +433,9 @@ def test_runtime_serialized_integer_fields_have_explicit_safe_bounds():
     )
 
 
-def test_present_constraint_is_enforced_per_rule():
-    document = _document()
-    bad = _unique_rule_copy(document)
-    _file_unit_schema_violation(bad)
-    document["signatures"].append(bad)
+def test_contract_defaults_omission_null_and_second_field_bounds():
+    """Preserve defaults while distinguishing omission, null, and overflow."""
 
-    result = validate_document(document)
-
-    assert result.file_valid
-    assert result.activation_valid
-    assert len(result.usable_rules) == 1
-    assert len(result.broken_rules) == 1
-    assert [
-        (issue.code, issue.path)
-        for issue in result.broken_rules[0].issues
-        if issue.code == "invalid_length"
-    ] == [
-        (
-            "invalid_length",
-            "$.signatures[1].signature.conditions.events[0].event.path.unit",
-        )
-    ]
-
-
-def test_pydantic_constraint_has_one_stable_operator_diagnostic():
-    document = _document()
-    event = document["signatures"][0]["signature"]["conditions"]["events"][
-        0
-    ]["event"]
-    event["match_period"] = 3601
-
-    result = validate_document(document)
-
-    assert [issue.code for issue in result.broken_rules[0].issues] == [
-        "out_of_range"
-    ]
-
-
-def test_contract_defaults_do_not_mutate_input():
     document = _document()
     metadata = document["signatures"][0]["signature"]["metadata"]
     metadata.pop("priority", None)
@@ -497,8 +446,6 @@ def test_contract_defaults_do_not_mutate_input():
     assert document == original
     assert result.ruleset.signatures[0].metadata.priority == 5
 
-
-def test_omitted_event_sampling_interval_is_distinct_from_explicit_null():
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
     wrapper = deepcopy(_document()["signatures"][0])
     dto = contract.validate_signature(wrapper)
@@ -527,8 +474,6 @@ def test_omitted_event_sampling_interval_is_distinct_from_explicit_null():
         )
     ]
 
-
-def test_omitted_envelope_timeout_is_distinct_from_explicit_null():
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
     document = _document()
     document.pop("local_action_default_timeout")
@@ -546,10 +491,8 @@ def test_omitted_envelope_timeout_is_distinct_from_explicit_null():
         for issue in normalize_validation_error(caught.value)
     ] == [("invalid_type", "$.local_action_default_timeout")]
 
-
-@pytest.mark.parametrize(
-    "mutate, expected_path, file_scoped",
-    (
+    # All duration fields use the same unsigned 32-bit wire bound.
+    for mutate, expected_path, file_scoped in (
         (
             lambda document: document.update(
                 {"local_action_default_timeout": 2**32}
@@ -577,36 +520,26 @@ def test_omitted_envelope_timeout_is_distinct_from_explicit_null():
             "time_window",
             False,
         ),
-    ),
-)
-def test_second_fields_are_bounded_unsigned_32_bit(
-    mutate, expected_path, file_scoped
-):
-    document = _document()
-    mutate(document)
+    ):
+        document = _document()
+        mutate(document)
 
-    result = validate_document(document)
-    issues = result.file_errors if file_scoped else result.broken_rules[0].issues
+        result = validate_document(document)
+        issues = (
+            result.file_errors
+            if file_scoped
+            else result.broken_rules[0].issues
+        )
 
-    assert any(
-        issue.code == "out_of_range" and issue.path == expected_path
-        for issue in issues
-    )
-
-
-def test_generated_schema_publishes_optional_but_non_null_fields():
-    schema = generate_schema("0.0.1")
-    redis_event = schema["$defs"]["RedisEventV001"]
-
-    assert "sampling_interval" not in redis_event["required"]
-    assert redis_event["properties"]["sampling_interval"]["type"] == "integer"
-    assert "local_action_default_timeout" not in schema["required"]
-    assert schema["properties"]["local_action_default_timeout"][
-        "type"
-    ] == "integer"
+        assert any(
+            issue.code == "out_of_range" and issue.path == expected_path
+            for issue in issues
+        )
 
 
-def test_vendor_operation_has_bounded_extension_boundary():
+def test_vendor_operation_extension_and_canonical_error_paths():
+    """Preserve vendor data while redacting values and normalizing key paths."""
+
     document = _document()
     action = document["signatures"][0]["signature"]["actions"][
         "repair_actions"
@@ -634,8 +567,6 @@ def test_vendor_operation_has_bounded_extension_boundary():
         "parameters": {"force": True},
     }
 
-
-def test_hostile_vendor_payload_is_rejected_without_value_disclosure():
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
     wrapper = deepcopy(_document()["signatures"][0])
     action = wrapper["signature"]["actions"]["repair_actions"][
@@ -659,80 +590,70 @@ def test_hostile_vendor_payload_is_rejected_without_value_disclosure():
     }
 
 
-@pytest.mark.parametrize(
-    "vendor_key", ("vendor", "cli", "dict[str,...]", "FooV001")
-)
-def test_vendor_keys_that_resemble_union_internals_keep_canonical_path(
-    vendor_key,
-):
-    contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
-    wrapper = deepcopy(_document()["signatures"][0])
-    action = wrapper["signature"]["actions"]["repair_actions"][
-        "local_actions"
-    ]["action_list"][0]["action"]
-    action.clear()
-    action.update({"type": "acme_psu_reset", vendor_key: object()})
+    # Keys resembling union branch internals retain canonical paths.
+    for vendor_key in ("vendor", "cli", "dict[str,...]", "FooV001"):
+        contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
+        wrapper = deepcopy(_document()["signatures"][0])
+        action = wrapper["signature"]["actions"]["repair_actions"][
+            "local_actions"
+        ]["action_list"][0]["action"]
+        action.clear()
+        action.update({"type": "acme_psu_reset", vendor_key: object()})
 
-    with pytest.raises(ValidationError) as caught:
-        contract.validate_signature(wrapper)
-    issues = normalize_validation_error(
-        caught.value, base_path="$.signatures[0]"
-    )
-
-    suffix = (
-        ".{}".format(vendor_key)
-        if vendor_key.replace("_", "a").isalnum()
-        and not vendor_key[0].isdigit()
-        else "[{}]".format(json.dumps(vendor_key))
-    )
-    assert [(issue.code, issue.path) for issue in issues] == [
-        (
-            "invalid_type",
-            "$.signatures[0].signature.actions.repair_actions.local_actions."
-            "action_list[0].action{}".format(suffix),
+        with pytest.raises(ValidationError) as caught:
+            contract.validate_signature(wrapper)
+        issues = normalize_validation_error(
+            caught.value, base_path="$.signatures[0]"
         )
-    ]
+
+        suffix = (
+            ".{}".format(vendor_key)
+            if vendor_key.replace("_", "a").isalnum()
+            and not vendor_key[0].isdigit()
+            else "[{}]".format(json.dumps(vendor_key))
+        )
+        assert [(issue.code, issue.path) for issue in issues] == [
+            (
+                "invalid_type",
+                "$.signatures[0].signature.actions.repair_actions."
+                "local_actions.action_list[0].action{}".format(suffix),
+            )
+        ]
 
 
-@pytest.mark.parametrize(
-    "mapping_key, path_suffix",
-    (
+    # Non-string mapping keys omit Pydantic's internal key marker.
+    for mapping_key, path_suffix in (
         (1, "[1]"),
         (1.5, '["1.5"]'),
         (
             date(2026, 7, 6),
             '["datetime.date(2026, 7, 6)"]',
         ),
-    ),
-)
-def test_non_string_vendor_mapping_key_omits_pydantic_key_marker(
-    mapping_key, path_suffix
-):
-    contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
-    wrapper = deepcopy(_document()["signatures"][0])
-    action = wrapper["signature"]["actions"]["repair_actions"][
-        "local_actions"
-    ]["action_list"][0]["action"]
-    action.clear()
-    action.update(
-        {"type": "acme_psu_reset", "payload": {mapping_key: "value"}}
-    )
+    ):
+        contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
+        wrapper = deepcopy(_document()["signatures"][0])
+        action = wrapper["signature"]["actions"]["repair_actions"][
+            "local_actions"
+        ]["action_list"][0]["action"]
+        action.clear()
+        action.update(
+            {"type": "acme_psu_reset", "payload": {mapping_key: "value"}}
+        )
 
-    with pytest.raises(ValidationError) as caught:
-        contract.validate_signature(wrapper)
-    issues = normalize_validation_error(
-        caught.value, base_path="$.signatures[0]"
-    )
+        with pytest.raises(ValidationError) as caught:
+            contract.validate_signature(wrapper)
+        issues = normalize_validation_error(
+            caught.value, base_path="$.signatures[0]"
+        )
 
-    expected = (
-        "$.signatures[0].signature.actions.repair_actions.local_actions."
-        "action_list[0].action.payload{}".format(path_suffix)
-    )
-    assert any(issue.path == expected for issue in issues)
-    assert all(".[key]" not in issue.path for issue in issues)
+        expected = (
+            "$.signatures[0].signature.actions.repair_actions.local_actions."
+            "action_list[0].action.payload{}".format(path_suffix)
+        )
+        assert any(issue.path == expected for issue in issues)
+        assert all(".[key]" not in issue.path for issue in issues)
 
-
-def test_literal_vendor_key_marker_uses_escaped_property_path():
+    # A literal '[key]' property remains escaped as user data.
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
     wrapper = deepcopy(_document()["signatures"][0])
     action = wrapper["signature"]["actions"]["repair_actions"][
@@ -756,7 +677,9 @@ def test_literal_vendor_key_marker_uses_escaped_property_path():
     assert any(issue.path == expected for issue in issues)
 
 
-def test_bounded_paths_keep_distinct_hash_suffixes():
+def test_diagnostic_redaction_bounding_and_identity_contract():
+    """Keep normalized diagnostics distinct, deterministic, redacted, and bounded."""
+
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
     wrapper = deepcopy(_document()["signatures"][0])
     common_prefix = "x" * 3000
@@ -774,8 +697,7 @@ def test_bounded_paths_keep_distinct_hash_suffixes():
     assert all("...#" in issue.path for issue in issues)
     assert all(len(issue.path.encode("utf-8")) <= 2048 for issue in issues)
 
-
-def test_error_normalization_is_deterministic_redacted_and_bounded():
+    # Many issues normalize deterministically without exposing input values.
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
     wrapper = deepcopy(_document()["signatures"][0])
     wrapper["signature"]["metadata"].update(
@@ -811,8 +733,7 @@ def test_error_normalization_is_deterministic_redacted_and_bounded():
         )
     )
 
-
-def test_complete_candidate_diagnostics_have_issue_and_byte_caps():
+    # Candidate diagnostics apply aggregate issue, byte, and identity caps.
     document = _document()
     original = document["signatures"][0]
     signatures = []
@@ -845,8 +766,6 @@ def test_complete_candidate_diagnostics_have_issue_and_byte_caps():
         for issue in item.issues
     )
 
-
-def test_control_character_identities_cannot_expand_diagnostic_budget():
     document = _document()
     original = document["signatures"][0]
     signatures = []
@@ -879,7 +798,9 @@ def test_control_character_identities_cannot_expand_diagnostic_budget():
     assert all("\0" not in item.rule_name for item in result.broken_rules)
 
 
-def test_excessively_nested_logic_is_a_rule_diagnostic():
+def test_expression_limits_and_stable_source_diagnostics():
+    """Localize bounded logic/regex errors with stable paths and lines."""
+
     document = _document()
     conditions = document["signatures"][0]["signature"]["conditions"]
     conditions["logic"] = (
@@ -894,8 +815,23 @@ def test_excessively_nested_logic_is_a_rule_diagnostic():
         issue.code for issue in result.broken_rules[0].issues
     }
 
+    document = _document()
+    document["signatures"][0]["signature"]["conditions"]["logic"] = (
+        "9" * 5000
+    )
 
-def test_excessively_nested_regex_is_a_rule_diagnostic():
+    previous_limit = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    try:
+        result = validate_document(document)
+    finally:
+        sys.set_int_max_str_digits(previous_limit)
+
+    issue = result.broken_rules[0].issues[0]
+    assert issue.code == "invalid_logic"
+    assert issue.message == "logic expression is invalid"
+    assert issue.path == "$.signatures[0].signature.conditions"
+
     document = _document()
     event = document["signatures"][0]["signature"]["conditions"]["events"][
         0
@@ -916,8 +852,7 @@ def test_excessively_nested_regex_is_a_rule_diagnostic():
         issue.code for issue in result.broken_rules[0].issues
     }
 
-
-def test_contract_issue_path_and_line_are_stable_across_runs():
+    # Repeated validation produces identical contract paths and source lines.
     document = _document()
     bad = _unique_rule_copy(document)
     _file_unit_schema_violation(bad)
@@ -948,52 +883,45 @@ def test_contract_issue_path_and_line_are_stable_across_runs():
     ] * 2
 
 
-def test_duplicate_json_keys_are_rejected_before_contract_dispatch():
-    source = (
-        '{"schema_version":"0.0.1",'
-        '"schema_version":"0.0.1","signatures":[]}'
-    )
+def test_source_parsing_rejects_ambiguous_nonfinite_and_oversized_input():
+    """Reject unsafe input before decode, construction, or contract dispatch."""
 
-    result = load_rules(source)
+    for source, message, line in (
+        (
+            '{"schema_version":"0.0.1",'
+            '"schema_version":"0.0.1","signatures":[]}',
+            "duplicate JSON key 'schema_version'",
+            None,
+        ),
+        (
+            "schema_version: '0.0.1'\n"
+            "schema_version: '0.0.1'\n"
+            "signatures: []\n",
+            "found duplicate key 'schema_version'",
+            2,
+        ),
+    ):
+        if source.startswith("schema_version"):
+            pytest.importorskip("yaml")
 
-    assert result.file_errors[0].code == "parse_error"
-    assert "duplicate JSON key 'schema_version'" in result.file_errors[0].message
-    # stdlib object_pairs_hook exposes duplicate order but not source offsets;
-    # do not publish a misleading line number.
-    assert result.file_errors[0].line is None
+        result = load_rules(source)
+        issue = result.file_errors[0]
+        assert issue.code == "parse_error"
+        assert message in issue.message
+        # JSON has no source offsets; YAML reports the second key line.
+        assert issue.line == line
 
-
-def test_duplicate_yaml_keys_report_second_key_line():
-    pytest.importorskip("yaml")
-    source = (
-        "schema_version: '0.0.1'\n"
-        "schema_version: '0.0.1'\n"
-        "signatures: []\n"
-    )
-
-    result = load_rules(source)
-
-    assert result.file_errors[0].code == "parse_error"
-    assert "found duplicate key 'schema_version'" in result.file_errors[0].message
-    assert result.file_errors[0].line == 2
-
-
-@pytest.mark.parametrize(
-    "source",
-    (
+    # Nonfinite values and keys are rejected consistently across formats.
+    for source in (
         '{"schema_version":"0.0.1","value":NaN,"signatures":[]}',
         "schema_version: '0.0.1'\nvalue: .inf\nsignatures: []\n",
         "schema_version: '0.0.1'\n.nan: value\nsignatures: []\n",
-    ),
-)
-def test_nonfinite_numbers_are_rejected_during_parsing(source):
-    result = load_rules(source)
+    ):
+        result = load_rules(source)
+        assert result.file_errors[0].code == "parse_error"
+        assert "non-finite" in result.file_errors[0].message
 
-    assert result.file_errors[0].code == "parse_error"
-    assert "non-finite" in result.file_errors[0].message
-
-
-def test_source_size_limit_is_applied_before_parsing():
+    # Text source size is checked before parsing.
     result = load_rules(" " * (MAX_SOURCE_BYTES + 1))
 
     assert result.file_errors[0].code == "parse_error"
@@ -1001,8 +929,7 @@ def test_source_size_limit_is_applied_before_parsing():
         result.file_errors[0].message
     )
 
-
-def test_mapping_keys_are_subject_to_scalar_size_limit():
+    # Mapping keys use the same scalar-size guard as values.
     document = _document()
     document["k" * (MAX_SCALAR_BYTES + 1)] = True
 
@@ -1013,24 +940,21 @@ def test_mapping_keys_are_subject_to_scalar_size_limit():
         result.file_errors[0].message
     )
 
-
-@pytest.mark.parametrize(
-    "source",
-    (
+    # Byte and stream inputs are bounded before decoding.
+    for source in (
         b" " * (MAX_SOURCE_BYTES + 1),
         BytesIO(b" " * (MAX_SOURCE_BYTES + 1)),
-    ),
-)
-def test_byte_source_size_is_checked_before_decode(source):
-    result = load_rules(source)
-
-    assert result.file_errors[0].code == "parse_error"
-    assert "exceeds {} bytes".format(MAX_SOURCE_BYTES) in (
-        result.file_errors[0].message
-    )
+    ):
+        result = load_rules(source)
+        assert result.file_errors[0].code == "parse_error"
+        assert "exceeds {} bytes".format(MAX_SOURCE_BYTES) in (
+            result.file_errors[0].message
+        )
 
 
-def test_document_depth_limit_is_applied_before_contract_validation():
+def test_document_resource_alias_and_rule_count_limits():
+    """Bound depth, nodes, collections, aliases, signatures, and events."""
+
     document = _document()
     nested = "leaf"
     for unused in range(MAX_DOCUMENT_DEPTH + 1):
@@ -1044,32 +968,23 @@ def test_document_depth_limit_is_applied_before_contract_validation():
         result.file_errors[0].message
     )
 
-
-@pytest.mark.parametrize(
-    "extension, expected",
-    (
+    # Direct documents enforce scalar, collection, and total-node limits.
+    for extension, expected in (
         ("x" * (MAX_SCALAR_BYTES + 1), "scalar larger"),
         (list(range(MAX_COLLECTION_ITEMS + 1)), "collection exceeds"),
         (
             [[None] * 9 for unused in range(MAX_COLLECTION_ITEMS)],
             "exceeds {} nodes".format(MAX_DOCUMENT_NODES),
         ),
-    ),
-)
-def test_direct_document_validation_enforces_resource_limits(
-    extension, expected
-):
-    document = _document()
-    document["vendor_extension"] = extension
+    ):
+        document = _document()
+        document["vendor_extension"] = extension
+        result = validate_document(document, materialize=False)
+        assert not result.file_valid
+        assert result.file_errors[0].code == "parse_error"
+        assert expected in result.file_errors[0].message
 
-    result = validate_document(document, materialize=False)
-
-    assert not result.file_valid
-    assert result.file_errors[0].code == "parse_error"
-    assert expected in result.file_errors[0].message
-
-
-def test_direct_document_validation_rejects_cycles():
+    # Recursive direct objects and YAML aliases are rejected before models.
     document = _document()
     cycle = []
     cycle.append(cycle)
@@ -1081,8 +996,6 @@ def test_direct_document_validation_rejects_cycles():
     assert result.file_errors[0].code == "parse_error"
     assert "recursive aliases" in result.file_errors[0].message
 
-
-def test_yaml_aliases_are_rejected_before_construction():
     pytest.importorskip("yaml")
     source = (
         "schema_version: &version '0.0.1'\n"
@@ -1096,8 +1009,7 @@ def test_yaml_aliases_are_rejected_before_construction():
     assert "YAML aliases are not allowed" in result.file_errors[0].message
     assert result.file_errors[0].line == 2
 
-
-def test_signature_count_limit_is_file_scoped():
+    # Signature overflow is file-scoped.
     document = _document()
     original = document["signatures"][0]
     signatures = []
@@ -1115,8 +1027,7 @@ def test_signature_count_limit_is_file_scoped():
     assert result.file_errors[0].code == "invalid_length"
     assert result.file_errors[0].path == "$.signatures"
 
-
-def test_event_count_limit_is_rule_scoped_in_mixed_generation():
+    # Event overflow is localized to its rule in an otherwise usable file.
     document = _document()
     bad = _unique_rule_copy(document)
     conditions = bad["signature"]["conditions"]
@@ -1139,53 +1050,51 @@ def test_event_count_limit_is_rule_scoped_in_mixed_generation():
     )
 
 
-def test_real_contract_rejection_falls_back_to_active_generation(tmp_path):
-    paths = _lifecycle_paths(tmp_path)
-    os.makedirs(os.path.dirname(paths.inbox), exist_ok=True)
-    os.makedirs(paths.rules_dir, exist_ok=True)
-    active_source = json.dumps(_document(), sort_keys=True)
-    Path(paths.active).write_text(active_source)
+def test_schema_validation_drives_lifecycle_candidate_selection(tmp_path):
+    for scenario in ("fallback", "degraded"):
+        scenario_root = tmp_path / scenario
+        scenario_root.mkdir()
+        paths = _lifecycle_paths(scenario_root)
+        os.makedirs(os.path.dirname(paths.inbox), exist_ok=True)
+        if scenario == "fallback":
+            os.makedirs(paths.rules_dir, exist_ok=True)
+            active_source = json.dumps(_document(), sort_keys=True)
+            Path(paths.active).write_text(active_source)
+            candidate = _document()
+            del candidate["signatures"][0]["signature"]["metadata"][
+                "severity"
+            ]
+            source = json.dumps(candidate)
+        else:
+            candidate = _document()
+            bad = _unique_rule_copy(candidate)
+            _file_unit_schema_violation(bad)
+            candidate["signatures"].append(bad)
+            source = json.dumps(candidate, sort_keys=True)
 
-    invalid = _document()
-    del invalid["signatures"][0]["signature"]["metadata"]["severity"]
-    Path(paths.inbox).write_text(json.dumps(invalid))
-    _accept_inbox(paths)
+        Path(paths.inbox).write_text(source)
+        _accept_inbox(paths)
 
-    result = RuleGenerationManager(
-        paths, _candidate_validation, "platform-v1"
-    ).activate()
+        result = RuleGenerationManager(
+            paths, _candidate_validation, "platform-v1"
+        ).activate()
 
-    assert result.source == "active"
-    assert result.fallback_used is True
-    assert Path(paths.active).read_text() == active_source
-    manifest = json.loads(Path(paths.manifest).read_text())
-    rejected = next(
-        attempt
-        for attempt in manifest["activation_attempts"]
-        if attempt["source"] == "inbox"
-    )
-    assert rejected["validation_result"] == "FAILED"
-    assert rejected["usable_rule_count"] == 0
-    assert "zero usable rules" in rejected["reason"]
-
-
-def test_mixed_contract_candidate_activates_degraded(tmp_path):
-    paths = _lifecycle_paths(tmp_path)
-    os.makedirs(os.path.dirname(paths.inbox), exist_ok=True)
-    candidate = _document()
-    bad = _unique_rule_copy(candidate)
-    _file_unit_schema_violation(bad)
-    candidate["signatures"].append(bad)
-    source = json.dumps(candidate, sort_keys=True)
-    Path(paths.inbox).write_text(source)
-    _accept_inbox(paths)
-
-    result = RuleGenerationManager(
-        paths, _candidate_validation, "platform-v1"
-    ).activate()
-
-    assert result.source == "inbox"
-    assert result.validation_result == "DEGRADED"
-    assert result.fallback_used is False
-    assert len(result.broken_rules) == 1
-    assert Path(paths.active).read_text() == source
+        if scenario == "fallback":
+            assert result.source == "active"
+            assert result.fallback_used is True
+            assert Path(paths.active).read_text() == active_source
+            manifest = json.loads(Path(paths.manifest).read_text())
+            rejected = next(
+                attempt
+                for attempt in manifest["activation_attempts"]
+                if attempt["source"] == "inbox"
+            )
+            assert rejected["validation_result"] == "FAILED"
+            assert rejected["usable_rule_count"] == 0
+            assert "zero usable rules" in rejected["reason"]
+        else:
+            assert result.source == "inbox"
+            assert result.validation_result == "DEGRADED"
+            assert result.fallback_used is False
+            assert len(result.broken_rules) == 1
+            assert Path(paths.active).read_text() == source

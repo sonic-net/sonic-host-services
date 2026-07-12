@@ -24,7 +24,7 @@ def _runtime_values():
     }
 
 
-def test_fault_ownership_marker_accepts_text_and_redis_bytes_only():
+def test_fault_ownership_and_cleanup_contract(tmp_path):
     assert is_dldd_fault_payload({"producer": "dldd"})
     assert is_dldd_fault_payload({b"producer": b"dldd"})
     assert not is_dldd_fault_payload({"producer": "another-service"})
@@ -32,13 +32,11 @@ def test_fault_ownership_marker_accepts_text_and_redis_bytes_only():
         {"rule_id": "1000001", "active_rules_checksum": "sha256:test"}
     )
 
-
-def test_default_cleanup_preserves_faults_and_artifacts(tmp_path):
     values = _runtime_values()
     state_db = FakeStateDB(values)
     state_file = tmp_path / "dld_state.json"
     state_file.write_text("{}", encoding="utf-8")
-    artifacts = tmp_path / "artifacts"
+    artifacts = tmp_path / "artifacts-full"
     artifacts.mkdir()
     artifact = artifacts / "dldd-test.tar.gz"
     artifact.write_text("diagnostics", encoding="utf-8")
@@ -60,8 +58,6 @@ def test_default_cleanup_preserves_faults_and_artifacts(tmp_path):
     assert result.artifacts == 0
     assert result.local_state_removed
 
-
-def test_full_cleanup_removes_only_dldd_owned_faults_and_artifacts(tmp_path):
     values = _runtime_values()
     state_db = FakeStateDB(values)
     state_file = tmp_path / "missing-state.json"

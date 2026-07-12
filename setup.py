@@ -6,6 +6,13 @@ from packaging import version
 
 # sonic_dependencies, version requirement only supports '>='
 sonic_dependencies = ['sonic-py-common', 'sonic-utilities']
+testing_dependencies = [
+    'parameterized',
+    'pytest',
+    'pytest-cov',
+    'pyfakefs',
+    'deepdiff>=6.2.2',
+]
 for package in sonic_dependencies:
     try:
         package_dist = pkg_resources.get_distribution(package.split(">=")[0])
@@ -76,22 +83,9 @@ setup(
         'pytest-runner',
         'wheel'
     ],
-    tests_require = [
-        'parameterized',
-        'pytest',
-        'pyfakefs',
-        'sonic-py-common',
-        'deepdiff>=6.2.2',
-        'psutil'
-    ],
+    tests_require = testing_dependencies,
     extras_require = {
-        "testing": [
-            'parameterized',
-            'pytest',
-            'pyfakefs',
-            'sonic-py-common',
-            'deepdiff>=6.2.2'
-        ]
+        "testing": testing_dependencies
     },
     classifiers = [
         'Development Status :: 3 - Alpha',

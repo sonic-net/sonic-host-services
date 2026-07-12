@@ -1,15 +1,26 @@
 from __future__ import absolute_import
 
+import builtins
 import json
 from queue import Queue
+import sys
+from types import ModuleType, SimpleNamespace
+
+import pytest
 
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine
+from dldd.models import ValueConfig
 from dldd.orchestrator import PrimaryOrchestrator
 from dldd.planner import build_plans
 from dldd.runtime import FaultRecord
 from dldd.sonic_hash import SonicHashReader
-from dldd.telemetry import SonicStateDB, TelemetryPublisher
+from dldd.telemetry import (
+    SonicStateDB,
+    StateDB,
+    TelemetryPublisher,
+    value_config_payload,
+)
 from dldd.validation import load_rules
 from tests.dldd_fakes import FakeStateDB
 
@@ -40,6 +51,23 @@ class RecordingRedisClient(object):
         self.transaction = RecordingPipeline()
         self.scan_pattern = None
         self.deleted = []
+        self.direct = []
+
+    def hset(self, key, mapping):
+        self.direct.append(("hset", key, mapping))
+
+    def expire(self, key, seconds):
+        self.direct.append(("expire", key, seconds))
+
+    def persist(self, key):
+        self.direct.append(("persist", key))
+
+    def hdel(self, key, *fields):
+        self.direct.append(("hdel", key, fields))
+
+    def hgetall(self, key):
+        self.direct.append(("hgetall", key))
+        return {b"status": b"ACTIVE"}
 
     def hkeys(self, key):
         return self.fields
@@ -88,7 +116,30 @@ def fault(status="ACTIVE"):
     )
 
 
-def test_status_uses_120_second_atomic_ttl_contract():
+def test_state_db_interface_and_value_config_serialization_contract():
+    for operation in (
+        lambda database: database.hset("KEY", {}),
+        lambda database: database.expire("KEY", 1),
+        lambda database: database.persist("KEY"),
+        lambda database: database.hdel("KEY", ("field",)),
+        lambda database: database.delete("KEY"),
+        lambda database: database.hgetall("KEY"),
+        lambda database: database.keys("KEY*"),
+    ):
+        with pytest.raises(NotImplementedError):
+            operation(StateDB())
+
+    assert value_config_payload(
+        ValueConfig(type="float", unit="C", scaling=0.5)
+    ) == {
+        "type": "float",
+        "unit": "C",
+        "scaling": 0.5,
+        "encoding": "N/A",
+    }
+
+
+def test_status_publication_ttl_failure_and_reason_boundary_contract(caplog):
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
     publisher.publish_status(
@@ -103,15 +154,43 @@ def test_status_uses_120_second_atomic_ttl_contract():
     )
     assert database.ttls[publisher.STATUS_KEY] == 120
     assert json.loads(database.values[publisher.STATUS_KEY]["broken_rules"]) == []
-    assert database.values[publisher.STATUS_KEY]["redis_monitor_polling_interval"] == "60"
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "redis_monitor_polling_interval"
+        ]
+        == "60"
+    )
     assert database.values[publisher.STATUS_KEY]["rules_inbox_settle_time"] == "30"
     assert database.values[publisher.STATUS_KEY]["active_rules_source"] == "inbox"
     assert database.values[publisher.STATUS_KEY]["activation_result"] == "DEGRADED"
     assert database.values[publisher.STATUS_KEY]["activation_fallback_used"] == "true"
-    assert database.values[publisher.STATUS_KEY]["previous_active_rules_checksum"] == "sha256:old"
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "previous_active_rules_checksum"
+        ]
+        == "sha256:old"
+    )
+
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    database.fail_writes_with(RuntimeError("STATE_DB unavailable"))
+
+    assert not publisher.publish_status("OK", "schema", "/active", "checksum")
+    assert not publisher.publish_rule_status("checksum", ())
+    assert not publisher.clear_rule_status()
+    assert not publisher.publish_fault(fault())
+    assert "STATE_DB unavailable" in caplog.text
+
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    record = fault("INACTIVE")
+    record.reason = "x" * 2048
+
+    assert publisher.publish_fault(record)
+    assert len(database.values[record.redis_key]["reason"].encode()) <= 512
 
 
-def test_rule_status_uses_generation_bound_120_second_snapshot():
+def test_rule_status_snapshot_replacement_and_key_namespace_contract():
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
     rules = (
@@ -156,6 +235,43 @@ def test_rule_status_uses_generation_bound_120_second_snapshot():
     assert publisher.RULE_STATUS_KEY not in database.values
     assert "DLDD_RULE_STATUS|rule|PSU_FAULT" not in database.values
     assert "DLDD_RULE_DETAIL|rule|PSU_FAULT" not in database.values
+
+    database.hset(
+        publisher.RULE_STATUS_KEY,
+        {"rules": [{"rule": "legacy-monolith"}]},
+    )
+    publisher.publish_rule_status(
+        "sha256:first",
+        (
+            {"rule_id": 1, "rule": "RULE_ONE", "work_items": []},
+            {"rule_id": 2, "rule": "RULE_TWO", "work_items": []},
+        ),
+    )
+    assert "rules" not in database.values[publisher.RULE_STATUS_KEY]
+    assert "DLDD_RULE_STATUS|rule|RULE_TWO" in database.values
+    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" in database.values
+
+    publisher.publish_rule_status(
+        "sha256:second",
+        ({"rule_id": 1, "rule": "RULE_ONE", "work_items": []},),
+    )
+    assert json.loads(
+        database.values[publisher.RULE_STATUS_KEY]["rule_keys"]
+    ) == ["DLDD_RULE_STATUS|rule|RULE_ONE"]
+    assert "DLDD_RULE_STATUS|rule|RULE_TWO" not in database.values
+    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" not in database.values
+
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    assert publisher.publish_rule_status(
+        "sha256:test",
+        ({"rule_id": 1, "rule": "active", "work_items": []},),
+    )
+    assert publisher.RULE_STATUS_KEY in database.values
+    assert "DLDD_RULE_STATUS|rule|active" in database.values
+    assert json.loads(
+        database.values[publisher.RULE_STATUS_KEY]["rule_keys"]
+    ) == ["DLDD_RULE_STATUS|rule|active"]
 
 
 def test_publications_floor_timestamps_and_preserve_duration_precision():
@@ -251,54 +367,7 @@ def test_publications_floor_timestamps_and_preserve_duration_precision():
     assert json.loads(published_fault["local_action_state"])["completed_at"] == 113
 
 
-def test_rule_status_replaces_index_and_removes_stale_rule_keys():
-    database = FakeStateDB()
-    publisher = TelemetryPublisher(database, DLDDConfig())
-    database.hset(
-        publisher.RULE_STATUS_KEY,
-        {"rules": [{"rule": "legacy-monolith"}]},
-    )
-    publisher.publish_rule_status(
-        "sha256:first",
-        (
-            {"rule_id": 1, "rule": "RULE_ONE", "work_items": []},
-            {"rule_id": 2, "rule": "RULE_TWO", "work_items": []},
-        ),
-    )
-
-    assert "rules" not in database.values[publisher.RULE_STATUS_KEY]
-    assert "DLDD_RULE_STATUS|rule|RULE_TWO" in database.values
-    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" in database.values
-
-    publisher.publish_rule_status(
-        "sha256:second",
-        ({"rule_id": 1, "rule": "RULE_ONE", "work_items": []},),
-    )
-
-    assert json.loads(
-        database.values[publisher.RULE_STATUS_KEY]["rule_keys"]
-    ) == ["DLDD_RULE_STATUS|rule|RULE_ONE"]
-    assert "DLDD_RULE_STATUS|rule|RULE_TWO" not in database.values
-    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" not in database.values
-
-
-def test_rule_named_active_cannot_collide_with_rule_index():
-    database = FakeStateDB()
-    publisher = TelemetryPublisher(database, DLDDConfig())
-
-    assert publisher.publish_rule_status(
-        "sha256:test",
-        ({"rule_id": 1, "rule": "active", "work_items": []},),
-    )
-
-    assert publisher.RULE_STATUS_KEY in database.values
-    assert "DLDD_RULE_STATUS|rule|active" in database.values
-    assert json.loads(
-        database.values[publisher.RULE_STATUS_KEY]["rule_keys"]
-    ) == ["DLDD_RULE_STATUS|rule|active"]
-
-
-def test_active_fault_is_persistent_and_nested_fields_are_json():
+def test_fault_payload_identity_json_replacement_and_inactive_ttl_contract(caplog):
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
     record = fault()
@@ -309,10 +378,10 @@ def test_active_fault_is_persistent_and_nested_fields_are_json():
     assert payload["component_name"] == "PSU0"
     assert payload["component_serial_number"] == "serial"
     assert "component_info" not in payload
-    assert json.loads(database.values[record.redis_key]["repair_actions"])[0]["action"] == "ACTION_RESEAT"
+    assert json.loads(
+        database.values[record.redis_key]["repair_actions"]
+    )[0]["action"] == "ACTION_RESEAT"
 
-
-def test_vendor_component_and_remote_action_identities_are_preserved():
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
     record = fault()
@@ -330,8 +399,6 @@ def test_vendor_component_and_remote_action_identities_are_preserved():
         {"action": "vendor-healthz:ACTION_REPAIR_FABRIC_MODULE"}
     ]
 
-
-def test_fault_serial_can_be_supplied_by_platform_metadata_hook():
     database = FakeStateDB()
     publisher = TelemetryPublisher(
         database,
@@ -344,8 +411,31 @@ def test_fault_serial_can_be_supplied_by_platform_metadata_hook():
     assert payload["component_serial_number"] == "SERIAL-1"
     assert record.serial_number == "SERIAL-1"
 
+    database = FakeStateDB()
 
-def test_inactive_fault_gets_retention_ttl():
+    def fail_serial(component_type, component_name):
+        raise RuntimeError("inventory is unavailable")
+
+    publisher = TelemetryPublisher(
+        database, DLDDConfig(), serial_resolver=fail_serial
+    )
+    record = fault()
+
+    assert publisher.publish_fault(record)
+    assert database.values[record.redis_key]["component_serial_number"] == ""
+    assert "inventory is unavailable" in caplog.text
+
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    record = fault()
+    record.events = ({"id": 1, "value_read": b"\x00\xff"},)
+    assert publisher.publish_fault(record)
+    assert json.loads(database.values[record.redis_key]["events"])[0][
+        "value_read"
+    ] == [0, 255]
+
+
+    # Inactive publication applies retention and complete hash replacement.
     database = FakeStateDB()
     config = DLDDConfig(inactive_fault_retention_period=42)
     publisher = TelemetryPublisher(database, config)
@@ -353,8 +443,6 @@ def test_inactive_fault_gets_retention_ttl():
     publisher.publish_fault(record)
     assert database.ttls[record.redis_key] == 42
 
-
-def test_complete_fault_row_replacement_removes_stale_optional_fields():
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
     record = fault()
@@ -368,18 +456,7 @@ def test_complete_fault_row_replacement_removes_stale_optional_fields():
     assert database.delete_calls == 0
 
 
-def test_nested_byte_evidence_is_json_safe():
-    database = FakeStateDB()
-    publisher = TelemetryPublisher(database, DLDDConfig())
-    record = fault()
-    record.events = ({"id": 1, "value_read": b"\x00\xff"},)
-    assert publisher.publish_fault(record)
-    assert json.loads(database.values[record.redis_key]["events"])[0][
-        "value_read"
-    ] == [0, 255]
-
-
-def test_production_hash_replacement_never_deletes_whole_fault_key():
+def test_production_state_db_hash_replacement_and_transaction_contract():
     client = RecordingRedisClient((b"status", b"healthz_artifact"))
     database = SonicStateDB(client)
     database.replace_hash("FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None)
@@ -388,8 +465,117 @@ def test_production_hash_replacement_never_deletes_whole_fault_key():
     assert names == ["hset", "hdel", "persist", "execute"]
     assert "delete" not in names
 
+    client = RecordingRedisClient((b"status",))
+    database = SonicStateDB(client)
 
-def test_sonic_hash_reader_connects_lazily_once_per_database():
+    database.replace_hash("KEY", {"status": "ACTIVE"}, None)
+
+    assert client.transaction.operations == [
+        ("hset", "KEY", {"status": "ACTIVE"}),
+        ("persist", "KEY"),
+        ("execute",),
+    ]
+
+    client = RecordingRedisClient((b"status", b"healthz_artifact"))
+    database = SonicStateDB(client)
+    database.replace_hash(
+        "FAULT_INFO|PSU0|SYMPTOM", {"status": "INACTIVE"}, 42
+    )
+    assert client.transaction.operations == [
+        ("hset", "FAULT_INFO|PSU0|SYMPTOM", {"status": "INACTIVE"}),
+        ("hdel", "FAULT_INFO|PSU0|SYMPTOM", ("healthz_artifact",)),
+        ("expire", "FAULT_INFO|PSU0|SYMPTOM", 42),
+        ("execute",),
+    ]
+
+
+    # Direct operations and pipelines share the same Redis boundary.
+    client = RecordingRedisClient()
+    database = SonicStateDB(client)
+
+    database.hset("KEY", {"enabled": True, "items": [1, 2]})
+    database.expire("KEY", 10)
+    database.persist("KEY")
+    database.hdel("KEY", ())
+    database.hdel("KEY", ("old",))
+    assert database.hgetall("KEY") == {b"status": b"ACTIVE"}
+    database.delete("KEY")
+    database.delete_many(())
+
+    assert client.direct == [
+        ("hset", "KEY", {"enabled": "true", "items": "[1,2]"}),
+        ("expire", "KEY", 10),
+        ("persist", "KEY"),
+        ("hdel", "KEY", ("old",)),
+        ("hgetall", "KEY"),
+    ]
+    assert client.deleted == [("KEY",)]
+
+    client = RecordingRedisClient()
+    database = SonicStateDB(client)
+    database.hset_with_ttl("DLDD_STATUS|process_state", {"state": "OK"}, 120)
+    assert client.transaction.operations == [
+        ("hset", "DLDD_STATUS|process_state", {"state": "OK"}),
+        ("expire", "DLDD_STATUS|process_state", 120),
+        ("execute",),
+    ]
+
+    database.delete_many(
+        ("DLDD_STATUS|process_state", "DLDD_RULE_STATUS|active")
+    )
+    assert client.deleted == [
+        ("DLDD_STATUS|process_state", "DLDD_RULE_STATUS|active")
+    ]
+
+
+def test_production_state_db_endpoint_dependency_and_hash_reader_contract(
+    monkeypatch,
+):
+    for socket_path, expected in (
+        ("/var/run/redis.sock", {"unix_socket_path": "/var/run/redis.sock", "db": 6}),
+        ("", {"host": "127.0.0.1", "port": 6379, "db": 6}),
+    ):
+        clients = []
+
+        class RedisFactory(object):
+            def __new__(cls, **kwargs):
+                clients.append(kwargs)
+                return RecordingRedisClient()
+
+        redis_module = ModuleType("redis")
+        redis_module.Redis = RedisFactory
+        swss = SimpleNamespace(
+            SonicDBKey=type("SonicDBKey", (), {}),
+            SonicDBConfig=SimpleNamespace(
+                getDbId=lambda database, key: 6,
+                getDbSock=lambda database, key: socket_path,
+                getDbHostname=lambda database, key: "127.0.0.1",
+                getDbPort=lambda database, key: 6379,
+            ),
+        )
+        swss_package = ModuleType("swsscommon")
+        swss_package.swsscommon = swss
+        monkeypatch.setitem(sys.modules, "redis", redis_module)
+        monkeypatch.setitem(sys.modules, "swsscommon", swss_package)
+
+        database = SonicStateDB()
+        database.hset("KEY", {"status": "ACTIVE"})
+
+        assert clients == [expected]
+
+    original_import = builtins.__import__
+
+    def missing_dependencies(name, *args, **kwargs):
+        if name in ("redis", "swsscommon"):
+            raise ImportError("not installed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_dependencies)
+    with pytest.raises(RuntimeError, match="STATE_DB dependencies are unavailable"):
+        SonicStateDB()._db()
+
+
+    # Hash reads connect lazily once per database and may be shared by StateDB.
     connector = RecordingSonicConnector()
     reader = SonicHashReader(connector=connector)
 
@@ -408,8 +594,6 @@ def test_sonic_hash_reader_connects_lazily_once_per_database():
         ("APPL_DB", "TABLE|KEY"),
     ]
 
-
-def test_state_db_can_share_the_read_only_hash_reader():
     connector = RecordingSonicConnector()
     database = SonicStateDB(
         redis_client=RecordingRedisClient(),
@@ -422,47 +606,7 @@ def test_state_db_can_share_the_read_only_hash_reader():
     assert connector.connections == [("STATE_DB", False)]
 
 
-def test_production_status_write_sets_ttl_in_one_transaction():
-    client = RecordingRedisClient()
-    database = SonicStateDB(client)
-
-    database.hset_with_ttl("DLDD_STATUS|process_state", {"state": "OK"}, 120)
-
-    assert client.transaction.operations == [
-        ("hset", "DLDD_STATUS|process_state", {"state": "OK"}),
-        ("expire", "DLDD_STATUS|process_state", 120),
-        ("execute",),
-    ]
-
-
-def test_production_bulk_delete_uses_one_redis_operation():
-    client = RecordingRedisClient()
-    database = SonicStateDB(client)
-
-    database.delete_many(("DLDD_STATUS|process_state", "DLDD_RULE_STATUS|active"))
-
-    assert client.deleted == [
-        ("DLDD_STATUS|process_state", "DLDD_RULE_STATUS|active")
-    ]
-
-
-def test_production_inactive_fault_replacement_sets_retention_ttl():
-    client = RecordingRedisClient((b"status", b"healthz_artifact"))
-    database = SonicStateDB(client)
-
-    database.replace_hash(
-        "FAULT_INFO|PSU0|SYMPTOM", {"status": "INACTIVE"}, 42
-    )
-
-    assert client.transaction.operations == [
-        ("hset", "FAULT_INFO|PSU0|SYMPTOM", {"status": "INACTIVE"}),
-        ("hdel", "FAULT_INFO|PSU0|SYMPTOM", ("healthz_artifact",)),
-        ("expire", "FAULT_INFO|PSU0|SYMPTOM", 42),
-        ("execute",),
-    ]
-
-
-def test_production_fault_scan_uses_nonblocking_iterator():
+def test_fault_scan_iteration_failure_and_malformed_payload_contract():
     client = RecordingRedisClient()
     database = SonicStateDB(client)
 
@@ -472,13 +616,94 @@ def test_production_fault_scan_uses_nonblocking_iterator():
     assert client.scan_pattern == "FAULT_INFO|*"
 
 
-def test_fault_key_escapes_redis_separator_reversibly():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    database.fail_reads_with(RuntimeError("scan failed"))
+    with pytest.raises(RuntimeError, match="scan failed"):
+        list(publisher.read_faults())
+
+    class PartialReadDatabase(FakeStateDB):
+        def keys(self, pattern):
+            # A later row failure must abort the whole snapshot even after a
+            # valid row was decoded.
+            return [b"FAULT_INFO|GOOD", b"FAULT_INFO|BAD"]
+
+        def hgetall(self, key):
+            if key == "FAULT_INFO|BAD":
+                raise RuntimeError("row failed")
+            return {
+                b"status": b"ACTIVE",
+                b"events": b"not-json",
+                b"local_action_state": b'{"state":"IDLE"}',
+            }
+
+    with pytest.raises(RuntimeError, match="row failed"):
+        list(
+            TelemetryPublisher(
+                PartialReadDatabase(), DLDDConfig()
+            ).read_faults()
+        )
+
+
+    class MalformedPayloadDatabase(FakeStateDB):
+        def keys(self, pattern):
+            assert pattern == "FAULT_INFO|*"
+            return [b"FAULT_INFO|SENSOR0|SYMPTOM_UNKNOWN"]
+
+        def hgetall(self, key):
+            assert key == "FAULT_INFO|SENSOR0|SYMPTOM_UNKNOWN"
+            return {
+                b"producer": b"dldd",
+                b"status": b"ACTIVE",
+                b"events": b"not-json",
+                b"local_action_state": b'{"state":"IDLE"}',
+            }
+
+    rows = list(
+        TelemetryPublisher(
+            MalformedPayloadDatabase(), DLDDConfig()
+        ).read_faults()
+    )
+
+    assert rows == [
+        {
+            "producer": "dldd",
+            "status": "ACTIVE",
+            "events": "not-json",
+            "local_action_state": {"state": "IDLE"},
+            "redis_key": "FAULT_INFO|SENSOR0|SYMPTOM_UNKNOWN",
+        }
+    ]
+
+
+    database = FakeStateDB()
+    database.hset(
+        "FAULT_INFO|BAD|SYMPTOM_UNKNOWN",
+        {
+            "status": "ACTIVE",
+            "events": "not-json",
+            "local_action_state": '{"state":"IDLE"}',
+        },
+    )
+
+    rows = list(TelemetryPublisher(database, DLDDConfig()).read_faults())
+
+    assert rows == [
+        {
+            "status": "ACTIVE",
+            "events": "not-json",
+            "local_action_state": {"state": "IDLE"},
+            "redis_key": "FAULT_INFO|BAD|SYMPTOM_UNKNOWN",
+        }
+    ]
+
+
     record = fault()
     record.component_name = "PSU|0"
     assert record.redis_key == "FAULT_INFO|PSU%7C0|SYMPTOM_OVER_THRESHOLD"
 
 
-def test_startup_reconciliation_schedules_current_fault_recheck():
+def test_active_fault_reconciliation_recheck_and_timeout_contract():
     database = FakeStateDB()
     config = DLDDConfig()
     publisher = TelemetryPublisher(database, config)
@@ -505,8 +730,6 @@ def test_startup_reconciliation_schedules_current_fault_recheck():
     command = bundle.monitor_plans["redis"].control_queue.get_nowait()
     assert command.command.value == "RECHECK_ONCE"
 
-
-def test_reconciliation_timeout_restores_active_fault_to_arbiter():
     database = FakeStateDB()
     config = DLDDConfig(fault_evidence_ack_timeout=1)
     publisher = TelemetryPublisher(database, config)
@@ -542,13 +765,14 @@ def test_reconciliation_timeout_restores_active_fault_to_arbiter():
     assert orchestrator.faults[(1000001, "PSU")].stale_source is True
 
 
-def test_startup_loads_retained_inactive_occurrence_history_without_recheck():
+def test_inactive_fault_reconciliation_history_and_config_ttl_contract():
     database = FakeStateDB()
     config = DLDDConfig()
     publisher = TelemetryPublisher(database, config)
     record = fault("INACTIVE")
     record.component_name = "PSU"
     record.occurrences = 4
+    record.reason = "authoritative DSE discovery removed the instance"
     publisher.publish_fault(record)
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
@@ -571,10 +795,9 @@ def test_startup_loads_retained_inactive_occurrence_history_without_recheck():
     loaded = orchestrator.faults[(1000001, "PSU")]
     assert loaded.status == "INACTIVE"
     assert loaded.occurrences == 4
+    assert loaded.reason == "authoritative DSE discovery removed the instance"
     assert bundle.monitor_plans["redis"].control_queue.empty()
 
-
-def test_primary_owned_config_update_refreshes_inactive_fault_ttl():
     database = FakeStateDB()
     initial = DLDDConfig(inactive_fault_retention_period=3600)
     publisher = TelemetryPublisher(database, initial)
@@ -597,7 +820,9 @@ def test_primary_owned_config_update_refreshes_inactive_fault_ttl():
     record.component_name = "PSU"
     identity = (record.rule_id, record.component_name)
     orchestrator.faults[identity] = record
-    orchestrator.published_by_key[(record.component_name, record.symptom)] = record.rule_id
+    orchestrator.published_by_key[
+        (record.component_name, record.symptom)
+    ] = record.rule_id
     publisher.publish_fault(record)
 
     updated = DLDDConfig(inactive_fault_retention_period=42)

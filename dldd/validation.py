@@ -5,9 +5,9 @@ from __future__ import absolute_import
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field, replace
 import json
+import logging
 import math
 import os
-import re
 from typing import Mapping, Optional
 
 from pydantic import ValidationError
@@ -21,7 +21,6 @@ from .dse import (
     DSEContext,
     DSEError,
     DSEEvaluationHandle,
-    DSEReferenceError,
     DSERegistry,
     DSESourceHandle,
     EMPTY_DSE_REGISTRY,
@@ -60,6 +59,8 @@ from .rule_schema.errors import (
 
 SUPPORTED_SCHEMA_VERSIONS = frozenset(DEFAULT_CONTRACT_REGISTRY.versions)
 
+LOGGER = logging.getLogger(__name__)
+
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 MAX_DOCUMENT_DEPTH = 64
 MAX_DOCUMENT_NODES = 100000
@@ -73,19 +74,16 @@ MAX_SERIALIZED_DIAGNOSTIC_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_MESSAGE_BYTES = 1024
 MAX_DIAGNOSTIC_PATH_BYTES = 2048
 MAX_DIAGNOSTIC_IDENTITY_BYTES = 256
-_HEX = re.compile(r"^0x[0-9A-Fa-f]+$")
-
-
 class CompatibilityMatcher(object, metaclass=ABCMeta):
     """Platform-owned matching contract for product and software versions."""
 
     @abstractmethod
     def product_matches(self, current_product, supported_products):
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def software_matches(self, current_version, supported_versions):
-        pass
+        raise NotImplementedError
 
 
 class ExactCompatibilityMatcher(CompatibilityMatcher):
@@ -275,41 +273,29 @@ def _build_source_lines(root_node):
 
     lines = {}
 
-    def visit(node, path, ancestors):
+    def visit(node, path):
         if node is None:
             return
-        mark = getattr(node, "start_mark", None)
-        if mark is not None:
-            lines.setdefault(path, mark.line + 1)
-        identity = id(node)
-        if identity in ancestors:
-            return
-        nested = ancestors | {identity}
-        if yaml is not None and isinstance(node, yaml.nodes.MappingNode):
+        lines.setdefault(path, node.start_mark.line + 1)
+        if isinstance(node, yaml.nodes.MappingNode):
             for key_node, value_node in node.value:
                 key = str(getattr(key_node, "value", ""))
                 if (
                     isinstance(key_node, yaml.nodes.ScalarNode)
                     and key_node.tag != "tag:yaml.org,2002:str"
                 ):
-                    try:
-                        key = yaml.safe_load(key_node.value)
-                    except (TypeError, ValueError, yaml.YAMLError):
-                        pass
+                    key = yaml.safe_load(key_node.value)
                 child_path = append_path_component(path, key)
-                key_mark = getattr(key_node, "start_mark", None)
-                if key_mark is not None:
-                    lines[child_path] = key_mark.line + 1
-                visit(value_node, child_path, nested)
-        elif yaml is not None and isinstance(node, yaml.nodes.SequenceNode):
+                lines[child_path] = key_node.start_mark.line + 1
+                visit(value_node, child_path)
+        elif isinstance(node, yaml.nodes.SequenceNode):
             for index, item_node in enumerate(node.value):
                 visit(
                     item_node,
                     append_path_component(path, index),
-                    nested,
                 )
 
-    visit(root_node, "$", set())
+    visit(root_node, "$")
     return lines
 
 
@@ -338,181 +324,8 @@ def _is_rule_id(value):
     return _is_int(value) and 1_000_000 <= value <= 9_999_999
 
 
-def _is_number(value):
-    return (isinstance(value, (int, float)) and not isinstance(value, bool))
-
-
 def _issue(issues, code, message, path):
     issues.append((code, message, path))
-
-
-def _require_mapping(value, issues, path):
-    if not isinstance(value, Mapping):
-        _issue(issues, "invalid_type", "must be an object", path)
-        return None
-    return value
-
-
-def _require_string(mapping, key, issues, path, nonempty=True):
-    value = mapping.get(key)
-    field_path = "{}.{}".format(path, key)
-    if not isinstance(value, str):
-        _issue(issues, "invalid_type", "must be a string", field_path)
-        return None
-    if nonempty and not value:
-        _issue(issues, "invalid_value", "must not be empty", field_path)
-        return None
-    return value
-
-
-def _require_integer(mapping, key, issues, path, minimum=None, maximum=None):
-    value = mapping.get(key)
-    field_path = "{}.{}".format(path, key)
-    if not _is_int(value):
-        _issue(issues, "invalid_type", "must be an integer", field_path)
-        return None
-    if minimum is not None and value < minimum:
-        _issue(
-            issues,
-            "out_of_range",
-            "must be at least {}".format(minimum),
-            field_path,
-        )
-    if maximum is not None and value > maximum:
-        _issue(
-            issues,
-            "out_of_range",
-            "must be at most {}".format(maximum),
-            field_path,
-        )
-    return value
-
-
-def _validate_dse_reference(value, issues, path):
-    if not isinstance(value, str) or not value:
-        return
-    try:
-        parse_reference(value)
-    except DSEReferenceError as error:
-        _issue(issues, "invalid_dse_reference", str(error), path)
-
-
-def _validate_i2c_path(value, issues, path, monitoring=True):
-    target = _require_mapping(value, issues, path)
-    if target is None:
-        return
-    bus = target.get("bus")
-    if not (
-        (isinstance(bus, str) and bus)
-        or (
-            isinstance(bus, (list, tuple))
-            and bool(bus)
-            and all(isinstance(item, str) and item for item in bus)
-        )
-    ):
-        _issue(issues, "invalid_i2c_bus", "must be a string or non-empty string list", path + ".bus")
-    for key in ("chip_addr", "command"):
-        item = _require_string(target, key, issues, path)
-        if item is not None and _HEX.match(item) is None:
-            _issue(issues, "invalid_hex", "must use 0x hexadecimal notation", path + "." + key)
-    operation = _require_string(target, "i2c_type", issues, path)
-    permitted = ("get",) if monitoring else ("get", "set")
-    if operation is not None and operation not in permitted:
-        _issue(issues, "invalid_i2c_operation", "must be one of {}".format(permitted), path + ".i2c_type")
-    size = _require_string(target, "size", issues, path)
-    if size is not None and size not in ("b", "w", "l"):
-        _issue(issues, "invalid_i2c_size", "must be 'b', 'w', or 'l'", path + ".size")
-    if not monitoring and operation == "set" and "value" not in target:
-        _issue(issues, "missing_field", "set actions require a value", path + ".value")
-
-
-def _validate_argv(value, issues, path):
-    # Parsed rule documents contain lists.  Frozen Event/ResolvedSource models
-    # deliberately convert them to tuples before materialization revalidates a
-    # resolved source, so both sequence representations are valid here.
-    if not isinstance(value, (list, tuple)) or not value:
-        _issue(issues, "invalid_argv", "must be a non-empty argv list", path)
-        return ()
-    result = []
-    for index, item in enumerate(value):
-        if not isinstance(item, str) or not item:
-            _issue(issues, "invalid_argv", "argv entries must be non-empty strings", "{}[{}]".format(path, index))
-        else:
-            result.append(item)
-    return tuple(result)
-
-
-def _validate_source_path(kind, value, instances, issues, path):
-    if kind == "i2c":
-        _validate_i2c_path(value, issues, path, monitoring=True)
-        if (
-            isinstance(value, Mapping)
-            and isinstance(value.get("bus"), (list, tuple))
-            and not instances
-        ):
-            _issue(
-                issues,
-                "instance_path_mismatch",
-                "list-valued I2C bus requires positional instances",
-                path + ".bus",
-            )
-    elif kind == "redis":
-        source = _require_mapping(value, issues, path)
-        if source is not None:
-            for key in ("database", "table", "key", "path"):
-                _require_string(source, key, issues, path)
-    elif kind == "dse":
-        if not isinstance(value, str) or not value:
-            _issue(issues, "invalid_type", "DSE path must be a reference string", path)
-        else:
-            _validate_dse_reference(value, issues, path)
-    elif kind == "cli":
-        source = _require_mapping(value, issues, path)
-        if source is not None:
-            _validate_argv(source.get("argv"), issues, path + ".argv")
-            if "timeout" in source:
-                _require_integer(source, "timeout", issues, path, minimum=1)
-    elif kind in ("file", "sysfs"):
-        source = _require_mapping(value, issues, path)
-        if source is not None:
-            _require_string(source, "file", issues, path)
-            _require_string(source, "format", issues, path)
-            if "scaling" in source and not (
-                _is_number(source.get("scaling")) or source.get("scaling") == "N/A"
-            ):
-                _issue(issues, "invalid_type", "must be numeric or 'N/A'", path + ".scaling")
-            if "unit" in source and not isinstance(source.get("unit"), str):
-                _issue(issues, "invalid_type", "must be a string", path + ".unit")
-    elif kind == "platform_api":
-        if isinstance(value, Mapping):
-            _require_string(value, "hook", issues, path)
-        elif isinstance(value, str) and value:
-            _validate_dse_reference(value, issues, path)
-        else:
-            _issue(
-                issues,
-                "invalid_platform_api_path",
-                "must be a DSE reference string or an object with a hook",
-                path,
-            )
-    elif kind is not None:
-        event_path = path.rsplit(".", 1)[0]
-        _issue(
-            issues,
-            "unsupported_event_type",
-            "unsupported event type",
-            event_path + ".type",
-        )
-
-    if instances and isinstance(value, Mapping):
-        for key, item in value.items():
-            if isinstance(item, list) and key != "argv" and len(item) != len(instances):
-                _issue(
-                    issues,
-                    "instance_path_mismatch",
-                    "list-valued path field must match instances length",
-                    "{}.{}".format(path, key),
-                )
 
 
 def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
@@ -589,22 +402,15 @@ def _bounded_raw_issue(issue):
     )
 
 
-def _raw_issue_size(issue, identity=None):
+def _raw_issue_size(issue):
     code, message, path = issue
     payload = {
-        "scope": "rule" if identity is not None else "file",
+        "scope": "file",
         "code": code,
         "message": message,
         "path": path,
         "line": None,
     }
-    if identity is not None:
-        payload.update(
-            {
-                "rule_name": identity[0],
-                "rule_id": identity[1],
-            }
-        )
     return len(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8", "replace"
@@ -805,21 +611,26 @@ def _context_for(signature, context, event_id=None):
 
 
 def _direct_sources(event):
+    """Expand one Pydantic-validated direct event into source bindings.
+
+    Every installed direct event contract has a mapping path. DSE references
+    and the string form of Platform API paths are dispatched by
+    :func:`materialize_signature` before this helper is called.
+    """
+
     if not event.instances:
         return (ResolvedSource(type=event.type, path=event.path),)
     result = []
     for index, binding in enumerate(event.instances):
         instance, path_identifier = binding.split(":", 1)
-        path = event.path
-        if isinstance(path, Mapping):
-            path = {
-                key: (
-                    item[index]
-                    if isinstance(item, tuple) and key != "argv"
-                    else item
-                )
-                for key, item in path.items()
-            }
+        path = {
+            key: (
+                item[index]
+                if isinstance(item, tuple) and key != "argv"
+                else item
+            )
+            for key, item in event.path.items()
+        }
         vendor_data = (
             {"path_identifier": path_identifier} if path_identifier else {}
         )
@@ -862,9 +673,11 @@ def materialize_signature(signature, context=None):
     for event in signature.conditions.events:
         dse_context = _context_for(signature, context, event.id)
         dse_source_handle = None
+        dse_source_reference = None
         if event.type == "dse" or (
             event.type == "platform_api" and isinstance(event.path, str)
         ):
+            dse_source_reference = parse_reference(event.path)
             resolved_source = registry.resolve_source(event.path, dse_context)
             if isinstance(resolved_source, DSESourceHandle):
                 dse_source_handle = resolved_source
@@ -881,6 +694,23 @@ def materialize_signature(signature, context=None):
         materialized_event = event
         dse_evaluation_handle = None
         if event.evaluation.type == "dse":
+            dse_evaluation_reference = parse_reference(
+                event.evaluation.value
+            )
+            if (
+                dse_source_reference is not None
+                and dse_evaluation_reference.selector
+                != dse_source_reference.selector
+            ):
+                LOGGER.warning(
+                    "rule %r event %s explicitly maps DSE source selector "
+                    "%r to evaluation selector %r; allowing this unusual "
+                    "cross-selector mapping",
+                    signature.metadata.name,
+                    event.id,
+                    dse_source_reference.selector,
+                    dse_evaluation_reference.selector,
+                )
             resolved_evaluation = registry.resolve_evaluation(
                 event.evaluation.value,
                 dse_context,
@@ -888,33 +718,24 @@ def materialize_signature(signature, context=None):
             )
             if isinstance(resolved_evaluation, DSEEvaluationHandle):
                 dse_evaluation_handle = resolved_evaluation
-                evaluation_is_instanced = any(
-                    token in resolved_evaluation.reference.selector
-                    for token in ("*", "?")
-                )
-                if dse_source_handle is not None:
-                    source_is_instanced = any(
-                        token in dse_source_handle.reference.selector
+                if (
+                    dse_source_reference is None
+                    and any(
+                        token in resolved_evaluation.reference.selector
                         for token in ("*", "?")
                     )
-                    if evaluation_is_instanced and not source_is_instanced:
-                        raise DSEError(
-                            "an instanced DSE evaluator requires an instanced source"
-                        )
-                    if (
-                        evaluation_is_instanced
-                        and resolved_evaluation.reference.selector
-                        != dse_source_handle.reference.selector
-                    ):
-                        raise DSEError(
-                            "instanced DSE source and evaluator selectors must match"
-                        )
-                elif evaluation_is_instanced and (
-                    not sources
-                    or any(source.instance is None for source in sources)
+                    and (
+                        not sources
+                        or any(source.instance is None for source in sources)
+                    )
                 ):
-                    raise DSEError(
-                        "an instanced DSE evaluator requires instanced source bindings"
+                    LOGGER.warning(
+                        "rule %r event %s applies instanced DSE evaluation "
+                        "selector %r to source bindings without explicit "
+                        "instances; allowing this unusual evaluator mapping",
+                        signature.metadata.name,
+                        event.id,
+                        resolved_evaluation.reference.selector,
                     )
             else:
                 value_configs = event.evaluation.value_configs
@@ -1217,8 +1038,6 @@ def _parse_error_line(error):
 
 def _parse_document_with_lines(source):
     text = _load_text(source)
-    if not isinstance(text, str):
-        raise TypeError("rules source must produce text")
     try:
         document = json.loads(
             text,

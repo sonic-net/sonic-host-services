@@ -6,6 +6,7 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
+from .planner import monitor_type_for_source
 from .rule_schema.errors import bound_diagnostic, bound_identity, bound_path
 from .timestamps import floor_timestamp_fields
 
@@ -40,7 +41,8 @@ def _monitor_indexes(monitors):
     plan_by_key = {}
     for monitor in tuple(monitors):
         plan = monitor.plan
-        for key, state in tuple(plan.state_by_key.items()):
+        _, states = plan.runtime_snapshot()
+        for key, state in states.items():
             state_by_key[key] = state
             plan_by_key[key] = plan
     return state_by_key, plan_by_key
@@ -122,7 +124,7 @@ def _work_item_detail(
     interval = (
         item.sampling_interval
         if item.sampling_interval_is_explicit or plan is None
-        else plan.polling_interval
+        else plan.polling_intervals[monitor_type_for_source(item.source_type)]
     )
     next_due = None
     if state is not None and state.next_sample_due is not None:

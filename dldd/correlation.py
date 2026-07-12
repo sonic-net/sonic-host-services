@@ -85,6 +85,11 @@ class CorrelationEngine:
         execution = self.executions.get(identity)
         if execution is None:
             return
+        # Inventory removal invalidates this event's sampled truth.  Keeping
+        # it would let a rediscovered instance combine new evidence with stale
+        # pre-removal history.
+        self._events.pop((item.rule_id, item.component_name, item.event_id), None)
+        self._active.pop(identity, None)
         event_keys = {
             event_id: tuple(
                 key
@@ -204,6 +209,15 @@ class CorrelationEngine:
     def set_active(self, rule_id: int, component_name: str, active: bool) -> None:
         self._active[(rule_id, component_name)] = active
 
+    def retire(self, rule_id: int, component_name: str) -> None:
+        """Forget all correlation history for a removed runtime instance."""
+
+        identity = (rule_id, component_name)
+        self._active.pop(identity, None)
+        for key in tuple(self._events):
+            if key[:2] == identity:
+                self._events.pop(key, None)
+
     @staticmethod
     def _event_truth(state, definition, now: float) -> bool:
         if state is None or not any(state.matching_keys.values()):
@@ -299,6 +313,19 @@ class FaultArbiter:
         else:
             self._active.pop(identity, None)
             self._detected_at.pop(identity, None)
+        return self._winner(fault_key)
+
+    def retire(
+        self, rule_id: int, component_name: str, symptom: str
+    ) -> Optional[SignatureExecution]:
+        """Remove one execution whose runtime component no longer exists."""
+
+        identity = (component_name, symptom, rule_id)
+        self._active.pop(identity, None)
+        self._detected_at.pop(identity, None)
+        return self._winner((component_name, symptom))
+
+    def _winner(self, fault_key) -> Optional[SignatureExecution]:
         candidates = [
             (key, execution)
             for key, execution in self._active.items()

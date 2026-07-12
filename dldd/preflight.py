@@ -103,7 +103,11 @@ def preflight_activation(
                 ),
             )
 
-    for item in plan.work_items.values():
+    preflight_items = dict(plan.work_items)
+    for template in plan.templates.values():
+        for item in template.common_items:
+            preflight_items.setdefault(item.correlation_key, item)
+    for item in preflight_items.values():
         if item.rule_id in failures:
             continue
         try:

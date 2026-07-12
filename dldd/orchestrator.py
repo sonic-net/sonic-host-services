@@ -17,6 +17,7 @@ from .correlation import CorrelationDecision, CorrelationEngine, FaultArbiter, S
 from .monitor import command_for_plan
 from .ownership import is_dldd_fault_payload
 from .planner import monitor_type_for_source
+from .rule_schema.errors import bound_diagnostic
 from .runtime import (
     DSEExpansionEvent,
     EvaluationResultType,
@@ -103,6 +104,14 @@ class PrimaryOrchestrator:
             for plan in self.plans.values()
             for template in plan.templates_by_key.values()
         }
+        self._dse_template_ids_by_rule: Dict[int, Set[str]] = {}
+        for plan in self.plans.values():
+            for template_id, template in plan.templates_by_key.items():
+                self._dse_template_ids_by_rule.setdefault(
+                    template.item.rule_id, set()
+                ).add(template_id)
+        self._authoritative_dse_instances: Dict[str, Set[str]] = {}
+        self._dse_retirement_candidates: Set[Tuple[int, str]] = set()
         self.correlation = correlation
         self.telemetry = telemetry
         self.config = config
@@ -151,6 +160,7 @@ class PrimaryOrchestrator:
         if latest is None:
             return
         self.config = latest
+        self.telemetry.config = latest
         now = self.clock()
         for identity, deadline in list(self.next_active_recheck.items()):
             self.next_active_recheck[identity] = min(
@@ -163,6 +173,10 @@ class PrimaryOrchestrator:
                 )
         for identity, record in self.faults.items():
             if record.status == "INACTIVE":
+                record.inactive_deadline = (
+                    self.wall_clock()
+                    + latest.inactive_fault_retention_period
+                )
                 self._publish_fault_record(
                     identity, record, record.remote_action_time_window
                 )
@@ -213,21 +227,47 @@ class PrimaryOrchestrator:
             or event.plan_generation != plan.plan_generation
         ):
             raise ValueError("DSE expansion belongs to an unknown plan")
+        if event.removed_keys and not event.authoritative:
+            raise ValueError(
+                "non-authoritative DSE expansion cannot remove runtime instances"
+            )
+        if event.authoritative:
+            self._authoritative_dse_instances[event.template_id] = set(
+                event.present_instances
+            )
+            for component_name in event.present_instances:
+                self._dse_retirement_candidates.discard(
+                    (event.signature.metadata.id, component_name)
+                )
         added_identities = set()
         for item in event.added_items:
             self.work_items[item.correlation_key] = item
             self.correlation.register_work_item(
                 event.signature, item, event.plan_generation
             )
-            added_identities.add((item.rule_id, item.component_name))
+            identity = (item.rule_id, item.component_name)
+            added_identities.add(identity)
+            self._dse_retirement_candidates.discard(identity)
+        removed_identities = set()
         for key in event.removed_keys:
             item = self.work_items.pop(key, None)
             if item is None:
                 continue
+            identity = (item.rule_id, item.component_name)
+            removed_identities.add(identity)
+            self._dse_retirement_candidates.add(identity)
             self.correlation.unregister_work_item(item)
             self.broken_rules.pop(key, None)
-            self.source_status.pop(item.source_id, None)
-        for identity in added_identities:
+            self._forget_removed_work_state(key, item)
+        reconciliation_identities = set(added_identities)
+        if event.authoritative:
+            reconciliation_identities.update(
+                identity
+                for identity in self.pending_dynamic_faults
+                if identity[0] == event.signature.metadata.id
+                and identity[1] in event.present_instances
+            )
+        for identity in reconciliation_identities:
             record = self.pending_dynamic_faults.get(identity)
             execution = self.correlation.executions.get(identity)
             if (
@@ -241,14 +281,179 @@ class PrimaryOrchestrator:
             self._start_reconciliation(
                 execution, record, "runtime_expansion_fault_reconciliation"
             )
-            self.service_diagnostics.append(
+        if event.authoritative:
+            candidates = {
+                identity
+                for identity in self._dse_retirement_candidates
+                if identity[0] == event.signature.metadata.id
+            }
+            candidates.update(
+                identity
+                for identity in self.pending_dynamic_faults
+                if identity[0] == event.signature.metadata.id
+            )
+            candidates.update(removed_identities)
+            for identity in sorted(candidates):
+                self._retire_absent_dse_fault(identity, event)
+        if event.removed_keys:
+            self._refresh_fault_source_staleness()
+
+    def _forget_removed_work_state(self, key, item) -> None:
+        """Drop per-key failure state without erasing live source siblings."""
+
+        self._primary_processing_failures.pop(key, None)
+        failed_keys = self._source_failure_keys.get(item.source_id)
+        if failed_keys is not None:
+            failed_keys.discard(key)
+        suspended_keys = self._suspended_sources.get(item.source_id)
+        if suspended_keys is not None:
+            suspended_keys.discard(key)
+
+        if failed_keys:
+            current = dict(self.source_status.get(item.source_id, {}))
+            current["affected_rules"] = sorted(
                 {
-                    "reason": "dynamic_fault_reconciliation_started",
-                    "rule_id": identity[0],
-                    "component": identity[1],
-                    "observed_at": self.wall_clock(),
+                    self.work_items[failed_key].rule_id
+                    for failed_key in failed_keys
+                    if failed_key in self.work_items
                 }
             )
+            current["stale_faults"] = self._stale_fault_keys(failed_keys)
+            self.source_status[item.source_id] = current
+            if not suspended_keys:
+                self._suspended_sources.pop(item.source_id, None)
+            return
+
+        self._source_failure_keys.pop(item.source_id, None)
+        self._suspended_sources.pop(item.source_id, None)
+        self._source_unavailable_since.pop(item.source_id, None)
+        has_source_sibling = any(
+            sibling.source_id == item.source_id
+            for sibling in self.work_items.values()
+        )
+        if not has_source_sibling or self.source_status.get(
+            item.source_id, {}
+        ).get("state") != "RECOVERED":
+            self.source_status.pop(item.source_id, None)
+
+    def _retire_absent_dse_fault(
+        self,
+        identity: Tuple[int, str],
+        event: DSEExpansionEvent,
+    ) -> bool:
+        """Retain and clear a fault only after DSE proves its instance is gone."""
+
+        rule_id, component_name = identity
+        template_ids = self._dse_template_ids_by_rule.get(rule_id, set())
+        if not template_ids or any(
+            template_id not in self._authoritative_dse_instances
+            or component_name
+            in self._authoritative_dse_instances[template_id]
+            for template_id in template_ids
+        ):
+            return False
+
+        # Monitor children remain registered while any key is collecting,
+        # queued, held, or still owned by another template.  Waiting for the
+        # complete expanded identity to disappear prevents a partial removal
+        # from clearing a live fault.
+        removed_keys = frozenset(event.removed_keys)
+        if any(
+            key not in removed_keys
+            and item.rule_id == rule_id
+            and item.component_name == component_name
+            for plan in self.plans.values()
+            for key, item in plan.expanded_item_snapshot().items()
+        ):
+            return False
+        if identity in self.pending or identity in self.reconciliation:
+            return False
+
+        record = self.faults.get(identity)
+        static_keys = tuple(
+            key
+            for key, item in self.work_items.items()
+            if item.rule_id == rule_id
+            and item.component_name == component_name
+            and item.dse_binding is None
+        )
+        if static_keys:
+            # The component still has independently materialized direct work.
+            # Clear only the removed DSE event history and promptly re-evaluate
+            # the remaining expression instead of forcing the whole component
+            # inactive (for example, a DSE OR direct-Redis rule).
+            self.pending_dynamic_faults.pop(identity, None)
+            self._dse_retirement_candidates.discard(identity)
+            if record is not None and record.status == "ACTIVE":
+                self.uncertain_faults.add(identity)
+                self._start_reconciliation(
+                    self.correlation.executions[identity],
+                    record,
+                    "dse_removal_remaining_work_reconciliation",
+                )
+            return False
+
+        self.correlation.retire(rule_id, component_name)
+        symptom = (
+            record.symptom
+            if record is not None
+            else event.signature.metadata.symptom
+        )
+        winner = self.arbiter.retire(rule_id, component_name, symptom)
+        self.pending_dynamic_faults.pop(identity, None)
+        self.next_active_recheck.pop(identity, None)
+        self.uncertain_faults.discard(identity)
+        self._dse_retirement_candidates.discard(identity)
+        if record is None:
+            return True
+
+        reason = bound_diagnostic(
+            "authoritative DSE discovery no longer reports instance '{}'".format(
+                component_name
+            ),
+            512,
+        )
+        record.status = "INACTIVE"
+        record.reason = reason
+        record.last_detection_time = event.observed_at
+        record.inactive_deadline = (
+            event.observed_at + self.config.inactive_fault_retention_period
+        )
+        record.repair_actions = ()
+        record.stale_source = False
+
+        fault_key = (component_name, record.symptom)
+        owner = self.published_by_key.get(fault_key)
+        if owner is None:
+            self.published_by_key[fault_key] = rule_id
+            owner = rule_id
+        if owner == rule_id and winner is not None:
+            alternate_identity = (
+                winner.signature.metadata.id,
+                component_name,
+            )
+            alternate = self.faults.get(alternate_identity)
+            if alternate is not None and alternate.status == "ACTIVE":
+                alternate.origin_time = record.origin_time
+                alternate.occurrences = record.occurrences
+                self.published_by_key[fault_key] = alternate.rule_id
+                self._publish_fault_record(
+                    alternate_identity,
+                    alternate,
+                    self._remote_action_window(
+                        alternate_identity, alternate
+                    ),
+                )
+            else:
+                self._publish_fault_record(
+                    identity, record, record.remote_action_time_window
+                )
+        elif owner == rule_id:
+            self._publish_fault_record(
+                identity, record, record.remote_action_time_window
+            )
+
+        return True
 
     @staticmethod
     def _execution_has_all_events(execution: SignatureExecution) -> bool:
@@ -663,15 +868,19 @@ class PrimaryOrchestrator:
                 stale.append(fault.redis_key)
         return stale
 
-    def _source_outage_is_expected(
-        self, key: str, preserve_on_error: bool = False
-    ) -> bool:
+    def _source_outage_is_expected(self, key: str) -> bool:
         if self.source_lifecycle_probe is None:
             return False
         try:
             return bool(self.source_lifecycle_probe(self.work_items[key]))
-        except Exception:
-            return preserve_on_error
+        except Exception as error:
+            LOGGER.warning(
+                "source lifecycle probe failed for %s; treating source as "
+                "unavailable: %s",
+                self.work_items[key].component_name,
+                error,
+            )
+            return False
 
     def _recover_expected_source_suspensions(self) -> None:
         now = self.clock()
@@ -683,7 +892,7 @@ class PrimaryOrchestrator:
                 self._suspended_sources.pop(source_id, None)
                 continue
             if any(
-                self._source_outage_is_expected(key, preserve_on_error=True)
+                self._source_outage_is_expected(key)
                 for key in keys
             ):
                 continue
@@ -822,6 +1031,11 @@ class PrimaryOrchestrator:
             last_detection_time=observed_at,
             occurrences=occurrences,
             events=tuple(events),
+            inactive_deadline=(
+                observed_at + self.config.inactive_fault_retention_period
+                if status == "INACTIVE"
+                else None
+            ),
         )
 
     def _request_rechecks(
@@ -1132,10 +1346,21 @@ class PrimaryOrchestrator:
             if record.status != "ACTIVE":
                 # Retained inactive rows own occurrence history even if a new
                 # generation replaces the rule that originally produced them.
+                record.inactive_deadline = (
+                    record.last_detection_time
+                    + self.config.inactive_fault_retention_period
+                )
                 self.faults[identity] = record
                 self.published_by_key[
                     (record.component_name, record.symptom)
                 ] = record.rule_id
+                if pending_dynamic:
+                    # A current-generation dynamic component may have vanished
+                    # while DLDD was stopped.  Keep the retained history row,
+                    # but let the first complete authoritative inventory either
+                    # confirm the instance or refresh the row with the explicit
+                    # DSE-removal reason and normal inactive TTL.
+                    self._dse_retirement_candidates.add(identity)
                 continue
             if pending_dynamic:
                 # Runtime-expanded instances do not exist when startup fault
@@ -1148,22 +1373,18 @@ class PrimaryOrchestrator:
                 ] = record.rule_id
                 self.pending_dynamic_faults[identity] = record
                 self.uncertain_faults.add(identity)
-                self.service_diagnostics.append(
-                    {
-                        "reason": "dynamic_fault_waiting_for_expansion",
-                        "rule_id": identity[0],
-                        "component": identity[1],
-                        "observed_at": self.wall_clock(),
-                    }
-                )
                 continue
             if not current:
                 record.status = "INACTIVE"
                 record.repair_actions = ()
                 record.last_detection_time = self.wall_clock()
-                record.description = "{} [stale rule/source after DLDD restart]".format(
-                    record.description
-                ).strip()
+                record.inactive_deadline = (
+                    record.last_detection_time
+                    + self.config.inactive_fault_retention_period
+                )
+                record.reason = bound_diagnostic(
+                    "stale rule/source after DLDD restart", 512
+                )
                 self.faults[identity] = record
                 self.published_by_key[
                     (record.component_name, record.symptom)
@@ -1282,6 +1503,7 @@ class PrimaryOrchestrator:
             priority=int(payload.get("priority", 5)),
             error_type=str(payload.get("error_type", "")),
             description=str(payload.get("description", "")),
+            reason=str(payload.get("reason", "")),
             status=str(payload.get("status", "ACTIVE")),
             origin_time=float(payload.get("origin_time", time.time())),
             last_detection_time=float(payload.get("last_detection_time", time.time())),
@@ -1342,6 +1564,7 @@ class PrimaryOrchestrator:
         existing.priority = metadata.priority
         existing.error_type = metadata.error_type
         existing.description = metadata.description
+        existing.reason = ""
         preserve_action_history = (
             status == "INACTIVE"
             and existing.local_action_state not in ("", "IDLE")
@@ -1349,6 +1572,11 @@ class PrimaryOrchestrator:
             and not actions_taken
         )
         existing.status = status
+        existing.inactive_deadline = (
+            now + self.config.inactive_fault_retention_period
+            if status == "INACTIVE"
+            else None
+        )
         if state_changed:
             existing.last_detection_time = now
         if decision.event_snapshots:

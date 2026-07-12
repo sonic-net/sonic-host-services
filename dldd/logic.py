@@ -54,8 +54,6 @@ def _tokenize(expression):
     nesting = 0
     while position < len(expression):
         match = _TOKEN.match(expression, position)
-        if match is None:
-            raise LogicSyntaxError("invalid token at character {}".format(position))
         operator, number, left, right, invalid = match.groups()
         if invalid is not None:
             raise LogicSyntaxError(
@@ -67,9 +65,11 @@ def _tokenize(expression):
             try:
                 event_id = int(number)
             except ValueError:
+                # Python bounds decimal-to-integer conversion.  Keep that
+                # implementation detail behind the rules-language contract.
                 raise LogicSyntaxError(
                     "event ID is too large at character {}".format(position)
-                )
+                ) from None
             tokens.append((event_id, position))
         elif left is not None:
             nesting += 1
@@ -223,6 +223,4 @@ def evaluate_logic(expression, event_states):
             raise TypeError(
                 "unsupported logic expression node {!r}".format(node)
             )
-    if len(values) != 1:
-        raise TypeError("invalid logic expression tree")
     return values[0]

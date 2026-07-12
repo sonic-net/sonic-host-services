@@ -3,7 +3,7 @@ from __future__ import absolute_import
 from dldd.timestamps import floor_timestamp, floor_timestamp_fields
 
 
-def test_floor_timestamp_uses_mathematical_floor_for_finite_numbers():
+def test_timestamp_normalization_contract():
     assert floor_timestamp(1234.999) == 1234
     assert floor_timestamp(-1.001) == -2
     assert floor_timestamp(1234) == 1234
@@ -11,8 +11,6 @@ def test_floor_timestamp_uses_mathematical_floor_for_finite_numbers():
     assert floor_timestamp("1234.9") == "1234.9"
     assert floor_timestamp(float("inf")) == float("inf")
 
-
-def test_floor_timestamp_fields_is_recursive_and_preserves_durations():
     payload = {
         "timestamp": 100.9,
         "nested": {

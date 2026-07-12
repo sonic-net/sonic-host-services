@@ -2,20 +2,13 @@ from __future__ import absolute_import
 
 import json
 from datetime import date
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from dldd import cli as dldd_cli
 from dldd.validation import load_rules
-
-
-FIXTURE = Path(__file__).parent / "fixtures" / "valid-redis-rule.json"
-
-
-def _document():
-    return json.loads(FIXTURE.read_text())
+from tests.dldd_fakes import load_valid_rules_document as _document
 
 
 def _line_containing(text, value):
@@ -26,7 +19,9 @@ def _line_containing(text, value):
     )
 
 
-def test_json_nested_validation_issue_has_exact_source_line():
+def test_nested_json_yaml_and_vendor_issues_use_exact_source_lines():
+    """Resolve exact and nearest-parent lines across JSON and YAML paths."""
+
     document = _document()
     evaluation = document["signatures"][0]["signature"]["conditions"][
         "events"
@@ -43,8 +38,7 @@ def test_json_nested_validation_issue_has_exact_source_line():
 
     assert issue.line == _line_containing(source, '"operator": "bogus"')
 
-
-def test_yaml_missing_action_field_uses_nearest_parent_line():
+    # Missing YAML fields use the closest materialized parent line.
     yaml = pytest.importorskip("yaml")
     document = _document()
     del document["local_action_default_timeout"]
@@ -59,8 +53,7 @@ def test_yaml_missing_action_field_uses_nearest_parent_line():
 
     assert issue.line == _line_containing(source, "- action:")
 
-
-def test_yaml_exotic_vendor_key_has_exact_source_line():
+    # Exotic vendor keys retain their exact YAML line.
     yaml = pytest.importorskip("yaml")
     document = _document()
     action = document["signatures"][0]["signature"]["actions"][
@@ -85,9 +78,8 @@ def test_yaml_exotic_vendor_key_has_exact_source_line():
     assert issue.line == _line_containing(source, "x.y:")
 
 
-@pytest.mark.parametrize(
-    "source, expected_line",
-    (
+def test_parse_and_empty_file_errors_use_stable_source_lines():
+    for source, expected_line in (
         (
             "schema_version: '0.0.1'\n"
             "signatures:\n"
@@ -101,16 +93,12 @@ def test_yaml_exotic_vendor_key_has_exact_source_line():
             "}\n",
             4,
         ),
-    ),
-)
-def test_parse_error_has_source_line(source, expected_line):
-    result = load_rules(source)
+    ):
+        result = load_rules(source)
+        assert result.file_errors[0].code == "parse_error"
+        assert result.file_errors[0].line == expected_line
 
-    assert result.file_errors[0].code == "parse_error"
-    assert result.file_errors[0].line == expected_line
-
-
-def test_empty_source_uses_first_line_for_file_gate_error():
+    # An empty source reports its file gate at the first line.
     result = load_rules("")
 
     assert result.file_errors[0].code == "invalid_top_level"

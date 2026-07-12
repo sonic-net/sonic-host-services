@@ -8,6 +8,7 @@ import pytest
 from dldd.lifecycle import (
     BrokenRuleStateStore,
     CandidateValidation,
+    NoRulesAvailable,
     RuleGenerationManager,
     RulePaths,
     sha256_file,
@@ -26,6 +27,14 @@ def paths(tmp_path):
     )
 
 
+def case_paths(tmp_path, name):
+    """Create an isolated lifecycle layout for one scenario in a grouped test."""
+
+    root = tmp_path / name
+    root.mkdir()
+    return paths(root)
+
+
 def test_watcher_state_is_outside_remotely_writable_inbox(tmp_path):
     rule_paths = paths(tmp_path)
 
@@ -38,11 +47,17 @@ def test_watcher_state_is_outside_remotely_writable_inbox(tmp_path):
 def validator(path, _dse):
     content = open(path).read()
     valid = content != "invalid"
-    return CandidateValidation(valid, 1 if valid else 0, "0.0.1", errors=() if valid else ("invalid",), payload=content)
+    return CandidateValidation(
+        valid,
+        1 if valid else 0,
+        "0.0.1",
+        errors=() if valid else ("invalid",),
+        payload=content,
+    )
 
 
-def test_packaged_generation_is_atomically_promoted(tmp_path):
-    rule_paths = paths(tmp_path)
+def test_generation_promotion_fallback_and_history_contract(tmp_path):
+    rule_paths = case_paths(tmp_path, "packaged-promotion")
     with open(rule_paths.packaged, "w") as stream:
         stream.write("valid")
     result = RuleGenerationManager(
@@ -60,9 +75,7 @@ def test_packaged_generation_is_atomically_promoted(tmp_path):
     assert manifest["last_activation"]["at"] == 1234
     assert manifest["last_attempt"]["at"] == 1234
 
-
-def test_malformed_activation_manifest_is_treated_as_empty(tmp_path):
-    rule_paths = paths(tmp_path)
+    rule_paths = case_paths(tmp_path, "malformed-manifest")
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.packaged, "w") as stream:
         stream.write("valid")
@@ -78,9 +91,29 @@ def test_malformed_activation_manifest_is_treated_as_empty(tmp_path):
         manifest = json.load(stream)
     assert manifest["active_checksum"] == result.checksum
 
+    rule_paths = case_paths(tmp_path, "rollback")
+    os.makedirs(rule_paths.rules_dir)
+    previous = os.path.join(rule_paths.rules_dir, "dld_rules.1-previous.yaml")
+    with open(previous, "w") as stream:
+        stream.write("previous")
+    with open(rule_paths.active, "w") as stream:
+        stream.write("invalid")
+    with open(rule_paths.manifest, "w") as stream:
+        json.dump(
+            {
+                "platform_identity": "platform-v1",
+                "active_checksum": "sha256:bad",
+                "previous_active_generation_path": previous,
+            },
+            stream,
+        )
+    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
+    assert result.source == "previous_active"
+    assert result.fallback_used is True
+    assert open(rule_paths.active).read() == "previous"
 
-def test_invalid_inbox_does_not_displace_active_generation(tmp_path):
-    rule_paths = paths(tmp_path)
+
+    rule_paths = case_paths(tmp_path, "invalid-inbox")
     os.makedirs(os.path.dirname(rule_paths.inbox))
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.active, "w") as stream:
@@ -92,9 +125,7 @@ def test_invalid_inbox_does_not_displace_active_generation(tmp_path):
     assert result.fallback_used is False
     assert open(rule_paths.active).read() == "active"
 
-
-def test_candidate_validator_exception_falls_back_to_active_generation(tmp_path):
-    rule_paths = paths(tmp_path)
+    rule_paths = case_paths(tmp_path, "validator-exception")
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.packaged, "w") as stream:
         stream.write("raises")
@@ -114,9 +145,7 @@ def test_candidate_validator_exception_falls_back_to_active_generation(tmp_path)
     assert result.fallback_used is True
     assert open(rule_paths.active).read() == "active"
 
-
-def test_fallback_preserves_rejected_inbox_activation_attempt(tmp_path):
-    rule_paths = paths(tmp_path)
+    rule_paths = case_paths(tmp_path, "rejected-inbox-attempt")
     os.makedirs(os.path.dirname(rule_paths.inbox))
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.active, "w") as stream:
@@ -165,7 +194,6 @@ def test_fallback_preserves_rejected_inbox_activation_attempt(tmp_path):
     )
 
 
-def test_activation_attempt_history_is_bounded_to_recent_records(tmp_path):
     manager = RuleGenerationManager(paths(tmp_path), validator, "platform-v1")
     manifest = {}
 
@@ -180,8 +208,8 @@ def test_activation_attempt_history_is_bounded_to_recent_records(tmp_path):
     }
 
 
-def test_only_watcher_accepted_inbox_can_activate(tmp_path):
-    rule_paths = paths(tmp_path)
+def test_watcher_authorizes_an_immutable_settled_inbox(tmp_path):
+    rule_paths = case_paths(tmp_path, "watcher-accepted")
     os.makedirs(os.path.dirname(rule_paths.inbox))
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.active, "w") as stream:
@@ -194,9 +222,7 @@ def test_only_watcher_accepted_inbox_can_activate(tmp_path):
     assert result.source == "inbox"
     assert open(rule_paths.active).read() == "new"
 
-
-def test_inbox_is_promoted_from_the_immutable_validated_snapshot(tmp_path):
-    rule_paths = paths(tmp_path)
+    rule_paths = case_paths(tmp_path, "immutable-snapshot")
     os.makedirs(os.path.dirname(rule_paths.inbox))
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.inbox, "w") as stream:
@@ -221,9 +247,7 @@ def test_inbox_is_promoted_from_the_immutable_validated_snapshot(tmp_path):
     assert open(rule_paths.active).read() == "validated"
     assert result.checksum == sha256_file(rule_paths.active)
 
-
-def test_replaced_inbox_must_be_settled_by_watcher_before_activation(tmp_path):
-    rule_paths = paths(tmp_path)
+    rule_paths = case_paths(tmp_path, "replaced-inbox")
     os.makedirs(os.path.dirname(rule_paths.inbox))
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.inbox, "w") as stream:
@@ -249,36 +273,53 @@ def test_replaced_inbox_must_be_settled_by_watcher_before_activation(tmp_path):
     assert open(rule_paths.active).read() == "active"
 
 
-def test_previous_active_generation_is_a_rollback_candidate(tmp_path):
-    rule_paths = paths(tmp_path)
+def test_candidate_presence_errors_are_distinct_from_no_rules(tmp_path):
+    with pytest.raises(NoRulesAvailable, match="no rules candidates exist"):
+        RuleGenerationManager(
+            case_paths(tmp_path, "no-candidates"), validator, "platform-v1"
+        ).activate()
+
+    rule_paths = case_paths(tmp_path, "invalid-candidate")
+    os.makedirs(os.path.dirname(rule_paths.inbox))
     os.makedirs(rule_paths.rules_dir)
-    previous = os.path.join(rule_paths.rules_dir, "dld_rules.1-previous.yaml")
-    with open(previous, "w") as stream:
-        stream.write("previous")
-    with open(rule_paths.active, "w") as stream:
+    with open(rule_paths.active, "w", encoding="utf-8") as stream:
         stream.write("invalid")
-    with open(rule_paths.manifest, "w") as stream:
-        json.dump(
-            {
-                "platform_identity": "platform-v1",
-                "active_checksum": "sha256:bad",
-                "previous_active_generation_path": previous,
-            },
-            stream,
-        )
-    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
-    assert result.source == "previous_active"
-    assert result.fallback_used is True
-    assert open(rule_paths.active).read() == "previous"
+
+    def reject(unused_path, unused_dse):
+        return CandidateValidation(False, 0, errors=("invalid rules",))
+
+    with pytest.raises(RuntimeError, match="invalid rules") as error:
+        RuleGenerationManager(rule_paths, reject, "platform-v1").activate()
+
+    assert not isinstance(error.value, NoRulesAvailable)
+
+    for candidate_path in ("active", "inbox"):
+        for candidate_kind in ("directory", "broken_symlink"):
+            name = "{}-{}".format(candidate_path, candidate_kind)
+            rule_paths = case_paths(tmp_path, name)
+            os.makedirs(rule_paths.rules_dir)
+            path = getattr(rule_paths, candidate_path)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if candidate_kind == "directory":
+                os.makedirs(path)
+            else:
+                os.symlink(str(tmp_path / "missing-generation"), path)
+
+            with pytest.raises(
+                RuntimeError,
+                match="{} candidate is not a regular file".format(
+                    candidate_path
+                ),
+            ) as error:
+                RuleGenerationManager(
+                    rule_paths, validator, "platform-v1"
+                ).activate()
+
+            assert not isinstance(error.value, NoRulesAvailable), name
 
 
-def test_zero_candidates_is_fatal(tmp_path):
-    with pytest.raises(RuntimeError):
-        RuleGenerationManager(paths(tmp_path), validator, "platform-v1").activate()
-
-
-def test_watcher_requires_stability_and_restarts_once(tmp_path):
-    rule_paths = paths(tmp_path)
+def test_watcher_stability_state_and_restart_contract(tmp_path, monkeypatch):
+    rule_paths = case_paths(tmp_path, "stable-watcher")
     os.makedirs(os.path.dirname(rule_paths.inbox))
     with open(rule_paths.inbox, "w") as stream:
         stream.write("rules")
@@ -287,7 +328,7 @@ def test_watcher_requires_stability_and_restarts_once(tmp_path):
     watcher = RulesWatcher(
         rule_paths.inbox,
         rule_paths.lock,
-        str(tmp_path / "watch.json"),
+        str(tmp_path / "stable-watch.json"),
         settle_time=30,
         restart=lambda: restarts.append(True),
         clock=lambda: now[0],
@@ -297,12 +338,10 @@ def test_watcher_requires_stability_and_restarts_once(tmp_path):
     assert watcher.check_once() is True
     assert watcher.check_once() is False
     assert restarts == [True]
-    state = json.load(open(tmp_path / "watch.json"))
+    state = json.load(open(tmp_path / "stable-watch.json"))
     assert state["last_restart_requested_at"] == 131
 
-
-def test_watcher_replaces_malformed_state_with_observation(tmp_path):
-    rule_paths = paths(tmp_path)
+    rule_paths = case_paths(tmp_path, "malformed-watcher-state")
     os.makedirs(os.path.dirname(rule_paths.inbox))
     with open(rule_paths.inbox, "w") as stream:
         stream.write("rules")
@@ -322,23 +361,6 @@ def test_watcher_replaces_malformed_state_with_observation(tmp_path):
     assert state["observation"]["size"] == 5
     assert state["first_seen"] == 100.0
 
-
-def test_broken_rule_state_floors_external_timestamps(tmp_path, monkeypatch):
-    state_path = tmp_path / "state.json"
-    store = BrokenRuleStateStore(str(state_path))
-    monkeypatch.setattr("dldd.lifecycle.time.time", lambda: 200.9)
-
-    store.save(
-        "sha256:test",
-        ({"rule_id": 1, "last_attempt": 199.8},),
-    )
-
-    state = json.load(open(state_path))
-    assert state["updated_at"] == 200
-    assert state["broken_rules"][0]["last_attempt"] == 199
-
-
-def test_watcher_queues_restart_without_waiting_on_its_partof_unit(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "dldd.watcher.subprocess.run",
@@ -355,8 +377,22 @@ def test_watcher_queues_restart_without_waiting_on_its_partof_unit(monkeypatch):
     ]
 
 
-def test_non_object_broken_rule_state_is_ignored_with_diagnostic(tmp_path):
+def test_broken_rule_state_serialization_and_recovery_diagnostics(
+    tmp_path, monkeypatch
+):
     state_path = tmp_path / "state.json"
+    store = BrokenRuleStateStore(str(state_path))
+    monkeypatch.setattr("dldd.lifecycle.time.time", lambda: 200.9)
+
+    store.save(
+        "sha256:test",
+        ({"rule_id": 1, "last_attempt": 199.8},),
+    )
+
+    state = json.load(open(state_path))
+    assert state["updated_at"] == 200
+    assert state["broken_rules"][0]["last_attempt"] == 199
+
     state_path.write_text("[]")
 
     state = BrokenRuleStateStore(str(state_path)).load(
@@ -366,9 +402,6 @@ def test_non_object_broken_rule_state_is_ignored_with_diagnostic(tmp_path):
     assert state["broken_rules"] == []
     assert "root must be an object" in state["recovery_error"]
 
-
-def test_malformed_broken_rule_records_are_ignored_with_diagnostic(tmp_path):
-    state_path = tmp_path / "state.json"
     state_path.write_text(
         json.dumps(
             {

@@ -14,6 +14,7 @@ from .hooks import VendorHookError
 from .lifecycle import RulePaths
 from .platform import PlatformIdentity, detect_identity, load_extensions
 from .preflight import preflight_activation
+from .qualification import qualify_e2e
 from .reset import clear_runtime_state
 from .service import run_service
 from .telemetry import SonicStateDB
@@ -113,65 +114,81 @@ def validate_rules(args) -> int:
             failure.rule_id: (failure.code, failure.message)
             for failure in preflight.failures
         }
-        probe_results.extend(
-            {
+        for failure in preflight.failures:
+            failure_result = {
                 "correlation_key": failure.correlation_key,
                 "state": "FAILED",
                 "error": failure.message,
             }
-            for failure in preflight.failures
-        )
+            if args.mode == "e2e-execute":
+                failure_result.update(
+                    rule=failure.rule_name,
+                    rule_id=failure.rule_id,
+                    event_id=None,
+                    component=None,
+                    stage="preflight",
+                )
+            probe_results.append(failure_result)
         if args.mode in ("hardware-probe", "e2e-execute"):
             probe_failed = bool(preflight.failures)
-        for item in bundle.work_items.values():
-            if item.rule_id in invalid_rule_ids:
-                continue
-            try:
-                adapter = adapters[item.source_type]
-                if args.mode == "activation-dry-run":
-                    state = "VALID"
-                elif args.mode == "hardware-probe":
+        if args.mode == "e2e-execute":
+            qualification = qualify_e2e(
+                bundle, adapters, invalid_rule_ids
+            )
+            probe_results.extend(qualification.event_results)
+            payload["rule_results"] = list(qualification.rule_results)
+            probe_failed = probe_failed or qualification.failed
+        if args.mode == "activation-dry-run":
+            for item in bundle.work_items.values():
+                if item.rule_id not in invalid_rule_ids:
+                    probe_results.append(
+                        {
+                            "correlation_key": item.correlation_key,
+                            "state": "VALID",
+                        }
+                    )
+        elif args.mode == "hardware-probe":
+            for item in bundle.work_items.values():
+                if item.rule_id in invalid_rule_ids:
+                    continue
+                try:
+                    adapter = adapters[item.source_type]
                     adapter.get_value(item)
                     state = "AVAILABLE"
-                else:
-                    evaluated = adapter.collect(item)
-                    state = evaluated.result.value
-                    if state in ("SOURCE_UNAVAILABLE", "COLLECTION_ERROR", "EVALUATION_ERROR"):
-                        probe_failed = True
-                probe_results.append(
-                    {"correlation_key": item.correlation_key, "state": state}
-                )
-            except (ValueError, VendorHookError) as error:
-                if args.mode in ("hardware-probe", "e2e-execute"):
+                    probe_results.append(
+                        {
+                            "correlation_key": item.correlation_key,
+                            "state": state,
+                        }
+                    )
+                except (ValueError, VendorHookError) as error:
                     probe_failed = True
-                invalid_rule_ids.add(item.rule_id)
-                invalid_reasons.setdefault(
-                    item.rule_id,
-                    ("adapter_validation_failed", str(error)),
-                )
-                probe_results.append(
-                    {
-                        "correlation_key": item.correlation_key,
-                        "state": "FAILED",
-                        "error": str(error),
-                    }
-                )
-            except Exception as error:
-                if args.mode == "activation-dry-run":
-                    raise
-                probe_failed = True
-                invalid_rule_ids.add(item.rule_id)
-                invalid_reasons.setdefault(
-                    item.rule_id,
-                    ("adapter_probe_failed", str(error)),
-                )
-                probe_results.append(
-                    {
-                        "correlation_key": item.correlation_key,
-                        "state": "FAILED",
-                        "error": str(error),
-                    }
-                )
+                    invalid_rule_ids.add(item.rule_id)
+                    invalid_reasons.setdefault(
+                        item.rule_id,
+                        ("adapter_validation_failed", str(error)),
+                    )
+                    probe_results.append(
+                        {
+                            "correlation_key": item.correlation_key,
+                            "state": "FAILED",
+                            "error": str(error),
+                        }
+                    )
+                except Exception as error:
+                    probe_failed = True
+                    invalid_rule_ids.add(item.rule_id)
+                    invalid_reasons.setdefault(
+                        item.rule_id,
+                        ("adapter_probe_failed", str(error)),
+                    )
+                    probe_results.append(
+                        {
+                            "correlation_key": item.correlation_key,
+                            "state": "FAILED",
+                            "error": str(error),
+                        }
+                    )
         payload["probe_results"] = probe_results
         if invalid_rule_ids:
             invalid_rules = {
@@ -206,6 +223,14 @@ def validate_rules(args) -> int:
             payload["rule_level_result"] = (
                 "DEGRADED" if valid_rule_count else "FAILED"
             )
+    if args.mode == "e2e-execute":
+        payload["qualification_result"] = (
+            "PASSED"
+            if result.activation_valid
+            and valid_rule_count > 0
+            and not probe_failed
+            else "FAILED"
+        )
     if args.json:
         print(json.dumps(payload, sort_keys=True, indent=2))
     else:
@@ -230,7 +255,36 @@ def validate_rules(args) -> int:
             )
         print("File-level result: {}".format(payload["file_level_result"]))
         print("Rule-level result: {}".format(payload["rule_level_result"]))
-        if args.verbose:
+        if args.mode == "e2e-execute":
+            print(
+                "Qualification result: {}".format(
+                    payload["qualification_result"]
+                )
+            )
+            for probe in payload.get("probe_results", ()):
+                detail = probe.get("error") or probe.get("reason")
+                print(
+                    "  event {}:{}:{} [{}]: {}{}".format(
+                        probe.get("rule", "unknown"),
+                        probe.get("event_id", "-"),
+                        probe.get("component") or "unresolved",
+                        probe.get("stage", "execution"),
+                        probe["state"],
+                        " ({})".format(detail) if detail else "",
+                    )
+                )
+            for rule in payload.get("rule_results", ()):
+                detail = rule.get("reason")
+                print(
+                    "  rule {}:{} [{}]: {}{}".format(
+                        rule["rule"],
+                        rule.get("component") or "unresolved",
+                        rule["stage"],
+                        rule["state"],
+                        " ({})".format(detail) if detail else "",
+                    )
+                )
+        elif args.verbose:
             for rule in result.materialized_rules:
                 print(
                     "  materialized {} with {} event(s)".format(
@@ -334,6 +388,11 @@ def build_parser() -> argparse.ArgumentParser:
             "e2e-execute",
         ),
         default="activation-dry-run",
+        help=(
+            "validation strength; hardware-probe reads live sources and "
+            "e2e-execute expands DSE instances and performs one live, "
+            "non-remediating collection/comparison pass"
+        ),
     )
     return parser
 
@@ -346,8 +405,7 @@ def main(argv=None) -> int:
         return validate_rules(args)
     if args.command == "clear-state":
         return clear_state(args)
-    if args.command in (None, "run"):
-        run_service()
-        return 0
-    parser.error("unknown command")
-    return 2
+    # argparse rejects unknown subcommands, so the only remaining choices are
+    # the explicit ``run`` command and the backward-compatible empty command.
+    run_service()
+    return 0

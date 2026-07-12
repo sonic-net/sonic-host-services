@@ -7,12 +7,13 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from itertools import count
 from queue import Empty, Full, PriorityQueue, Queue
 from typing import Callable, Dict, Optional
 
 from .adapters import DataSourceAdapter
+from .planner import monitor_type_for_source, work_items_for_dse_expansion
 from .runtime import (
     EvaluationResult,
     EvaluationResultType,
@@ -25,7 +26,6 @@ from .runtime import (
     MonitorWorkStateRecord,
     RuleRuntimeStatus,
     SourceAvailability,
-    make_correlation_key,
 )
 
 
@@ -191,28 +191,29 @@ class MonitorThread(threading.Thread):
     def stop(self) -> None:
         self.stop_event.set()
 
-    def update_polling_interval(self, interval: float) -> None:
-        """Queue a monitor-default update for application by this thread."""
+    def update_polling_intervals(self, intervals) -> None:
+        """Queue all source defaults for atomic application by this thread."""
 
-        self.plan.queue_polling_interval_update(interval)
+        self.plan.queue_polling_interval_update(intervals)
 
     def drain_interval_update_queue(self) -> None:
         """Apply queued defaults while retaining sole ownership of cadence state."""
 
         while True:
             try:
-                interval = self.plan.interval_update_queue.get_nowait()
+                intervals = self.plan.interval_update_queue.get_nowait()
             except Empty:
                 return
             try:
-                self._apply_polling_interval(interval)
+                self._apply_polling_intervals(intervals)
             finally:
                 self.plan.interval_update_queue.task_done()
 
-    def _apply_polling_interval(self, interval: float) -> None:
-        interval = self.plan.validated_polling_interval(interval)
+    def _apply_polling_intervals(self, intervals) -> None:
+        intervals = self.plan.validated_polling_intervals(intervals)
         now = self.clock()
-        self.plan.polling_interval = interval
+        self.plan.polling_intervals = intervals
+        self.plan.polling_interval = intervals[self.plan.monitor_type]
         for key, item in self.plan.item_snapshot().items():
             if item.sampling_interval_is_explicit:
                 continue
@@ -220,9 +221,8 @@ class MonitorThread(threading.Thread):
             if state.next_sample_due is not None:
                 # A shorter default takes effect promptly. A longer default
                 # does not postpone work that was already scheduled sooner.
-                state.next_sample_due = min(
-                    state.next_sample_due, now + interval
-                )
+                interval = intervals[monitor_type_for_source(item.source_type)]
+                state.next_sample_due = min(state.next_sample_due, now + interval)
         self._refresh_next_poll(now)
 
     def run(self) -> None:
@@ -407,60 +407,6 @@ class MonitorThread(threading.Thread):
                 now,
             )
 
-    def _expanded_item(self, template, binding):
-        base = template.item
-        source_id = "dse:{}:{}".format(
-            template.source_handle.reference.canonical,
-            binding.source_id,
-        )
-        key = make_correlation_key(
-            base.rule_id,
-            base.event_id,
-            binding.instance,
-            base.symptom,
-            source_id,
-        )
-        config = binding.value_configs
-        value_config = (
-            base.value_config
-            if config.type == "N/A" and base.value_config.type != "N/A"
-            else config
-        )
-        source = dict(binding.data)
-        source["dse_reference"] = (
-            template.source_handle.reference.canonical
-        )
-        return replace(
-            base,
-            component_name=binding.instance,
-            correlation_key=key,
-            source_id=source_id,
-            source=source,
-            value_config=value_config,
-            dse_binding=binding,
-        )
-
-    def _common_items(self, template, binding):
-        """Clone common predicates for a newly discovered component instance."""
-
-        result = []
-        for item in template.common_items:
-            key = make_correlation_key(
-                item.rule_id,
-                item.event_id,
-                binding.instance,
-                item.symptom,
-                item.source_id,
-            )
-            result.append(
-                replace(
-                    item,
-                    component_name=binding.instance,
-                    correlation_key=key,
-                )
-            )
-        return tuple(result)
-
     def _warmup_keys(self, keys):
         return {
             key
@@ -476,11 +422,7 @@ class MonitorThread(threading.Thread):
         previous_phase = state.phase
         try:
             result = adapter.expand(template)
-            expanded = []
-            for binding in result.bindings:
-                expanded.append(self._expanded_item(template, binding))
-                expanded.extend(self._common_items(template, binding))
-            items = tuple(expanded)
+            items = work_items_for_dse_expansion(template, result)
         except Exception as error:
             state.last_error = str(error)
             state.next_expansion_due = now + policy.bootstrap_interval
@@ -533,7 +475,11 @@ class MonitorThread(threading.Thread):
                 if not (owners - {template_id}):
                     removed.append(key)
 
-        if added or removed:
+        # An authoritative result is also primary-thread evidence when its
+        # inventory is unchanged or empty.  Persisted DSE faults have no
+        # monitor child after restart, so the primary needs the complete
+        # instance snapshot to decide whether an old instance is truly gone.
+        if added or removed or result.authoritative:
             event = DSEExpansionEvent(
                 monitor_id=self.plan.monitor_id,
                 plan_generation=self.plan.plan_generation,
@@ -541,6 +487,9 @@ class MonitorThread(threading.Thread):
                 signature=template.signature,
                 added_items=tuple(added),
                 removed_keys=tuple(removed),
+                present_instances=tuple(
+                    sorted({binding.instance for binding in result.bindings})
+                ),
                 phase=state.phase,
                 authoritative=result.authoritative,
                 observed_at=self.wall_clock(),
@@ -587,11 +536,7 @@ class MonitorThread(threading.Thread):
 
         if state.phase == "BOOTSTRAP":
             state.bootstrap_scans_completed += 1
-            if (
-                state.bootstrap_scans_completed
-                >= policy.bootstrap_scans
-                and state.child_keys
-            ):
+            if state.bootstrap_scans_completed >= policy.bootstrap_scans:
                 state.phase = "WARMUP"
                 state.warmup_cycles_completed = 0
                 state.pending_cycle_keys = self._warmup_keys(state.child_keys)
@@ -603,10 +548,7 @@ class MonitorThread(threading.Thread):
                 state.warmup_cycles_completed = 0
             else:
                 state.warmup_cycles_completed += 1
-            if (
-                state.warmup_cycles_completed >= policy.warmup_cycles
-                and state.child_keys
-            ):
+            if state.warmup_cycles_completed >= policy.warmup_cycles:
                 state.phase = "STABLE"
                 state.pending_cycle_keys.clear()
                 state.next_expansion_due = now + policy.stable_interval
@@ -686,7 +628,9 @@ class MonitorThread(threading.Thread):
                 interval = (
                     item.sampling_interval
                     if item.sampling_interval_is_explicit
-                    else self.plan.polling_interval
+                    else self.plan.polling_intervals[
+                        monitor_type_for_source(item.source_type)
+                    ]
                 )
             if item.async_collection:
                 if self._submit_async_collection(key, state, item):

@@ -28,9 +28,8 @@ def main():
             ).rules_inbox_settle_time
         except Exception:
             settle_time = DLDDConfig().rules_inbox_settle_time
-    return 0 if RulesWatcher(
-        args.inbox, args.lock, args.state, settle_time
-    ).check_once() else 0
+    RulesWatcher(args.inbox, args.lock, args.state, settle_time).check_once()
+    return 0
 
 
 if __name__ == "__main__":

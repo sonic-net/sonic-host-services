@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 
 import json
+from queue import Queue
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,11 @@ from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
 from dldd.planner import build_plans
 from dldd.preflight import validate_runtime_operation_hooks
-from dldd.runtime import MonitorWorkState, MonitorWorkStateRecord
+from dldd.runtime import (
+    MonitorExecutionPlan,
+    MonitorWorkState,
+    MonitorWorkStateRecord,
+)
 from dldd.service import (
     DLDDService,
     TelemetryUnavailable,
@@ -58,7 +63,7 @@ def test_ingestion_failure_reason_uses_hld_category(code, message, prefix):
     assert dldd_service._ingestion_failure_reason((issue,)).startswith(prefix)
 
 
-def test_service_composes_vendor_artifact_client_with_stable_named_args(tmp_path):
+def test_service_artifact_client_creation_contract(tmp_path, monkeypatch):
     identity = PlatformIdentity("test", "product", "software")
     client = VendorArtifactClient()
     captured = {}
@@ -87,8 +92,6 @@ def test_service_composes_vendor_artifact_client_with_stable_named_args(tmp_path
     assert captured["artifact_directory"] == DEFAULT_ARTIFACT_DIRECTORY
     assert captured["query_runner"].__self__ is service
 
-
-def test_service_rejects_vendor_artifact_client_with_wrong_type(tmp_path):
     extensions = PlatformExtensions(
         PlatformIdentity("test", "product", "software"),
         DSERegistry(),
@@ -104,6 +107,31 @@ def test_service_rejects_vendor_artifact_client_with_wrong_type(tmp_path):
 
     with pytest.raises(TypeError, match="must return HealthzArtifactClient"):
         service._create_artifact_client()
+
+    identity = PlatformIdentity("test", "product", "software")
+    extensions = SimpleNamespace(
+        identity=identity,
+        dse_registry=DSERegistry(),
+        vendor_hooks=VendorHookRegistry(),
+        compatibility_matcher=ExactCompatibilityMatcher(),
+    )
+    service = DLDDService(
+        paths=RulePaths(str(tmp_path)),
+        state_db=object(),
+        extensions=extensions,
+    )
+    sentinel = object()
+    captured = {}
+
+    def create_default(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(dldd_service, "FilesystemArtifactClient", create_default)
+
+    assert service._create_artifact_client() is sentinel
+    assert captured["directory"] == DEFAULT_ARTIFACT_DIRECTORY
+    assert captured["query_runner"].__self__ is service
 
 
 @pytest.mark.parametrize("failure_mode", ("exception", "invalid-result"))
@@ -174,6 +202,7 @@ def test_artifact_factory_failure_publishes_fatal_without_workers(
             work_items={item.correlation_key: item},
             monitor_plans={},
             signatures={},
+            templates={},
         ),
     )
     monkeypatch.setattr(
@@ -189,36 +218,7 @@ def test_artifact_factory_failure_publishes_fatal_without_workers(
     assert service.monitors == []
 
 
-def test_service_simple_namespace_extensions_use_default_artifact_client(
-    tmp_path, monkeypatch
-):
-    identity = PlatformIdentity("test", "product", "software")
-    extensions = SimpleNamespace(
-        identity=identity,
-        dse_registry=DSERegistry(),
-        vendor_hooks=VendorHookRegistry(),
-        compatibility_matcher=ExactCompatibilityMatcher(),
-    )
-    service = DLDDService(
-        paths=RulePaths(str(tmp_path)),
-        state_db=object(),
-        extensions=extensions,
-    )
-    sentinel = object()
-    captured = {}
-
-    def create_default(**kwargs):
-        captured.update(kwargs)
-        return sentinel
-
-    monkeypatch.setattr(dldd_service, "FilesystemArtifactClient", create_default)
-
-    assert service._create_artifact_client() is sentinel
-    assert captured["directory"] == DEFAULT_ARTIFACT_DIRECTORY
-    assert captured["query_runner"].__self__ is service
-
-
-def test_ingestion_broken_rule_includes_version_and_last_attempt(
+def test_ingestion_broken_rule_and_external_byte_cap_contract(
     tmp_path, monkeypatch
 ):
     issue = ValidationIssue("rule", "missing_field", "severity is required")
@@ -263,8 +263,35 @@ def test_ingestion_broken_rule_includes_version_and_last_attempt(
         },
     )
 
+    broken_rules = tuple(
+        BrokenRule(
+            rule_name="\0" * 240 + "{:04d}".format(index),
+            rule_id=1_000_000 + index,
+            rule_version="1.0.0",
+            issues=(
+                ValidationIssue(
+                    "rule",
+                    "unknown_field",
+                    "X" * 4096,
+                    path="$." + "Y" * 2048,
+                ),
+            ),
+        )
+        for index in range(1024)
+    )
+    records = dldd_service._bounded_broken_rule_records(
+        SimpleNamespace(broken_rules=broken_rules), 1234.5
+    )
+    serialized = json.dumps(
+        records, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert len(records) == 1024
+    assert len(serialized) <= dldd_service.MAX_SERIALIZED_DIAGNOSTIC_BYTES
+    assert len({record["rule"] for record in records}) == 1024
+    assert all("\0" not in record["rule"] for record in records)
 
-def test_service_candidate_preflight_validates_without_reading(
+
+def test_service_and_shared_activation_preflight_contract(
     tmp_path, monkeypatch
 ):
     extensions = PlatformExtensions(
@@ -320,7 +347,7 @@ def test_service_candidate_preflight_validates_without_reading(
         dldd_preflight,
         "build_plans",
         lambda *args, **kwargs: SimpleNamespace(
-            work_items={item.correlation_key: item}
+            work_items={item.correlation_key: item}, templates={}
         ),
     )
     monkeypatch.setattr(
@@ -336,11 +363,8 @@ def test_service_candidate_preflight_validates_without_reading(
     assert calls == [("validate", item.correlation_key)]
 
 
-def test_shared_activation_preflight_returns_validation_plan_and_adapters(
-    monkeypatch,
-):
     validation = SimpleNamespace(materialized_rules=())
-    plan = SimpleNamespace(work_items={})
+    plan = SimpleNamespace(work_items={}, templates={})
     adapters = {"redis": object()}
     extensions = SimpleNamespace(
         vendor_hooks=VendorHookRegistry(),
@@ -367,9 +391,6 @@ def test_shared_activation_preflight_returns_validation_plan_and_adapters(
     assert result.failures == ()
 
 
-def test_service_candidate_preflight_propagates_adapter_programming_error(
-    tmp_path, monkeypatch
-):
     extensions = PlatformExtensions(
         PlatformIdentity("test", "product", "software"),
         DSERegistry(),
@@ -414,7 +435,7 @@ def test_service_candidate_preflight_propagates_adapter_programming_error(
         dldd_preflight,
         "build_plans",
         lambda *args, **kwargs: SimpleNamespace(
-            work_items={item.correlation_key: item}
+            work_items={item.correlation_key: item}, templates={}
         ),
     )
     monkeypatch.setattr(
@@ -444,37 +465,7 @@ def test_service_candidate_preflight_propagates_adapter_programming_error(
     assert "unsupported source binding" in candidate.broken_rules[0]["reason"]
 
 
-def test_service_candidate_records_remain_within_external_byte_cap():
-    broken_rules = tuple(
-        BrokenRule(
-            rule_name="\0" * 240 + "{:04d}".format(index),
-            rule_id=1_000_000 + index,
-            rule_version="1.0.0",
-            issues=(
-                ValidationIssue(
-                    "rule",
-                    "unknown_field",
-                    "X" * 4096,
-                    path="$." + "Y" * 2048,
-                ),
-            ),
-        )
-        for index in range(1024)
-    )
-    result = SimpleNamespace(broken_rules=broken_rules)
-
-    records = dldd_service._bounded_broken_rule_records(result, 1234.5)
-    serialized = json.dumps(
-        records, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-    assert len(records) == 1024
-    assert len(serialized) <= dldd_service.MAX_SERIALIZED_DIAGNOSTIC_BYTES
-    assert len({record["rule"] for record in records}) == 1024
-    assert all("\0" not in record["rule"] for record in records)
-
-
-def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
+def _rule_status_fixture(work_state=MonitorWorkState.READY):
     result = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         result.materialized_rules,
@@ -483,8 +474,27 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
     )
     item = next(iter(bundle.work_items.values()))
     plan = bundle.monitor_plans["redis"]
+    plan.state_by_key[item.correlation_key].state = work_state
+    service = object.__new__(DLDDService)
+    service.activation = SimpleNamespace(
+        payload=result,
+        broken_rules=(),
+        checksum="sha256:test",
+    )
+    service.orchestrator = SimpleNamespace(
+        work_items=bundle.work_items,
+        broken_rules={},
+        faults={},
+    )
+    service.monitors = [SimpleNamespace(plan=plan)]
+    return service, result, bundle, item, plan
+
+
+def test_rule_status_snapshot_classification_grouping_and_truncation(monkeypatch):
+    service, result, bundle, item, plan = _rule_status_fixture(
+        MonitorWorkState.DEGRADED
+    )
     state = plan.state_by_key[item.correlation_key]
-    state.state = MonitorWorkState.DEGRADED
     state.last_attempt_timestamp = 1234.9
     state.last_success_timestamp = 1200.8
     state.consecutive_failure_count = 3
@@ -507,7 +517,6 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
         "last_attempt": 1000.0,
         "reason": "schema_error: field is required",
     }
-    service = object.__new__(DLDDService)
     service.activation = SimpleNamespace(
         payload=result,
         broken_rules=(ingestion_broken,),
@@ -550,49 +559,18 @@ def test_rule_status_snapshot_aggregates_health_faults_and_work_details():
     assert rows[1]["health"] == "BROKEN"
     assert rows[1]["work_items_total"] == 0
 
-
-@pytest.mark.parametrize(
-    "work_state,expected_health",
-    (
+    for work_state, expected_health in (
         (MonitorWorkState.READY, "OK"),
         (MonitorWorkState.COLLECTING, "OK"),
         (MonitorWorkState.SUSPENDED, "SUSPENDED"),
         (MonitorWorkState.BROKEN, "BROKEN"),
         (MonitorWorkState.DEGRADED, "DEGRADED"),
-    ),
-)
-def test_rule_status_snapshot_classifies_work_state(
-    work_state, expected_health
-):
-    result = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
-    bundle = build_plans(
-        result.materialized_rules,
-        "sha256:test",
-        {"redis": 41, "file": 42, "common": 43},
-    )
-    item = next(iter(bundle.work_items.values()))
-    plan = bundle.monitor_plans["redis"]
-    plan.state_by_key[item.correlation_key].state = work_state
-    service = object.__new__(DLDDService)
-    service.activation = SimpleNamespace(
-        payload=result,
-        broken_rules=(),
-        checksum="sha256:test",
-    )
-    service.orchestrator = SimpleNamespace(
-        work_items=bundle.work_items,
-        broken_rules={},
-        faults={},
-    )
-    service.monitors = [SimpleNamespace(plan=plan)]
+    ):
+        classified, _, _, _, _ = _rule_status_fixture(work_state)
+        rows, truncated = classified._rule_status_snapshot()
+        assert not truncated
+        assert rows[0]["health"] == expected_health
 
-    rows, truncated = service._rule_status_snapshot()
-
-    assert not truncated
-    assert rows[0]["health"] == expected_health
-
-
-def test_rule_status_snapshot_groups_ingestion_failures_by_rule():
     failures = (
         {
             "rule": "BAD_RULE",
@@ -611,16 +589,16 @@ def test_rule_status_snapshot_groups_ingestion_failures_by_rule():
             "reason": "second problem",
         },
     )
-    service = object.__new__(DLDDService)
-    service.activation = SimpleNamespace(
+    grouped = object.__new__(DLDDService)
+    grouped.activation = SimpleNamespace(
         payload=SimpleNamespace(materialized_rules=()),
         broken_rules=failures,
         checksum="sha256:test",
     )
-    service.orchestrator = None
-    service.monitors = []
+    grouped.orchestrator = None
+    grouped.monitors = []
 
-    rows, truncated = service._rule_status_snapshot()
+    rows, truncated = grouped._rule_status_snapshot()
 
     assert not truncated
     assert len(rows) == 1
@@ -630,38 +608,17 @@ def test_rule_status_snapshot_groups_ingestion_failures_by_rule():
     assert rows[0]["last_attempt"] == 1001.0
     assert rows[0]["reason"] == "first problem (+1 more)"
 
-
-def test_rule_status_snapshot_reports_omitted_detail(monkeypatch):
-    result = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
-    bundle = build_plans(
-        result.materialized_rules,
-        "sha256:test",
-        {"redis": 41, "file": 42, "common": 43},
-    )
-    service = object.__new__(DLDDService)
-    service.activation = SimpleNamespace(
-        payload=result,
-        broken_rules=(),
-        checksum="sha256:test",
-    )
-    service.orchestrator = SimpleNamespace(
-        work_items=bundle.work_items,
-        broken_rules={},
-        faults={},
-    )
-    service.monitors = [
-        SimpleNamespace(plan=bundle.monitor_plans["redis"])
-    ]
+    omitted, _, _, _, _ = _rule_status_fixture()
     monkeypatch.setattr("dldd.rule_status.MAX_DETAILS_PER_RULE", 0)
 
-    rows, truncated = service._rule_status_snapshot()
+    rows, truncated = omitted._rule_status_snapshot()
 
     assert truncated
     assert rows[0]["work_items"] == []
     assert rows[0]["work_items_omitted"] == 1
 
 
-def test_rule_status_snapshot_failure_marks_heartbeat_failed(caplog):
+def test_rule_status_publication_contains_snapshot_exceptions(caplog):
     published = []
     service = object.__new__(DLDDService)
     service.activation = SimpleNamespace(checksum="sha256:test")
@@ -681,7 +638,7 @@ def test_rule_status_snapshot_failure_marks_heartbeat_failed(caplog):
     assert "unable to build DLDD rule status snapshot" in caplog.text
 
 
-def test_run_exits_after_bounded_telemetry_write_failures(monkeypatch):
+def test_run_fails_after_three_consecutive_status_write_failures(monkeypatch):
     service = object.__new__(DLDDService)
     service.orchestrator = None
     service.stop_event = SimpleNamespace(
@@ -706,50 +663,64 @@ def test_run_exits_after_bounded_telemetry_write_failures(monkeypatch):
     assert shutdown_modes == [False]
 
 
-def test_inflight_status_reports_only_durable_structured_work():
+def test_inflight_status_contract(caplog):
     transient = MonitorWorkStateRecord(
         state=MonitorWorkState.IN_FLIGHT,
         last_enqueue_timestamp=100.0,
     )
-    held = MonitorWorkStateRecord(
+    expanded_held = MonitorWorkStateRecord(
         state=MonitorWorkState.HELD_BY_PRIMARY,
         last_enqueue_timestamp=101.0,
     )
-    items = {
+    expanded_recheck = MonitorWorkStateRecord(
+        state=MonitorWorkState.RECHECK_REQUESTED,
+        last_enqueue_timestamp=102.0,
+    )
+    static_items = {
         "transient-key": SimpleNamespace(
             rule_name="TRANSIENT_RULE",
             rule_id=1000001,
             event_id=1,
             component_name="PSU0",
         ),
-        "held-key": SimpleNamespace(
-            rule_name="HELD_RULE",
-            rule_id=1000002,
-            event_id=2,
-            component_name="PSU1",
-        ),
     }
+    expanded_item = SimpleNamespace(
+        correlation_key="expanded-held-key",
+        rule_name="EXPANDED_HELD_RULE",
+        rule_id=1000002,
+        event_id=2,
+        component_name="PSU1",
+    )
+    expanded_recheck_item = SimpleNamespace(
+        correlation_key="expanded-recheck-key",
+        rule_name="EXPANDED_RECHECK_RULE",
+        rule_id=1000003,
+        event_id=3,
+        component_name="PSU2",
+    )
+    plan = MonitorExecutionPlan(
+        monitor_id="redis",
+        monitor_type="redis",
+        polling_interval=1,
+        plan_generation="sha256:test",
+        items_by_key=static_items,
+        state_by_key={"transient-key": transient},
+        control_queue=Queue(),
+    )
+    plan.add_expanded_item(expanded_item)
+    plan.state_by_key["expanded-held-key"] = expanded_held
+    plan.add_expanded_item(expanded_recheck_item)
+    plan.state_by_key["expanded-recheck-key"] = expanded_recheck
     service = object.__new__(DLDDService)
-    service.monitors = [
-        SimpleNamespace(
-            plan=SimpleNamespace(
-                monitor_id="redis",
-                items_by_key=items,
-                state_by_key={
-                    "transient-key": transient,
-                    "held-key": held,
-                },
-            )
-        )
-    ]
+    service.monitors = [SimpleNamespace(plan=plan)]
     service.orchestrator = SimpleNamespace(pending={})
 
     statuses = service._inflight_status()
 
     assert statuses == (
         {
-            "correlation_key": "held-key",
-            "rule": "HELD_RULE",
+            "correlation_key": "expanded-held-key",
+            "rule": "EXPANDED_HELD_RULE",
             "rule_id": 1000002,
             "event_id": 2,
             "component": "PSU1",
@@ -759,6 +730,44 @@ def test_inflight_status_reports_only_durable_structured_work():
             "hold_deadline": None,
             "owning_monitor": "redis",
         },
+        {
+            "correlation_key": "expanded-recheck-key",
+            "rule": "EXPANDED_RECHECK_RULE",
+            "rule_id": 1000003,
+            "event_id": 3,
+            "component": "PSU2",
+            "state": "RECHECK_REQUESTED",
+            "reason": "primary_owned",
+            "since": 102.0,
+            "hold_deadline": None,
+            "owning_monitor": "redis",
+        },
+    )
+
+    plan = MonitorExecutionPlan(
+        monitor_id="redis",
+        monitor_type="redis",
+        polling_interval=1,
+        plan_generation="sha256:test",
+        items_by_key={},
+        state_by_key={
+            "missing-key": MonitorWorkStateRecord(
+                state=MonitorWorkState.RECHECK_REQUESTED,
+                last_enqueue_timestamp=101.0,
+            )
+        },
+        control_queue=Queue(),
+    )
+    service = object.__new__(DLDDService)
+    service.monitors = [SimpleNamespace(plan=plan)]
+    service.orchestrator = SimpleNamespace(pending={})
+
+    statuses = service._inflight_status()
+
+    assert statuses == ()
+    assert (
+        "unable to publish in-flight status for missing work item missing-key"
+        in caplog.text
     )
 
 
@@ -850,6 +859,7 @@ def test_start_does_not_repeat_candidate_adapter_preflight(
             work_items={item.correlation_key: item},
             monitor_plans={},
             signatures={},
+            templates={},
         )
 
     monkeypatch.setattr(service, "_load_config", lambda: DLDDConfig())
@@ -877,7 +887,7 @@ def test_start_does_not_repeat_candidate_adapter_preflight(
     )
 
 
-def test_dynamic_config_updates_runtime_and_monitor_intervals(tmp_path):
+def test_dynamic_monitor_config_contract(tmp_path):
     service = object.__new__(DLDDService)
     service.paths = SimpleNamespace(defaults=str(tmp_path / "missing.yaml"))
     service.config = DLDDConfig()
@@ -913,7 +923,6 @@ def test_dynamic_config_updates_runtime_and_monitor_intervals(tmp_path):
     )
 
 
-def test_dynamic_config_uses_stable_monitor_snapshot_during_replacement(tmp_path):
     service = object.__new__(DLDDService)
     service.paths = SimpleNamespace(defaults=str(tmp_path / "missing.yaml"))
     service.config = DLDDConfig()
@@ -930,9 +939,10 @@ def test_dynamic_config_uses_stable_monitor_snapshot_during_replacement(tmp_path
             self.source_recovery_samples = 1
             self.replace_self = replace_self
 
-        def update_polling_interval(self, interval):
+        def update_polling_intervals(self, intervals):
             updates.append(self.plan.monitor_type)
-            self.plan.polling_interval = interval
+            self.plan.polling_intervals = intervals
+            self.plan.polling_interval = intervals[self.plan.monitor_type]
             if self.replace_self:
                 replacement = Monitor(self.plan.monitor_type, plan=self.plan)
                 service.monitors.remove(self)
@@ -957,6 +967,53 @@ def test_dynamic_config_uses_stable_monitor_snapshot_during_replacement(tmp_path
         (monitor.plan.monitor_type, monitor.plan.polling_interval)
         for monitor in service.monitors
     ) == [("common", 9), ("file", 8), ("redis", 7)]
+
+    class Connector(object):
+        def __init__(self):
+            self.handler = None
+
+        def get_table(self, table):
+            assert table == "DLDD_CONFIG"
+            return {
+                "global": {
+                    "redis_monitor_polling_interval": "7",
+                    "file_monitor_polling_interval": "8",
+                }
+            }
+
+        def subscribe(self, table, handler):
+            self.handler = handler
+
+        def listen(self):
+            self.handler(
+                "DLDD_CONFIG",
+                "global",
+                {"redis_monitor_polling_interval": "7"},
+            )
+
+    connector = Connector()
+    observed = []
+    ConfigDBProvider(connector).listen(observed.append)
+    assert observed == [
+        {
+            "redis_monitor_polling_interval": "7",
+            "file_monitor_polling_interval": "8",
+        }
+    ]
+
+    queued = []
+    service = object.__new__(DLDDService)
+    service.paths = SimpleNamespace(defaults=str(tmp_path / "missing.yaml"))
+    service.config = DLDDConfig()
+    service.telemetry = SimpleNamespace(config=None)
+    service.orchestrator = SimpleNamespace(
+        config=None,
+        queue_config_update=queued.append,
+    )
+    service.monitors = []
+    service._apply_config({"inactive_fault_retention_period": "42"})
+    assert service.config.inactive_fault_retention_period == 42
+    assert queued == [service.config]
 
 
 def test_crash_state_persists_only_broken_not_degraded_records():
@@ -987,97 +1044,6 @@ def test_crash_state_persists_only_broken_not_degraded_records():
     ]
 
 
-def test_config_notification_rereads_complete_global_row():
-    class Connector(object):
-        def __init__(self):
-            self.handler = None
-
-        def get_table(self, table):
-            assert table == "DLDD_CONFIG"
-            return {
-                "global": {
-                    "redis_monitor_polling_interval": "7",
-                    "file_monitor_polling_interval": "8",
-                }
-            }
-
-        def subscribe(self, table, handler):
-            self.handler = handler
-
-        def listen(self):
-            self.handler(
-                "DLDD_CONFIG",
-                "global",
-                {"redis_monitor_polling_interval": "7"},
-            )
-
-    connector = Connector()
-    observed = []
-
-    ConfigDBProvider(connector).listen(observed.append)
-
-    assert observed == [
-        {
-            "redis_monitor_polling_interval": "7",
-            "file_monitor_polling_interval": "8",
-        }
-    ]
-
-
-def test_runtime_config_update_is_queued_for_primary_owner(tmp_path):
-    queued = []
-    service = object.__new__(DLDDService)
-    service.paths = SimpleNamespace(defaults=str(tmp_path / "missing.yaml"))
-    service.config = DLDDConfig()
-    service.telemetry = SimpleNamespace(config=None)
-    service.orchestrator = SimpleNamespace(
-        config=None,
-        queue_config_update=queued.append,
-    )
-    service.monitors = []
-
-    service._apply_config({"inactive_fault_retention_period": "42"})
-
-    assert service.config.inactive_fault_retention_period == 42
-    assert queued == [service.config]
-
-
-def test_activation_preflight_rejects_custom_action_without_runtime_hook():
-    operation = SimpleNamespace(
-        type="vendor_reset", executor=None, options={}
-    )
-    materialized = SimpleNamespace(
-        signature=SimpleNamespace(
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(
-                    local_actions=SimpleNamespace(action_list=(operation,))
-                ),
-                log_collection=None,
-            )
-        )
-    )
-
-    with pytest.raises(VendorHookError, match="not registered"):
-        validate_runtime_operation_hooks(materialized, VendorHookRegistry())
-
-
-def test_activation_preflight_rejects_custom_query_without_runtime_hook():
-    operation = SimpleNamespace(
-        type="vendor_dump", executor=None, options={"hook": "diagnostics"}
-    )
-    materialized = SimpleNamespace(
-        signature=SimpleNamespace(
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(local_actions=None),
-                log_collection=SimpleNamespace(queries=(operation,)),
-            )
-        )
-    )
-
-    with pytest.raises(VendorHookError, match="diagnostics"):
-        validate_runtime_operation_hooks(materialized, VendorHookRegistry())
-
-
 class RuntimeOperationHook(VendorHook):
     def collect(self, operation):
         return None
@@ -1091,51 +1057,65 @@ class RejectingI2CHook(RuntimeOperationHook):
         raise ValueError("logical bus is not mapped")
 
 
-def test_activation_preflight_accepts_registered_operation_hook():
+def test_activation_preflight_runtime_operation_hook_contract():
+    def materialized(action=None, query=None):
+        return SimpleNamespace(
+            signature=SimpleNamespace(
+                actions=SimpleNamespace(
+                    repair_actions=SimpleNamespace(
+                        local_actions=(
+                            SimpleNamespace(action_list=(action,))
+                            if action is not None
+                            else None
+                        )
+                    ),
+                    log_collection=(
+                        SimpleNamespace(queries=(query,))
+                        if query is not None
+                        else None
+                    ),
+                )
+            )
+        )
+
+    action = SimpleNamespace(type="vendor_reset", executor=None, options={})
+    with pytest.raises(VendorHookError, match="not registered"):
+        validate_runtime_operation_hooks(
+            materialized(action=action), VendorHookRegistry()
+        )
+
+    query = SimpleNamespace(
+        type="vendor_dump", executor=None, options={"hook": "diagnostics"}
+    )
+    with pytest.raises(VendorHookError, match="diagnostics"):
+        validate_runtime_operation_hooks(
+            materialized(query=query), VendorHookRegistry()
+        )
+
     action = SimpleNamespace(
         type="vendor_reset", executor=None, options={"hook": "operations"}
     )
     query = SimpleNamespace(
         type="vendor_dump", executor=None, options={"hook": "operations"}
     )
-    materialized = SimpleNamespace(
-        signature=SimpleNamespace(
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(
-                    local_actions=SimpleNamespace(action_list=(action,))
-                ),
-                log_collection=SimpleNamespace(queries=(query,)),
-            )
-        )
-    )
     hooks = VendorHookRegistry()
     hooks.register("operations", RuntimeOperationHook())
 
-    validate_runtime_operation_hooks(materialized, hooks)
+    validate_runtime_operation_hooks(
+        materialized(action=action, query=query), hooks
+    )
 
-
-def test_activation_preflight_runs_optional_i2c_hook_validation():
     operation = SimpleNamespace(
         type="i2c",
         executor=None,
         options={},
         path={"bus": "IO-MUX-6"},
     )
-    materialized = SimpleNamespace(
-        signature=SimpleNamespace(
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(
-                    local_actions=SimpleNamespace(action_list=(operation,))
-                ),
-                log_collection=None,
-            )
-        )
-    )
     hooks = VendorHookRegistry()
     hooks.register("i2c", RejectingI2CHook())
 
     with pytest.raises(ValueError, match="not mapped"):
-        validate_runtime_operation_hooks(materialized, hooks)
+        validate_runtime_operation_hooks(materialized(action=operation), hooks)
 
 
 def test_activation_dry_run_validates_adapter_without_reading(
@@ -1195,7 +1175,7 @@ def test_activation_dry_run_validates_adapter_without_reading(
         dldd_preflight,
         "build_plans",
         lambda *args, **kwargs: SimpleNamespace(
-            work_items={item.correlation_key: item}
+            work_items={item.correlation_key: item}, templates={}
         ),
     )
     monkeypatch.setattr(
@@ -1243,9 +1223,6 @@ def test_activation_dry_run_validates_adapter_without_reading(
     assert "no adapter is registered" in issue["message"]
 
 
-def test_activation_dry_run_reports_missing_runtime_operation_hook(
-    monkeypatch, capsys
-):
     operation = SimpleNamespace(
         type="vendor_reset", executor=None, options={}
     )
@@ -1287,7 +1264,7 @@ def test_activation_dry_run_reports_missing_runtime_operation_hook(
     monkeypatch.setattr(
         dldd_preflight,
         "build_plans",
-        lambda *args, **kwargs: SimpleNamespace(work_items={}),
+        lambda *args, **kwargs: SimpleNamespace(work_items={}, templates={}),
     )
     monkeypatch.setattr(
         dldd_preflight,

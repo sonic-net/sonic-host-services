@@ -40,7 +40,7 @@ class RecordingHook(DSEHook):
         return ResolvedCommand(executor=lambda operation: None)
 
 
-def test_canonical_action_and_query_commands_remain_typed_references():
+def test_dse_action_and_query_resolution_contract():
     hook = RecordingHook()
     registry = DSERegistry(hook=hook)
 
@@ -52,8 +52,6 @@ def test_canonical_action_and_query_commands_remain_typed_references():
         selector="psu*", function="get_status"
     )
 
-
-def test_opaque_action_and_query_commands_reach_vendor_hook_unchanged():
     hook = RecordingHook()
     registry = DSERegistry(hook=hook)
     action = "reset power rail 7"
@@ -65,8 +63,6 @@ def test_opaque_action_and_query_commands_reach_vendor_hook_unchanged():
     assert hook.action_command is action
     assert hook.query_command is query
 
-
-def test_opaque_commands_materialize_through_the_rules_contract():
     with FIXTURE.open("r", encoding="utf-8") as stream:
         document = json.load(stream)
     actions = document["signatures"][0]["signature"]["actions"]

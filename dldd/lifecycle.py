@@ -21,6 +21,10 @@ from .timestamps import floor_timestamp, floor_timestamp_fields
 LOGGER = logging.getLogger(__name__)
 
 
+class NoRulesAvailable(RuntimeError):
+    """Raised when none of the configured rules generation files exists."""
+
+
 @dataclass(frozen=True)
 class RulePaths:
     platform_dir: str
@@ -133,8 +137,18 @@ class RuleGenerationManager:
             manifest = self._load_manifest()
             candidates = self._candidates(manifest)
             failures = []
+            candidate_present = False
             for source, path in candidates:
+                if not os.path.lexists(path):
+                    continue
+                candidate_present = True
                 if not os.path.isfile(path):
+                    message = "{} candidate is not a regular file: {}".format(
+                        source, path
+                    )
+                    LOGGER.warning(message)
+                    failures.append(message)
+                    self._record_failed_attempt(manifest, source, "", message)
                     continue
                 try:
                     staged = self._stage_candidate(path)
@@ -291,6 +305,9 @@ class RuleGenerationManager:
                     validation_result=validation_result,
                 )
 
+            if not candidate_present:
+                raise NoRulesAvailable("no rules candidates exist")
+
             manifest["last_failure"] = {
                 "at": floor_timestamp(self.clock()),
                 "errors": failures or ["no rules candidates exist"],
@@ -349,14 +366,21 @@ class RuleGenerationManager:
 
     def _candidates(self, manifest: Mapping[str, Any]) -> List[Tuple[str, str]]:
         candidates: List[Tuple[str, str]] = []
-        if os.path.isfile(self.paths.inbox):
-            checksum = sha256_file(self.paths.inbox)
-            watcher = load_json_object(self.paths.watcher_state)
-            if (
-                checksum == watcher.get("last_restart_checksum")
-                and checksum != manifest.get("last_attempted_inbox_checksum")
-            ):
+        if os.path.lexists(self.paths.inbox):
+            # A malformed filesystem object in the inbox is still a supplied
+            # candidate.  Include it so activation records a deterministic
+            # rejection instead of reporting that no rules were supplied.
+            if not os.path.isfile(self.paths.inbox):
                 candidates.append(("inbox", self.paths.inbox))
+            else:
+                checksum = sha256_file(self.paths.inbox)
+                watcher = load_json_object(self.paths.watcher_state)
+                if (
+                    checksum == watcher.get("last_restart_checksum")
+                    and checksum
+                    != manifest.get("last_attempted_inbox_checksum")
+                ):
+                    candidates.append(("inbox", self.paths.inbox))
         platform_changed = manifest.get("platform_identity") != self.platform_identity
         if platform_changed:
             candidates.append(("packaged", self.paths.packaged))

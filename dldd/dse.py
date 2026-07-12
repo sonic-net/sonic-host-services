@@ -9,6 +9,8 @@ from __future__ import absolute_import
 
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
+import math
+from numbers import Real
 import re
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
@@ -66,14 +68,24 @@ class DSEExpansionPolicy(object):
     stable_interval: float = 300.0
 
     def __post_init__(self):
-        if self.bootstrap_scans < 1:
-            raise ValueError("bootstrap_scans must be positive")
-        if self.bootstrap_interval <= 0:
-            raise ValueError("bootstrap_interval must be positive")
-        if self.warmup_cycles < 1:
-            raise ValueError("warmup_cycles must be positive")
-        if self.stable_interval <= 0:
-            raise ValueError("stable_interval must be positive")
+        for name in ("bootstrap_scans", "warmup_cycles"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError("{} must be a positive integer".format(name))
+            if value < 1:
+                raise ValueError("{} must be positive".format(name))
+        for name in ("bootstrap_interval", "stable_interval"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(value)
+            ):
+                raise TypeError(
+                    "{} must be a finite positive number".format(name)
+                )
+            if value <= 0:
+                raise ValueError("{} must be positive".format(name))
 
 
 @dataclass(frozen=True)
@@ -110,6 +122,8 @@ class DSEExpansionResult(object):
     authoritative: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.authoritative, bool):
+            raise TypeError("DSE expansion authoritative must be a bool")
         bindings = tuple(self.bindings)
         if any(not isinstance(item, DSEBinding) for item in bindings):
             raise TypeError("DSE expansion bindings must be DSEBinding objects")
@@ -117,7 +131,6 @@ class DSEExpansionResult(object):
         if len(identities) != len(set(identities)):
             raise ValueError("DSE expansion bindings must be unique")
         object.__setattr__(self, "bindings", bindings)
-        object.__setattr__(self, "authoritative", bool(self.authoritative))
 
 
 @dataclass(frozen=True)
