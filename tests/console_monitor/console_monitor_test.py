@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import copy
+import tempfile
 import termios
 import types
 from unittest import TestCase, mock
@@ -211,9 +212,13 @@ class TestDCEService(TestCase):
         # Verify 3 ports are parsed
         self.assertEqual(len(configs), 3)
         
-        # Verify port 1 config (new format only has baud)
+        # Verify port 1 config
         self.assertIn("1", configs)
         self.assertEqual(configs["1"]["baud"], 9600)
+        self.assertEqual(configs["1"]["logging_enabled"], "no")
+        self.assertEqual(configs["1"]["log_file"], "/var/log/console-1.log")
+        self.assertEqual(configs["1"]["logrotate_size"], "1M")
+        self.assertEqual(configs["1"]["logrotate_count"], "20")
         
         # Verify port 2 config
         self.assertIn("2", configs)
@@ -222,6 +227,43 @@ class TestDCEService(TestCase):
         # Verify port 3 config
         self.assertIn("3", configs)
         self.assertEqual(configs["3"]["baud"], 9600)
+
+    def test_dce_sync_logrotate_configs(self):
+        """Test _sync_logrotate_configs writes and removes logrotate files."""
+        config_db = {
+            "CONSOLE_SWITCH": {
+                "console_mgmt": {"enabled": "yes"},
+            },
+            "CONSOLE_PORT": {
+                "1": {
+                    "baud_rate": "9600",
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console1.log",
+                    "logrotate_size": "10M",
+                    "logrotate_count": "5",
+                },
+                "2": {
+                    "baud_rate": "9600",
+                },
+            },
+        }
+        MockConfigDb.set_config_db(config_db)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                service._sync_logrotate_configs()
+
+                conf_path = os.path.join(tmpdir, "console-1")
+                self.assertTrue(os.path.exists(conf_path))
+                with open(conf_path, 'r') as conf_file:
+                    content = conf_file.read()
+                self.assertIn("/var/log/console1.log", content)
+                self.assertIn("size 10M", content)
+                self.assertIn("rotate 5", content)
+                self.assertIn("copytruncate", content)
+                self.assertFalse(os.path.exists(os.path.join(tmpdir, "console-2")))
     
     def test_dce_sync_starts_services_when_enabled(self):
         """Test _sync starts pty-bridge and proxy services for each configured port when feature is enabled."""
@@ -790,6 +832,9 @@ class TestProxyService(TestCase):
         self.assertFalse(proxy.running)
         self.assertEqual(proxy.ser_fd, -1)
         self.assertEqual(proxy.ptm_fd, -1)
+        self.assertEqual(proxy.log_fd, -1)
+        self.assertFalse(proxy.logging_enabled)
+        self.assertEqual(proxy.log_file_path, "")
     
     def test_proxy_service_calculate_filter_timeout(self):
         """Test filter timeout calculation based on baud rate."""
@@ -1528,6 +1573,10 @@ class TestDCEServiceExtended(TestCase):
         # Check port 1
         self.assertIn("1", configs)
         self.assertEqual(configs["1"]["baud"], 9600)
+        self.assertEqual(configs["1"]["logging_enabled"], "no")
+        self.assertEqual(configs["1"]["log_file"], "/var/log/console-1.log")
+        self.assertEqual(configs["1"]["logrotate_size"], "1M")
+        self.assertEqual(configs["1"]["logrotate_count"], "20")
         
         # Check port 2
         self.assertIn("2", configs)
@@ -2169,6 +2218,20 @@ class TestProxyServicePhases(TestCase):
                 proxy._on_ptm_read()
                 
                 mock_write.assert_called_once_with(11, b"user input")
+
+    def test_proxy_on_ptm_read_does_not_log_input(self):
+        """Test _on_ptm_read forwards to serial without logging (echo is logged on serial read)."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.ptm_fd = 10
+        proxy.ser_fd = 11
+        proxy.log_fd = 12
+
+        with mock.patch('os.read', return_value=b"user input"):
+            with mock.patch('os.write') as mock_write:
+                proxy._on_ptm_read()
+
+                mock_write.assert_called_once_with(11, b"user input")
     
     def test_proxy_on_ptm_read_handles_blocking_error(self):
         """Test _on_ptm_read handles BlockingIOError gracefully."""
@@ -2536,6 +2599,24 @@ class TestMainWithSubcommands(TestCase):
                     mock_log.assert_called_once_with('debug')
 
 
+class TestLogrotateConfig(TestCase):
+    """Tests for console logrotate helper functions."""
+
+    def test_build_logrotate_config(self):
+        content = console_monitor.build_logrotate_config("/var/log/console1.log", "10M", 5)
+        self.assertIn("/var/log/console1.log", content)
+        self.assertIn("size 10M", content)
+        self.assertIn("rotate 5", content)
+        self.assertIn("copytruncate", content)
+
+    def test_logrotate_conf_path(self):
+        with mock.patch.object(console_monitor, 'LOGROTATE_DIR', '/etc/logrotate.d'):
+            self.assertEqual(
+                console_monitor.logrotate_conf_path("1"),
+                "/etc/logrotate.d/console-1",
+            )
+
+
 class TestCalculateFilterTimeout(TestCase):
     """Tests for calculate_filter_timeout function."""
     
@@ -2685,6 +2766,27 @@ class TestProxyServiceUserDataOSError(TestCase):
         with mock.patch('os.write', side_effect=OSError("Write failed")):
             # Should not raise
             proxy._on_user_data_received(b"test data")
+
+    def test_on_user_data_received_logs_output(self):
+        """Test _on_user_data_received writes device output to the log file."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.ptm_fd = 10
+        proxy.log_fd = 12
+
+        with mock.patch('os.write') as mock_write:
+            proxy._on_user_data_received(b"device output")
+
+            mock_write.assert_any_call(12, b"device output")
+            mock_write.assert_any_call(10, b"device output")
+
+    def test_write_log_skips_when_disabled(self):
+        """Test _write_log does nothing when log file is not open."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.log_fd = -1
+
+        with mock.patch('os.write') as mock_write:
+            proxy._write_log(b"ignored")
+            mock_write.assert_not_called()
 
 
 class TestDCEServiceSystemctlFailures(TestCase):
