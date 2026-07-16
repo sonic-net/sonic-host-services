@@ -3,6 +3,7 @@ import sys
 import time
 import signal
 import psutil
+import pytest
 import swsscommon as swsscommon_package
 from subprocess import CalledProcessError
 from sonic_py_common import device_info
@@ -461,6 +462,79 @@ class TestHostcfgdDaemon(TestCase):
             except TimeoutError:
                 pass
             mocked_run_cmd.assert_has_calls([call(['systemctl', 'restart', 'resolv-config'], True, False)])
+
+class TestRunCmd:
+    """Tests for the run_cmd family error handling.
+
+    Regression for the case where the executed command's binary is missing:
+    subprocess raises FileNotFoundError (no .cmd/.returncode/.output attrs),
+    and the error-logging path must not itself raise AttributeError. When
+    raise_exception=True the original exception must propagate unchanged.
+    """
+
+    @staticmethod
+    def _last_msg(mock_syslog):
+        # syslog.syslog(level, msg) -> return the formatted msg of the last call
+        assert mock_syslog.called
+        args = mock_syslog.call_args.args
+        return args[1] if len(args) > 1 else args[0]
+
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_run_cmd_missing_binary_does_not_raise(self, mock_syslog):
+        exc = FileNotFoundError(2, 'No such file or directory', 'systemctl')
+        with mock.patch('hostcfgd.subprocess.check_call', side_effect=exc):
+            # Should swallow the error (raise_exception defaults to False) and
+            # must not blow up on err.cmd/err.returncode in the logging path.
+            hostcfgd.run_cmd(['systemctl', 'restart', 'resolv-config'])
+        # The logged message carries the command and the real error reason.
+        msg = self._last_msg(mock_syslog)
+        assert "['systemctl', 'restart', 'resolv-config']" in msg
+        assert 'systemctl' in msg
+
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_run_cmd_missing_binary_reraises_original(self, mock_syslog):
+        with mock.patch('hostcfgd.subprocess.check_call',
+                        side_effect=FileNotFoundError(2, 'No such file or directory', 'systemctl')):
+            with pytest.raises(FileNotFoundError):
+                hostcfgd.run_cmd(['systemctl', 'restart', 'resolv-config'],
+                                 log_err=True, raise_exception=True)
+
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_run_cmd_called_process_error_still_logged(self, mock_syslog):
+        err = CalledProcessError(returncode=1, cmd=['false'], output='boom')
+        with mock.patch('hostcfgd.subprocess.check_call', side_effect=err):
+            hostcfgd.run_cmd(['false'])
+        # Assert directly on the formatted syslog message (stable/precise).
+        msg = self._last_msg(mock_syslog)
+        assert "['false']" in msg
+        assert 'return code - 1' in msg
+        assert 'boom' in msg
+
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_run_cmd_pipe_missing_binary_does_not_raise(self, mock_syslog):
+        exc = FileNotFoundError(2, 'No such file or directory', 'grep')
+        with mock.patch('hostcfgd.check_output_pipe', side_effect=exc):
+            hostcfgd.run_cmd_pipe(['cat', '/x'], ['grep', 'y'], ['wc', '-l'])
+        msg = self._last_msg(mock_syslog)
+        assert 'grep' in msg
+
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_run_cmd_pipe_missing_binary_reraises_original(self, mock_syslog):
+        with mock.patch('hostcfgd.check_output_pipe',
+                        side_effect=FileNotFoundError(2, 'No such file or directory', 'grep')):
+            with pytest.raises(FileNotFoundError):
+                hostcfgd.run_cmd_pipe(['cat', '/x'], ['grep', 'y'], ['wc', '-l'],
+                                      log_err=True, raise_exception=True)
+
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_run_cmd_output_missing_binary_does_not_raise(self, mock_syslog):
+        exc = FileNotFoundError(2, 'No such file or directory', 'ip')
+        with mock.patch('hostcfgd.subprocess.check_output', side_effect=exc):
+            out = hostcfgd.run_cmd_output(['ip', 'addr'])
+        assert out == ''
+        msg = self._last_msg(mock_syslog)
+        assert 'ip' in msg
+
 
 class TestDnsHandler:
 

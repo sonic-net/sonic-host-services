@@ -733,6 +733,15 @@ class ControlPlaneAclManager(logger.Logger):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-t', 'raw', '-A', 'PREROUTING', '-p', 'ipv6-icmp', '-j', 'NOTRACK'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-t', 'raw', '-A', 'OUTPUT', '-p', 'ipv6-icmp', '-j', 'NOTRACK'])
 
+        for k, v in self.ACL_SERVICES.items():
+            if namespace != DEFAULT_NAMESPACE and v["multi_asic_ns_to_host_fwd"]:
+                for ip_protocol in v["ip_protocols"]:
+                    for dst_port in v["dst_ports"]:
+                        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                             ['ip6tables', '-A', 'FORWARD', '-p', str(ip_protocol), '-s', self.namespace_mgmt_ipv6, '--sport', dst_port, '-j', 'ACCEPT'])
+                        iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                                             ['iptables', '-A', 'FORWARD', '-p', str(ip_protocol), '-s', self.namespace_mgmt_ip, '--sport', dst_port, '-j', 'ACCEPT'])
+
         # Get current ACL tables and rules from Config DB
 
         self._tables_db_info = config_db_connector.get_table(self.ACL_TABLE)
@@ -848,7 +857,10 @@ class ControlPlaneAclManager(logger.Logger):
                         for dst_port in dst_ports:
                             rule_cmd = ["ip6tables"] if table_ip_version == 6 else ["iptables"]
 
-                            rule_cmd += ["-A", "INPUT"]
+                            if namespace != DEFAULT_NAMESPACE and self.ACL_SERVICES[acl_service]["multi_asic_ns_to_host_fwd"]:
+                                rule_cmd += ["-A", "FORWARD"]
+                            else:
+                                rule_cmd += ["-A", "INPUT"]
                             if ip_protocol != "any":
                                 rule_cmd += ["-p", str(ip_protocol)]
 
@@ -912,6 +924,9 @@ class ControlPlaneAclManager(logger.Logger):
         if num_ctrl_plane_acl_rules > 0:
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-j', 'DROP'])
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-j', 'DROP'])
+            if namespace != DEFAULT_NAMESPACE:
+                iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'FORWARD', '-j', 'DROP'])
+                iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'FORWARD', '-j', 'DROP'])
 
         return iptables_cmds, service_to_source_ip_map
 

@@ -40,6 +40,7 @@ PERSISTENT_STORAGE_KEY = "use_persistent_storage"
 
 
 DEBUG_INFO_FLAG = "debug_info"
+DEFAULT_HOSTNAME = "switch"
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,8 @@ class DebugArtifactCollector(host_service.HostModule):
   """DBus endpoint that collects debug artifacts."""
 
   def __init__(self, mod_name):
-    self._hostname, self._board_type = DebugArtifactCollector.get_device_metadata()
+    self._hostname = DEFAULT_HOSTNAME
+    self._board_type = ""
     super(DebugArtifactCollector, self).__init__(mod_name)
 
   @staticmethod
@@ -99,7 +101,7 @@ class DebugArtifactCollector(host_service.HostModule):
     Get hostname and board_type from CONFIG_DB
     using a single swsscommon call.
     """
-    hostname = "switch"
+    hostname = DEFAULT_HOSTNAME
     board_type = ""
     try:
       # Connect to CONFIG_DB
@@ -360,7 +362,7 @@ class DebugArtifactCollector(host_service.HostModule):
     except json.JSONDecodeError:
       return 1, "invalid input: " + options[0]
 
-    if not self._board_type or self._hostname == "switch":
+    if not self._board_type or self._hostname == DEFAULT_HOSTNAME:
       self._hostname, self._board_type = DebugArtifactCollector.get_device_metadata()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
