@@ -132,6 +132,7 @@ class ControlPlaneAclManager(logger.Logger):
     VxlanAllowed = False
     VxlanSrcIP = ""
     RedfishAllowed = False
+    DhcpServerSyslogAllowed = False
     # a map from dpu name to port
     dashHaPortMap = {}
 
@@ -170,6 +171,7 @@ class ControlPlaneAclManager(logger.Logger):
 
         feature_tb = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.FEATURE_TABLE)
         self.RedfishAllowed = feature_tb.get("redfish", {}).get("state") == "enabled"
+        self.DhcpServerSyslogAllowed = feature_tb.get("dhcp_server", {}).get("state") == "enabled"
 
         metadata = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.DEVICE_METADATA_TABLE)
         if 'subtype' in metadata['localhost'] and metadata['localhost']['subtype'] == 'DualToR':
@@ -668,6 +670,10 @@ class ControlPlaneAclManager(logger.Logger):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', '127.0.0.1', '-i', 'lo', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', '::1', '-i', 'lo', '-j', 'ACCEPT'])
 
+        # dhcp_server docker0 syslog (RELP tcp/2514) exception; host namespace / IPv4 only
+        if namespace == DEFAULT_NAMESPACE and self.DhcpServerSyslogAllowed:
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-i', 'docker0', '-p', 'tcp', '--dport', '2514', '-j', 'ACCEPT', '-m', 'comment', '--comment', 'dhcp_server_syslog'])
+
 
         if self.bfdAllowed:
             iptables_cmds += self.get_bfd_iptable_commands(namespace)
@@ -1094,27 +1100,28 @@ class ControlPlaneAclManager(logger.Logger):
         self.RedfishAllowed = False
         self.log_info("Disabled REDFISH control plane ACL handling")
 
-    def handle_redfish_feature_events(self, subscribe_feature_table, namespace, ctrl_plane_acl_notification):
-        """Drain FEATURE table events and toggle REDFISH control plane ACL handling.
-
-        REDFISH iptables rules are only emitted when FEATURE.redfish is enabled. On a
-        state change, flip RedfishAllowed and request a re-walk so any existing REDFISH
-        ACL rules get (de)programmed immediately.
-        """
+    def handle_feature_state_events(self, subscribe_feature_table, namespace, ctrl_plane_acl_notification):
+        """Drain FEATURE-table events and toggle redfish / dhcp_server INPUT handling."""
         while True:
             key, op, fvs = subscribe_feature_table.pop()
             if not key:
                 break
-            if key != "redfish":
-                continue
             new_state = (op == 'SET' and dict(fvs).get("state") == "enabled")
-            if new_state == self.RedfishAllowed:
-                continue
-            if new_state:
-                self.allow_redfish()
-            else:
-                self.block_redfish()
-            ctrl_plane_acl_notification.add(namespace)
+            if key == "redfish":
+                if new_state == self.RedfishAllowed:
+                    continue
+                if new_state:
+                    self.allow_redfish()
+                else:
+                    self.block_redfish()
+                ctrl_plane_acl_notification.add(namespace)
+            elif key == "dhcp_server":
+                if new_state == self.DhcpServerSyslogAllowed:
+                    continue
+                self.DhcpServerSyslogAllowed = new_state
+                self.log_info("{} dhcp_server docker0 syslog control plane ACL handling"
+                              .format("Enabled" if new_state else "Disabled"))
+                ctrl_plane_acl_notification.add(namespace)
 
     def remove_dash_ha_rules(self, namespace, port):
         iptables_cmds = []
@@ -1329,7 +1336,7 @@ class ControlPlaneAclManager(logger.Logger):
                     if "dash-ha" in self.feature_present:
                         self.update_dash_ha_rules(namespace, key, op, fvs)
 
-                self.handle_redfish_feature_events(subscribe_feature_table, namespace, ctrl_plane_acl_notification)
+                self.handle_feature_state_events(subscribe_feature_table, namespace, ctrl_plane_acl_notification)
 
             # Pop data of both Subscriber Table object of namespace that got config db acl table event
             for table in config_db_subscriber_table_map[namespace]:
