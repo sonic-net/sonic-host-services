@@ -103,7 +103,7 @@ def printable_escape(payload: bytes) -> str:
         if byte < 0x20 or 0x7F <= byte <= 0x9F:
             return r"\x{:02x}".format(byte)
         return None
-    
+
     def _utf8_width(byte: int) -> int:
         if 0xC2 <= byte <= 0xDF:
             return 2
@@ -615,7 +615,13 @@ class RecordingArchiver:
 
 
 class MirrorManager:
-    """Thread-safe per-line mirror state machine."""
+    """Coordinate one console line's mirror session and runtime state.
+
+    Construction resets the line to ``idle`` in STATE_DB. Use :meth:`start`,
+    :meth:`submit`, :meth:`update_timeout`, :meth:`status`, and :meth:`stop` to
+    manage a session, then call :meth:`shutdown` when the proxy exits. Public
+    methods are thread-safe.
+    """
 
     def __init__(
         self,
@@ -677,6 +683,7 @@ class MirrorManager:
         self._state_set(values)
 
     def start(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        """Start an idle mirror session and return its active-session metadata."""
         direction = options.get("direction", "both")
         if not isinstance(direction, str) or direction not in VALID_DIRECTIONS:
             raise MirrorError("invalid_direction", "Direction must be rx, tx, or both")
@@ -684,6 +691,10 @@ class MirrorManager:
         max_file_size = options.get("max_file_size", DEFAULT_MAX_FILE_SIZE_MB)
         if isinstance(max_file_size, bool) or not isinstance(max_file_size, int) or max_file_size <= 0:
             raise MirrorError("invalid_max_file_size", "max_file_size must be a positive integer in MB")
+        owner_pid = options.get("owner_pid")
+        if isinstance(owner_pid, bool) or not isinstance(owner_pid, int) or owner_pid <= 0:
+            raise MirrorError("invalid_owner_pid", "owner_pid must be a positive integer")
+        started_by = str(options.get("started_by", "root"))
 
         with self._lock:
             if self.state != "idle":
@@ -718,8 +729,8 @@ class MirrorManager:
             self.timeout_seconds = timeout_seconds
             self.deadline = time.monotonic() + timeout_seconds
             self.file_path = writer.file_path
-            self._owner_pid = int(options.get("owner_pid", 0))
-            self._started_by = str(options.get("started_by", "root"))
+            self._owner_pid = owner_pid
+            self._started_by = started_by
             self.writer_drop_count = 0
             self.timer = timer
             self.state = "active"
@@ -754,6 +765,7 @@ class MirrorManager:
         self.writer_drop_count = 0
 
     def submit(self, direction: str, payload: bytes) -> None:
+        """Best-effort submit RX/TX bytes without blocking the proxy data path."""
         if direction not in ("rx", "tx") or not payload:
             return
         if not self._lock.acquire(blocking=False):
@@ -779,6 +791,7 @@ class MirrorManager:
             self._lock.release()
 
     def update_timeout(self, timeout_value: Any) -> Dict[str, Any]:
+        """Reset an active session's timeout from now and return the new timeout."""
         timeout_text, timeout_seconds = parse_duration(timeout_value)
         replacement = threading.Timer(
             timeout_seconds, lambda: self._on_timeout(replacement)
@@ -812,6 +825,10 @@ class MirrorManager:
         archive: bool = False,
         expected_timer: Optional[threading.Timer] = None,
     ) -> Dict[str, Any]:
+        """Stop an active session, optionally submitting its files for archiving.
+
+        ``expected_timer`` rejects callbacks from a superseded timeout timer.
+        """
         with self._lock:
             if self.state != "active" or self.writer is None:
                 raise MirrorError("mirror_not_active", "Line {} has no active mirror session".format(self.line))
@@ -870,6 +887,7 @@ class MirrorManager:
         }
 
     def status(self) -> Dict[str, Any]:
+        """Return the current state and any active-session metadata."""
         with self._lock:
             response: Dict[str, Any] = {"status": "ok", "state": self.state, "line": self.line}
             if self.state in ("active", "stopping"):
@@ -918,6 +936,7 @@ class MirrorManager:
             self._write_active_state()
 
     def shutdown(self, archive_timeout: float = 5.0) -> None:
+        """Stop any active session and shut down the archiver within the timeout."""
         with self._lock:
             active = self.state == "active"
         if active:
@@ -929,3 +948,264 @@ class MirrorManager:
         with self._lock:
             self.state = "idle"
             self._write_idle_state()
+
+
+def _recv_exact(connection: socket.socket, size: int) -> Optional[bytes]:
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = connection.recv(remaining)
+        if not chunk:
+            return None
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+def recv_message(connection: socket.socket) -> Optional[Dict[str, Any]]:
+    """Receive one length-prefixed JSON object, or ``None`` after a clean EOF."""
+    header = _recv_exact(connection, 4)
+    if header is None:
+        return None
+    length = struct.unpack("!I", header)[0]
+    if length <= 0 or length > MAX_CONTROL_MESSAGE:
+        raise MirrorError("invalid_message", "Invalid control message length")
+    payload = _recv_exact(connection, length)
+    if payload is None:
+        raise MirrorError("invalid_message", "Truncated control message")
+    try:
+        message = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise MirrorError("invalid_message", "Control message is not valid UTF-8 JSON")
+    if not isinstance(message, dict):
+        raise MirrorError("invalid_message", "Control message must be a JSON object")
+    return message
+
+def send_message(connection: socket.socket, message: Dict[str, Any]) -> None:
+    """Send one JSON object using the control protocol's length prefix."""
+    payload = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    connection.sendall(struct.pack("!I", len(payload)) + payload)
+
+class MirrorControlServer:
+    """Serve root-only mirror control requests for one console line.
+
+    The server listens on ``line<line>.sock`` below ``runtime_dir`` and delegates
+    validated start, stop, status, and timeout requests to ``manager``. Call
+    :meth:`start` after construction and :meth:`stop` during proxy shutdown.
+    Client handling and archive-completion waits run on bounded worker threads.
+    """
+
+    def __init__(
+        self,
+        line: str,
+        manager: MirrorManager,
+        runtime_dir: str = MIRROR_RUNTIME_DIR,
+        archive_wait_seconds: float = ARCHIVE_WAIT_SECONDS,
+        max_clients: int = 8,
+    ) -> None:
+        self.line = validate_line(line)
+        self.manager = manager
+        self.runtime_dir = runtime_dir
+        self.archive_wait_seconds = archive_wait_seconds
+        self.max_clients = max_clients
+        self.socket_path = os.path.join(runtime_dir, "line{}.sock".format(self.line))
+        self._socket: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = threading.Event()
+        self._clients = threading.Semaphore(max_clients)
+        self._client_threads: List[threading.Thread] = []
+
+    @staticmethod
+    def _root_only(uid: int) -> bool:
+        return uid == 0
+
+    def start(self) -> None:
+        """Create the control socket and start accepting client requests."""
+        _ensure_secure_directory(self.runtime_dir)
+        # Ensure the socket path is safe to use
+        try:
+            info = os.lstat(self.socket_path)
+            if not stat.S_ISSOCK(info.st_mode):
+                raise MirrorError("unsafe_socket_path", "Control socket path is occupied by a non-socket")
+            os.unlink(self.socket_path)
+        except FileNotFoundError:
+            pass
+        # Create the socket and bind
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(self.socket_path)
+            server.listen(self.max_clients)
+            server.settimeout(0.2)
+        except Exception:
+            server.close()
+            try:
+                os.unlink(self.socket_path)
+            except OSError:
+                pass
+            raise
+        self._socket = server
+        # Start the background thread
+        self._running.set()
+        self._thread = threading.Thread(
+            target=self._serve,
+            name="console-mirror-control-{}".format(self.line),
+            daemon=True
+        )
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while self._running.is_set():
+            try:
+                connection, _ = self._socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not self._clients.acquire(blocking=False):
+                connection.close()
+                continue
+            thread = threading.Thread(
+                target=self._handle_and_release,
+                args=(connection,),
+                name="console-mirror-client-{}".format(self.line),
+                daemon=True,
+            )
+            self._client_threads.append(thread)
+            thread.start()
+
+    def _handle_and_release(self, connection: socket.socket) -> None:
+        try:
+            self._handle_client(connection)
+        finally:
+            connection.close()
+            self._clients.release()
+            try:
+                self._client_threads.remove(threading.current_thread())
+            except ValueError:
+                pass
+
+    def _peer_credentials(self, connection: socket.socket) -> Tuple[int, int, int]:
+        credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        return struct.unpack("3i", credentials)
+
+    def _send_archive_completion(self, connection: socket.socket, handle: ArchiveHandle) -> None:
+        try:
+            deadline = time.monotonic() + self.archive_wait_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    handle.cancel()
+                    return
+                try:
+                    result = handle.result(timeout=min(0.2, remaining))
+                    break
+                # If the client disconnects while waiting, stop waiting and return
+                except concurrent.futures.TimeoutError:
+                    readable, _, _ = select.select([connection], [], [], 0)
+                    if readable and connection.recv(1, socket.MSG_PEEK) == b"":
+                        return
+            if result.undeleted_sources:
+                send_message(
+                    connection,
+                    {
+                        "status": "error",
+                        "code": "archive_cleanup_failed",
+                        "message": "Archive is valid but some source logs could not be deleted",
+                        "archive_path": result.archive_path,
+                        "source_paths": list(result.undeleted_sources),
+                    },
+                )
+            else:
+                send_message(connection, {"status": "ok", "archive_path": result.archive_path})
+        except MirrorError as error:
+            send_message(
+                connection,
+                {
+                    "status": "error",
+                    "code": error.code,
+                    "message": error.message + "; original log parts were preserved",
+                },
+            )
+        except (OSError, BrokenPipeError):
+            # A disconnected CLI loses only its response subscription.
+            pass
+        except Exception as error:
+            send_message(
+                connection,
+                {
+                    "status": "error",
+                    "code": "archive_failed",
+                    "message": "Archive packaging failed: {}; original log parts were preserved".format(error),
+                },
+            )
+
+    def _handle_client(self, connection: socket.socket) -> None:
+        try:
+            pid, uid, gid = self._peer_credentials(connection)
+            if not self._root_only(uid):
+                raise MirrorError("permission_denied", "Mirror control requires root privileges")
+            request = recv_message(connection)
+            if request is None:
+                return
+            if str(request.get("line")) != self.line:
+                raise MirrorError("line_mismatch", "Requested line does not match this proxy")
+            operation = request.get("op")
+            if operation == "start":
+                username = request.get("started_by")
+                if not isinstance(username, str) or not username or len(username) > 256:
+                    try:
+                        username = pwd.getpwuid(uid).pw_name
+                    except KeyError:
+                        username = str(uid)
+                options = dict(request)
+                options.update(owner_pid=pid, started_by=username)
+                response = self.manager.start(options)
+                send_message(connection, response)
+            elif operation == "stop":
+                archive = request.get("archive", False)
+                if not isinstance(archive, bool):
+                    raise MirrorError("invalid_archive", "archive must be a boolean")
+                response = self.manager.stop(reason="manual", archive=archive)
+                handle = response.pop("archive_handle", None)
+                send_message(connection, response)
+                if handle is not None:
+                    self._send_archive_completion(connection, handle)
+            elif operation == "status":
+                send_message(connection, self.manager.status())
+            elif operation == "timeout":
+                send_message(connection, self.manager.update_timeout(request.get("timeout")))
+            else:
+                raise MirrorError("unsupported_operation", "Unsupported mirror operation")
+        except MirrorError as error:
+            response = {"status": "error", "code": error.code, "message": error.message}
+            response.update(error.details)
+            try:
+                send_message(connection, response)
+            except OSError:
+                pass
+            except Exception as error:
+                log.exception("[%s] Unexpected mirror control error", self.line)
+                try:
+                    send_message(
+                        connection,
+                        {"status": "error", "code": "internal_error", "message": str(error)},
+                    )
+                except OSError:
+                    pass
+
+    def stop(self) -> None:
+        """Stop accepting clients, join workers boundedly, and remove the socket."""
+        self._running.clear()
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
+        if self._thread is not None:
+            self._thread.join(1.0)
+            self._thread = None
+        for thread in list(self._client_threads):
+            if thread.is_alive():
+                thread.join(0.1)
+        try:
+            os.unlink(self.socket_path)
+        except OSError as error:
+            if error.errno != errno.ENOENT:
+                log.warning("Failed to remove mirror control socket %s: %s", self.socket_path, error)

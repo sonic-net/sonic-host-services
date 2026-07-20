@@ -17,6 +17,7 @@ import sys
 import time
 import copy
 import termios
+import types
 from unittest import TestCase, mock
 from parameterized import parameterized
 
@@ -308,7 +309,7 @@ class TestDCEService(TestCase):
         with mock.patch.object(service, '_sync') as mock_sync:
             service.console_port_handler("1", "SET", {"baud_rate": "9600"})
             mock_sync.assert_called_once()
-    
+
     def test_dce_console_switch_handler_triggers_sync(self):
         """Test console_switch_handler triggers _sync on feature toggle."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
@@ -349,6 +350,33 @@ class TestDCEService(TestCase):
         self.assertEqual(len(received_frames), 1)  # Now we should have one frame
         self.assertTrue(received_frames[0].is_heartbeat())
         self.assertEqual(received_frames[0].seq, 10)
+
+
+class TestProxyMirrorHooks(TestCase):
+    """The proxy mirrors only bytes successfully forwarded on each path."""
+
+    def test_ptm_bytes_are_submitted_as_tx(self):
+        service = console_monitor.ProxyService("1")
+        service.running = True
+        service.ptm_fd = 10
+        service.ser_fd = 11
+        service.mirror_manager = mock.Mock()
+
+        with mock.patch.object(console_monitor.os, "read", return_value=b"show\n"), \
+                mock.patch.object(console_monitor.os, "write", return_value=5):
+            service._on_ptm_read()
+
+        service.mirror_manager.submit.assert_called_once_with("tx", b"show\n")
+
+    def test_filtered_serial_bytes_are_submitted_as_rx(self):
+        service = console_monitor.ProxyService("1")
+        service.ptm_fd = 10
+        service.mirror_manager = mock.Mock()
+
+        with mock.patch.object(console_monitor.os, "write", return_value=4):
+            service._on_user_data_received(b"boot")
+
+        service.mirror_manager.submit.assert_called_once_with("rx", b"boot")
 
 
 # ============================================================
@@ -2036,6 +2064,8 @@ class TestProxyServicePhases(TestCase):
             
             self.assertFalse(result)
     
+    @mock.patch.object(console_monitor, 'MirrorControlServer')
+    @mock.patch.object(console_monitor, 'MirrorManager')
     @mock.patch.object(console_monitor, 'configure_serial')
     @mock.patch.object(console_monitor, 'set_nonblocking')
     @mock.patch('os.open', return_value=12)
