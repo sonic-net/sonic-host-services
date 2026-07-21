@@ -142,7 +142,7 @@ class GnoiRebootHandler:
             ModuleBase.MODULE_STATUS_POWERED_DOWN,
         )
 
-    def _handle_transition(self, dpu_name: str, transition_type: str,
+    def _handle_transition(self, dpu_name: str,
                            config_db=None, state_db=None) -> bool:
         """
         Handle a shutdown or reboot transition for a DPU module.
@@ -392,7 +392,7 @@ def main():
                             thread_config_db = daemon_base.db_connect("CONFIG_DB")
                             thread_state_db = daemon_base.db_connect("STATE_DB")
                             reboot_handler._handle_transition(
-                                dpu, "shutdown",
+                                dpu,
                                 config_db=thread_config_db,
                                 state_db=thread_state_db)
                             logger.log_info(f"{dpu}: Transition thread completed successfully")
