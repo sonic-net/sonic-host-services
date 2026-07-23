@@ -1,0 +1,12 @@
+[Unit]
+Description=Init the PINS platform values into STATE DB.
+Requires=database.service
+After=swss.service
+After=rsyslog-config.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/bin/pins_platform_init.py
+
+[Install]
+WantedBy=multi-user.target

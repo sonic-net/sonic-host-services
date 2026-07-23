@@ -47,6 +47,7 @@ setup(
         'scripts/determine-reboot-cause',
         'scripts/process-reboot-cause',
         'scripts/gnoi_shutdown_daemon.py',
+        'scripts/pins_platform_init.py',
         'scripts/sonic-host-server',
         'scripts/ldap.py',
         'scripts/console-monitor'
