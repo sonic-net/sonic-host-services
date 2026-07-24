@@ -32,8 +32,8 @@ USER_ISSUED_REBOOT_CAUSE_REGEX ="User issued \'{}\' command [User: {}, Time: {}]
 REBOOT_CAUSE_UNKNOWN = "Unknown"
 REBOOT_CAUSE_TABLE_NAME = "REBOOT_CAUSE"
 MAX_HISTORY_FILES = 10
-DPU_REBOOT_CAUSE_DB_FIELDS = ("cause", "time", "user", "comment", "boot_id")
 NPU_REBOOT_CAUSE_DB_FIELDS = ("cause", "time", "user", "comment")
+DPU_REBOOT_CAUSE_DB_FIELDS = NPU_REBOOT_CAUSE_DB_FIELDS + ("boot_id", "device")
 
 REDIS_HOSTIP = "127.0.0.1"
 state_db = None
