@@ -142,11 +142,18 @@ class GnoiRebootHandler:
             ModuleBase.MODULE_STATUS_POWERED_DOWN,
         )
 
-    def _handle_transition(self, dpu_name: str, transition_type: str) -> bool:
+    def _handle_transition(self, dpu_name: str,
+                           config_db=None, state_db=None) -> bool:
         """
         Handle a shutdown or reboot transition for a DPU module.
         Returns True if the operation completed successfully, False otherwise.
+
+        config_db/state_db are per-thread DB connections; fall back to the
+        shared connections for direct/unit-test callers.
         """
+        config_db = config_db if config_db is not None else self._config_db
+        state_db = state_db if state_db is not None else self._db
+
         logger.log_notice(f"{dpu_name}: Starting gNOI shutdown sequence")
 
         # Check if DPU is already powered off / offline before attempting gNOI shutdown.
@@ -174,14 +181,14 @@ class GnoiRebootHandler:
             return cleared
 
         # Wait for platform PCI detach completion
-        if not self._wait_for_gnoi_halt_in_progress(dpu_name):
+        if not self._wait_for_gnoi_halt_in_progress(dpu_name, state_db):
             logger.log_warning(f"{dpu_name}: Timeout waiting for PCI detach, proceeding anyway")
 
         # Get DPU configuration
         dpu_ip = None
         try:
-            dpu_ip = get_dpu_ip(self._config_db, dpu_name)
-            port = get_dpu_gnmi_port(self._config_db, dpu_name)
+            dpu_ip = get_dpu_ip(config_db, dpu_name)
+            port = get_dpu_gnmi_port(config_db, dpu_name)
             if not dpu_ip:
                 logger.log_error(f"{dpu_name}: IP not found in DHCP_SERVER_IPV4_PORT table (key: bridge-midplane|{dpu_name.lower()}), cannot proceed")
                 self._clear_halt_flag(dpu_name)
@@ -206,16 +213,17 @@ class GnoiRebootHandler:
 
         return reboot_successful
 
-    def _wait_for_gnoi_halt_in_progress(self, dpu_name: str) -> bool:
+    def _wait_for_gnoi_halt_in_progress(self, dpu_name: str, state_db=None) -> bool:
         """
         Poll for gnoi_halt_in_progress flag in STATE_DB CHASSIS_MODULE_TABLE.
         This flag is set by the platform after completing PCI detach.
         """
+        state_db = state_db if state_db is not None else self._db
         deadline = time.monotonic() + _get_halt_timeout()
 
         while time.monotonic() < deadline:
             try:
-                table = swsscommon.Table(self._db, "CHASSIS_MODULE_TABLE")
+                table = swsscommon.Table(state_db, "CHASSIS_MODULE_TABLE")
                 (status, fvs) = table.get(dpu_name)
 
                 if status:
@@ -378,7 +386,15 @@ def main():
                     # Wrapper to clean up after transition
                     def handle_and_cleanup(dpu):
                         try:
-                            reboot_handler._handle_transition(dpu, "shutdown")
+                            # Per-thread DB connections: a redis connection is a
+                            # single non-thread-safe socket, so sharing one lets
+                            # concurrent DPU reads cross their IP/port values.
+                            thread_config_db = daemon_base.db_connect("CONFIG_DB")
+                            thread_state_db = daemon_base.db_connect("STATE_DB")
+                            reboot_handler._handle_transition(
+                                dpu,
+                                config_db=thread_config_db,
+                                state_db=thread_state_db)
                             logger.log_info(f"{dpu}: Transition thread completed successfully")
                         except Exception as e:
                             logger.log_error(f"{dpu}: Transition thread failed with exception: {e}")
