@@ -25,17 +25,21 @@ class TestFormatting(TestCase):
         for invalid in ("0s", "-1h", "1.5h", "forever", "1h30m", 123, "10x", "999999d"):
             with self.assertRaises(
                 console_mirror.MirrorError,
-                msg="{} should be invalid".format(invalid),
+                msg=f"{invalid} should be invalid",
             ):
                 console_mirror.parse_duration(invalid)
 
     def test_printable_escape_is_utf8_readable_and_terminal_safe(self):
-        payload = "SONiC é你好😀".encode("utf-8") + b"\n\r\t\\\x1b[31m\x00\xff\xfe\x80\x9f"
+        payload = (
+            "SONiC é你好😀".encode("utf-8") + b"\n\r\t\\\x1b[31m\x00\xff\xfe\x80\x9f"
+        )
         self.assertEqual(
             console_mirror.printable_escape(payload),
             r"SONiC é你好😀\n\r\t\\\x1b[31m\x00\xff\xfe\x80\x9f",
         )
-        self.assertEqual(console_mirror.printable_escape("\u200b".encode("utf-8")), r"\xe2\x80\x8b")
+        self.assertEqual(
+            console_mirror.printable_escape("\u200b".encode("utf-8")), r"\xe2\x80\x8b"
+        )
 
     def test_secure_directory_rejects_symbolic_link(self):
         with tempfile.TemporaryDirectory() as tempdir:
@@ -78,7 +82,9 @@ class TestRecordingWriter(TestCase):
         path = writer.file_path
         self.assertTrue(writer.submit_data("rx", b"Booting SONiC\n"))
         self.assertTrue(writer.submit_data("tx", bytearray(b"\x1b[2Jshow\n")))
-        self.assertTrue(writer.submit_event({"event": "stop", "reason": "manual", "text": "你好"}))
+        self.assertTrue(
+            writer.submit_event({"event": "stop", "reason": "manual", "text": "你好"})
+        )
         writer.close()
 
         self.assertFalse(writer.submit_data("rx", b"after close"))
@@ -90,11 +96,15 @@ class TestRecordingWriter(TestCase):
             lines = recording.read().splitlines()
         self.assertEqual(lines[0], "# SONIC_CONSOLE_MIRROR_TEXT version=1")
         self.assertIn("line=1 direction=both", lines[1])
-        self.assertRegex(lines[3], r"^[^ ]+ \+[0-9]{12}ms 00000001 RX 00000014 Booting SONiC\\n$")
+        self.assertRegex(
+            lines[3], r"^[^ ]+ \+[0-9]{12}ms 00000001 RX 00000014 Booting SONiC\\n$"
+        )
         self.assertIn(r"TX 00000009 \x1b[2Jshow\n", lines[4])
-        self.assertTrue(lines[5].endswith(
-            'EVENT 00000050 {"event":"stop","reason":"manual","text":"你好"}'
-        ))
+        self.assertTrue(
+            lines[5].endswith(
+                'EVENT 00000050 {"event":"stop","reason":"manual","text":"你好"}'
+            )
+        )
 
     def test_rejects_invalid_line_and_direction(self):
         with self.assertRaises(console_mirror.MirrorError) as caught:
@@ -106,9 +116,11 @@ class TestRecordingWriter(TestCase):
         self.assertEqual(caught.exception.code, "invalid_direction")
 
     def test_root_owned_directories_and_recording_file(self):
-        with mock.patch.object(console_mirror.os, "geteuid", return_value=0), \
-                mock.patch.object(console_mirror.os, "chown") as chown, \
-                mock.patch.object(console_mirror.os, "fchown") as fchown:
+        with (
+            mock.patch.object(console_mirror.os, "geteuid", return_value=0),
+            mock.patch.object(console_mirror.os, "chown") as chown,
+            mock.patch.object(console_mirror.os, "fchown") as fchown,
+        ):
             writer = self.create_writer(line="5", direction="tx")
             writer.close()
         self.assertEqual(chown.call_count, 2)
@@ -161,7 +173,9 @@ class TestRecordingWriter(TestCase):
 
     def test_render_record_clamps_delta_and_handles_event_payload(self):
         writer = self.create_writer()
-        before_start = console_mirror.WriterRecord("RX", b"\x00", writer.start_timestamp - 1)
+        before_start = console_mirror.WriterRecord(
+            "RX", b"\x00", writer.start_timestamp - 1
+        )
         far_future = console_mirror.WriterRecord(
             "EVENT",
             b'{"event":"future"}',
@@ -177,16 +191,22 @@ class TestRecordingWriter(TestCase):
         writer = object.__new__(console_mirror.RecordingWriter)
         writer._lock = mock.Mock()
         writer._lock.acquire.return_value = False
-        self.assertFalse(writer._submit(mock.sentinel.record, priority=False, nonblocking=True))
+        self.assertFalse(
+            writer._submit(mock.sentinel.record, priority=False, nonblocking=True)
+        )
         writer._lock.release.assert_not_called()
 
         writer._lock = threading.Lock()
         writer._accepting = True
         writer.queue_size = 0
         writer._queue = queue.Queue(maxsize=1)
-        self.assertFalse(writer._submit(mock.sentinel.record, priority=False, nonblocking=False))
+        self.assertFalse(
+            writer._submit(mock.sentinel.record, priority=False, nonblocking=False)
+        )
         writer._queue.put_nowait(mock.sentinel.queued)
-        self.assertFalse(writer._submit(mock.sentinel.record, priority=True, nonblocking=False))
+        self.assertFalse(
+            writer._submit(mock.sentinel.record, priority=True, nonblocking=False)
+        )
 
     def test_prepare_paths_retries_collision_and_reports_exhaustion(self):
         writer = object.__new__(console_mirror.RecordingWriter)
@@ -195,16 +215,20 @@ class TestRecordingWriter(TestCase):
         writer.line = "4"
         writer.direction = "both"
         writer._open_part = mock.Mock(side_effect=[FileExistsError(), None])
-        with mock.patch.object(console_mirror, "_ensure_secure_directory"), \
-                mock.patch.object(console_mirror.time, "sleep") as sleep:
+        with (
+            mock.patch.object(console_mirror, "_ensure_secure_directory"),
+            mock.patch.object(console_mirror.time, "sleep") as sleep,
+        ):
             writer._prepare_paths_and_open()
         self.assertEqual(writer._open_part.call_count, 2)
         sleep.assert_called_once_with(0.000001)
 
         writer._open_part = mock.Mock(side_effect=FileExistsError("collision"))
-        with mock.patch.object(console_mirror, "_ensure_secure_directory"), \
-                mock.patch.object(console_mirror.time, "sleep"), \
-                self.assertRaises(console_mirror.MirrorError) as caught:
+        with (
+            mock.patch.object(console_mirror, "_ensure_secure_directory"),
+            mock.patch.object(console_mirror.time, "sleep"),
+            self.assertRaises(console_mirror.MirrorError) as caught,
+        ):
             writer._prepare_paths_and_open()
         self.assertEqual(caught.exception.code, "file_open_failed")
         self.assertIsInstance(caught.exception.__cause__, FileExistsError)
@@ -213,11 +237,15 @@ class TestRecordingWriter(TestCase):
     def test_open_part_cleans_up_descriptor_when_setup_fails(self):
         writer = object.__new__(console_mirror.RecordingWriter)
         writer.recording_prefix = os.path.join(self.tempdir.name, "recording")
-        with mock.patch.object(console_mirror.os, "open", return_value=42), \
-                mock.patch.object(console_mirror.os, "fchmod", side_effect=OSError("chmod")), \
-                mock.patch.object(console_mirror.os, "close") as close, \
-                mock.patch.object(console_mirror.os, "unlink") as unlink, \
-                self.assertRaisesRegex(OSError, "chmod"):
+        with (
+            mock.patch.object(console_mirror.os, "open", return_value=42),
+            mock.patch.object(
+                console_mirror.os, "fchmod", side_effect=OSError("chmod")
+            ),
+            mock.patch.object(console_mirror.os, "close") as close,
+            mock.patch.object(console_mirror.os, "unlink") as unlink,
+            self.assertRaisesRegex(OSError, "chmod"),
+        ):
             writer._open_part(1)
         close.assert_called_once_with(42)
         unlink.assert_called_once_with(writer.recording_prefix + "-part0001.log")
@@ -232,12 +260,16 @@ class TestRecordingWriter(TestCase):
         writer.direction = "rx"
         writer.start_timestamp = 0
         writer.timeout_text = "1h"
-        with mock.patch.object(console_mirror.os, "open", return_value=42), \
-                mock.patch.object(console_mirror.os, "fchmod"), \
-                mock.patch.object(console_mirror.os, "geteuid", return_value=1000), \
-                mock.patch.object(console_mirror.os, "fdopen", return_value=broken_file), \
-                mock.patch.object(console_mirror.os, "unlink", side_effect=OSError("unlink")), \
-                self.assertRaisesRegex(OSError, "write"):
+        with (
+            mock.patch.object(console_mirror.os, "open", return_value=42),
+            mock.patch.object(console_mirror.os, "fchmod"),
+            mock.patch.object(console_mirror.os, "geteuid", return_value=1000),
+            mock.patch.object(console_mirror.os, "fdopen", return_value=broken_file),
+            mock.patch.object(
+                console_mirror.os, "unlink", side_effect=OSError("unlink")
+            ),
+            self.assertRaisesRegex(OSError, "write"),
+        ):
             writer._open_part(1, exclusive=False)
         broken_file.close.assert_called_once_with()
 
@@ -324,15 +356,17 @@ class TestRecordingArchiver(TestCase):
         self.archivers.append(archiver)
         return archiver
 
-    def make_job(self, part_numbers=(1,), prefix_name="console-mirror-line1-both-session"):
+    def make_job(
+        self, part_numbers=(1,), prefix_name="console-mirror-line1-both-session"
+    ):
         line_dir = os.path.join(self.tempdir.name, "line1")
         os.makedirs(line_dir, exist_ok=True)
         prefix = os.path.join(line_dir, prefix_name)
         sources = []
         for number in part_numbers:
-            source = "{}-part{:04d}.log".format(prefix, number)
+            source = f"{prefix}-part{number:04d}.log"
             with open(source, "wb") as stream:
-                stream.write("part{}".format(number).encode("ascii"))
+                stream.write(f"part{number}".encode("ascii"))
             sources.append(source)
         job = console_mirror.ArchiveJob(
             "1", "both", time.time(), prefix, prefix + ".zip", "manual"
@@ -359,22 +393,30 @@ class TestRecordingArchiver(TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(result.archive_path).st_mode), 0o600)
         with zipfile.ZipFile(result.archive_path) as archive:
             self.assertIsNone(archive.testzip())
-            self.assertEqual(archive.namelist(), [os.path.basename(path) for path in sources])
+            self.assertEqual(
+                archive.namelist(), [os.path.basename(path) for path in sources]
+            )
 
     def test_archive_file_is_root_owned_when_running_as_root(self):
         job, _ = self.make_job((1,), "root-owned")
-        with mock.patch.object(console_mirror.os, "geteuid", return_value=0), \
-                mock.patch.object(console_mirror.os, "fchown") as fchown:
+        with (
+            mock.patch.object(console_mirror.os, "geteuid", return_value=0),
+            mock.patch.object(console_mirror.os, "fchown") as fchown,
+        ):
             result = console_mirror.RecordingArchiver._archive(job, threading.Event())
         self.assertEqual(result.archive_path, job.archive_path)
         fchown.assert_called_once()
 
     def test_missing_and_noncontiguous_parts_are_rejected(self):
         for part_numbers in ((), (2,), (1, 3)):
-            job, sources = self.make_job(part_numbers, "session-{}".format(len(part_numbers)))
+            job, sources = self.make_job(
+                part_numbers, f"session-{len(part_numbers)}"
+            )
             self.assert_mirror_error(
                 "archive_failed",
-                lambda job=job: console_mirror.RecordingArchiver._archive(job, threading.Event()),
+                lambda job=job: console_mirror.RecordingArchiver._archive(
+                    job, threading.Event()
+                ),
             )
             self.assertTrue(all(os.path.exists(source) for source in sources))
             self.assertFalse(os.path.exists(job.archive_path))
@@ -442,11 +484,13 @@ class TestRecordingArchiver(TestCase):
             [False, False, False, True],
         )
         for index, sequence in enumerate(checkpoints):
-            job, sources = self.make_job((1,), "cancel-{}".format(index))
+            job, sources = self.make_job((1,), f"cancel-{index}")
             self.assert_mirror_error(
                 "archive_cancelled",
-                lambda job=job, sequence=sequence: console_mirror.RecordingArchiver._archive(
-                    job, SequencedEvent(sequence)
+                lambda job=job, sequence=sequence: (
+                    console_mirror.RecordingArchiver._archive(
+                        job, SequencedEvent(sequence)
+                    )
                 ),
             )
             self.assertTrue(os.path.exists(sources[0]))
@@ -456,7 +500,7 @@ class TestRecordingArchiver(TestCase):
         real_zip_file = console_mirror.zipfile.ZipFile
         validation_results = (("bad-entry", [mock.sentinel.info]), (None, []))
         for index, (bad_entry, infos) in enumerate(validation_results):
-            job, sources = self.make_job((1,), "invalid-zip-{}".format(index))
+            job, sources = self.make_job((1,), f"invalid-zip-{index}")
             invalid_archive = mock.MagicMock()
             invalid_archive.__enter__.return_value.testzip.return_value = bad_entry
             invalid_archive.__enter__.return_value.infolist.return_value = infos
@@ -466,7 +510,9 @@ class TestRecordingArchiver(TestCase):
                     return invalid_archive
                 return real_zip_file(file, mode, *args, **kwargs)
 
-            with mock.patch.object(console_mirror.zipfile, "ZipFile", side_effect=zip_file):
+            with mock.patch.object(
+                console_mirror.zipfile, "ZipFile", side_effect=zip_file
+            ):
                 self.assert_mirror_error(
                     "archive_failed",
                     lambda job=job: console_mirror.RecordingArchiver._archive(
@@ -494,21 +540,31 @@ class TestRecordingArchiver(TestCase):
 
     def test_archive_wraps_creation_errors_and_closes_unwrapped_descriptor(self):
         job, sources = self.make_job((1,), "open-failure")
-        with mock.patch.object(console_mirror.os, "open", side_effect=OSError("no space")):
+        with mock.patch.object(
+            console_mirror.os, "open", side_effect=OSError("no space")
+        ):
             error = self.assert_mirror_error(
                 "archive_failed",
-                lambda: console_mirror.RecordingArchiver._archive(job, threading.Event()),
+                lambda: console_mirror.RecordingArchiver._archive(
+                    job, threading.Event()
+                ),
             )
         self.assertIn("no space", error.message)
         self.assertTrue(os.path.exists(sources[0]))
 
         job, _ = self.make_job((1,), "fdopen-failure")
         real_close = os.close
-        with mock.patch.object(console_mirror.os, "fdopen", side_effect=OSError("fdopen")), \
-                mock.patch.object(console_mirror.os, "close", wraps=real_close) as close:
+        with (
+            mock.patch.object(
+                console_mirror.os, "fdopen", side_effect=OSError("fdopen")
+            ),
+            mock.patch.object(console_mirror.os, "close", wraps=real_close) as close,
+        ):
             self.assert_mirror_error(
                 "archive_failed",
-                lambda: console_mirror.RecordingArchiver._archive(job, threading.Event()),
+                lambda: console_mirror.RecordingArchiver._archive(
+                    job, threading.Event()
+                ),
             )
         close.assert_called_once()
         self.assertFalse(os.path.exists(job.archive_path + ".tmp"))
@@ -516,12 +572,16 @@ class TestRecordingArchiver(TestCase):
     def test_temporary_cleanup_failure_is_logged(self):
         job, _ = self.make_job((1,), "cleanup-failure")
         cleanup_error = OSError(errno.EACCES, "permission denied")
-        with mock.patch.object(console_mirror.os, "open", side_effect=OSError("create")), \
-                mock.patch.object(console_mirror.os, "unlink", side_effect=cleanup_error), \
-                mock.patch.object(console_mirror.log, "warning") as warning:
+        with (
+            mock.patch.object(console_mirror.os, "open", side_effect=OSError("create")),
+            mock.patch.object(console_mirror.os, "unlink", side_effect=cleanup_error),
+            mock.patch.object(console_mirror.log, "warning") as warning,
+        ):
             self.assert_mirror_error(
                 "archive_failed",
-                lambda: console_mirror.RecordingArchiver._archive(job, threading.Event()),
+                lambda: console_mirror.RecordingArchiver._archive(
+                    job, threading.Event()
+                ),
             )
         warning.assert_called_once_with(
             "Failed to remove temporary archive %s: %s",
@@ -580,7 +640,9 @@ class TestMirrorManager(TestCase):
             self.timers.append(timer)
             return timer
 
-        self.timer_patch = mock.patch.object(console_mirror.threading, "Timer", side_effect=make_timer)
+        self.timer_patch = mock.patch.object(
+            console_mirror.threading, "Timer", side_effect=make_timer
+        )
         self.timer_patch.start()
 
     def tearDown(self):
@@ -633,9 +695,17 @@ class TestMirrorManager(TestCase):
         self.state_table.set.assert_called_once_with("7", [("state", "idle")])
         self.assertEqual(
             [call.args for call in self.state_table.hdel.call_args_list],
-            [("7", field) for field in (
-                "owner_pid", "started_by", "start_time", "timeout", "file_path", "direction"
-            )],
+            [
+                ("7", field)
+                for field in (
+                    "owner_pid",
+                    "started_by",
+                    "start_time",
+                    "timeout",
+                    "file_path",
+                    "direction",
+                )
+            ],
         )
 
         broken_table = mock.Mock()
@@ -710,11 +780,16 @@ class TestMirrorManager(TestCase):
         )
         self.assertEqual(manager._owner_pid, 1234)
         self.assertEqual(manager._started_by, "root")
-        self.assert_error("mirror_already_active", lambda: manager.start({"owner_pid": 1234}))
+        self.assert_error(
+            "mirror_already_active", lambda: manager.start({"owner_pid": 1234})
+        )
 
         for direction in ("sideways", 1):
             fresh = self.make_manager()
-            self.assert_error("invalid_direction", lambda direction=direction: fresh.start({"direction": direction}))
+            self.assert_error(
+                "invalid_direction",
+                lambda direction=direction: fresh.start({"direction": direction}),
+            )
         for size in (True, "8", 0, -1):
             fresh = self.make_manager()
             self.assert_error(
@@ -749,7 +824,9 @@ class TestMirrorManager(TestCase):
             expected,
         )
 
-        manager = self.make_manager(writer_factory=mock.Mock(side_effect=OSError("disk error")))
+        manager = self.make_manager(
+            writer_factory=mock.Mock(side_effect=OSError("disk error"))
+        )
         error = self.assert_error(
             "file_open_failed", lambda: manager.start({"owner_pid": 1234})
         )
@@ -832,15 +909,19 @@ class TestMirrorManager(TestCase):
 
         manager.writer = self.writer
         manager.start_time = 0
-        with mock.patch.object(console_mirror.time, "time", return_value=console_mirror.MAX_DELTA_MS / 1000):
+        with mock.patch.object(
+            console_mirror.time, "time", return_value=console_mirror.MAX_DELTA_MS / 1000
+        ):
             self.assert_error("invalid_timeout", lambda: manager.update_timeout("1s"))
 
     def test_update_timeout_replaces_timer_and_updates_writer_and_state(self):
         manager, _ = self.start_manager()
         previous = manager.timer
         manager.start_time = 100.0
-        with mock.patch.object(console_mirror.time, "time", return_value=99.0), \
-                mock.patch.object(console_mirror.time, "monotonic", return_value=500.0):
+        with (
+            mock.patch.object(console_mirror.time, "time", return_value=99.0),
+            mock.patch.object(console_mirror.time, "monotonic", return_value=500.0),
+        ):
             response = manager.update_timeout("30m")
 
         replacement = manager.timer
@@ -851,8 +932,12 @@ class TestMirrorManager(TestCase):
         self.assertEqual(manager.timeout_seconds, 1800)
         self.assertEqual(manager.deadline, 2300.0)
         self.writer.update_timeout.assert_called_once_with("30m")
-        self.writer.submit_event.assert_called_with({"event": "timeout_update", "timeout": "30m"})
-        self.assertEqual(response, {"status": "ok", "timeout": "30m", "remaining": "30m"})
+        self.writer.submit_event.assert_called_with(
+            {"event": "timeout_update", "timeout": "30m"}
+        )
+        self.assertEqual(
+            response, {"status": "ok", "timeout": "30m", "remaining": "30m"}
+        )
 
         with mock.patch.object(manager, "_on_timeout") as on_timeout:
             replacement.fire()
@@ -868,7 +953,9 @@ class TestMirrorManager(TestCase):
         previous = manager.timer
         previous_deadline = manager.deadline
         self.next_timer_error = RuntimeError("cannot start")
-        error = self.assert_error("timer_setup_failed", lambda: manager.update_timeout("30m"))
+        error = self.assert_error(
+            "timer_setup_failed", lambda: manager.update_timeout("30m")
+        )
 
         self.assertIn("cannot start", error.message)
         self.assertIs(manager.timer, previous)
@@ -882,6 +969,7 @@ class TestMirrorManager(TestCase):
         manager, _ = self.start_manager()
         timer = manager.timer
         states_seen = []
+
         def capture_state(line, values):
             states_seen.append(dict(values)["state"])
 
@@ -889,7 +977,9 @@ class TestMirrorManager(TestCase):
         response = manager.stop(reason="manual", archive=False)
 
         self.assertTrue(timer.cancelled)
-        self.writer.submit_event.assert_called_with({"event": "stop", "reason": "manual"})
+        self.writer.submit_event.assert_called_with(
+            {"event": "stop", "reason": "manual"}
+        )
         self.writer.close.assert_called_once_with()
         self.assertEqual(states_seen, ["stopping", "idle"])
         self.assertEqual(manager.state, "idle")
@@ -912,7 +1002,10 @@ class TestMirrorManager(TestCase):
         self.assert_error("mirror_not_active", manager.stop)
 
         manager, _ = self.start_manager(self.make_manager())
-        self.assert_error("stale_timeout", lambda: manager.stop(expected_timer=FakeTimer(1, lambda: None)))
+        self.assert_error(
+            "stale_timeout",
+            lambda: manager.stop(expected_timer=FakeTimer(1, lambda: None)),
+        )
         self.assertEqual(manager.state, "active")
 
         manager.timer = None
@@ -922,7 +1015,9 @@ class TestMirrorManager(TestCase):
     def test_stop_does_not_clear_a_writer_replaced_while_old_writer_closes(self):
         manager, _ = self.start_manager()
         replacement_writer = mock.Mock()
-        self.writer.close.side_effect = lambda: setattr(manager, "writer", replacement_writer)
+        self.writer.close.side_effect = lambda: setattr(
+            manager, "writer", replacement_writer
+        )
 
         manager.stop()
 
@@ -933,7 +1028,9 @@ class TestMirrorManager(TestCase):
         handle = mock.sentinel.archive_handle
         self.archiver.submit.return_value = handle
         manager, _ = self.start_manager(direction="rx")
-        response = manager.stop(reason="timeout", archive=True, expected_timer=manager.timer)
+        response = manager.stop(
+            reason="timeout", archive=True, expected_timer=manager.timer
+        )
 
         job = self.archiver.submit.call_args.args[0]
         self.assertEqual(
@@ -948,7 +1045,9 @@ class TestMirrorManager(TestCase):
             ),
         )
         self.assertEqual(response["status"], "packaging")
-        self.assertEqual(response["archive_path"], self.writer.recording_prefix + ".zip")
+        self.assertEqual(
+            response["archive_path"], self.writer.recording_prefix + ".zip"
+        )
         self.assertIs(response["archive_handle"], handle)
         self.assertEqual(manager.state, "idle")
 
@@ -956,7 +1055,10 @@ class TestMirrorManager(TestCase):
         expected = console_mirror.MirrorError("archive_queue_full", "full")
         self.archiver.submit.side_effect = expected
         manager, _ = self.start_manager()
-        self.assertIs(self.assert_error("archive_queue_full", lambda: manager.stop(archive=True)), expected)
+        self.assertIs(
+            self.assert_error("archive_queue_full", lambda: manager.stop(archive=True)),
+            expected,
+        )
         self.assertEqual(manager.state, "idle")
 
         self.archiver.submit.side_effect = RuntimeError("executor stopped")
@@ -967,7 +1069,9 @@ class TestMirrorManager(TestCase):
 
     def test_status_reports_idle_active_stopping_and_clamps_remaining(self):
         manager = self.make_manager()
-        self.assertEqual(manager.status(), {"status": "ok", "state": "idle", "line": "1"})
+        self.assertEqual(
+            manager.status(), {"status": "ok", "state": "idle", "line": "1"}
+        )
 
         manager, _ = self.start_manager(manager, direction="tx", timeout="1m")
         manager.deadline = 101.2
@@ -989,7 +1093,9 @@ class TestMirrorManager(TestCase):
         timer = FakeTimer(1, lambda: None)
         manager.stop = mock.Mock()
         manager._on_timeout(timer)
-        manager.stop.assert_called_once_with(reason="timeout", archive=True, expected_timer=timer)
+        manager.stop.assert_called_once_with(
+            reason="timeout", archive=True, expected_timer=timer
+        )
 
         for code in ("mirror_not_active", "stale_timeout"):
             manager.stop.side_effect = console_mirror.MirrorError(code, code)
@@ -997,7 +1103,9 @@ class TestMirrorManager(TestCase):
                 manager._on_timeout(timer)
             log_error.assert_not_called()
 
-        manager.stop.side_effect = console_mirror.MirrorError("archive_failed", "broken archive")
+        manager.stop.side_effect = console_mirror.MirrorError(
+            "archive_failed", "broken archive"
+        )
         with mock.patch.object(console_mirror.log, "error") as log_error:
             manager._on_timeout(timer)
         log_error.assert_called_once_with(
@@ -1007,8 +1115,12 @@ class TestMirrorManager(TestCase):
     def test_writer_fatal_callback_starts_named_daemon_stop_thread(self):
         manager = self.make_manager()
         thread = mock.Mock()
-        with mock.patch.object(console_mirror.threading, "Thread", return_value=thread) as thread_type, \
-                mock.patch.object(console_mirror.log, "error") as log_error:
+        with (
+            mock.patch.object(
+                console_mirror.threading, "Thread", return_value=thread
+            ) as thread_type,
+            mock.patch.object(console_mirror.log, "error") as log_error,
+        ):
             manager._on_writer_fatal(self.writer, OSError("disk full"))
         log_error.assert_called_once()
         thread_type.assert_called_once_with(
@@ -1034,7 +1146,9 @@ class TestMirrorManager(TestCase):
         manager._stop_after_writer_error(self.writer)
         manager.stop.assert_called_once_with(reason="writer_error", archive=False)
 
-        manager.stop.side_effect = console_mirror.MirrorError("mirror_not_active", "raced")
+        manager.stop.side_effect = console_mirror.MirrorError(
+            "mirror_not_active", "raced"
+        )
         manager._stop_after_writer_error(self.writer)
 
     def test_rotate_updates_only_an_active_session(self):
@@ -1061,12 +1175,16 @@ class TestMirrorManager(TestCase):
     def test_shutdown_stops_active_session_and_always_shuts_down_archiver(self):
         manager, _ = self.start_manager()
         manager.shutdown(archive_timeout=2.5)
-        self.writer.submit_event.assert_called_with({"event": "stop", "reason": "proxy_shutdown"})
+        self.writer.submit_event.assert_called_with(
+            {"event": "stop", "reason": "proxy_shutdown"}
+        )
         self.archiver.shutdown.assert_called_once_with(timeout=2.5)
         self.assertEqual(manager.state, "idle")
 
         manager = self.make_manager()
-        manager.stop = mock.Mock(side_effect=console_mirror.MirrorError("raced", "raced"))
+        manager.stop = mock.Mock(
+            side_effect=console_mirror.MirrorError("raced", "raced")
+        )
         manager.state = "active"
         manager.shutdown(archive_timeout=1)
         manager.stop.assert_called_once_with(reason="proxy_shutdown", archive=False)
@@ -1090,7 +1208,10 @@ class TestControlMessageProtocol(TestCase):
         if chunk_size is None:
             chunks = [data]
         else:
-            chunks = [data[index:index + chunk_size] for index in range(0, len(data), chunk_size)]
+            chunks = [
+                data[index : index + chunk_size]
+                for index in range(0, len(data), chunk_size)
+            ]
         connection.recv.side_effect = chunks
         return connection
 
@@ -1150,7 +1271,9 @@ class TestControlMessageProtocol(TestCase):
         framed = connection.sendall.call_args.args[0]
         length = struct.unpack("!I", framed[:4])[0]
         self.assertEqual(length, len(framed[4:]))
-        self.assertEqual(json.loads(framed[4:].decode("utf-8")), {"status": "ok", "text": "你好"})
+        self.assertEqual(
+            json.loads(framed[4:].decode("utf-8")), {"status": "ok", "text": "你好"}
+        )
         self.assertNotIn(b" ", framed[4:])
 
 
@@ -1173,9 +1296,13 @@ class TestMirrorControlServer(TestCase):
 
     def handle_request(self, request, credentials=(4321, 0, 0)):
         connection = mock.Mock()
-        with mock.patch.object(self.server, "_peer_credentials", return_value=credentials), \
-                mock.patch.object(console_mirror, "recv_message", return_value=request), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(
+                self.server, "_peer_credentials", return_value=credentials
+            ),
+            mock.patch.object(console_mirror, "recv_message", return_value=request),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._handle_client(connection)
         return connection, send
 
@@ -1194,11 +1321,17 @@ class TestMirrorControlServer(TestCase):
         server_socket = mock.Mock()
         worker = mock.Mock()
         socket_info = mock.Mock(st_mode=stat.S_IFSOCK)
-        with mock.patch.object(console_mirror, "_ensure_secure_directory") as secure, \
-                mock.patch.object(console_mirror.os, "lstat", return_value=socket_info), \
-                mock.patch.object(console_mirror.os, "unlink") as unlink, \
-                mock.patch.object(console_mirror.socket, "socket", return_value=server_socket) as socket_type, \
-                mock.patch.object(console_mirror.threading, "Thread", return_value=worker) as thread_type:
+        with (
+            mock.patch.object(console_mirror, "_ensure_secure_directory") as secure,
+            mock.patch.object(console_mirror.os, "lstat", return_value=socket_info),
+            mock.patch.object(console_mirror.os, "unlink") as unlink,
+            mock.patch.object(
+                console_mirror.socket, "socket", return_value=server_socket
+            ) as socket_type,
+            mock.patch.object(
+                console_mirror.threading, "Thread", return_value=worker
+            ) as thread_type,
+        ):
             self.server.start()
 
         secure.assert_called_once_with("/runtime/mirror")
@@ -1218,27 +1351,47 @@ class TestMirrorControlServer(TestCase):
 
     def test_start_accepts_missing_socket_path_and_rejects_occupied_path(self):
         server_socket = mock.Mock()
-        with mock.patch.object(console_mirror, "_ensure_secure_directory"), \
-                mock.patch.object(console_mirror.os, "lstat", side_effect=FileNotFoundError), \
-                mock.patch.object(console_mirror.socket, "socket", return_value=server_socket), \
-                mock.patch.object(console_mirror.threading, "Thread", return_value=mock.Mock()):
+        with (
+            mock.patch.object(console_mirror, "_ensure_secure_directory"),
+            mock.patch.object(
+                console_mirror.os, "lstat", side_effect=FileNotFoundError
+            ),
+            mock.patch.object(
+                console_mirror.socket, "socket", return_value=server_socket
+            ),
+            mock.patch.object(
+                console_mirror.threading, "Thread", return_value=mock.Mock()
+            ),
+        ):
             self.server.start()
         self.assertIs(self.server._socket, server_socket)
 
-        with mock.patch.object(console_mirror, "_ensure_secure_directory"), \
-                mock.patch.object(console_mirror.os, "lstat", return_value=mock.Mock(st_mode=stat.S_IFREG)), \
-                self.assertRaises(console_mirror.MirrorError) as caught:
+        with (
+            mock.patch.object(console_mirror, "_ensure_secure_directory"),
+            mock.patch.object(
+                console_mirror.os, "lstat", return_value=mock.Mock(st_mode=stat.S_IFREG)
+            ),
+            self.assertRaises(console_mirror.MirrorError) as caught,
+        ):
             self.server.start()
         self.assertEqual(caught.exception.code, "unsafe_socket_path")
 
     def test_start_closes_socket_and_cleans_path_when_setup_fails(self):
         server_socket = mock.Mock()
         server_socket.bind.side_effect = OSError("bind failed")
-        with mock.patch.object(console_mirror, "_ensure_secure_directory"), \
-                mock.patch.object(console_mirror.os, "lstat", side_effect=FileNotFoundError), \
-                mock.patch.object(console_mirror.os, "unlink", side_effect=OSError("missing")), \
-                mock.patch.object(console_mirror.socket, "socket", return_value=server_socket), \
-                self.assertRaisesRegex(OSError, "bind failed"):
+        with (
+            mock.patch.object(console_mirror, "_ensure_secure_directory"),
+            mock.patch.object(
+                console_mirror.os, "lstat", side_effect=FileNotFoundError
+            ),
+            mock.patch.object(
+                console_mirror.os, "unlink", side_effect=OSError("missing")
+            ),
+            mock.patch.object(
+                console_mirror.socket, "socket", return_value=server_socket
+            ),
+            self.assertRaisesRegex(OSError, "bind failed"),
+        ):
             self.server.start()
         server_socket.close.assert_called_once_with()
 
@@ -1247,7 +1400,7 @@ class TestMirrorControlServer(TestCase):
         accepted = mock.Mock()
         self.server._socket = mock.Mock()
         self.server._socket.accept.side_effect = [
-            socket.timeout(),
+            TimeoutError(),
             (rejected, None),
             (accepted, None),
             OSError("closed"),
@@ -1258,7 +1411,9 @@ class TestMirrorControlServer(TestCase):
         self.server._clients.acquire.side_effect = [False, True]
         worker = mock.Mock()
 
-        with mock.patch.object(console_mirror.threading, "Thread", return_value=worker) as thread_type:
+        with mock.patch.object(
+            console_mirror.threading, "Thread", return_value=worker
+        ) as thread_type:
             self.server._serve()
 
         rejected.close.assert_called_once_with()
@@ -1311,16 +1466,22 @@ class TestMirrorControlServer(TestCase):
         connection = mock.Mock()
         handle = mock.Mock()
         handle.result.return_value = console_mirror.ArchiveResult("session.zip")
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._send_archive_completion(connection, handle)
-        send.assert_called_once_with(connection, {"status": "ok", "archive_path": "session.zip"})
+        send.assert_called_once_with(
+            connection, {"status": "ok", "archive_path": "session.zip"}
+        )
 
         handle.result.return_value = console_mirror.ArchiveResult(
             "session.zip", ("part0001.log", "part0002.log")
         )
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._send_archive_completion(connection, handle)
         self.assertEqual(
             send.call_args.args[1],
@@ -1336,8 +1497,10 @@ class TestMirrorControlServer(TestCase):
     def test_archive_completion_cancels_after_server_wait_budget(self):
         connection = mock.Mock()
         handle = mock.Mock()
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 14]), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 14]),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._send_archive_completion(connection, handle)
         handle.cancel.assert_called_once_with()
         handle.result.assert_not_called()
@@ -1348,9 +1511,13 @@ class TestMirrorControlServer(TestCase):
         connection.recv.return_value = b""
         handle = mock.Mock()
         handle.result.side_effect = concurrent.futures.TimeoutError
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]), \
-                mock.patch.object(console_mirror.select, "select", return_value=([connection], [], [])), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]),
+            mock.patch.object(
+                console_mirror.select, "select", return_value=([connection], [], [])
+            ),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._send_archive_completion(connection, handle)
         connection.recv.assert_called_once_with(1, socket.MSG_PEEK)
         handle.cancel.assert_not_called()
@@ -1362,27 +1529,45 @@ class TestMirrorControlServer(TestCase):
         handle = mock.Mock()
         result = console_mirror.ArchiveResult("session.zip")
         handle.result.side_effect = [concurrent.futures.TimeoutError, result]
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10, 10]), \
-                mock.patch.object(console_mirror.select, "select", return_value=([connection], [], [])), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(
+                console_mirror.time, "monotonic", side_effect=[10, 10, 10]
+            ),
+            mock.patch.object(
+                console_mirror.select, "select", return_value=([connection], [], [])
+            ),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._send_archive_completion(connection, handle)
         self.assertEqual(handle.result.call_count, 2)
-        send.assert_called_once_with(connection, {"status": "ok", "archive_path": "session.zip"})
+        send.assert_called_once_with(
+            connection, {"status": "ok", "archive_path": "session.zip"}
+        )
 
         handle.reset_mock()
         handle.result.side_effect = [concurrent.futures.TimeoutError, result]
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10, 10]), \
-                mock.patch.object(console_mirror.select, "select", return_value=([], [], [])), \
-                mock.patch.object(console_mirror, "send_message"):
+        with (
+            mock.patch.object(
+                console_mirror.time, "monotonic", side_effect=[10, 10, 10]
+            ),
+            mock.patch.object(
+                console_mirror.select, "select", return_value=([], [], [])
+            ),
+            mock.patch.object(console_mirror, "send_message"),
+        ):
             self.server._send_archive_completion(connection, handle)
         self.assertEqual(handle.result.call_count, 2)
 
     def test_archive_completion_reports_archive_and_unexpected_failures(self):
         connection = mock.Mock()
         handle = mock.Mock()
-        handle.result.side_effect = console_mirror.MirrorError("archive_failed", "zip failed")
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        handle.result.side_effect = console_mirror.MirrorError(
+            "archive_failed", "zip failed"
+        )
+        with (
+            mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._send_archive_completion(connection, handle)
         self.assertEqual(
             send.call_args.args[1],
@@ -1394,8 +1579,10 @@ class TestMirrorControlServer(TestCase):
         )
 
         handle.result.side_effect = RuntimeError("worker crashed")
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._send_archive_completion(connection, handle)
         self.assertEqual(send.call_args.args[1]["code"], "archive_failed")
         self.assertIn("worker crashed", send.call_args.args[1]["message"])
@@ -1404,8 +1591,12 @@ class TestMirrorControlServer(TestCase):
         connection = mock.Mock()
         handle = mock.Mock()
         handle.result.return_value = console_mirror.ArchiveResult("session.zip")
-        with mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]), \
-                mock.patch.object(console_mirror, "send_message", side_effect=OSError("disconnected")):
+        with (
+            mock.patch.object(console_mirror.time, "monotonic", side_effect=[10, 10]),
+            mock.patch.object(
+                console_mirror, "send_message", side_effect=OSError("disconnected")
+            ),
+        ):
             self.server._send_archive_completion(connection, handle)
 
     def test_handle_client_dispatches_start_with_authenticated_audit_metadata(self):
@@ -1422,14 +1613,18 @@ class TestMirrorControlServer(TestCase):
         options = self.manager.start.call_args.args[0]
         self.assertEqual(options["owner_pid"], 4321)
         self.assertEqual(options["started_by"], "admin")
-        send.assert_called_once_with(connection, {"status": "ok", "file_path": "part.log"})
+        send.assert_called_once_with(
+            connection, {"status": "ok", "file_path": "part.log"}
+        )
 
     def test_handle_client_falls_back_to_peer_username_or_uid(self):
         self.manager.start.return_value = {"status": "ok"}
         invalid_names = (None, "", "x" * 257)
         for name in invalid_names:
             self.manager.start.reset_mock()
-            with mock.patch.object(console_mirror.pwd, "getpwuid", return_value=mock.Mock(pw_name="root")):
+            with mock.patch.object(
+                console_mirror.pwd, "getpwuid", return_value=mock.Mock(pw_name="root")
+            ):
                 self.handle_request({"op": "start", "line": "1", "started_by": name})
             self.assertEqual(self.manager.start.call_args.args[0]["started_by"], "root")
 
@@ -1445,7 +1640,9 @@ class TestMirrorControlServer(TestCase):
             "archive_handle": handle,
         }
         with mock.patch.object(self.server, "_send_archive_completion") as completion:
-            connection, send = self.handle_request({"op": "stop", "line": "1", "archive": True})
+            connection, send = self.handle_request(
+                {"op": "stop", "line": "1", "archive": True}
+            )
         self.manager.stop.assert_called_once_with(reason="manual", archive=True)
         send.assert_called_once_with(
             connection, {"status": "packaging", "archive_path": "session.zip"}
@@ -1464,9 +1661,13 @@ class TestMirrorControlServer(TestCase):
         send.assert_called_once_with(connection, self.manager.status.return_value)
 
         self.manager.update_timeout.return_value = {"status": "ok", "timeout": "2h"}
-        connection, send = self.handle_request({"op": "timeout", "line": "1", "timeout": "2h"})
+        connection, send = self.handle_request(
+            {"op": "timeout", "line": "1", "timeout": "2h"}
+        )
         self.manager.update_timeout.assert_called_once_with("2h")
-        send.assert_called_once_with(connection, self.manager.update_timeout.return_value)
+        send.assert_called_once_with(
+            connection, self.manager.update_timeout.return_value
+        )
 
     def test_handle_client_rejects_unauthorized_mismatched_and_invalid_requests(self):
         connection, send = self.handle_request(
@@ -1484,9 +1685,11 @@ class TestMirrorControlServer(TestCase):
         self.assert_error_response(send, "unsupported_operation")
 
         connection = mock.Mock()
-        with mock.patch.object(self.server, "_peer_credentials", return_value=(1, 0, 0)), \
-                mock.patch.object(console_mirror, "recv_message", return_value=None), \
-                mock.patch.object(console_mirror, "send_message") as send:
+        with (
+            mock.patch.object(self.server, "_peer_credentials", return_value=(1, 0, 0)),
+            mock.patch.object(console_mirror, "recv_message", return_value=None),
+            mock.patch.object(console_mirror, "send_message") as send,
+        ):
             self.server._handle_client(connection)
         send.assert_not_called()
 
@@ -1505,25 +1708,43 @@ class TestMirrorControlServer(TestCase):
             },
         )
 
-        with mock.patch.object(self.server, "_peer_credentials", return_value=(1, 1000, 1000)), \
-                mock.patch.object(console_mirror, "send_message", side_effect=OSError("closed")):
+        with (
+            mock.patch.object(
+                self.server, "_peer_credentials", return_value=(1, 1000, 1000)
+            ),
+            mock.patch.object(
+                console_mirror, "send_message", side_effect=OSError("closed")
+            ),
+        ):
             self.server._handle_client(connection)
 
     def test_handle_client_reports_unexpected_error_while_sending_error_response(self):
         connection = mock.Mock()
-        with mock.patch.object(self.server, "_peer_credentials", return_value=(1, 1000, 1000)), \
-                mock.patch.object(console_mirror, "send_message", side_effect=[ValueError("encode"), None]) as send, \
-                mock.patch.object(console_mirror.log, "exception") as log_exception:
+        with (
+            mock.patch.object(
+                self.server, "_peer_credentials", return_value=(1, 1000, 1000)
+            ),
+            mock.patch.object(
+                console_mirror, "send_message", side_effect=[ValueError("encode"), None]
+            ) as send,
+            mock.patch.object(console_mirror.log, "exception") as log_exception,
+        ):
             self.server._handle_client(connection)
-        log_exception.assert_called_once_with("[%s] Unexpected mirror control error", "1")
+        log_exception.assert_called_once_with(
+            "[%s] Unexpected mirror control error", "1"
+        )
         self.assertEqual(send.call_args_list[1].args[1]["code"], "internal_error")
 
-        with mock.patch.object(self.server, "_peer_credentials", return_value=(1, 1000, 1000)), \
-                mock.patch.object(
-                    console_mirror,
-                    "send_message",
-                    side_effect=[ValueError("encode"), OSError("closed")],
-                ):
+        with (
+            mock.patch.object(
+                self.server, "_peer_credentials", return_value=(1, 1000, 1000)
+            ),
+            mock.patch.object(
+                console_mirror,
+                "send_message",
+                side_effect=[ValueError("encode"), OSError("closed")],
+            ),
+        ):
             self.server._handle_client(connection)
 
     def test_stop_closes_server_joins_workers_and_removes_socket(self):
@@ -1551,14 +1772,18 @@ class TestMirrorControlServer(TestCase):
 
     def test_stop_handles_missing_socket_and_logs_other_cleanup_errors(self):
         missing = OSError(errno.ENOENT, "missing")
-        with mock.patch.object(console_mirror.os, "unlink", side_effect=missing), \
-                mock.patch.object(console_mirror.log, "warning") as warning:
+        with (
+            mock.patch.object(console_mirror.os, "unlink", side_effect=missing),
+            mock.patch.object(console_mirror.log, "warning") as warning,
+        ):
             self.server.stop()
         warning.assert_not_called()
 
         denied = OSError(errno.EACCES, "denied")
-        with mock.patch.object(console_mirror.os, "unlink", side_effect=denied), \
-                mock.patch.object(console_mirror.log, "warning") as warning:
+        with (
+            mock.patch.object(console_mirror.os, "unlink", side_effect=denied),
+            mock.patch.object(console_mirror.log, "warning") as warning,
+        ):
             self.server.stop()
         warning.assert_called_once_with(
             "Failed to remove mirror control socket %s: %s",

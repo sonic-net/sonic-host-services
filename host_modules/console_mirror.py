@@ -15,8 +15,9 @@ import struct
 import threading
 import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 log = logging.getLogger("console-monitor.mirror")
 
@@ -41,18 +42,22 @@ class MirrorError(Exception):
         self.message = message
         self.details = details
 
+
 class ArchiveCancelled(Exception):
     pass
 
-def parse_duration(value: Any) -> Tuple[str, int]:
+
+def parse_duration(value: Any) -> tuple[str, int]:
     """Parse a duration string into (orginal text, seconds) tuple. Accepts formats like '30m', '2h', '1d'."""
     if not isinstance(value, str):
-        raise MirrorError("invalid_timeout",
-                          "Timeout must use the form <integer>[s|m|h|d]")
+        raise MirrorError(
+            "invalid_timeout", "Timeout must use the form <integer>[s|m|h|d]"
+        )
     match = _DURATION_RE.match(value)
     if not match:
-        raise MirrorError("invalid_timeout",
-                          "Timeout must use the form <integer>[s|m|h|d]")
+        raise MirrorError(
+            "invalid_timeout", "Timeout must use the form <integer>[s|m|h|d]"
+        )
     amount, unit = match.groups()
     amount = int(amount)
     if amount <= 0:
@@ -60,8 +65,7 @@ def parse_duration(value: Any) -> Tuple[str, int]:
     multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     seconds = amount * multipliers[unit]
     if seconds * 1000 > MAX_DELTA_MS:
-        raise MirrorError("invalid_timeout",
-                          "Timeout exceeds the SCM-Text delta range")
+        raise MirrorError("invalid_timeout", "Timeout exceeds the SCM-Text delta range")
     return value.strip(), seconds
 
 
@@ -70,26 +74,28 @@ def validate_line(value: Any) -> str:
     line = str(value).strip()
     if not re.fullmatch(r"[0-9]+", line):
         raise MirrorError(
-            "invalid_line", "Console line must contain decimal digits only")
+            "invalid_line", "Console line must contain decimal digits only"
+        )
     return line
 
 
 def format_remaining(seconds: float) -> str:
     """Format a duration in seconds into a human-readable string like '1d2h3m4s'."""
-    remaining = max(0, int(math.ceil(seconds)))
+    remaining = max(0, math.ceil(seconds))
     if remaining == 0:
         return "0s"
     parts = []
     for suffix, unit in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
         value, remaining = divmod(remaining, unit)
         if value:
-            parts.append("{}{}".format(value, suffix))
+            parts.append(f"{value}{suffix}")
     return "".join(parts)
 
 
 def printable_escape(payload: bytes) -> str:
     """Return a deterministic, terminal-safe representation of a bytes payload."""
-    def _escape_control_byte(byte: int) -> Optional[str]:
+
+    def _escape_control_byte(byte: int) -> str | None:
         """Escape a single control byte"""
         escaped = {
             0x0A: r"\n",
@@ -101,7 +107,7 @@ def printable_escape(payload: bytes) -> str:
         if escaped is not None:
             return escaped
         if byte < 0x20 or 0x7F <= byte <= 0x9F:
-            return r"\x{:02x}".format(byte)
+            return rf"\x{byte:02x}"
         return None
 
     def _utf8_width(byte: int) -> int:
@@ -113,9 +119,9 @@ def printable_escape(payload: bytes) -> str:
             return 4
         return 1
 
-    def _decode_printable_utf8(payload: bytes, index: int) -> Optional[Tuple[str, int]]:
+    def _decode_printable_utf8(payload: bytes, index: int) -> tuple[str, int] | None:
         width = _utf8_width(payload[index])
-        chunk = payload[index:index + width]
+        chunk = payload[index : index + width]
         try:
             char = chunk.decode("utf-8")
         except UnicodeDecodeError:
@@ -124,7 +130,7 @@ def printable_escape(payload: bytes) -> str:
             return char, width
         return None
 
-    def _escape_byte(payload: bytes, index: int) -> Tuple[str, int]:
+    def _escape_byte(payload: bytes, index: int) -> tuple[str, int]:
         """Escape one unit"""
         byte = payload[index]
         if escaped := _escape_control_byte(byte):
@@ -133,9 +139,9 @@ def printable_escape(payload: bytes) -> str:
             return chr(byte), 1
         if decoded := _decode_printable_utf8(payload, index):
             return decoded
-        return r"\x{:02x}".format(byte), 1
+        return rf"\x{byte:02x}", 1
 
-    output: List[str] = []
+    output: list[str] = []
     index = 0
     while index < len(payload):
         escaped, consumed = _escape_byte(payload, index)
@@ -146,12 +152,12 @@ def printable_escape(payload: bytes) -> str:
 
 def _rfc3339_ms(timestamp: float) -> str:
     dt = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + "{:03d}Z".format(dt.microsecond // 1000)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
 def _timestamp_token(timestamp: float) -> str:
     dt = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
-    return dt.strftime("%Y%m%dT%H%M%S") + "{:06d}Z".format(dt.microsecond)
+    return dt.strftime("%Y%m%dT%H%M%S") + f"{dt.microsecond:06d}Z"
 
 
 def _ensure_secure_directory(path: str) -> None:
@@ -159,11 +165,14 @@ def _ensure_secure_directory(path: str) -> None:
     os.makedirs(path, mode=0o700, exist_ok=True)
     info = os.lstat(path)
     if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
-        raise MirrorError("unsafe_recording_path",
-                          "Recording directory is not a real directory: {}".format(path))
+        raise MirrorError(
+            "unsafe_recording_path",
+            f"Recording directory is not a real directory: {path}",
+        )
     os.chmod(path, 0o700)
     if os.geteuid() == 0:
         os.chown(path, 0, 0)
+
 
 @dataclass(frozen=True)
 class WriterRecord:
@@ -171,6 +180,7 @@ class WriterRecord:
     payload: bytes
     timestamp: float
     is_event: bool = False
+
 
 class RecordingWriter:
     """Write one mirror session through a bounded background queue.
@@ -194,8 +204,8 @@ class RecordingWriter:
         base_dir: str = MIRROR_BASE_DIR,
         queue_size: int = 4096,
         shutdown_timeout: float = 5.0,
-        on_fatal: Optional[Callable[["RecordingWriter", Exception], None]] = None,
-        on_rotate: Optional[Callable[[str], None]] = None,
+        on_fatal: Callable[["RecordingWriter", Exception], None] | None = None,
+        on_rotate: Callable[[str], None] | None = None,
     ) -> None:
         self.line = validate_line(line)
         if direction not in VALID_DIRECTIONS:
@@ -204,7 +214,7 @@ class RecordingWriter:
         self.timeout_text = timeout_text
         self.max_file_size = max_file_size_mb * 1024 * 1024
         self.base_dir = base_dir
-        self.line_dir = os.path.join(base_dir, "line{}".format(line))
+        self.line_dir = os.path.join(base_dir, f"line{line}")
         self.queue_size = queue_size
         self.shutdown_timeout = shutdown_timeout
         self.on_fatal = on_fatal
@@ -223,7 +233,7 @@ class RecordingWriter:
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size + 4)
         self._accepting = True
         self._closing = threading.Event()
-        self._shutdown_deadline: Optional[float] = None
+        self._shutdown_deadline: float | None = None
         self._lock = threading.Lock()
         self._fatal_reported = False
 
@@ -231,7 +241,7 @@ class RecordingWriter:
         self._prepare_paths_and_open()
         # Start the background thread to process the queue
         self._thread = threading.Thread(
-            target=self._run, name="console-mirror-writer-{}".format(line), daemon=True
+            target=self._run, name=f"console-mirror-writer-{line}", daemon=True
         )
         self._thread.start()
 
@@ -244,9 +254,7 @@ class RecordingWriter:
             self.start_timestamp = time.time()
             self.start_monotonic = time.monotonic()
             self.timestamp_token = _timestamp_token(self.start_timestamp)
-            basename = "console-mirror-line{}-{}-{}".format(
-                self.line, self.direction, self.timestamp_token
-            )
+            basename = f"console-mirror-line{self.line}-{self.direction}-{self.timestamp_token}"
             self.recording_prefix = os.path.join(self.line_dir, basename)
             try:
                 self._open_part(1, exclusive=True)
@@ -254,15 +262,17 @@ class RecordingWriter:
             except FileExistsError as error:
                 last_error = error
                 time.sleep(0.000001)
-        raise MirrorError("file_open_failed", "Could not create a unique recording file") from last_error
+        raise MirrorError(
+            "file_open_failed", "Could not create a unique recording file"
+        ) from last_error
 
     def _open_part(self, part_number: int, exclusive: bool = True) -> None:
-        path = "{}-part{:04d}.log".format(self.recording_prefix, part_number)
-        flags = os.O_WRONLY | os.O_CREAT # Write-only, create if not exists
+        path = f"{self.recording_prefix}-part{part_number:04d}.log"
+        flags = os.O_WRONLY | os.O_CREAT  # Write-only, create if not exists
         if exclusive:
-            flags |= os.O_EXCL # Fail if the file already exists
+            flags |= os.O_EXCL  # Fail if the file already exists
         if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW # Do not follow symlinks
+            flags |= os.O_NOFOLLOW  # Do not follow symlinks
         fd = os.open(path, flags, 0o600)
         file_object = None
         try:
@@ -270,17 +280,11 @@ class RecordingWriter:
             if os.geteuid() == 0:
                 os.fchown(fd, 0, 0)
             file_object = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
-            fd = -1 # Mark fd as closed since we now have a file object
+            fd = -1  # Mark fd as closed since we now have a file object
             header = (
                 "# SONIC_CONSOLE_MIRROR_TEXT version=1\n"
-                "# line={} direction={} start_time={} timeout={} part=part{:04d} encoding=printable-escape\n"
+                f"# line={self.line} direction={self.direction} start_time={_rfc3339_ms(self.start_timestamp)} timeout={self.timeout_text} part=part{part_number:04d} encoding=printable-escape\n"
                 "# fields=timestamp delta seq direction length payload\n"
-            ).format(
-                self.line,
-                self.direction,
-                _rfc3339_ms(self.start_timestamp),
-                self.timeout_text,
-                part_number,
             )
             file_object.write(header)
             file_object.flush()
@@ -316,9 +320,11 @@ class RecordingWriter:
             nonblocking=True,
         )
 
-    def submit_event(self, event: Dict[str, Any], nonblocking: bool = False) -> bool:
+    def submit_event(self, event: dict[str, Any], nonblocking: bool = False) -> bool:
         """Enqueue a JSON event; optionally avoid waiting for the state lock."""
-        payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
         return self._submit(
             WriterRecord("EVENT", payload, time.time(), is_event=True),
             priority=True,
@@ -344,37 +350,37 @@ class RecordingWriter:
 
     def _render_record(self, record: WriterRecord, seq: int) -> bytes:
         # Calculate the time delta in milliseconds
-        delta_ms = int(round((record.timestamp - self.start_timestamp) * 1000))
+        delta_ms = round((record.timestamp - self.start_timestamp) * 1000)
         delta_ms: int = min(MAX_DELTA_MS, max(0, delta_ms))
         # Decode the payload for display
-        payload_text: str = record.payload.decode("utf-8") if record.is_event else printable_escape(record.payload)
+        payload_text: str = (
+            record.payload.decode("utf-8")
+            if record.is_event
+            else printable_escape(record.payload)
+        )
         # Format the line
         # timestamp delta seq direction length payload
         # 2026-07-14T12:00:01.000Z +000000001000ms 00000002 RX 00000005 hello
-        line: str = "{} +{:012d}ms {:08d} {} {:08d} {}\n".format(
-            _rfc3339_ms(record.timestamp),
-            delta_ms,
-            seq,
-            record.direction,
-            len(record.payload),
-            payload_text,
-        )
+        line: str = f"{_rfc3339_ms(record.timestamp)} +{delta_ms:012d}ms {seq:08d} {record.direction} {len(record.payload):08d} {payload_text}\n"
         return line.encode("utf-8")
 
     def _rotate(self) -> None:
         next_part = self.part_number + 1
         if next_part > MAX_PART_NUMBER:
-            raise MirrorError("part_limit_exceeded", "Recording reached the maximum part count")
+            raise MirrorError(
+                "part_limit_exceeded", "Recording reached the maximum part count"
+            )
         rotate = WriterRecord(
             "EVENT",
             json.dumps(
-                {"event": "rotate", "next_part": "part{:04d}".format(next_part)},
+                {"event": "rotate", "next_part": f"part{next_part:04d}"},
                 separators=(",", ":"),
             ).encode("utf-8"),
             time.time(),
             is_event=True,
         )
         rotate_bytes = self._render_record(rotate, self._seq + 1)
+        assert self._file is not None
         # If the current part has enough space, write the rotate event to it before closing
         if self._file_size + len(rotate_bytes) <= self.max_file_size:
             self._file.write(rotate_bytes.decode("utf-8"))
@@ -392,10 +398,14 @@ class RecordingWriter:
     def _write_record(self, record: WriterRecord) -> None:
         encoded = self._render_record(record, self._seq + 1)
         # Rotate if not the first record and exceeds the max file size
-        if self._part_has_records and self._file_size + len(encoded) > self.max_file_size:
+        if (
+            self._part_has_records
+            and self._file_size + len(encoded) > self.max_file_size
+        ):
             self._rotate()
             # Re-render the record after rotation to get the correct seq
             encoded = self._render_record(record, self._seq + 1)
+        assert self._file is not None
         self._file.write(encoded.decode("utf-8"))
         self._file_size += len(encoded)
         self._part_has_records = True
@@ -408,7 +418,10 @@ class RecordingWriter:
                 if self._closing.is_set():
                     if self._queue.empty():
                         break
-                    if self._shutdown_deadline is not None and time.monotonic() >= self._shutdown_deadline:
+                    if (
+                        self._shutdown_deadline is not None
+                        and time.monotonic() >= self._shutdown_deadline
+                    ):
                         break
                 try:
                     # Wait for a record to be available
@@ -419,6 +432,7 @@ class RecordingWriter:
                     self._write_record(record)
                 finally:
                     self._queue.task_done()
+            assert self._file is not None
             self._file.flush()
         except Exception as error:
             fatal_error = error
@@ -465,17 +479,19 @@ class ArchiveJob:
 @dataclass(frozen=True)
 class ArchiveResult:
     archive_path: str
-    undeleted_sources: Tuple[str, ...] = ()
+    undeleted_sources: tuple[str, ...] = ()
 
 
 class ArchiveHandle:
     """Caller-facing handle for waiting on or cancelling an archive job."""
 
-    def __init__(self, future: concurrent.futures.Future, cancel_event: threading.Event) -> None:
+    def __init__(
+        self, future: concurrent.futures.Future, cancel_event: threading.Event
+    ) -> None:
         self.future = future
         self.cancel_event = cancel_event
 
-    def result(self, timeout: Optional[float] = None) -> ArchiveResult:
+    def result(self, timeout: float | None = None) -> ArchiveResult:
         """Wait for completion and return the result, subject to ``timeout``."""
         return self.future.result(timeout=timeout)
 
@@ -497,7 +513,7 @@ class RecordingArchiver:
             max_workers=1, thread_name_prefix="console-mirror-archiver"
         )
         self._lock = threading.Lock()
-        self._handles: List[ArchiveHandle] = []
+        self._handles: list[ArchiveHandle] = []
         self._pending_slots = threading.BoundedSemaphore(max_pending_jobs)
 
     def submit(self, job: ArchiveJob) -> ArchiveHandle:
@@ -531,19 +547,25 @@ class RecordingArchiver:
         line_dir = os.path.dirname(job.recording_prefix)
         prefix_name = os.path.basename(job.recording_prefix)
         # Eg: <prefix>-part0001.log
-        pattern = re.compile(r"^{}-part([0-9]{{4}})\.log$".format(re.escape(prefix_name)))
-        parts: List[Tuple[int, str]] = []
+        pattern = re.compile(
+            rf"^{re.escape(prefix_name)}-part([0-9]{{4}})\.log$"
+        )
+        parts: list[tuple[int, str]] = []
         for entry in os.scandir(line_dir):
             match = pattern.fullmatch(entry.name)
             if match and entry.is_file(follow_symlinks=False):
                 parts.append((int(match.group(1)), entry.path))
         parts.sort()
-        if not parts or [number for number, _ in parts] != list(range(1, len(parts) + 1)):
-            raise MirrorError("archive_failed", "Recording parts are missing or non-contiguous")
+        if not parts or [number for number, _ in parts] != list(
+            range(1, len(parts) + 1)
+        ):
+            raise MirrorError(
+                "archive_failed", "Recording parts are missing or non-contiguous"
+            )
         for _, path in parts:
             with open(path, "rb"):
                 pass
-        
+
         # Create a temporary archive file and write the parts into it
         temporary_path = job.archive_path + ".tmp"
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
@@ -551,7 +573,7 @@ class RecordingArchiver:
             flags |= os.O_NOFOLLOW
         fd = -1
         try:
-             # Create file
+            # Create file
             if cancel_event.is_set():
                 raise ArchiveCancelled()
             fd = os.open(temporary_path, flags, 0o600)
@@ -562,17 +584,21 @@ class RecordingArchiver:
             # Write parts
             with os.fdopen(fd, "w+b") as archive_file:
                 fd = -1
-                with zipfile.ZipFile(archive_file, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                with zipfile.ZipFile(
+                    archive_file, "w", compression=zipfile.ZIP_DEFLATED
+                ) as archive:
                     for _, source in parts:
                         if cancel_event.is_set():
                             raise ArchiveCancelled()
                         archive.write(source, arcname=os.path.basename(source))
-                        
+
             # Validate the archive by checking for any bad files and ensuring the number of files matches
             if cancel_event.is_set():
                 raise ArchiveCancelled()
             with zipfile.ZipFile(temporary_path, "r") as archive:
-                if archive.testzip() is not None or len(archive.infolist()) != len(parts):
+                if archive.testzip() is not None or len(archive.infolist()) != len(
+                    parts
+                ):
                     raise MirrorError("archive_failed", "ZIP validation failed")
             os.replace(temporary_path, job.archive_path)
 
@@ -588,11 +614,16 @@ class RecordingArchiver:
 
             return ArchiveResult(job.archive_path, tuple(undeleted))
         except ArchiveCancelled:
-            raise MirrorError("archive_cancelled", "Archive packaging was cancelled; source logs were preserved")
+            raise MirrorError(
+                "archive_cancelled",
+                "Archive packaging was cancelled; source logs were preserved",
+            )
         except MirrorError:
             raise
         except Exception as error:
-            raise MirrorError("archive_failed", "Archive packaging failed: {}".format(error))
+            raise MirrorError(
+                "archive_failed", f"Archive packaging failed: {error}"
+            )
         finally:
             if fd >= 0:
                 os.close(fd)
@@ -600,14 +631,20 @@ class RecordingArchiver:
                 os.unlink(temporary_path)
             except OSError as error:
                 if error.errno != errno.ENOENT:
-                    log.warning("Failed to remove temporary archive %s: %s", temporary_path, error)
+                    log.warning(
+                        "Failed to remove temporary archive %s: %s",
+                        temporary_path,
+                        error,
+                    )
 
     def shutdown(self, timeout: float = 5.0) -> None:
         """Wait boundedly, request cancellation, and stop accepting new jobs."""
         with self._lock:
             handles = list(self._handles)
         if handles:
-            concurrent.futures.wait([handle.future for handle in handles], timeout=timeout)
+            concurrent.futures.wait(
+                [handle.future for handle in handles], timeout=timeout
+            )
         for handle in handles:
             if not handle.future.done():
                 handle.cancel()
@@ -629,7 +666,7 @@ class MirrorManager:
         state_table: Any,
         base_dir: str = MIRROR_BASE_DIR,
         writer_factory: Callable[..., RecordingWriter] = RecordingWriter,
-        archiver: Optional[RecordingArchiver] = None,
+        archiver: RecordingArchiver | None = None,
         writer_queue_size: int = 4096,
     ) -> None:
         self.line = validate_line(line)
@@ -639,38 +676,51 @@ class MirrorManager:
         self.archiver = archiver or RecordingArchiver()
         self.writer_queue_size = writer_queue_size
         self.state = "idle"
-        self.direction: Optional[str] = None
-        self.start_time: Optional[float] = None
-        self.timeout_text: Optional[str] = None
-        self.timeout_seconds: Optional[int] = None
-        self.deadline: Optional[float] = None
-        self.file_path: Optional[str] = None
-        self.writer: Optional[RecordingWriter] = None
-        self.timer: Optional[threading.Timer] = None
+        self.direction: str | None = None
+        self.start_time: float | None = None
+        self.timeout_text: str | None = None
+        self.timeout_seconds: int | None = None
+        self.deadline: float | None = None
+        self.file_path: str | None = None
+        self.writer: RecordingWriter | None = None
+        self.timer: threading.Timer | None = None
         self.writer_drop_count = 0
-        self._owner_pid: Optional[int] = None
-        self._started_by: Optional[str] = None
+        self._owner_pid: int | None = None
+        self._started_by: str | None = None
         self._lock = threading.RLock()
         self._write_idle_state()
 
-    def _state_set(self, values: List[Tuple[str, str]]) -> None:
+    def _state_set(self, values: list[tuple[str, str]]) -> None:
         try:
             self.state_table.set(self.line, values)
         except Exception as error:
             log.error("[%s] Failed to update mirror STATE_DB: %s", self.line, error)
 
     def _state_delete_fields(self) -> None:
-        for field in ("owner_pid", "started_by", "start_time", "timeout", "file_path", "direction"):
+        for field in (
+            "owner_pid",
+            "started_by",
+            "start_time",
+            "timeout",
+            "file_path",
+            "direction",
+        ):
             try:
                 self.state_table.hdel(self.line, field)
             except Exception as error:
-                log.error("[%s] Failed to clear mirror STATE_DB field %s: %s", self.line, field, error)
+                log.error(
+                    "[%s] Failed to clear mirror STATE_DB field %s: %s",
+                    self.line,
+                    field,
+                    error,
+                )
 
     def _write_idle_state(self) -> None:
         self._state_set([("state", "idle")])
         self._state_delete_fields()
 
     def _write_active_state(self) -> None:
+        assert self.start_time is not None
         values = [
             ("state", self.state),
             ("owner_pid", str(self._owner_pid)),
@@ -682,25 +732,40 @@ class MirrorManager:
         ]
         self._state_set(values)
 
-    def start(self, options: Dict[str, Any]) -> Dict[str, Any]:
+    def start(self, options: dict[str, Any]) -> dict[str, Any]:
         """Start an idle mirror session and return its active-session metadata."""
         direction = options.get("direction", "both")
         if not isinstance(direction, str) or direction not in VALID_DIRECTIONS:
             raise MirrorError("invalid_direction", "Direction must be rx, tx, or both")
-        timeout_text, timeout_seconds = parse_duration(options.get("timeout", DEFAULT_TIMEOUT))
+        timeout_text, timeout_seconds = parse_duration(
+            options.get("timeout", DEFAULT_TIMEOUT)
+        )
         max_file_size = options.get("max_file_size", DEFAULT_MAX_FILE_SIZE_MB)
-        if isinstance(max_file_size, bool) or not isinstance(max_file_size, int) or max_file_size <= 0:
-            raise MirrorError("invalid_max_file_size", "max_file_size must be a positive integer in MB")
+        if (
+            isinstance(max_file_size, bool)
+            or not isinstance(max_file_size, int)
+            or max_file_size <= 0
+        ):
+            raise MirrorError(
+                "invalid_max_file_size",
+                "max_file_size must be a positive integer in MB",
+            )
         owner_pid = options.get("owner_pid")
-        if isinstance(owner_pid, bool) or not isinstance(owner_pid, int) or owner_pid <= 0:
-            raise MirrorError("invalid_owner_pid", "owner_pid must be a positive integer")
+        if (
+            isinstance(owner_pid, bool)
+            or not isinstance(owner_pid, int)
+            or owner_pid <= 0
+        ):
+            raise MirrorError(
+                "invalid_owner_pid", "owner_pid must be a positive integer"
+            )
         started_by = str(options.get("started_by", "root"))
 
         with self._lock:
             if self.state != "idle":
                 raise MirrorError(
                     "mirror_already_active",
-                    "Line {} already has an active mirror session".format(self.line),
+                    f"Line {self.line} already has an active mirror session",
                 )
             try:
                 writer = self.writer_factory(
@@ -716,11 +781,12 @@ class MirrorManager:
             except MirrorError:
                 raise
             except Exception as error:
-                raise MirrorError("file_open_failed", "Failed to open recording file: {}".format(error))
+                raise MirrorError(
+                    "file_open_failed",
+                    f"Failed to open recording file: {error}",
+                )
 
-            timer = threading.Timer(
-                timeout_seconds, lambda: self._on_timeout(timer)
-            )
+            timer = threading.Timer(timeout_seconds, lambda: self._on_timeout(timer))
             timer.daemon = True
             self.writer = writer
             self.direction = direction
@@ -743,7 +809,10 @@ class MirrorManager:
                 writer.close()
                 self._clear_runtime_fields()
                 self._write_idle_state()
-                raise MirrorError("timer_setup_failed", "Failed to arm mirror timeout: {}".format(error))
+                raise MirrorError(
+                    "timer_setup_failed",
+                    f"Failed to arm mirror timeout: {error}",
+                )
             writer.submit_event({"event": "start"})
             self._write_active_state()
             return {
@@ -790,7 +859,7 @@ class MirrorManager:
         finally:
             self._lock.release()
 
-    def update_timeout(self, timeout_value: Any) -> Dict[str, Any]:
+    def update_timeout(self, timeout_value: Any) -> dict[str, Any]:
         """Reset an active session's timeout from now and return the new timeout."""
         timeout_text, timeout_seconds = parse_duration(timeout_value)
         replacement = threading.Timer(
@@ -799,15 +868,25 @@ class MirrorManager:
         replacement.daemon = True
         with self._lock:
             if self.state != "active" or self.writer is None:
-                raise MirrorError("mirror_not_active", "Line {} has no active mirror session".format(self.line))
+                raise MirrorError(
+                    "mirror_not_active",
+                    f"Line {self.line} has no active mirror session",
+                )
+            assert self.start_time is not None
             elapsed_ms = max(0, int((time.time() - self.start_time) * 1000))
             if elapsed_ms + timeout_seconds * 1000 > MAX_DELTA_MS:
-                raise MirrorError("invalid_timeout", "Elapsed time plus timeout exceeds the SCM-Text delta range")
+                raise MirrorError(
+                    "invalid_timeout",
+                    "Elapsed time plus timeout exceeds the SCM-Text delta range",
+                )
             previous_timer = self.timer
             try:
                 replacement.start()
             except Exception as error:
-                raise MirrorError("timer_setup_failed", "Failed to reset mirror timeout: {}".format(error))
+                raise MirrorError(
+                    "timer_setup_failed",
+                    f"Failed to reset mirror timeout: {error}",
+                )
             self.timer = replacement
             self.timeout_text = timeout_text
             self.timeout_seconds = timeout_seconds
@@ -815,7 +894,9 @@ class MirrorManager:
             self.writer.update_timeout(timeout_text)
             if previous_timer:
                 previous_timer.cancel()
-            self.writer.submit_event({"event": "timeout_update", "timeout": timeout_text})
+            self.writer.submit_event(
+                {"event": "timeout_update", "timeout": timeout_text}
+            )
             self._write_active_state()
             return {"status": "ok", "timeout": timeout_text, "remaining": timeout_text}
 
@@ -823,15 +904,18 @@ class MirrorManager:
         self,
         reason: str = "manual",
         archive: bool = False,
-        expected_timer: Optional[threading.Timer] = None,
-    ) -> Dict[str, Any]:
+        expected_timer: threading.Timer | None = None,
+    ) -> dict[str, Any]:
         """Stop an active session, optionally submitting its files for archiving.
 
         ``expected_timer`` rejects callbacks from a superseded timeout timer.
         """
         with self._lock:
             if self.state != "active" or self.writer is None:
-                raise MirrorError("mirror_not_active", "Line {} has no active mirror session".format(self.line))
+                raise MirrorError(
+                    "mirror_not_active",
+                    f"Line {self.line} has no active mirror session",
+                )
             if expected_timer is not None and self.timer is not expected_timer:
                 raise MirrorError("stale_timeout", "Superseded mirror timeout ignored")
             self.state = "stopping"
@@ -862,6 +946,7 @@ class MirrorManager:
                 "message": "Mirror stopped; recording files retained",
                 "recording_prefix": recording_prefix,
             }
+        assert start_timestamp is not None and direction is not None
         job = ArchiveJob(
             line=self.line,
             direction=direction,
@@ -877,7 +962,7 @@ class MirrorManager:
         except Exception as error:
             raise MirrorError(
                 "archive_failed",
-                "Could not submit archive job: {}; source logs were preserved".format(error),
+                f"Could not submit archive job: {error}; source logs were preserved",
             )
         return {
             "status": "packaging",
@@ -886,12 +971,19 @@ class MirrorManager:
             "archive_handle": handle,
         }
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         """Return the current state and any active-session metadata."""
         with self._lock:
-            response: Dict[str, Any] = {"status": "ok", "state": self.state, "line": self.line}
+            response: dict[str, Any] = {
+                "status": "ok",
+                "state": self.state,
+                "line": self.line,
+            }
             if self.state in ("active", "stopping"):
-                remaining = 0 if self.deadline is None else self.deadline - time.monotonic()
+                remaining = (
+                    0 if self.deadline is None else self.deadline - time.monotonic()
+                )
+                assert self.start_time is not None
                 response.update(
                     {
                         "start_time": _rfc3339_ms(self.start_time),
@@ -908,14 +1000,16 @@ class MirrorManager:
             self.stop(reason="timeout", archive=True, expected_timer=fired_timer)
         except MirrorError as error:
             if error.code not in ("mirror_not_active", "stale_timeout"):
-                log.error("[%s] Automatic mirror stop failed: %s", self.line, error.message)
+                log.error(
+                    "[%s] Automatic mirror stop failed: %s", self.line, error.message
+                )
 
     def _on_writer_fatal(self, writer: RecordingWriter, error: Exception) -> None:
         log.error("[%s] Fatal mirror writer error: %s", self.line, error)
         threading.Thread(
             target=self._stop_after_writer_error,
             args=(writer,),
-            name="console-mirror-writer-error-{}".format(self.line),
+            name=f"console-mirror-writer-error-{self.line}",
             daemon=True,
         ).start()
 
@@ -950,7 +1044,7 @@ class MirrorManager:
             self._write_idle_state()
 
 
-def _recv_exact(connection: socket.socket, size: int) -> Optional[bytes]:
+def _recv_exact(connection: socket.socket, size: int) -> bytes | None:
     chunks = []
     remaining = size
     while remaining:
@@ -961,7 +1055,8 @@ def _recv_exact(connection: socket.socket, size: int) -> Optional[bytes]:
         remaining -= len(chunk)
     return b"".join(chunks)
 
-def recv_message(connection: socket.socket) -> Optional[Dict[str, Any]]:
+
+def recv_message(connection: socket.socket) -> dict[str, Any] | None:
     """Receive one length-prefixed JSON object, or ``None`` after a clean EOF."""
     header = _recv_exact(connection, 4)
     if header is None:
@@ -980,10 +1075,14 @@ def recv_message(connection: socket.socket) -> Optional[Dict[str, Any]]:
         raise MirrorError("invalid_message", "Control message must be a JSON object")
     return message
 
-def send_message(connection: socket.socket, message: Dict[str, Any]) -> None:
+
+def send_message(connection: socket.socket, message: dict[str, Any]) -> None:
     """Send one JSON object using the control protocol's length prefix."""
-    payload = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    payload = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
     connection.sendall(struct.pack("!I", len(payload)) + payload)
+
 
 class MirrorControlServer:
     """Serve root-only mirror control requests for one console line.
@@ -1007,12 +1106,12 @@ class MirrorControlServer:
         self.runtime_dir = runtime_dir
         self.archive_wait_seconds = archive_wait_seconds
         self.max_clients = max_clients
-        self.socket_path = os.path.join(runtime_dir, "line{}.sock".format(self.line))
-        self._socket: Optional[socket.socket] = None
-        self._thread: Optional[threading.Thread] = None
+        self.socket_path = os.path.join(runtime_dir, f"line{self.line}.sock")
+        self._socket: socket.socket | None = None
+        self._thread: threading.Thread | None = None
         self._running = threading.Event()
         self._clients = threading.Semaphore(max_clients)
-        self._client_threads: List[threading.Thread] = []
+        self._client_threads: list[threading.Thread] = []
 
     @staticmethod
     def _root_only(uid: int) -> bool:
@@ -1025,7 +1124,10 @@ class MirrorControlServer:
         try:
             info = os.lstat(self.socket_path)
             if not stat.S_ISSOCK(info.st_mode):
-                raise MirrorError("unsafe_socket_path", "Control socket path is occupied by a non-socket")
+                raise MirrorError(
+                    "unsafe_socket_path",
+                    "Control socket path is occupied by a non-socket",
+                )
             os.unlink(self.socket_path)
         except FileNotFoundError:
             pass
@@ -1047,16 +1149,17 @@ class MirrorControlServer:
         self._running.set()
         self._thread = threading.Thread(
             target=self._serve,
-            name="console-mirror-control-{}".format(self.line),
-            daemon=True
+            name=f"console-mirror-control-{self.line}",
+            daemon=True,
         )
         self._thread.start()
 
     def _serve(self) -> None:
         while self._running.is_set():
             try:
+                assert self._socket is not None
                 connection, _ = self._socket.accept()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 break
@@ -1066,7 +1169,7 @@ class MirrorControlServer:
             thread = threading.Thread(
                 target=self._handle_and_release,
                 args=(connection,),
-                name="console-mirror-client-{}".format(self.line),
+                name=f"console-mirror-client-{self.line}",
                 daemon=True,
             )
             self._client_threads.append(thread)
@@ -1083,11 +1186,15 @@ class MirrorControlServer:
             except ValueError:
                 pass
 
-    def _peer_credentials(self, connection: socket.socket) -> Tuple[int, int, int]:
-        credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    def _peer_credentials(self, connection: socket.socket) -> tuple[int, int, int]:
+        credentials = connection.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+        )
         return struct.unpack("3i", credentials)
 
-    def _send_archive_completion(self, connection: socket.socket, handle: ArchiveHandle) -> None:
+    def _send_archive_completion(
+        self, connection: socket.socket, handle: ArchiveHandle
+    ) -> None:
         try:
             deadline = time.monotonic() + self.archive_wait_seconds
             while True:
@@ -1115,7 +1222,9 @@ class MirrorControlServer:
                     },
                 )
             else:
-                send_message(connection, {"status": "ok", "archive_path": result.archive_path})
+                send_message(
+                    connection, {"status": "ok", "archive_path": result.archive_path}
+                )
         except MirrorError as error:
             send_message(
                 connection,
@@ -1134,20 +1243,24 @@ class MirrorControlServer:
                 {
                     "status": "error",
                     "code": "archive_failed",
-                    "message": "Archive packaging failed: {}; original log parts were preserved".format(error),
+                    "message": f"Archive packaging failed: {error}; original log parts were preserved",
                 },
             )
 
     def _handle_client(self, connection: socket.socket) -> None:
         try:
-            pid, uid, gid = self._peer_credentials(connection)
+            pid, uid, _gid = self._peer_credentials(connection)
             if not self._root_only(uid):
-                raise MirrorError("permission_denied", "Mirror control requires root privileges")
+                raise MirrorError(
+                    "permission_denied", "Mirror control requires root privileges"
+                )
             request = recv_message(connection)
             if request is None:
                 return
             if str(request.get("line")) != self.line:
-                raise MirrorError("line_mismatch", "Requested line does not match this proxy")
+                raise MirrorError(
+                    "line_mismatch", "Requested line does not match this proxy"
+                )
             operation = request.get("op")
             if operation == "start":
                 username = request.get("started_by")
@@ -1172,9 +1285,13 @@ class MirrorControlServer:
             elif operation == "status":
                 send_message(connection, self.manager.status())
             elif operation == "timeout":
-                send_message(connection, self.manager.update_timeout(request.get("timeout")))
+                send_message(
+                    connection, self.manager.update_timeout(request.get("timeout"))
+                )
             else:
-                raise MirrorError("unsupported_operation", "Unsupported mirror operation")
+                raise MirrorError(
+                    "unsupported_operation", "Unsupported mirror operation"
+                )
         except MirrorError as error:
             response = {"status": "error", "code": error.code, "message": error.message}
             response.update(error.details)
@@ -1187,7 +1304,11 @@ class MirrorControlServer:
                 try:
                     send_message(
                         connection,
-                        {"status": "error", "code": "internal_error", "message": str(error)},
+                        {
+                            "status": "error",
+                            "code": "internal_error",
+                            "message": str(error),
+                        },
                     )
                 except OSError:
                     pass
@@ -1208,4 +1329,8 @@ class MirrorControlServer:
             os.unlink(self.socket_path)
         except OSError as error:
             if error.errno != errno.ENOENT:
-                log.warning("Failed to remove mirror control socket %s: %s", self.socket_path, error)
+                log.warning(
+                    "Failed to remove mirror control socket %s: %s",
+                    self.socket_path,
+                    error,
+                )
