@@ -1,7 +1,7 @@
 [Unit]
 Description=gNOI based DPU Graceful Shutdown Daemon
-Requires=database.service gnmi.service
-Wants=network-online.target pmon.service
+Requires=database.service
+Wants=network-online.target gnmi.service pmon.service
 After=network-online.target database.service gnmi.service pmon.service
 
 [Service]
