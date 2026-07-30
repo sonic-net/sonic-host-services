@@ -40,7 +40,7 @@ class Showtech(host_service.HostModule):
             print("%Error: Host side: Failed: " + str(err.returncode))
             return err.returncode, output
 
-        output_file_match = re.search(r'/var/.*dump.*\.gz', result.stdout)
+        output_file_match = re.search('\/var\/.*dump.*\.gz', result.stdout)
         output_filename = output_file_match.group()
         return result.returncode, output_filename
 
