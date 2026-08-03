@@ -170,6 +170,63 @@ def test_status_publication_ttl_failure_and_reason_boundary_contract(caplog):
         ]
         == "sha256:old"
     )
+    assert database.values[publisher.STATUS_KEY]["async_pool_workers"] == "0"
+    assert database.values[publisher.STATUS_KEY]["async_pool_busy"] == "0"
+    assert database.values[publisher.STATUS_KEY]["async_pool_queued"] == "0"
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "async_pool_avg_queue_latency_ms"
+        ]
+        == "0.0"
+    )
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "async_pool_avg_execution_time_ms"
+        ]
+        == "0.0"
+    )
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "async_pool_avg_utilization_percent"
+        ]
+        == "0.0"
+    )
+
+    publisher.publish_status(
+        "OK",
+        "0.0.1",
+        "/active",
+        "sha256:test",
+        async_pool_metrics={
+            "async_pool_workers": 8,
+            "async_pool_busy": 3,
+            "async_pool_queued": 4,
+            "async_pool_avg_queue_latency_ms": 1.25,
+            "async_pool_avg_execution_time_ms": 4.5,
+            "async_pool_avg_utilization_percent": 12.5,
+        },
+    )
+    assert database.values[publisher.STATUS_KEY]["async_pool_workers"] == "8"
+    assert database.values[publisher.STATUS_KEY]["async_pool_busy"] == "3"
+    assert database.values[publisher.STATUS_KEY]["async_pool_queued"] == "4"
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "async_pool_avg_queue_latency_ms"
+        ]
+        == "1.25"
+    )
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "async_pool_avg_execution_time_ms"
+        ]
+        == "4.5"
+    )
+    assert (
+        database.values[publisher.STATUS_KEY][
+            "async_pool_avg_utilization_percent"
+        ]
+        == "12.5"
+    )
 
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())

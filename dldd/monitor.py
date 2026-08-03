@@ -50,10 +50,12 @@ class AsyncCollectionPool:
         max_workers: int = DEFAULT_ASYNC_COLLECTION_WORKERS,
         max_pending: int = DEFAULT_ASYNC_COLLECTION_PENDING,
         recheck_reserve: int = DEFAULT_ASYNC_RECHECK_RESERVE,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         max_workers = max(1, int(max_workers))
         max_pending = max(0, int(max_pending))
         recheck_reserve = min(max(0, int(recheck_reserve)), max_pending)
+        self._clock = monotonic_clock
         self._jobs = PriorityQueue()
         self._sequence = count()
         self._total_slots = threading.BoundedSemaphore(
@@ -62,7 +64,18 @@ class AsyncCollectionPool:
         self._normal_slots = threading.BoundedSemaphore(
             max_workers + max_pending - recheck_reserve
         )
+        self._state_lock = threading.Lock()
         self._closed = False
+        self._worker_count = max_workers
+        self._busy_workers = 0
+        self._queued_jobs = 0
+        self._queue_latency_seconds = 0.0
+        self._queue_latency_samples = 0
+        self._execution_seconds = 0.0
+        self._execution_samples = 0
+        self._metrics_started_at = self._clock()
+        self._utilization_updated_at = self._metrics_started_at
+        self._busy_worker_seconds = 0.0
         self._workers = tuple(
             threading.Thread(
                 target=self._worker,
@@ -82,32 +95,103 @@ class AsyncCollectionPool:
         high_priority: bool = False,
     ) -> bool:
         normal_slot = not high_priority
-        if self._closed:
-            return False
-        if normal_slot and not self._normal_slots.acquire(False):
-            return False
-        if not self._total_slots.acquire(False):
-            if normal_slot:
-                self._normal_slots.release()
-            return False
-        priority = 0 if high_priority else 1
-        self._jobs.put_nowait(
-            (
-                priority,
-                next(self._sequence),
-                (token, collector, completion_queue, normal_slot),
+        with self._state_lock:
+            if self._closed:
+                return False
+            if normal_slot and not self._normal_slots.acquire(False):
+                return False
+            if not self._total_slots.acquire(False):
+                if normal_slot:
+                    self._normal_slots.release()
+                return False
+            priority = 0 if high_priority else 1
+            submitted_at = self._clock()
+            self._queued_jobs += 1
+            self._jobs.put_nowait(
+                (
+                    priority,
+                    next(self._sequence),
+                    (
+                        token,
+                        collector,
+                        completion_queue,
+                        normal_slot,
+                        submitted_at,
+                    ),
+                )
             )
-        )
         return True
+
+    def metrics(self) -> Dict[str, float]:
+        """Return a consistent service-lifetime pool telemetry snapshot."""
+
+        with self._state_lock:
+            now = self._clock()
+            self._advance_utilization(now)
+            elapsed = max(0.0, now - self._metrics_started_at)
+            queue_average = (
+                self._queue_latency_seconds / self._queue_latency_samples
+                if self._queue_latency_samples
+                else 0.0
+            )
+            execution_average = (
+                self._execution_seconds / self._execution_samples
+                if self._execution_samples
+                else 0.0
+            )
+            utilization = (
+                self._busy_worker_seconds
+                / (elapsed * self._worker_count)
+                * 100.0
+                if elapsed
+                else 0.0
+            )
+            return {
+                "async_pool_workers": self._worker_count,
+                "async_pool_busy": self._busy_workers,
+                "async_pool_queued": self._queued_jobs,
+                "async_pool_avg_queue_latency_ms": round(
+                    queue_average * 1000.0, 3
+                ),
+                "async_pool_avg_execution_time_ms": round(
+                    execution_average * 1000.0, 3
+                ),
+                "async_pool_avg_utilization_percent": round(utilization, 3),
+            }
+
+    def _advance_utilization(self, now: float) -> None:
+        elapsed = max(0.0, now - self._utilization_updated_at)
+        self._busy_worker_seconds += elapsed * self._busy_workers
+        self._utilization_updated_at = now
 
     def _worker(self) -> None:
         while True:
             unused_priority, unused_sequence, job = self._jobs.get()
+            execution_started_at = None
             try:
                 if job is None:
                     return
-                token, collector, completion_queue, normal_slot = job
-                if self._closed:
+                (
+                    token,
+                    collector,
+                    completion_queue,
+                    normal_slot,
+                    submitted_at,
+                ) = job
+                with self._state_lock:
+                    self._queued_jobs -= 1
+                    if self._closed:
+                        execute = False
+                    else:
+                        execute = True
+                        execution_started_at = self._clock()
+                        self._queue_latency_seconds += max(
+                            0.0, execution_started_at - submitted_at
+                        )
+                        self._queue_latency_samples += 1
+                        self._advance_utilization(execution_started_at)
+                        self._busy_workers += 1
+                if not execute:
                     continue
                 try:
                     result = collector()
@@ -123,6 +207,16 @@ class AsyncCollectionPool:
                     AsyncCollectionCompletion(token, result)
                 )
             finally:
+                if execution_started_at is not None:
+                    execution_completed_at = self._clock()
+                    with self._state_lock:
+                        self._advance_utilization(execution_completed_at)
+                        self._busy_workers -= 1
+                        self._execution_seconds += max(
+                            0.0,
+                            execution_completed_at - execution_started_at,
+                        )
+                        self._execution_samples += 1
                 if job is not None:
                     self._total_slots.release()
                     if normal_slot:
@@ -130,12 +224,13 @@ class AsyncCollectionPool:
                 self._jobs.task_done()
 
     def shutdown(self, wait: bool = True) -> None:
-        if not self._closed:
-            self._closed = True
-            for unused_worker in self._workers:
-                self._jobs.put_nowait(
-                    (2, next(self._sequence), None)
-                )
+        with self._state_lock:
+            if not self._closed:
+                self._closed = True
+                for unused_worker in self._workers:
+                    self._jobs.put_nowait(
+                        (2, next(self._sequence), None)
+                    )
         if wait:
             for worker in self._workers:
                 worker.join()

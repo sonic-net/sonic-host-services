@@ -21,6 +21,16 @@ from .timestamps import floor_timestamp_fields
 LOGGER = logging.getLogger(__name__)
 
 
+EMPTY_ASYNC_POOL_METRICS = {
+    "async_pool_workers": 0,
+    "async_pool_busy": 0,
+    "async_pool_queued": 0,
+    "async_pool_avg_queue_latency_ms": 0.0,
+    "async_pool_avg_execution_time_ms": 0.0,
+    "async_pool_avg_utilization_percent": 0.0,
+}
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, bytes):
         return list(value)
@@ -240,7 +250,11 @@ class TelemetryPublisher:
         activation_result: str = "",
         activation_fallback_used: bool = False,
         previous_active_rules_checksum: str = "",
+        async_pool_metrics: Optional[Mapping[str, float]] = None,
     ) -> bool:
+        pool_metrics = dict(EMPTY_ASYNC_POOL_METRICS)
+        if async_pool_metrics:
+            pool_metrics.update(async_pool_metrics)
         payload = {
             "state": state,
             "running_schema": running_schema,
@@ -250,6 +264,7 @@ class TelemetryPublisher:
             "activation_result": activation_result,
             "activation_fallback_used": activation_fallback_used,
             "previous_active_rules_checksum": previous_active_rules_checksum,
+            **pool_metrics,
             **asdict(self.config),
             "local_action_default_timeout": local_action_default_timeout,
             "broken_rules": list(broken_rules),

@@ -794,7 +794,10 @@ def test_status_publication_contract(tmp_path, monkeypatch):
     now = 1000.0
     monkeypatch.setattr(dldd_service.time, "time", lambda: now)
     service.fatal_reason = ""
-    service.monitors = [SimpleNamespace(diagnostics=({"reason": "monitor"},))]
+    service.monitors = [SimpleNamespace(diagnostics=({
+        "reason": "monitor",
+        "correlation_key": "work-key",
+    },))]
     service._inflight_status = lambda: ({"state": "HELD_BY_PRIMARY"},)
     service.orchestrator = SimpleNamespace(
         source_status={
@@ -802,11 +805,30 @@ def test_status_publication_contract(tmp_path, monkeypatch):
             "recent": {"state": "RECOVERED", "since": 990},
             "failed": {"state": "UNAVAILABLE", "since": 995},
         },
-        broken_rules={"bad": {"rule": "RUNTIME_BAD"}},
+        work_items={
+            "work-key": SimpleNamespace(
+                rule_id=1000001,
+                component_type="PSU",
+                component_name="PSU0",
+            )
+        },
+        broken_rules={"bad": {
+            "rule": "RUNTIME_BAD",
+            "rule_id": 1000001,
+            "correlation_key": "work-key",
+        }},
         service_state=lambda: "DEGRADED",
-        service_diagnostics=({"reason": "orchestrator"},),
+        service_diagnostics=({
+            "reason": "orchestrator",
+            "rule_id": 1000002,
+            "component": "FAN0",
+            "correlation_key": "diagnostic-key",
+        },),
         correlation=SimpleNamespace(
-            diagnostics=({"reason": "correlation"},)
+            diagnostics=({
+                "reason": "correlation",
+                "correlation_key": "work-key",
+            },)
         ),
     )
 
@@ -821,19 +843,46 @@ def test_status_publication_contract(tmp_path, monkeypatch):
     assert kwargs["inflight_fault_evidence"] == (
         {"state": "HELD_BY_PRIMARY"},
     )
+    assert kwargs["broken_rules"] == ({
+        "rule": "RUNTIME_BAD",
+        "rule_id": 1000001,
+        "component_type": "PSU",
+        "component_name": "PSU0",
+        "rule_instance_id": "1000001@PSU0",
+    },)
     assert [item["reason"] for item in kwargs["service_diagnostics"]] == [
         "monitor",
         "orchestrator",
         "correlation",
     ]
+    assert [
+        item.get("rule_instance_id", "")
+        for item in kwargs["service_diagnostics"]
+    ] == ["1000001@PSU0", "1000002@FAN0", "1000001@PSU0"]
+    assert all(
+        "correlation_key" not in item
+        for item in kwargs["service_diagnostics"]
+    )
     assert kwargs["reason"] == "DLDD has degraded or broken rules/sources"
 
     service.orchestrator = None
     service.activation.broken_rules = ()
+    expected_pool_metrics = {
+        "async_pool_workers": 8,
+        "async_pool_busy": 1,
+        "async_pool_queued": 2,
+        "async_pool_avg_queue_latency_ms": 1.0,
+        "async_pool_avg_execution_time_ms": 2.0,
+        "async_pool_avg_utilization_percent": 3.0,
+    }
+    service.async_collection_pool = SimpleNamespace(
+        metrics=lambda: expected_pool_metrics
+    )
     assert service._publish_status() is True
     args, kwargs = telemetry.statuses[-1]
     assert args[0] == "OK"
     assert kwargs["reason"] == ""
+    assert kwargs["async_pool_metrics"] == expected_pool_metrics
 
 
 @pytest.mark.parametrize("completed_action", (True, False))
@@ -845,6 +894,7 @@ def test_inflight_status_includes_pending_local_action_progress(
         rule_name="ACTION_RULE",
         rule_id=1000001,
         event_id=1,
+        component_type="SENSOR",
         component_name="SENSOR0",
     )
     state = SimpleNamespace(
@@ -883,7 +933,10 @@ def test_inflight_status_includes_pending_local_action_progress(
     monkeypatch.setattr(dldd_service.time, "monotonic", lambda: 100.0)
     monkeypatch.setattr(dldd_service.time, "time", lambda: 1000.0)
 
-    status = service._inflight_status()[0]["local_action_state"]
+    inflight = service._inflight_status()[0]
+    assert inflight["rule_instance_id"] == "1000001@SENSOR0"
+    assert "correlation_key" not in inflight
+    status = inflight["local_action_state"]
 
     if completed_action:
         assert status == {

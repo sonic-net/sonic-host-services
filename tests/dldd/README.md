@@ -52,6 +52,45 @@ in `tests/dldd_fakes.py`. Contract-specific helpers should remain near their
 own tests until at least two behavior groups share them; avoid both copied setup
 and one giant implicit `conftest.py`.
 
+### Rule conformance corpus
+
+The checked-in rule fixtures have deliberately different deployment scopes:
+
+- `fixtures/all-supported-rule-types.yaml` is the portable conformance corpus.
+  It covers every schema source, evaluator, value encoding, action/query shape,
+  logic form, timing form, and supported DSE composition mode using controlled
+  source and vendor doubles. It is hardware-neutral qualification data, not a
+  platform rules generation, and must not be installed on a DUT.
+- `fixtures/mixed-sensor-rules.yaml` is the only fixture intended for controlled
+  activation on the identified lab DUT. Executable rules carry `dut-live`; the
+  two `dut-schema-sentinel` rules intentionally remain non-executable to prove
+  rule isolation, so `DEGRADED` is the expected activation result. Its valid
+  rules perform read-only collection and declare remote recommendations only.
+  `DLDD_DUT_RULE_INSTANCE_BROKEN` is an executable runtime sentinel: it
+  deterministically produces a non-retryable evaluation error after resolving
+  `DLDD_RULE_INSTANCE_TEST`, so operator output must identify the broken work
+  as `9999302@DLDD_RULE_INSTANCE_TEST`. Use the fixture in an isolated lab
+  because an external controller could consume its recommendations.
+- `fixtures/localized-broken-rule-types.yaml` is the common validation failure
+  corpus. It is qualification-only and must not be installed. Unique identities
+  prove Pydantic, materialization, and generic preflight failures remain
+  localized; the schema-valid preflight cases are asserted separately from
+  schema and materialization failures.
+- `fixtures/dut-unsupported-extension-rules.yaml` is the software-pinned DUT
+  extension failure catalog. Run it only with `activation-dry-run`; never
+  install it or use hardware-probe/e2e modes. One Redis control must survive
+  while each `broken-*` case proves an unsupported platform/DSE reference is
+  localized. Resolution details belong to the vendor implementation, so common
+  tests assert categories rather than vendor error text.
+
+The conformance rules use `coverage-*` metadata tags as machine-checked
+capability labels. Tests also inspect the actual event/evaluation/operation
+fields, so a label cannot claim coverage that the rule does not contain. Fatal
+envelope cases such as an unsupported `schema_version`, duplicate rule
+identity, duplicate YAML key, or forbidden alias remain separate parser/unit
+inputs because any one of them correctly rejects the complete file and cannot
+coexist in a degraded-but-usable rules generation.
+
 `unit-coverage` records line and branch data in
 `/tmp/dldd-unit-coverage.json` by default and prints every missing line. The
 report is intentionally not combined with integration coverage. The build gate

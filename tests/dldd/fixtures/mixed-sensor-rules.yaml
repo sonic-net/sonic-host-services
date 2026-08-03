@@ -18,6 +18,9 @@ signatures:
       symptom: SYMPTOM_OVER_THRESHOLD
       error_type: TEMPERATURE
       severity: WARNING
+      tags:
+      - dut-live
+      - coverage-direct-temperature-sensors
     conditions:
       logic: '1'
       logic_lookback_time: 120
@@ -274,6 +277,9 @@ signatures:
       symptom: SYMPTOM_OVER_THRESHOLD
       error_type: POWER
       severity: WARNING
+      tags:
+      - dut-live
+      - coverage-direct-voltage-sensors
     conditions:
       logic: '1'
       logic_lookback_time: 120
@@ -971,6 +977,9 @@ signatures:
       symptom: SYMPTOM_OVER_THRESHOLD
       error_type: POWER
       severity: WARNING
+      tags:
+      - dut-live
+      - coverage-direct-current-sensors
     conditions:
       logic: '1'
       logic_lookback_time: 120
@@ -1098,6 +1107,9 @@ signatures:
       symptom: SYMPTOM_OVER_THRESHOLD
       error_type: TEMPERATURE
       severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse-temperature-sensors
     conditions:
       logic: '1'
       logic_lookback_time: 120
@@ -1132,6 +1144,9 @@ signatures:
       symptom: SYMPTOM_OVER_THRESHOLD
       error_type: POWER
       severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse-voltage-sensors
     conditions:
       logic: '1'
       logic_lookback_time: 120
@@ -1166,6 +1181,9 @@ signatures:
       symptom: SYMPTOM_OVER_THRESHOLD
       error_type: POWER
       severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse-current-sensors
     conditions:
       logic: '1'
       logic_lookback_time: 120
@@ -1199,6 +1217,9 @@ signatures:
       component: TEST_SENSOR
       symptom: SYMPTOM_UNKNOWN
       error_type: DLDD_TEST
+      tags:
+      - dut-schema-sentinel
+      - broken-missing-severity
     conditions:
       logic: '1'
       logic_lookback_time: 0
@@ -1237,6 +1258,9 @@ signatures:
       symptom: SYMPTOM_UNKNOWN
       error_type: DLDD_TEST
       severity: UNKNOWN
+      tags:
+      - dut-schema-sentinel
+      - broken-invalid-operator
     conditions:
       logic: '1'
       logic_lookback_time: 0
@@ -1253,6 +1277,1720 @@ signatures:
             type: comparison
             operator: definitely-not-valid
             value: 17141.0
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_RULE_INSTANCE_BROKEN
+      id: 9999302
+      version: 1.0.0
+      description: Deterministic runtime evaluation failure used to verify instance-bound broken-rule telemetry.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_RULE_INSTANCE_TEST
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - runtime-broken-rule-instance
+      - deterministic-evaluation-error
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: cli
+          path:
+            argv:
+            - /usr/bin/printf
+            - not-an-integer
+            timeout: 5
+          evaluation:
+            type: mask
+            logic: '&'
+            value: '0x01'
+            value_configs:
+              type: string
+              unit: N/A
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_ACTIVE_TEST
+      id: 9999301
+      version: 1.0.0
+      description: Synthetic DUT rule used to verify active fault publication.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: DIAGNOSTIC
+      severity: WARNING
+      tags:
+      - dut-live
+      - deterministic-active-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          instances:
+          - DLDD_ACTIVE_TEST:DLDD_TEST_SENSOR|DLDD_ACTIVE_TEST
+          sampling_interval: 1
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_ACTIVE_TEST
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            unit: state
+            value_configs:
+              type: int
+              unit: state
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_CLI_STRING_CONTAINS
+      id: 9999501
+      version: 1.0.0
+      description: DUT-safe CLI source exercising case-insensitive string containment.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_CLI
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-cli
+      - coverage-evaluation-string
+      - coverage-string-contains
+      - coverage-async
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: cli
+          path:
+            argv:
+            - /usr/bin/printf
+            - dldd-ready
+            timeout: 5
+          evaluation:
+            type: string
+            operator: contains
+            value: never-present
+            case_sensitive: false
+            value_configs:
+              type: string
+              unit: N/A
+          sampling_interval: 30
+          async: true
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_CLI_STRING_EQUALS
+      id: 9999502
+      version: 1.0.0
+      description: DUT-safe CLI source exercising exact string equality.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_CLI
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-cli
+      - coverage-evaluation-string
+      - coverage-string-equals
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: cli
+          path:
+            argv:
+            - /usr/bin/printf
+            - dldd-ready
+            timeout: 5
+          evaluation:
+            type: string
+            operator: equals
+            value: dldd-not-ready
+            value_configs:
+              type: string
+              unit: N/A
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_CLI_STRING_REGEX
+      id: 9999503
+      version: 1.0.0
+      description: DUT-safe CLI source exercising bounded regex evaluation.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_CLI
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-cli
+      - coverage-evaluation-string
+      - coverage-string-regex
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: cli
+          path:
+            argv:
+            - /usr/bin/printf
+            - dldd-ready
+            timeout: 5
+          evaluation:
+            type: string
+            operator: regex
+            value: ^never-present$
+            value_configs:
+              type: string
+              unit: N/A
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_CLI_BOOLEAN
+      id: 9999504
+      version: 1.0.0
+      description: DUT-safe CLI source exercising boolean normalization and evaluation.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_CLI
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-cli
+      - coverage-evaluation-boolean
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: cli
+          path:
+            argv:
+            - /usr/bin/printf
+            - 'false'
+            timeout: 5
+          evaluation:
+            type: boolean
+            value: true
+            value_configs:
+              type: boolean
+              unit: N/A
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_FILE_SOURCE
+      id: 9999505
+      version: 1.0.0
+      description: DUT-safe file source exercising text collection without creating a fault.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_FILE
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-file
+      - coverage-file-text
+      - coverage-evaluation-string
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: file
+          path:
+            file: /etc/hostname
+            format: text
+          evaluation:
+            type: string
+            operator: contains
+            value: __dldd_never_present__
+            value_configs:
+              type: string
+              unit: N/A
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_SYSFS_SOURCE
+      id: 9999506
+      version: 1.0.0
+      description: DUT-safe sysfs source exercising text collection without creating a fault.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_SYSFS
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-sysfs
+      - coverage-sysfs-text
+      - coverage-evaluation-string
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: sysfs
+          path:
+            file: /sys/class/dmi/id/product_name
+            format: text
+          evaluation:
+            type: string
+            operator: regex
+            value: ^$
+            value_configs:
+              type: string
+              unit: N/A
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_I2C_MASK
+      id: 9999507
+      version: 1.0.0
+      description: DUT I2C word read exercising bit-mask evaluation at a low-impact cadence.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_I2C
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-i2c
+      - coverage-i2c-word
+      - coverage-evaluation-mask
+      - low-impact-cadence
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: i2c
+          path:
+            bus: '19'
+            chip_addr: '0x58'
+            i2c_type: get
+            command: '0x79'
+            size: w
+          evaluation:
+            type: mask
+            logic: '&'
+            value: '0x8000'
+            value_configs:
+              type: hex
+              unit: N/A
+          sampling_interval: 86400
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_PLATFORM_API_DSE_SOURCE
+      id: 9999508
+      version: 1.0.0
+      description: Platform API event using the installed DSE current selector path form.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-source-platform-api
+      - coverage-platform-api-dse-string
+      - coverage-dse-source
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: platform_api
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1000000000000000.0
+            value_configs:
+              type: float
+              unit: mA
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_COMPARISON_OPERATORS
+      id: 9999509
+      version: 1.0.0
+      description: Controlled Redis source covering all six numeric comparison operators.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_COMPARISON
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-comparison-operators
+      - operator-gt
+      - operator-lt
+      - operator-gte
+      - operator-lte
+      - operator-eq
+      - operator-ne
+      - baseline-no-fault
+    conditions:
+      logic: 1 OR 2 OR 3 OR 4 OR 5 OR 6
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_VALUE_ONE
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>'
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_VALUE_ONE
+            path: value
+          evaluation:
+            type: comparison
+            operator: '<'
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 3
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_VALUE_ONE
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 2
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 4
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_VALUE_ONE
+            path: value
+          evaluation:
+            type: comparison
+            operator: '<='
+            value: 0
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 5
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_VALUE_ONE
+            path: value
+          evaluation:
+            type: comparison
+            operator: ==
+            value: 0
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 6
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_VALUE_ONE
+            path: value
+          evaluation:
+            type: comparison
+            operator: '!='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_CLI_MASK
+      id: 9999510
+      version: 1.0.0
+      description: Deterministic CLI hexadecimal output exercising a non-matching mask.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_CLI
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-cli
+      - coverage-evaluation-mask
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: cli
+          path:
+            argv:
+            - /usr/bin/printf
+            - '0x80'
+            timeout: 5
+          evaluation:
+            type: mask
+            logic: '&'
+            value: '0x40'
+            value_configs:
+              type: hex
+              unit: N/A
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_REDIS_POSITIONAL_INSTANCES
+      id: 9999511
+      version: 1.0.0
+      description: One Redis event expanded positionally across two explicitly named instances.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_POSITIONAL
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-positional-instances
+      - coverage-one-event-many-instances
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          instances:
+          - DLDD_POSITIONAL_A:DLDD_TEST_SENSOR|LOGIC_A
+          - DLDD_POSITIONAL_B:DLDD_TEST_SENSOR|LOGIC_B
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key:
+            - DLDD_TEST_SENSOR|LOGIC_A
+            - DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value:
+            - 2
+            - 2
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_LOGIC_CURRENT_STATE
+      id: 9999601
+      version: 1.0.0
+      description: Toggle test proving lookback zero correlates currently active event state regardless of sample age.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_LOGIC_CURRENT
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-logic-and
+      - coverage-lookback-current-state
+      - temporal-toggle-required
+      - baseline-no-fault
+    conditions:
+      logic: 1 AND 2
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_A
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 86400
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 1
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_LOGIC_WINDOWED
+      id: 9999602
+      version: 1.0.0
+      description: Toggle test proving a five-second lookback rejects stale event evidence.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_LOGIC_WINDOWED
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-logic-and
+      - coverage-lookback-windowed
+      - lookback-five-seconds
+      - temporal-toggle-required
+      - baseline-no-fault
+    conditions:
+      logic: 1 AND 2
+      logic_lookback_time: 5
+      events:
+      - event:
+          id: 1
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_A
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 86400
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 1
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_MATCH_WINDOW
+      id: 9999603
+      version: 1.0.0
+      description: Toggle test requiring three matching samples within a ten-second period.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_MATCH_WINDOW
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-match-count
+      - coverage-match-period
+      - temporal-toggle-required
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|MATCH_WINDOW
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 1
+          match_count: 3
+          match_period: 10
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_LOGIC_PRECEDENCE
+      id: 9999604
+      version: 1.0.0
+      description: Controlled Redis events exercising unparenthesized AND-before-OR precedence.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_LOGIC_PRECEDENCE
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-logic-and
+      - coverage-logic-or
+      - coverage-logic-precedence
+      - baseline-no-fault
+    conditions:
+      logic: 1 OR 2 AND 3
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 3
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_LOGIC_NESTED
+      id: 9999605
+      version: 1.0.0
+      description: Controlled Redis events exercising nested parentheses with AND and OR groups.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_LOGIC_NESTED
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-logic-and
+      - coverage-logic-or
+      - coverage-logic-nested-parentheses
+      - baseline-no-fault
+    conditions:
+      logic: (1 AND (2 OR 3)) OR (4 AND 5)
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_A
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 3
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 4
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 5
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|LOGIC_B
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_DSE_CURRENT_LOW
+      id: 9999701
+      version: 1.0.0
+      description: DSE current expansion with a live low-threshold evaluator refreshed on every sample.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_UNDER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-source-runtime-handle
+      - coverage-dse-evaluation-runtime-handle
+      - coverage-dse-low-threshold
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{current*}:{get_low_threshold()}'
+          sampling_interval: 5
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_DSE_STATIC_ASYNC
+      id: 9999702
+      version: 1.0.0
+      description: DSE current expansion with a fixed common evaluator, inherited cadence, and async execution.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-source-static-evaluation
+      - coverage-dse-common-evaluator
+      - coverage-async
+      - coverage-cadence-inherited
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1000000000000000.0
+            value_configs:
+              type: float
+              unit: mA
+          async: true
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_COMMON_SOURCE_DSE_EVAL_WARNING
+      id: 9999703
+      version: 1.0.0
+      description: Permitted wildcard DSE evaluator on one common Redis source, expected to emit a cardinality warning.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_DSE_WARNING
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-dse
+      - coverage-dse-common-source-wildcard-evaluator
+      - coverage-dse-cardinality-warning
+      - coverage-dse-rule-operator
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: '>'
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_DSE_CROSS_SELECTOR
+      id: 9999704
+      version: 1.0.0
+      description: Intentional current-source and voltage-evaluator selector mismatch retained with a warning.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-cross-selector
+      - coverage-dse-selector-warning
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{voltage*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_DSE_RULE_OPERATOR
+      id: 9999705
+      version: 1.0.0
+      description: Explicit rule operator overriding the vendor evaluator's default comparison operator.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-rule-operator
+      - coverage-dse-operator-precedence
+      - baseline-no-fault
+    conditions:
+      logic: '1'
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            operator: '>'
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_MULTI_DSE_AND
+      id: 9999706
+      version: 1.0.0
+      description: Two runtime DSE predicates correlated with AND for each expanded current sensor.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_UNKNOWN
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-multi-event
+      - coverage-logic-and
+      - baseline-no-fault
+    conditions:
+      logic: 1 AND 2
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{current*}:{get_low_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_MULTI_DSE_OR
+      id: 9999707
+      version: 1.0.0
+      description: High- or low-threshold runtime DSE predicates correlated with OR for each current sensor.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_UNKNOWN
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-multi-event
+      - coverage-logic-or
+      - baseline-no-fault
+    conditions:
+      logic: 1 OR 2
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{current*}:{get_low_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_DSE_COMMON_AND
+      id: 9999708
+      version: 1.0.0
+      description: Runtime DSE threshold predicate correlated with a common Redis predicate using AND.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-common-predicate
+      - coverage-logic-and
+      - baseline-no-fault
+    conditions:
+      logic: 1 AND 2
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_ACTIVE_TEST
+            path: value
+          evaluation:
+            type: comparison
+            operator: '>='
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_DSE_COMMON_OR
+      id: 9999709
+      version: 1.0.0
+      description: Runtime DSE threshold predicate correlated with a false common Redis predicate using OR.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: CURRENT_SENSOR
+      symptom: SYMPTOM_OVER_THRESHOLD
+      error_type: POWER
+      severity: WARNING
+      tags:
+      - dut-live
+      - coverage-dse
+      - coverage-dse-common-predicate
+      - coverage-logic-or
+      - baseline-no-fault
+    conditions:
+      logic: 1 OR 2
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: dse
+          path: '{current*}:{get_value()}'
+          evaluation:
+            type: dse
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DLDD_ACTIVE_TEST
+            path: value
+          evaluation:
+            type: comparison
+            operator: '<'
+            value: 1
+            value_configs:
+              type: int
+              unit: state
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+    actions:
+      repair_actions:
+        remote_actions:
+          action_list:
+          - ACTION_REPLACE
+          time_window: 3600
+- signature:
+    metadata:
+      name: DLDD_DUT_DSE_OPERATOR_MATRIX
+      id: 9999710
+      version: 1.0.0
+      description: One explicit Redis binding exercising every rule-visible DSE operator against a live threshold callback.
+      product_ids:
+      - 8102_28fh_dpu_o
+      sw_versions:
+      - grboudre_dldd-impl.0-1d85491a7
+      component: DLDD_TEST_DSE_OPERATORS
+      symptom: SYMPTOM_UNKNOWN
+      error_type: DIAGNOSTIC
+      severity: UNKNOWN
+      tags:
+      - dut-live
+      - coverage-source-redis
+      - coverage-dse
+      - coverage-dse-operators
+      - coverage-dse-explicit-binding
+      - operator-gt
+      - operator-lt
+      - operator-gte
+      - operator-lte
+      - operator-eq
+      - operator-ne
+      - operator-equals
+      - operator-not-equals
+      - baseline-no-fault
+    conditions:
+      logic: 1 AND 2 AND 3 AND 4 AND 5 AND 6 AND 7 AND 8
+      logic_lookback_time: 0
+      events:
+      - event:
+          id: 1
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: '>'
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 2
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: '<'
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 3
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: '>='
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 4
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: '<='
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 5
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: ==
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 6
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: '!='
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 7
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: equals
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
+          match_count: 1
+          match_period: 0
+      - event:
+          id: 8
+          type: redis
+          instances:
+          - DSE_OPERATOR_TEST:DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+          path:
+            database: STATE_DB
+            table: DLDD_TEST_SENSOR
+            key: DLDD_TEST_SENSOR|DSE_OPERATOR_TEST
+            path: value
+          evaluation:
+            type: dse
+            operator: not_equals
+            value: '{current*}:{get_high_threshold()}'
+          sampling_interval: 30
           match_count: 1
           match_period: 0
     actions:

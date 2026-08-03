@@ -1,0 +1,1757 @@
+# Qualification-only corpus for the complete schema 0.0.1 positive surface.
+#
+# This file is intentionally hardware neutral. Tests install controlled Redis,
+# file, I2C, Platform API, vendor-operation, and DSE doubles before attempting
+# materialization or execution. It must not be installed as a daemon ruleset on
+# a production device. YAML aliases are deliberately avoided because the DLDD
+# parser rejects them.
+schema_version: 0.0.1
+local_action_default_timeout: 30
+signatures:
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_LOGIC_PRECEDENCE_AND_CADENCE
+        id: 9901001
+        version: 1.0.0
+        description: Covers unparenthesized AND/OR precedence and cadence modes.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_COMPONENT
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: CRITICAL
+        priority: 0
+        tags:
+          - dldd-corpus
+          - coverage-logic
+          - logic-and
+          - logic-or
+          - logic-precedence
+          - lookback-current
+          - cadence-inherited
+          - cadence-explicit
+          - async
+          - async-omitted
+          - async-false
+          - async-true
+          - boundary-priority-min
+          - boundary-lookback-min
+          - boundary-sampling-min
+      conditions:
+        logic: "1 OR 2 AND 3"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|LOGIC_1
+                path: value
+              evaluation:
+                type: comparison
+                operator: ">"
+                value: 10
+                value_configs:
+                  type: int
+                  unit: N/A
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|LOGIC_2
+                path: value
+              evaluation:
+                type: comparison
+                operator: "<"
+                value: 10
+                value_configs:
+                  type: int
+                  unit: N/A
+              sampling_interval: 1
+              async: false
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|LOGIC_3
+                path: value
+              evaluation:
+                type: comparison
+                operator: ">="
+                value: 10
+                value_configs:
+                  type: int
+                  unit: N/A
+              sampling_interval: 1
+              async: true
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 60
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_LOGIC_PARENTHESES_AND_LOOKBACK
+        id: 9901002
+        version: 1.0.0
+        description: Covers parenthesized logic and the maximum correlation lookback.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_COMPONENT
+        symptom: SYMPTOM_UNDER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: MAJOR
+        tags:
+          - dldd-corpus
+          - coverage-logic
+          - logic-and
+          - logic-or
+          - logic-parentheses
+          - logic-nested-parentheses
+          - lookback-windowed
+          - boundary-lookback-max
+      conditions:
+        logic: "(1 AND (2 OR 3)) OR (4 AND 5)"
+        logic_lookback_time: 86400
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|PAREN_1
+                path: value
+              evaluation:
+                type: comparison
+                operator: "<="
+                value: 10
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|PAREN_2
+                path: value
+              evaluation:
+                type: comparison
+                operator: "=="
+                value: ready
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|PAREN_3
+                path: value
+              evaluation:
+                type: comparison
+                operator: "!="
+                value: failed
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 4
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|PAREN_4
+                path: value
+              evaluation:
+                type: boolean
+                value: true
+                value_configs:
+                  type: boolean
+                  unit: N/A
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 5
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|PAREN_5
+                path: value
+              evaluation:
+                type: boolean
+                value: false
+                value_configs:
+                  type: boolean
+                  unit: N/A
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_RESEAT, ACTION_REPLACE]
+            time_window: 86400
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_MATCH_WINDOW_BOUNDARIES
+        id: 9901003
+        version: 1.0.0
+        description: Covers minimum and maximum event match-window boundaries.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_COMPONENT
+        symptom: SYMPTOM_MEMORY_ERRORS
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-logic
+          - logic-and
+          - lookback-windowed
+          - match-window
+          - boundary-match-count-min
+          - boundary-match-count-max
+          - boundary-match-period-min
+          - boundary-match-period-max
+          - boundary-sampling-max
+      conditions:
+        logic: "1 AND 2"
+        logic_lookback_time: 60
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|WINDOW_CURRENT
+                path: value
+              evaluation:
+                type: boolean
+                value: true
+                value_configs:
+                  type: boolean
+                  unit: N/A
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|WINDOW_ACCUMULATED
+                path: value
+              evaluation:
+                type: boolean
+                value: true
+                value_configs:
+                  type: boolean
+                  unit: N/A
+              sampling_interval: 4294967295
+              match_count: 1000
+              match_period: 3600
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 4294967295
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_EVALUATION_AND_VALUE_TYPES
+        id: 9901101
+        version: 1.0.0
+        description: Covers built-in evaluator, operator, and value metadata variants.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_COMPONENT
+        symptom: SYMPTOM_MISSING_COMPONENT
+        error_type: DLDD_CORPUS
+        severity: MINOR
+        tags:
+          - dldd-corpus
+          - coverage-evaluation-types
+          - coverage-comparison-operators
+          - coverage-string-operators
+          - coverage-value-config-types
+      conditions:
+        logic: "1 OR 2 OR 3 OR 4 OR 5 OR 6 OR 7 OR 8 OR 9 OR 10 OR 11 OR 12"
+        logic_lookback_time: 1
+        events:
+          - event:
+              id: 1
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_GT", path: value}
+              evaluation:
+                type: comparison
+                operator: ">"
+                value: 10
+                value_configs: {type: int, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_LT", path: value}
+              evaluation:
+                type: comparison
+                operator: "<"
+                value: 10.0
+                value_configs: {type: float, unit: volts, scaling: 0.001, encoding: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_GE", path: value}
+              evaluation:
+                type: comparison
+                operator: ">="
+                value: 10
+                value_configs: {type: hex, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 4
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_LE", path: value}
+              evaluation:
+                type: comparison
+                operator: "<="
+                value: 10
+                value_configs: {type: binary, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 5
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_EQ", path: value}
+              evaluation:
+                type: comparison
+                operator: "=="
+                value: ready
+                value_configs: {type: string, unit: N/A, encoding: utf-8}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 6
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_NE", path: value}
+              evaluation:
+                type: comparison
+                operator: "!="
+                value: raw
+                value_configs: {type: bytes, unit: N/A, encoding: utf-8}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 7
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_MASK", path: value}
+              evaluation:
+                type: mask
+                logic: "&"
+                value: "0x80"
+                value_configs: {type: binary, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 8
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_CONTAINS", path: value}
+              evaluation:
+                type: string
+                operator: contains
+                value: fault
+                case_sensitive: false
+                value_configs: {type: string, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 9
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_EQUALS", path: value}
+              evaluation:
+                type: string
+                operator: equals
+                value: exact
+                value_configs: {type: N/A, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 10
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_REGEX", path: value}
+              evaluation:
+                type: string
+                operator: regex
+                value: "^fault-[0-9]+$"
+                value_configs: {type: json, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 11
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_BOOLEAN", path: value}
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 12
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|EVAL_DSE_PLACEHOLDER", path: value}
+              evaluation:
+                type: dse
+                value: "direct_sensor:get_fixed_threshold()"
+                value_configs: {type: N/A, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_FILE_FORMATS
+        id: 9901201
+        version: 1.0.0
+        description: Covers every format accepted by the common file adapter.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_FILE
+        symptom: SYMPTOM_COMM_ERROR
+        error_type: DLDD_CORPUS
+        severity: UNKNOWN
+        tags:
+          - dldd-corpus
+          - coverage-source-types
+          - coverage-file-formats
+      conditions:
+        logic: "1 OR 2 OR 3 OR 4 OR 5 OR 6 OR 7 OR 8 OR 9"
+        logic_lookback_time: 5
+        events:
+          - event:
+              id: 1
+              type: file
+              path: {file: /tmp/dldd-corpus/file-text, format: text}
+              evaluation: {type: string, operator: contains, value: corpus}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: file
+              path: {file: /tmp/dldd-corpus/file-string, format: string}
+              evaluation: {type: string, operator: equals, value: corpus}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: file
+              path: {file: /tmp/dldd-corpus/file-raw, format: raw}
+              evaluation: {type: string, operator: regex, value: "^corpus$"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 4
+              type: file
+              path: {file: /tmp/dldd-corpus/file-json, format: json}
+              evaluation:
+                type: string
+                operator: contains
+                value: corpus
+                value_configs: {type: json, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 5
+              type: file
+              path: {file: /tmp/dldd-corpus/file-yaml, format: yaml}
+              evaluation:
+                type: string
+                operator: contains
+                value: corpus
+                value_configs: {type: json, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 6
+              type: file
+              path: {file: /tmp/dldd-corpus/file-integer, format: integer}
+              evaluation:
+                type: comparison
+                operator: ">="
+                value: 1
+                value_configs: {type: int, unit: count}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 7
+              type: file
+              path: {file: /tmp/dldd-corpus/file-int, format: int}
+              evaluation:
+                type: comparison
+                operator: "=="
+                value: 7
+                value_configs: {type: int, unit: count}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 8
+              type: file
+              path: {file: /tmp/dldd-corpus/file-float, format: float, scaling: 0.5, unit: volts}
+              evaluation:
+                type: comparison
+                operator: ">"
+                value: 1.0
+                value_configs: {type: float, unit: volts}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 9
+              type: file
+              path: {file: /tmp/dldd-corpus/file-boolean, format: boolean}
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_SYSFS_FORMATS
+        id: 9901202
+        version: 1.0.0
+        description: Covers every format accepted by the common sysfs adapter.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_SYSFS
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-source-types
+          - coverage-sysfs-formats
+      conditions:
+        logic: "1 OR 2 OR 3 OR 4 OR 5 OR 6 OR 7 OR 8 OR 9"
+        logic_lookback_time: 5
+        events:
+          - event:
+              id: 1
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-text, format: text}
+              evaluation: {type: string, operator: contains, value: corpus}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-string, format: string}
+              evaluation: {type: string, operator: equals, value: corpus}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-raw, format: raw}
+              evaluation: {type: string, operator: regex, value: "^corpus$"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 4
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-json, format: json}
+              evaluation:
+                type: string
+                operator: contains
+                value: corpus
+                value_configs: {type: json, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 5
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-yaml, format: yaml}
+              evaluation:
+                type: string
+                operator: contains
+                value: corpus
+                value_configs: {type: json, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 6
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-integer, format: integer}
+              evaluation:
+                type: comparison
+                operator: ">="
+                value: 1
+                value_configs: {type: int, unit: count}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 7
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-int, format: int}
+              evaluation:
+                type: comparison
+                operator: "=="
+                value: 7
+                value_configs: {type: int, unit: count}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 8
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-float, format: float, scaling: 0.5, unit: volts}
+              evaluation:
+                type: comparison
+                operator: ">"
+                value: 1.0
+                value_configs: {type: float, unit: volts}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 9
+              type: sysfs
+              path: {file: /tmp/dldd-corpus/sysfs-boolean, format: boolean}
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_I2C_VARIANTS
+        id: 9901301
+        version: 1.0.0
+        description: Covers I2C byte, word, and long reads and positional buses.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_I2C
+        symptom: SYMPTOM_COMM_ERROR
+        error_type: DLDD_CORPUS
+        severity: MAJOR
+        tags:
+          - dldd-corpus
+          - coverage-source-types
+          - coverage-i2c-variants
+          - i2c-size-b
+          - i2c-size-w
+          - i2c-size-l
+          - i2c-scalar-bus
+          - i2c-positional-bus
+      conditions:
+        logic: "1 OR 2 OR 3"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: i2c
+              path:
+                bus: corpus-bus-0
+                chip_addr: "0x50"
+                i2c_type: get
+                command: "0x01"
+                size: b
+              evaluation:
+                type: mask
+                logic: "&"
+                value: "0x01"
+                value_configs: {type: hex, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: i2c
+              instances:
+                - I2C0:corpus-bus-0
+                - I2C1:corpus-bus-1
+              path:
+                bus: [corpus-bus-0, corpus-bus-1]
+                chip_addr: "0x51"
+                i2c_type: get
+                command: "0x02"
+                size: w
+              evaluation:
+                type: comparison
+                operator: ">="
+                value: [1, 2]
+                value_configs: {type: int, unit: count}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: i2c
+              path:
+                bus: corpus-bus-2
+                chip_addr: "0x52"
+                i2c_type: get
+                command: "0x03"
+                size: l
+                scaling: 0.001
+              evaluation:
+                type: comparison
+                operator: ">"
+                value: 1.0
+                unit: volts
+                value_configs: {type: float, unit: volts}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_CLI_VARIANTS
+        id: 9901302
+        version: 1.0.0
+        description: Covers explicit CLI timeout, inherited cadence, and async collection.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_CLI
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_CORPUS
+        severity: MINOR
+        tags:
+          - dldd-corpus
+          - coverage-source-types
+          - coverage-cli-variants
+          - cadence-inherited
+          - cadence-explicit
+          - async
+      conditions:
+        logic: "1 OR 2"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: cli
+              path:
+                argv: [/usr/bin/printf, corpus-cli]
+                timeout: 5
+              evaluation:
+                type: string
+                operator: equals
+                value: corpus-cli
+              sampling_interval: 2
+              async: true
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: cli
+              path:
+                argv: [/usr/bin/printf, corpus-defaults]
+              evaluation:
+                type: string
+                operator: contains
+                value: defaults
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_PLATFORM_API_VARIANTS
+        id: 9901303
+        version: 1.0.0
+        description: Covers Platform API hook mapping and DSE-reference path forms.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_PLATFORM_API
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_CORPUS
+        severity: UNKNOWN
+        tags:
+          - dldd-corpus
+          - coverage-source-types
+          - coverage-platform-api-variants
+          - platform-api-mapping
+          - platform-api-dse-string
+      conditions:
+        logic: "1 OR 2"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: platform_api
+              instances:
+                - PLATFORM0:channel-0
+                - PLATFORM1:channel-1
+              path:
+                hook: corpus_platform
+                sensor_class: corpus
+                channel: [channel-0, channel-1]
+                argv: [literal, non-positional]
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: platform_api
+              path: "{platform_sensor*}:{get_value()}"
+              evaluation:
+                type: comparison
+                operator: ">"
+                value: 10.0
+                value_configs: {type: float, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_RUNTIME_PAIR
+        id: 9901401
+        version: 1.0.0
+        description: Covers an instanced runtime source and runtime comparator pair.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-source-types
+          - coverage-evaluation-types
+          - coverage-dse
+          - dse-runtime-pair
+          - dse-same-selector
+          - cadence-explicit
+          - async
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{runtime_sensor*}:{get_value()}"
+              evaluation:
+                type: dse
+                value: "{runtime_sensor*}:{get_threshold()}"
+              sampling_interval: 5
+              async: true
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_SOURCE_STATIC_EVAL
+        id: 9901402
+        version: 1.0.0
+        description: Covers an instanced runtime DSE source with a built-in evaluator.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_UNDER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-source-static-eval
+          - cadence-inherited
+          - async-omitted
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{runtime_sensor*}:{get_value()}"
+              evaluation:
+                type: comparison
+                operator: ">="
+                value: 100.0
+                value_configs: {type: float, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DIRECT_SOURCE_RUNTIME_DSE_EVAL
+        id: 9901403
+        version: 1.0.0
+        description: Covers positional direct sources with a runtime DSE comparator.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-direct-source-runtime-eval
+          - dse-instanced-evaluator
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: redis
+              instances:
+                - SENSOR0:DLDD_CORPUS|DSE_DIRECT_0
+                - SENSOR1:DLDD_CORPUS|DSE_DIRECT_1
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: ["DLDD_CORPUS|DSE_DIRECT_0", "DLDD_CORPUS|DSE_DIRECT_1"]
+                path: value
+              evaluation:
+                type: dse
+                value: "{runtime_sensor*}:{get_threshold()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_COMMON_SOURCE_WILDCARD_DSE_EVAL
+        id: 9901404
+        version: 1.0.0
+        description: Covers the permitted warning for a wildcard evaluator on a common source.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_CORPUS
+        severity: UNKNOWN
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-common-source-wildcard-eval
+          - dse-cardinality-warning
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|DSE_COMMON_SOURCE
+                path: value
+              evaluation:
+                type: dse
+                value: "{runtime_sensor*}:{get_threshold()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_DIRECT_RESULT_FIXED_EVAL
+        id: 9901405
+        version: 1.0.0
+        description: Covers direct typed source results and a fixed DSE evaluation.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: MAJOR
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-direct-result
+          - dse-fixed-eval
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{direct_sensor*}:{get_direct_value()}"
+              evaluation:
+                type: dse
+                value: "direct_sensor:get_fixed_threshold()"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_TRUSTED_COMPARATOR
+        id: 9901406
+        version: 1.0.0
+        description: Covers a runtime DSE evaluation returning a trusted comparator.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_CORPUS
+        severity: MINOR
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-runtime-pair
+          - dse-trusted-comparator
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{comparator_sensor*}:{get_value()}"
+              evaluation:
+                type: dse
+                value: "{comparator_sensor*}:{get_trusted_comparator()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_CROSS_SELECTOR_RULE_OPERATOR
+        id: 9901407
+        version: 1.0.0
+        description: Covers an explicit cross-selector mapping and rule operator precedence.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-cross-selector
+          - dse-rule-operator
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{runtime_sensor*}:{get_value()}"
+              evaluation:
+                type: dse
+                operator: ">"
+                value: "{other_sensor*}:{get_threshold()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_MULTI_DSE_COMMON_PREDICATES
+        id: 9901408
+        version: 1.0.0
+        description: Covers multi-DSE correlation with common Redis and CLI predicates.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_COMM_ERROR
+        error_type: DLDD_CORPUS
+        severity: CRITICAL
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-multi-source
+          - dse-common-predicate
+          - dse-common-predicate-and
+          - dse-common-predicate-or
+          - logic-and
+          - logic-or
+          - logic-parentheses
+      conditions:
+        logic: "(1 AND 3) OR (2 AND 4)"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{runtime_sensor*}:{get_value()}"
+              evaluation:
+                type: dse
+                value: "{runtime_sensor*}:{get_threshold()}"
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: dse
+              path: "{secondary_sensor*}:{get_value()}"
+              evaluation:
+                type: comparison
+                operator: ">"
+                value: 10.0
+                value_configs: {type: float, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|COMMON_REDIS
+                path: value
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 4
+              type: cli
+              path:
+                argv: [/usr/bin/printf, ready]
+                timeout: 5
+              evaluation:
+                type: string
+                operator: equals
+                value: ready
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_EXPANSION_VARIANTS
+        id: 9901409
+        version: 1.0.0
+        description: Covers empty, authoritative, non-authoritative, and multi-source expansion.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_CORPUS
+        severity: UNKNOWN
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-empty-expansion
+          - dse-authoritative-expansion
+          - dse-non-authoritative-expansion
+          - dse-multiple-source-ids
+          - async-false
+      conditions:
+        logic: "1 OR 2 OR 3 OR 4"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{empty_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              async: false
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: dse
+              path: "{authoritative_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: dse
+              path: "{nonauthoritative_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 4
+              type: dse
+              path: "{multi_source_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_OPERATORS
+        id: 9901410
+        version: 1.0.0
+        description: Covers every rule-visible DSE operator and vendor-supplied semantics.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - coverage-dse-operators
+          - dse-rule-operator
+          - dse-vendor-operator
+      conditions:
+        logic: "1 OR 2 OR 3 OR 4 OR 5 OR 6 OR 7 OR 8 OR 9"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: ">", value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: "<", value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: ">=", value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 4
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: "<=", value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 5
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: "==", value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 6
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: "!=", value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 7
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: equals, value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 8
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, operator: not_equals, value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 9
+              type: dse
+              path: "{operator_sensor*}:{get_value()}"
+              evaluation: {type: dse, value: "{operator_sensor*}:{get_threshold()}"}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_RUNTIME_SOURCE_FIXED_COMMON_EVAL
+        id: 9901411
+        version: 1.0.0
+        description: Covers an instanced runtime source with one fixed common evaluation.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-runtime-source-fixed-eval
+          - dse-fixed-eval
+          - dse-common-evaluator
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{runtime_sensor*}:{get_value()}"
+              evaluation:
+                type: dse
+                value: "direct_sensor:get_fixed_threshold()"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_DSE_DIRECT_RESULT_RUNTIME_EVAL
+        id: 9901412
+        version: 1.0.0
+        description: Covers direct typed DSE sources with a runtime comparison handle.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-direct-result
+          - dse-direct-result-runtime-eval
+          - dse-cross-selector
+      conditions:
+        logic: "1"
+        logic_lookback_time: 30
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{direct_sensor*}:{get_direct_value()}"
+              evaluation:
+                type: dse
+                value: "{runtime_sensor*}:{get_threshold()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_MULTI_DSE_AND_COMMON_AND
+        id: 9901413
+        version: 1.0.0
+        description: Covers AND correlation across two DSE sources and one common predicate.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_COMM_ERROR
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-common-and
+          - dse-multi-and
+          - dse-common-predicate
+          - logic-and
+      conditions:
+        logic: "1 AND 2 AND 3"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{runtime_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: dse
+              path: "{secondary_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|COMMON_AND", path: value}
+              evaluation: {type: boolean, value: true, value_configs: {type: boolean, unit: N/A}}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_MULTI_DSE_OR_COMMON_OR
+        id: 9901414
+        version: 1.0.0
+        description: Covers OR correlation across two DSE sources and one common predicate.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_DSE
+        symptom: SYMPTOM_COMM_ERROR
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        tags:
+          - dldd-corpus
+          - coverage-dse
+          - dse-common-or
+          - dse-multi-or
+          - dse-common-predicate
+          - logic-or
+      conditions:
+        logic: "1 OR 2 OR 3"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{runtime_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: dse
+              path: "{secondary_sensor*}:{get_value()}"
+              evaluation: {type: comparison, operator: ">", value: 10.0}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 3
+              type: redis
+              path: {database: STATE_DB, table: DLDD_CORPUS, key: "DLDD_CORPUS|COMMON_OR", path: value}
+              evaluation: {type: boolean, value: true, value_configs: {type: boolean, unit: N/A}}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_ACTION_QUERY_AND_IDENTITY_TYPES
+        id: 9901501
+        version: 1.0.0
+        description: Covers every local action and query wire shape plus extensible identities.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: VENDOR_CORPUS_COMPONENT
+        symptom: SYMPTOM_UNKNOWN
+        error_type: VENDOR_CORPUS_ERROR
+        severity: UNKNOWN
+        tags:
+          - dldd-corpus
+          - coverage-actions
+          - coverage-queries
+          - coverage-logs
+          - coverage-metadata
+          - custom-component-identity
+          - custom-error-identity
+          - custom-remediation-identity
+          - action-cli
+          - action-dse
+          - action-i2c-get
+          - action-i2c-set
+          - action-vendor
+          - query-cli
+          - query-dse
+          - query-i2c
+          - query-vendor
+          - action-timeout-inherited
+          - action-timeout-explicit
+          - boundary-wait-min
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|ACTIONS
+                path: value
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          local_actions:
+            wait_period: 0
+            action_list:
+              - action:
+                  type: cli
+                  argv: [/usr/bin/true]
+                  max_output_bytes: 1024
+              - action:
+                  type: dse
+                  command: "corpus:no_op()"
+                  timeout: 5
+              - action:
+                  type: dse
+                  command: corpus opaque action
+                  timeout: 5
+              - action:
+                  type: i2c
+                  path:
+                    bus: corpus-bus-0
+                    chip_addr: "0x50"
+                    i2c_type: get
+                    command: "0x01"
+                    size: b
+                  timeout: 5
+              - action:
+                  type: i2c
+                  path:
+                    bus: corpus-bus-1
+                    chip_addr: "0x51"
+                    i2c_type: set
+                    command: "0x02"
+                    size: w
+                    value: "0x0001"
+                  timeout: 5
+              - action:
+                  type: i2c
+                  path:
+                    bus: corpus-bus-2
+                    chip_addr: "0x52"
+                    i2c_type: get
+                    command: "0x03"
+                    size: l
+                  timeout: 5
+              - action:
+                  type: corpus_vendor_action
+                  timeout: 5
+                  hook: corpus_vendor
+                  operation_name: no_op
+                  arguments: [one, 2, true]
+          remote_actions:
+            action_list:
+              - ACTION_RESEAT
+              - ACTION_WARM_REBOOT
+              - ACTION_COLD_REBOOT
+              - ACTION_POWER_CYCLE
+              - ACTION_FACTORY_RESET
+              - ACTION_REPLACE
+              - "vendor-healthz:ACTION_REPAIR_CORPUS_COMPONENT"
+            time_window: 86400
+        log_collection:
+          logs:
+            - log: /tmp/dldd-corpus/log-one
+            - log: /tmp/dldd-corpus/log-*
+          queries:
+            - query:
+                type: cli
+                argv: [/usr/bin/printf, corpus-query]
+                timeout: 5
+                max_output_bytes: 4096
+            - query:
+                type: dse
+                command: "corpus:get_status()"
+                timeout: 5
+            - query:
+                type: dse
+                command: corpus opaque query
+                timeout: 5
+            - query:
+                type: i2c
+                path:
+                  bus: corpus-bus-0
+                  chip_addr: "0x50"
+                  i2c_type: get
+                  command: "0x01"
+                  size: l
+                timeout: 5
+            - query:
+                type: corpus_vendor_query
+                hook: corpus_vendor
+                operation_name: get_status
+                arguments: {detail: true}
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_ARBITRATION_CRITICAL
+        id: 9901601
+        version: 1.0.0
+        description: High-severity arbitration candidate with a lower numeric preference.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_ARBITRATION
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: CRITICAL
+        priority: 100
+        tags:
+          - dldd-corpus
+          - coverage-arbitration
+          - arbitration-shared-component-symptom
+          - arbitration-severity
+          - arbitration-priority
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|ARBITRATION
+                path: value
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300
+
+  - signature:
+      metadata:
+        name: DLDD_CORPUS_ARBITRATION_WARNING
+        id: 9901602
+        version: 1.0.0
+        description: Lower-severity arbitration candidate with a higher numeric preference.
+        product_ids: [TEST-PRODUCT]
+        sw_versions: [TEST-SOFTWARE]
+        component: DLDD_CORPUS_ARBITRATION
+        symptom: SYMPTOM_OVER_THRESHOLD
+        error_type: DLDD_CORPUS
+        severity: WARNING
+        priority: 0
+        tags:
+          - dldd-corpus
+          - coverage-arbitration
+          - arbitration-shared-component-symptom
+          - arbitration-severity
+          - arbitration-priority
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_CORPUS
+                key: DLDD_CORPUS|ARBITRATION
+                path: value
+              evaluation:
+                type: boolean
+                value: true
+                value_configs: {type: boolean, unit: N/A}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 300

@@ -7,7 +7,8 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from .planner import monitor_type_for_source
-from .rule_schema.errors import bound_diagnostic, bound_identity, bound_path
+from .rule_schema.errors import bound_diagnostic, bound_identity
+from .runtime import make_rule_instance_id
 from .timestamps import floor_timestamp_fields
 
 
@@ -130,9 +131,11 @@ def _work_item_detail(
     if state is not None and state.next_sample_due is not None:
         next_due = wall_now + (state.next_sample_due - monotonic_now)
     return {
-        "correlation_key": bound_path(item.correlation_key, 512),
+        "rule_instance_id": make_rule_instance_id(
+            item.rule_id, item.component_name
+        ),
         "event_id": item.event_id,
-        "component": bound_identity(item.component_name, 128),
+        "component_name": bound_identity(item.component_name, 128),
         "source_type": bound_identity(item.source_type, 64),
         "source_id": bound_identity(item.source_id, 256),
         "monitor": bound_identity(

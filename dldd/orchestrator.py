@@ -26,6 +26,7 @@ from .runtime import (
     MonitorCommandType,
     MonitorExecutionPlan,
     MonitorWorkState,
+    make_rule_instance_id,
 )
 from .telemetry import TelemetryPublisher
 from .timestamps import floor_timestamp_fields
@@ -98,6 +99,10 @@ class PrimaryOrchestrator:
     ) -> None:
         self.evidence_queue = evidence_queue
         self.plans = dict(plans)
+        self._plan_by_work_key: Dict[str, MonitorExecutionPlan] = {}
+        for plan in self.plans.values():
+            for key in plan.item_snapshot():
+                self._register_plan_owner(key, plan)
         self.work_items = dict(work_items)
         self.dynamic_signatures = {
             template.item.rule_id: template.signature
@@ -143,6 +148,16 @@ class PrimaryOrchestrator:
         self._next_fault_publish_retry = 0.0
         self._config_updates = Queue()
         self.service_diagnostics = deque(maxlen=64)
+
+    def _register_plan_owner(
+        self, key: str, plan: MonitorExecutionPlan
+    ) -> None:
+        existing = self._plan_by_work_key.get(key)
+        if existing is not None and existing is not plan:
+            raise ValueError(
+                "work key {!r} is assigned to multiple monitors".format(key)
+            )
+        self._plan_by_work_key[key] = plan
 
     def queue_config_update(self, config: DLDDConfig) -> None:
         """Hand a runtime configuration update to the primary owner thread."""
@@ -241,6 +256,11 @@ class PrimaryOrchestrator:
                 )
         added_identities = set()
         for item in event.added_items:
+            # Runtime DSE children, including cloned direct predicates, are
+            # owned by the monitor which expanded them.  Their source type
+            # still selects the collection adapter, but is not a routing key
+            # for primary-to-monitor control commands.
+            self._register_plan_owner(item.correlation_key, plan)
             self.work_items[item.correlation_key] = item
             self.correlation.register_work_item(
                 event.signature, item, event.plan_generation
@@ -253,6 +273,8 @@ class PrimaryOrchestrator:
             item = self.work_items.pop(key, None)
             if item is None:
                 continue
+            if self._plan_by_work_key.get(key) is plan:
+                self._plan_by_work_key.pop(key, None)
             identity = (item.rule_id, item.component_name)
             removed_identities.add(identity)
             self._dse_retirement_candidates.add(identity)
@@ -1250,7 +1272,7 @@ class PrimaryOrchestrator:
         )
         action_details = {
             "state": action_state,
-            "correlation_key": pending.first_decision.event.correlation_key,
+            "rule_instance_id": make_rule_instance_id(*identity),
             "worker_id": (
                 pending.action_result.worker_id
                 if pending.action_result is not None
@@ -1874,8 +1896,13 @@ class PrimaryOrchestrator:
         **kwargs
     ) -> None:
         item = self.work_items[key]
-        monitor_type = monitor_type_for_source(item.source_type)
-        plan = self.plans[monitor_type]
+        plan = self._plan_by_work_key.get(key)
+        if plan is None:
+            # Preserve support for externally assembled plans and focused test
+            # doubles. Production static and expanded work is registered with
+            # an explicit owner above.
+            monitor_type = monitor_type_for_source(item.source_type)
+            plan = self.plans[monitor_type]
         plan.control_queue.put(
             command_for_plan(
                 plan,

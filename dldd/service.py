@@ -32,7 +32,11 @@ from .orchestrator import PrimaryOrchestrator
 from .planner import build_plans
 from .platform import PlatformExtensions, detect_identity, load_extensions
 from .preflight import build_adapter_registry, preflight_activation
-from .runtime import MonitorCommandType, MonitorWorkState
+from .runtime import (
+    MonitorCommandType,
+    MonitorWorkState,
+    make_rule_instance_id,
+)
 from .rule_schema.errors import bound_diagnostic, bound_identity
 from .rule_status import build_rule_status_snapshot
 from .telemetry import SonicStateDB, TelemetryPublisher
@@ -120,6 +124,44 @@ def _compact_json_size(value) -> int:
             "utf-8", "replace"
         )
     )
+
+
+def _operator_status_records(records, work_items=None):
+    """Project internal records onto the public rule-instance identity."""
+
+    work_items = work_items or {}
+    result = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            result.append(record)
+            continue
+        public = dict(record)
+        correlation_key = public.pop("correlation_key", "")
+        item = work_items.get(correlation_key)
+        rule_id = public.get("rule_id")
+        component_name = public.get(
+            "component_name", public.get("component", "")
+        )
+        if item is not None:
+            if rule_id in (None, ""):
+                rule_id = item.rule_id
+                public["rule_id"] = rule_id
+            if not component_name:
+                component_name = item.component_name
+            public.setdefault("component_type", item.component_type)
+        if component_name:
+            public.pop("component", None)
+            public["component_name"] = component_name
+        if (
+            not public.get("rule_instance_id")
+            and rule_id not in (None, "")
+            and component_name
+        ):
+            public["rule_instance_id"] = make_rule_instance_id(
+                rule_id, component_name
+            )
+        result.append(public)
+    return tuple(result)
 
 
 def _bounded_broken_rule_records(result, validation_time):
@@ -336,6 +378,11 @@ class DLDDService:
                 self.activation, "previous_checksum", ""
             ),
         }
+
+    def _async_pool_metrics(self):
+        if self.async_collection_pool is None:
+            return None
+        return self.async_collection_pool.metrics()
 
     def _create_artifact_client(self) -> HealthzArtifactClient:
         factory = getattr(self.extensions, "artifact_client_factory", None)
@@ -689,20 +736,22 @@ class DLDDService:
                 "",
                 "",
                 reason=self.fatal_reason or "no active rules generation",
+                async_pool_metrics=self._async_pool_metrics(),
             )
             return status_published and rule_status_published
         if self.fatal_reason:
             rule_status_published = self._publish_rule_status()
+            broken = _operator_status_records(
+                self.startup_broken or tuple(self.activation.broken_rules)
+            )
             status_published = self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 self.activation.schema_version,
                 self.activation.active_file,
                 self.activation.checksum,
-                broken_rules=(
-                    self.startup_broken
-                    or tuple(self.activation.broken_rules)
-                ),
+                broken_rules=broken,
                 reason=self.fatal_reason,
+                async_pool_metrics=self._async_pool_metrics(),
                 **self._activation_status_fields(),
             )
             return status_published and rule_status_published
@@ -710,6 +759,7 @@ class DLDDService:
         source = ()
         inflight = ()
         diagnostics = ()
+        work_items = {}
         state = "OK"
         if self.orchestrator is not None:
             recovered_cutoff = time.time() - 30
@@ -721,6 +771,7 @@ class DLDDService:
                     and source_record.get("since", 0) < recovered_cutoff
                 ):
                     self.orchestrator.source_status.pop(source_id, None)
+            work_items = getattr(self.orchestrator, "work_items", {})
             broken = tuple(self.orchestrator.broken_rules.values())
             source = tuple(self.orchestrator.source_status.values())
             inflight = self._inflight_status()
@@ -732,6 +783,8 @@ class DLDDService:
             ) + tuple(self.orchestrator.service_diagnostics) + tuple(
                 self.orchestrator.correlation.diagnostics
             )
+        broken = _operator_status_records(broken, work_items)
+        diagnostics = _operator_status_records(diagnostics, work_items)
         status_published = self.telemetry.publish_status(
             state,
             self.activation.schema_version,
@@ -742,6 +795,7 @@ class DLDDService:
             inflight_fault_evidence=inflight,
             service_diagnostics=diagnostics,
             reason="" if state == "OK" else "DLDD has degraded or broken rules/sources",
+            async_pool_metrics=self._async_pool_metrics(),
             **self._activation_status_fields(),
         )
         return status_published and self._publish_rule_status()
@@ -775,11 +829,14 @@ class DLDDService:
                     )
                     continue
                 status = {
-                    "correlation_key": key,
+                    "rule_instance_id": make_rule_instance_id(
+                        item.rule_id, item.component_name
+                    ),
                     "rule": item.rule_name,
                     "rule_id": item.rule_id,
                     "event_id": item.event_id,
-                    "component": item.component_name,
+                    "component_type": item.component_type,
+                    "component_name": item.component_name,
                     "state": state.state.value,
                     "reason": "primary_owned",
                     "since": state.last_enqueue_timestamp,

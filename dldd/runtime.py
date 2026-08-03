@@ -414,3 +414,9 @@ def make_correlation_key(
     return "{}:{}:{}:{}:{}".format(
         rule_id, event_id, component_name, symptom, source_id
     )
+
+
+def make_rule_instance_id(rule_id: int, component_name: str) -> str:
+    """Return the concise public identity for one rule/component instance."""
+
+    return "{}@{}".format(rule_id, component_name)

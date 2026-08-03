@@ -2,6 +2,7 @@ from __future__ import absolute_import
 
 from copy import deepcopy
 import json
+import logging
 
 import pytest
 
@@ -13,6 +14,8 @@ from .conftest import (
     RunningService,
     dse_integration_rule_document,
     eventually,
+    integration_rule_document,
+    SOURCE_KEY,
 )
 
 
@@ -216,8 +219,9 @@ def test_restart_authoritative_absence_refreshes_retained_inactive_dse_fault(
 
 
 def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
-    integration_environment_factory,
+    integration_environment_factory, caplog,
 ):
+    caplog.set_level(logging.WARNING, logger="dldd.monitor")
     document = dse_integration_rule_document()
     signature = document["signatures"][0]["signature"]
     conditions = signature["conditions"]
@@ -245,10 +249,21 @@ def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
     conditions["events"].append(direct_wrapper)
     conditions["logic"] = "1 AND 2"
 
+    # Keep a native Redis monitor in the same generation.  This mirrors a
+    # mixed production ruleset and proves that commands for the Redis-backed
+    # predicates cloned by DSE expansion are not misrouted to that monitor.
+    control = integration_rule_document()["signatures"][0]
+    control["signature"]["metadata"].update(
+        id=9900003,
+        name="DLDD_DSE_COMMON_ROUTING_CONTROL",
+    )
+    document["signatures"].append(control)
+
     hook = ControlledDSEHook()
     hook.set_value("DSE_SENSOR0", 20)
     hook.set_value("DSE_SENSOR1", 20)
     hook.set_direct_row("DLDD_COMMON_SENSOR|GLOBAL", {"value": "20"})
+    hook.set_direct_row(SOURCE_KEY, {"value": "5"})
     environment = integration_environment_factory(
         document=document,
         source=hook,
@@ -262,14 +277,18 @@ def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
     )
     running = RunningService(environment["service"]()).start()
     try:
-        items = eventually(
-            lambda: (
-                tuple(running.service.orchestrator.work_items.values())
-                if running.service.orchestrator is not None
-                and len(running.service.orchestrator.work_items) == 4
-                else None
+        def expanded_rule_items():
+            orchestrator = running.service.orchestrator
+            if orchestrator is None:
+                return None
+            items = tuple(
+                item
+                for item in orchestrator.work_items.values()
+                if item.rule_id == 9900002
             )
-        )
+            return items if len(items) == 4 else None
+
+        items = eventually(expanded_rule_items)
         assert {item.component_name for item in items} == {
             "DSE_SENSOR0",
             "DSE_SENSOR1",
@@ -288,6 +307,9 @@ def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
             for monitor in running.service.monitors
             if monitor.plan.monitor_type == "common"
         )
+        assert {
+            monitor.plan.monitor_type for monitor in running.service.monitors
+        } >= {"redis", "common"}
         assert dict(plan.polling_intervals) == {
             "redis": 2.0,
             "file": 3.0,
@@ -303,6 +325,25 @@ def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
                 .get("status")
                 == "ACTIVE"
             )
+
+        def scoped_common_predicates_are_released():
+            items, states = plan.runtime_snapshot()
+            keys = [
+                key
+                for key, item in items.items()
+                if item.rule_id == 9900002 and item.event_id == 2
+            ]
+            return len(keys) == 2 and all(
+                states[key].state.value == "READY" for key in keys
+            )
+
+        eventually(scoped_common_predicates_are_released)
+        assert not running.service.orchestrator.service_diagnostics
+        assert not any(
+            "discarding command for unknown key" in record.getMessage()
+            for record in caplog.records
+            if record.name == "dldd.monitor"
+        )
     finally:
         running.stop()
 

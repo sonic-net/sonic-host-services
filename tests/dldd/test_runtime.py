@@ -950,6 +950,138 @@ def test_async_collection_pool_capacity_failure_and_shutdown_lifecycle():
     assert completions.empty()
 
 
+def test_async_collection_pool_reports_lifetime_timing_and_usage():
+    class ManualClock(object):
+        def __init__(self):
+            self.value = 0.0
+
+        def __call__(self):
+            return self.value
+
+    clock = ManualClock()
+    first_started = ThreadEvent()
+    first_release = ThreadEvent()
+    second_started = ThreadEvent()
+    second_release = ThreadEvent()
+    completions = Queue()
+    pool = AsyncCollectionPool(
+        max_workers=1,
+        max_pending=1,
+        recheck_reserve=0,
+        monotonic_clock=clock,
+    )
+
+    def first():
+        first_started.set()
+        first_release.wait(1)
+        return result(EvaluationResultType.NO_MATCH, False)
+
+    def second():
+        second_started.set()
+        second_release.wait(1)
+        return result(EvaluationResultType.NO_MATCH, False)
+
+    try:
+        assert pool.metrics() == {
+            "async_pool_workers": 1,
+            "async_pool_busy": 0,
+            "async_pool_queued": 0,
+            "async_pool_avg_queue_latency_ms": 0.0,
+            "async_pool_avg_execution_time_ms": 0.0,
+            "async_pool_avg_utilization_percent": 0.0,
+        }
+        assert pool.submit("first", first, completions)
+        assert first_started.wait(1)
+
+        clock.value = 1.0
+        assert pool.submit("second", second, completions)
+        metrics = pool.metrics()
+        assert metrics["async_pool_busy"] == 1
+        assert metrics["async_pool_queued"] == 1
+        assert metrics["async_pool_avg_utilization_percent"] == 100.0
+
+        clock.value = 2.0
+        first_release.set()
+        assert second_started.wait(1)
+        assert pool.metrics()["async_pool_avg_queue_latency_ms"] == 500.0
+
+        clock.value = 4.0
+        second_release.set()
+        assert completions.get(timeout=1).token == "first"
+        assert completions.get(timeout=1).token == "second"
+        deadline = time.monotonic() + 1
+        while pool.metrics()["async_pool_busy"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert pool.metrics() == {
+            "async_pool_workers": 1,
+            "async_pool_busy": 0,
+            "async_pool_queued": 0,
+            "async_pool_avg_queue_latency_ms": 500.0,
+            "async_pool_avg_execution_time_ms": 2000.0,
+            "async_pool_avg_utilization_percent": 100.0,
+        }
+    finally:
+        first_release.set()
+        second_release.set()
+        pool.shutdown()
+
+
+def test_async_collection_pool_serializes_submit_with_shutdown():
+    pool = AsyncCollectionPool(max_workers=1, max_pending=0)
+    original_slots = pool._normal_slots
+    submit_inside_lock = ThreadEvent()
+    allow_submit = ThreadEvent()
+    shutdown_completed = ThreadEvent()
+    accepted = []
+
+    class BlockingSlots(object):
+        def acquire(self, blocking=True):
+            submit_inside_lock.set()
+            allow_submit.wait(1)
+            return original_slots.acquire(blocking)
+
+        def release(self):
+            original_slots.release()
+
+    pool._normal_slots = BlockingSlots()
+    submitter = Thread(
+        target=lambda: accepted.append(
+            pool.submit(
+                "racing",
+                lambda: result(EvaluationResultType.NO_MATCH, False),
+                Queue(),
+            )
+        )
+    )
+    shutdown_thread = Thread(
+        target=lambda: (
+            pool.shutdown(wait=False),
+            shutdown_completed.set(),
+        )
+    )
+    try:
+        submitter.start()
+        assert submit_inside_lock.wait(1)
+        shutdown_thread.start()
+        assert not shutdown_completed.wait(0.05)
+
+        allow_submit.set()
+        submitter.join(1)
+        shutdown_thread.join(1)
+        assert accepted == [True]
+        assert shutdown_completed.is_set()
+        assert not pool.submit(
+            "after-shutdown",
+            lambda: result(EvaluationResultType.NO_MATCH, False),
+            Queue(),
+        )
+    finally:
+        allow_submit.set()
+        submitter.join(1)
+        shutdown_thread.join(1)
+        pool.shutdown(wait=True)
+
+
 def test_async_monitor_admission_priority_and_cadence_lifecycle():
     """Capacity failures stay due and admitted work remains single-flight."""
 

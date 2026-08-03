@@ -63,6 +63,70 @@ def test_ingestion_failure_reason_uses_hld_category(code, message, prefix):
     assert dldd_service._ingestion_failure_reason((issue,)).startswith(prefix)
 
 
+def test_operator_status_records_use_only_public_rule_instance_identity():
+    records = (
+        {"correlation_key": "work-1", "reason": "resolved from work"},
+        {
+            "correlation_key": "work-2",
+            "rule_id": 1000002,
+            "component_name": "PSU2",
+        },
+        {
+            "correlation_key": "legacy-diagnostic",
+            "rule_id": 1000003,
+            "component": "FAN0",
+            "rule_instance_id": "1000003@FAN0",
+        },
+        {
+            "correlation_key": "rule:1000004",
+            "rule_id": 1000004,
+            "reason": "ingestion failure",
+        },
+        {"correlation_key": "component-only", "component": "ASIC0"},
+        "opaque-diagnostic",
+    )
+    work_items = {
+        "work-1": SimpleNamespace(
+            rule_id=1000001,
+            component_type="PSU",
+            component_name="PSU1",
+        ),
+        "work-2": SimpleNamespace(
+            rule_id=1000002,
+            component_type="PSU",
+            component_name="PSU2",
+        ),
+    }
+
+    projected = dldd_service._operator_status_records(records, work_items)
+
+    assert projected[0] == {
+        "reason": "resolved from work",
+        "rule_id": 1000001,
+        "component_type": "PSU",
+        "component_name": "PSU1",
+        "rule_instance_id": "1000001@PSU1",
+    }
+    assert projected[1] == {
+        "rule_id": 1000002,
+        "component_name": "PSU2",
+        "component_type": "PSU",
+        "rule_instance_id": "1000002@PSU2",
+    }
+    assert projected[2] == {
+        "rule_id": 1000003,
+        "component_name": "FAN0",
+        "rule_instance_id": "1000003@FAN0",
+    }
+    assert projected[3] == {
+        "rule_id": 1000004,
+        "reason": "ingestion failure",
+    }
+    assert projected[4] == {"component_name": "ASIC0"}
+    assert projected[5] == "opaque-diagnostic"
+    assert records[0]["correlation_key"] == "work-1"
+
+
 def test_service_artifact_client_creation_contract(tmp_path, monkeypatch):
     identity = PlatformIdentity("test", "product", "software")
     client = VendorArtifactClient()
@@ -556,6 +620,11 @@ def test_rule_status_snapshot_classification_grouping_and_truncation(monkeypatch
     )
     assert not active["work_items"][0]["async"]
     assert active["work_items"][0]["active_fault"]
+    assert active["work_items"][0]["rule_instance_id"] == "{}@{}".format(
+        item.rule_id, item.component_name
+    )
+    assert active["work_items"][0]["component_name"] == item.component_name
+    assert "correlation_key" not in active["work_items"][0]
     assert rows[1]["health"] == "BROKEN"
     assert rows[1]["work_items_total"] == 0
 
@@ -681,6 +750,7 @@ def test_inflight_status_contract(caplog):
             rule_name="TRANSIENT_RULE",
             rule_id=1000001,
             event_id=1,
+            component_type="PSU",
             component_name="PSU0",
         ),
     }
@@ -689,6 +759,7 @@ def test_inflight_status_contract(caplog):
         rule_name="EXPANDED_HELD_RULE",
         rule_id=1000002,
         event_id=2,
+        component_type="PSU",
         component_name="PSU1",
     )
     expanded_recheck_item = SimpleNamespace(
@@ -696,7 +767,16 @@ def test_inflight_status_contract(caplog):
         rule_name="EXPANDED_RECHECK_RULE",
         rule_id=1000003,
         event_id=3,
+        component_type="PSU",
         component_name="PSU2",
+    )
+    expanded_contributor = SimpleNamespace(
+        correlation_key="expanded-held-key-2",
+        rule_name="EXPANDED_HELD_RULE",
+        rule_id=1000002,
+        event_id=4,
+        component_type="PSU",
+        component_name="PSU1",
     )
     plan = MonitorExecutionPlan(
         monitor_id="redis",
@@ -709,6 +789,8 @@ def test_inflight_status_contract(caplog):
     )
     plan.add_expanded_item(expanded_item)
     plan.state_by_key["expanded-held-key"] = expanded_held
+    plan.add_expanded_item(expanded_contributor)
+    plan.state_by_key["expanded-held-key-2"] = expanded_held
     plan.add_expanded_item(expanded_recheck_item)
     plan.state_by_key["expanded-recheck-key"] = expanded_recheck
     service = object.__new__(DLDDService)
@@ -719,11 +801,12 @@ def test_inflight_status_contract(caplog):
 
     assert statuses == (
         {
-            "correlation_key": "expanded-held-key",
+            "rule_instance_id": "1000002@PSU1",
             "rule": "EXPANDED_HELD_RULE",
             "rule_id": 1000002,
             "event_id": 2,
-            "component": "PSU1",
+            "component_type": "PSU",
+            "component_name": "PSU1",
             "state": "HELD_BY_PRIMARY",
             "reason": "primary_owned",
             "since": 101.0,
@@ -731,11 +814,25 @@ def test_inflight_status_contract(caplog):
             "owning_monitor": "redis",
         },
         {
-            "correlation_key": "expanded-recheck-key",
+            "rule_instance_id": "1000002@PSU1",
+            "rule": "EXPANDED_HELD_RULE",
+            "rule_id": 1000002,
+            "event_id": 4,
+            "component_type": "PSU",
+            "component_name": "PSU1",
+            "state": "HELD_BY_PRIMARY",
+            "reason": "primary_owned",
+            "since": 101.0,
+            "hold_deadline": None,
+            "owning_monitor": "redis",
+        },
+        {
+            "rule_instance_id": "1000003@PSU2",
             "rule": "EXPANDED_RECHECK_RULE",
             "rule_id": 1000003,
             "event_id": 3,
-            "component": "PSU2",
+            "component_type": "PSU",
+            "component_name": "PSU2",
             "state": "RECHECK_REQUESTED",
             "reason": "primary_owned",
             "since": 102.0,

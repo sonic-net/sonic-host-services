@@ -1,0 +1,713 @@
+# Deliberately broken rule-isolation catalog. Every identity is unique so a
+# document-wide duplicate check cannot hide the intended per-rule diagnostic.
+# Most signatures fail schema conversion or materialization; the file-format
+# and Platform API hook cases are intentionally schema-valid and fail preflight.
+schema_version: "0.0.1"
+signatures:
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_MISSING_SEVERITY
+        id: 9981001
+        version: "1.0.0"
+        description: Intentional missing-required-field validation failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        tags: [coverage-broken-missing-required]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|MISSING_SEVERITY"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_EVENT_TYPE
+        id: 9981002
+        version: "1.0.0"
+        description: Intentional unsupported event type validation failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-event-type]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: definitely_not_an_event
+              path: {value: ignored}
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_EVALUATION_TYPE
+        id: 9981003
+        version: "1.0.0"
+        description: Intentional unsupported evaluation type validation failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-evaluation-type]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|BAD_EVALUATION"
+                path: value
+              evaluation: {type: definitely_not_an_evaluator, value: 10}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_COMPARISON_OPERATOR
+        id: 9981004
+        version: "1.0.0"
+        description: Intentional unsupported comparison operator failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-comparison-operator]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|BAD_OPERATOR"
+                path: value
+              evaluation: {type: comparison, operator: approximately, value: 10}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_REFERENCE
+        id: 9981005
+        version: "1.0.0"
+        description: Intentional malformed DSE reference schema failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-dse-reference]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{sensor*}:get_value()"
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_UNRESOLVED
+        id: 9981006
+        version: "1.0.0"
+        description: Intentional syntactically valid but unresolved DSE source.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-dse-unresolved]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "dldd_missing_selector:get_value()"
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_LOGIC_SYNTAX
+        id: 9981007
+        version: "1.0.0"
+        description: Intentional unsupported logic operator failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-logic-syntax]
+      conditions:
+        logic: "1 XOR 1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|LOGIC_SYNTAX"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_LOGIC_ID_ZERO
+        id: 9981008
+        version: "1.0.0"
+        description: Intentional invalid zero logic event ID failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-logic-id]
+      conditions:
+        logic: "0"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|LOGIC_ZERO"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_LOGIC_UNDEFINED
+        id: 9981009
+        version: "1.0.0"
+        description: Intentional undefined logic event ID failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-logic-undefined]
+      conditions:
+        logic: "1 AND 2"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|LOGIC_UNDEFINED"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DUPLICATE_EVENT_ID
+        id: 9981010
+        version: "1.0.0"
+        description: Intentional duplicate event ID failure within one rule.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-logic-duplicate]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|DUPLICATE_EVENT_A"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|DUPLICATE_EVENT_B"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_MATCH_WINDOW
+        id: 9981011
+        version: "1.0.0"
+        description: Intentional zero-period multi-match window failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-match-window]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|MATCH_WINDOW"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 2
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_POSITIONAL_PATH
+        id: 9981012
+        version: "1.0.0"
+        description: Intentional positional Redis path length mismatch.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-positional-path]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              instances: [SENSOR0:first, SENSOR1:second]
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: ["DLDD_TEST_SENSOR|ONLY_ONE_KEY"]
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_POSITIONAL_VALUE
+        id: 9981013
+        version: "1.0.0"
+        description: Intentional positional expected-value length mismatch.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-positional-value]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              instances: [SENSOR0:first, SENSOR1:second]
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: ["DLDD_TEST_SENSOR|SENSOR0", "DLDD_TEST_SENSOR|SENSOR1"]
+                path: value
+              evaluation: {type: comparison, operator: ">", value: [10]}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DUPLICATE_INSTANCE
+        id: 9981014
+        version: "1.0.0"
+        description: Intentional duplicate component instance failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-duplicate-instance]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              instances: [SENSOR0:first, SENSOR0:second]
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|SENSOR0"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_ACTION_TIMEOUT
+        id: 9981015
+        version: "1.0.0"
+        description: Intentional missing local action timeout failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-action-timeout]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|ACTION_TIMEOUT"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          local_actions:
+            wait_period: 0
+            action_list:
+              - action:
+                  type: cli
+                  argv: [/usr/bin/true]
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_I2C_SET_VALUE
+        id: 9981016
+        version: "1.0.0"
+        description: Intentional I2C set action without value failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-i2c-set-value]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|I2C_SET_VALUE"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          local_actions:
+            wait_period: 0
+            action_list:
+              - action:
+                  type: i2c
+                  timeout: 5
+                  path:
+                    bus: "0"
+                    chip_addr: "0x2a"
+                    i2c_type: set
+                    command: "0x01"
+                    size: b
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_FILE_FORMAT
+        id: 9981017
+        version: "1.0.0"
+        description: Schema-valid file source rejected by activation preflight.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-file-format]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: file
+              path:
+                file: /tmp/dldd-invalid-format
+                format: definitely-not-a-runtime-format
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_PLATFORM_HOOK
+        id: 9981018
+        version: "1.0.0"
+        description: Schema-valid Platform API source with no registered hook.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-platform-hook]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: platform_api
+              path:
+                hook: dldd_missing_platform_hook
+                operation: get_value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_VENDOR_ACTION
+        id: 9981019
+        version: "1.0.0"
+        description: Intentional unadvertised vendor local action failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-vendor-action]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|VENDOR_ACTION"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          local_actions:
+            wait_period: 0
+            action_list:
+              - action:
+                  type: dldd_test_vendor_action
+                  timeout: 5
+                  operation: no-op
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_VENDOR_QUERY
+        id: 9981020
+        version: "1.0.0"
+        description: Intentional unadvertised vendor artifact query failure.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: TEST_SENSOR
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [coverage-broken-vendor-query]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|VENDOR_QUERY"
+                path: value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+        log_collection:
+          queries:
+            - query:
+                type: dldd_test_vendor_query
+                timeout: 5
+                operation: collect-no-op

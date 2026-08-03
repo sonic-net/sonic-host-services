@@ -25,7 +25,9 @@ from dldd.runtime import (
     EvaluationResultType,
     FaultEvidenceEvent,
     FaultRecord,
+    MonitorCommandType,
     MonitorExecutionPlan,
+    MonitorWorkState,
     MonitorWorkStateRecord,
     ValueConfig,
 )
@@ -134,7 +136,6 @@ def test_dynamic_expansion_registration_and_fault_reconciliation():
     assert execution.signature.schema_version == item.schema_version
     assert execution.event_keys == {1: (item.correlation_key,)}
     assert common.control_queue.get_nowait().correlation_key == item.correlation_key
-
     # A retained dynamic fault waits for its owning expansion before recheck.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     static_bundle = build_plans(
@@ -221,6 +222,94 @@ def test_dynamic_expansion_registration_and_fault_reconciliation():
     assert identity not in orchestrator.pending_dynamic_faults
     assert identity in orchestrator.reconciliation
     assert common.control_queue.get_nowait().correlation_key == item.correlation_key
+
+
+def test_expanded_common_predicate_owner_routing_and_collision_rejection():
+    """Route cloned predicates to their owner and reject duplicate ownership."""
+
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    base = next(iter(bundle.work_items.values()))
+    item = replace(
+        base,
+        component_name="DYNAMIC0",
+        common_predicate=True,
+        correlation_key=(
+            "1000001:1:DYNAMIC0:SYMPTOM_OVER_THRESHOLD:redis:common"
+        ),
+    )
+    common = MonitorExecutionPlan(
+        "common",
+        "common",
+        60,
+        "sha256:test",
+        {},
+        {},
+        Queue(),
+    )
+    common.add_expanded_item(item)
+    orchestrator = PrimaryOrchestrator(
+        Queue(),
+        {
+            "redis": bundle.monitor_plans["redis"],
+            "common": common,
+        },
+        bundle.work_items,
+        CorrelationEngine({}),
+        TelemetryPublisher(FakeStateDB(), DLDDConfig()),
+        DLDDConfig(),
+        "sha256:test",
+    )
+    orchestrator.process_expansion(
+        DSEExpansionEvent(
+            monitor_id="common",
+            plan_generation="sha256:test",
+            template_id="template",
+            signature=rules.materialized_rules[0].signature,
+            added_items=(item,),
+        )
+    )
+
+    orchestrator.process_event(
+        replace(
+            evidence(item, EvaluationResultType.NO_MATCH, 1),
+            monitor_id="common",
+            work_state_generation=0,
+        )
+    )
+
+    command = common.control_queue.get_nowait()
+    assert command.correlation_key == item.correlation_key
+    assert command.monitor_id == "common"
+    assert command.command == MonitorCommandType.RESUME
+    assert command.target_state == MonitorWorkState.READY
+    assert bundle.monitor_plans["redis"].control_queue.empty()
+
+    # The monitor installs an expanded child before the primary consumes its
+    # expansion event.  Reject a child whose key is already owned by another
+    # monitor without overwriting that original owner or work item.
+    collision = replace(item, correlation_key=base.correlation_key)
+    common.add_expanded_item(collision)
+    with pytest.raises(ValueError, match="assigned to multiple monitors"):
+        orchestrator.process_expansion(
+            DSEExpansionEvent(
+                monitor_id="common",
+                plan_generation="sha256:test",
+                template_id="collision",
+                signature=rules.materialized_rules[0].signature,
+                added_items=(collision,),
+            )
+        )
+
+    assert (
+        orchestrator._plan_by_work_key[base.correlation_key]
+        is bundle.monitor_plans["redis"]
+    )
+    assert orchestrator.work_items[base.correlation_key] is base
 
 
 def test_materialized_operation_dispatch_payload_contract():
@@ -802,6 +891,8 @@ def test_local_action_recheck_and_artifact_lifecycle():
     assert json.loads(database.values[fault_key]["repair_actions"]) == []
     action_state = json.loads(database.values[fault_key]["local_action_state"])
     assert action_state["state"] == "COMPLETED"
+    assert action_state["rule_instance_id"] == "1000001@PSU"
+    assert "correlation_key" not in action_state
     assert action_state["worker_id"] == "worker-1"
     assert action_state["started_at"] == 100.0
     assert action_state["completed_at"] == 101.0

@@ -5,11 +5,12 @@ from dataclasses import FrozenInstanceError, replace
 import json
 import logging
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
-from dldd.adapters import RedisAdapter
+from dldd.adapters import CLIAdapter, RedisAdapter
 from dldd.dse import (
     DSEContext,
     DSEEvaluationHandle,
@@ -34,9 +35,11 @@ from dldd.rule_schema.generate import (
     generate_schema,
     render_schema,
 )
+from dldd.runtime import EvaluationResultType, make_rule_instance_id
 from dldd.validation import (
     CompatibilityMatcher,
     ValidationContext,
+    load_document,
     load_rules,
     validate_document,
 )
@@ -378,9 +381,33 @@ def test_redis_positional_materialization_requires_matching_instance_counts(
         assert [item.evaluation["value"] for item in items] == [75.0, 85.0]
 
 
-def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
+def test_mixed_sensor_rules_materialize_live_roles_and_isolate_sentinels():
+    path = FIXTURES / "mixed-sensor-rules.yaml"
+    document = load_document(path)
+    raw_signatures = [item["signature"] for item in document["signatures"]]
+    role_tags = {"dut-live", "dut-schema-sentinel"}
+    roles_by_id = {}
+    for signature in raw_signatures:
+        metadata = signature["metadata"]
+        roles = role_tags.intersection(metadata.get("tags", ()))
+        assert len(roles) == 1, (
+            "mixed DUT signature {!r} must have exactly one role tag"
+        ).format(metadata.get("name", "unknown"))
+        roles_by_id[metadata["id"]] = next(iter(roles))
+
+    assert len(roles_by_id) == len(raw_signatures)
+    live_ids = {
+        rule_id for rule_id, role in roles_by_id.items() if role == "dut-live"
+    }
+    sentinel_ids = {
+        rule_id
+        for rule_id, role in roles_by_id.items()
+        if role == "dut-schema-sentinel"
+    }
+    assert sentinel_ids == {9999201, 9999202}
+
     result = load_rules(
-        str(FIXTURES / "mixed-sensor-rules.yaml"),
+        str(path),
         ValidationContext(
             product_id="8102_28fh_dpu_o",
             software_version="grboudre_dldd-impl.0-1d85491a7",
@@ -398,14 +425,7 @@ def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
         for rule_id, rule in all_rules.items()
         if rule_id in (9999101, 9999102, 9999103)
     }
-    assert set(all_rules) == {
-        9999101,
-        9999102,
-        9999103,
-        9999401,
-        9999402,
-        9999403,
-    }
+    assert set(all_rules) == live_ids
     assert set(rules) == {9999101, 9999102, 9999103}
     assert {rule_id: rule.metadata.name for rule_id, rule in rules.items()} == {
         9999101: "DLDD_TEMPERATURE_HIGH",
@@ -449,8 +469,39 @@ def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
         "sha256:test",
         {"redis": 60, "file": 60, "common": 60},
     )
-    assert len(plans.work_items) == 317
-    assert len(plans.templates) == 3
+    planned_rule_ids = {
+        item.rule_id for item in plans.work_items.values()
+    } | {
+        template.item.rule_id for template in plans.templates.values()
+    }
+    assert planned_rule_ids == live_ids
+    runtime_broken_items = [
+        item
+        for item in plans.work_items.values()
+        if item.rule_id == 9999302
+    ]
+    assert len(runtime_broken_items) == 1
+    runtime_broken_item = runtime_broken_items[0]
+    assert runtime_broken_item.component_name == "DLDD_RULE_INSTANCE_TEST"
+    assert make_rule_instance_id(
+        runtime_broken_item.rule_id, runtime_broken_item.component_name
+    ) == "9999302@DLDD_RULE_INSTANCE_TEST"
+
+    def completed_process(argv, **unused_kwargs):
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=b"not-an-integer", stderr=b""
+        )
+
+    runtime_failure = CLIAdapter(completed_process).collect(
+        runtime_broken_item
+    )
+    assert runtime_failure.result is EvaluationResultType.EVALUATION_ERROR
+    assert runtime_failure.retryable is False
+    assert "invalid literal for int" in runtime_failure.error
+    template_rule_ids = {
+        template.item.rule_id for template in plans.templates.values()
+    }
+    assert {9999401, 9999402, 9999403} <= template_rule_ids
     assert {
         rule_id: sum(
             item.rule_id == rule_id for item in plans.work_items.values()
@@ -463,7 +514,7 @@ def test_mixed_sensor_rules_keep_three_usable_and_isolate_two_broken():
         if item.rule_id in rules
     } == {1}
     broken = {rule.rule_id: rule for rule in result.broken_rules}
-    assert set(broken) == {9999201, 9999202}
+    assert set(broken) == sentinel_ids
     assert {issue.code for issue in broken[9999201].issues} == {
         "missing_field"
     }
