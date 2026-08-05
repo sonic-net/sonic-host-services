@@ -34,11 +34,11 @@ local_authorization
 {% if tacacs_authorization %}
 tacacs_authorization
 {% endif %}
-{% if tacacs_authorization and traceid_authorization %}
 
-# traceid_authorization - If you want to send SSH TraceId in TACACS+ authorization, set it
-# Default: on
+# traceid_authorization - Send validated SSH_CLIENT_TRACEID values as the TACACS+ traceid authorization attribute
+# Default: off
 # traceid_authorization
+{% if tacacs_authorization and traceid_authorization %}
 traceid_authorization
 {% endif %}
 
