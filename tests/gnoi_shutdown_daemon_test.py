@@ -419,6 +419,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         with patch('gnoi_shutdown_daemon.time.monotonic', side_effect=[0, 1, 61]):
             result = handler._poll_reboot_status("DPU0", "10.0.0.1", "8080")
         self.assertFalse(result)
+        status_cmd = mock_execute_command.call_args.args[0]
+        self.assertIn("-insecure", status_cmd)
+        self.assertNotIn("-notls", status_cmd)
 
     def test_sonic_platform_import_mock(self):
         """Simple test to verify sonic_platform import mocking works."""
@@ -498,10 +501,13 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     def test_send_reboot_command_success(self):
         """Test successful _send_reboot_command."""
-        with patch('gnoi_shutdown_daemon.execute_command', return_value=(0, "success", "")):
+        with patch('gnoi_shutdown_daemon.execute_command', return_value=(0, "success", "")) as mock_execute_command:
             handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
             result = handler._send_reboot_command("DPU0", "10.0.0.1", "8080")
             self.assertTrue(result)
+            reboot_cmd = mock_execute_command.call_args.args[0]
+            self.assertIn("-insecure", reboot_cmd)
+            self.assertNotIn("-notls", reboot_cmd)
 
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")

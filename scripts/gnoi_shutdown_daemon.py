@@ -246,7 +246,7 @@ class GnoiRebootHandler:
         reboot_cmd = [
             "docker", "exec", "gnmi", "gnoi_client",
             f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-notls",
+            "-logtostderr", "-insecure",
             "-module", "System",
             "-rpc", "Reboot",
             "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
@@ -263,7 +263,7 @@ class GnoiRebootHandler:
         status_cmd = [
             "docker", "exec", "gnmi", "gnoi_client",
             f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-notls",
+            "-logtostderr", "-insecure",
             "-module", "System",
             "-rpc", "RebootStatus"
         ]
