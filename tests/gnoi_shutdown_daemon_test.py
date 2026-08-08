@@ -166,7 +166,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip')
-    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port')
+    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports')
     @patch('gnoi_shutdown_daemon.execute_command')
     @patch('gnoi_shutdown_daemon.time.sleep')
     @patch('gnoi_shutdown_daemon.time.monotonic')
@@ -178,7 +178,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock return values
         mock_get_dpu_ip.return_value = "10.0.0.1"
-        mock_get_gnmi_port.return_value = "8080"
+        mock_get_gnmi_port.return_value = ["8080", "50052"]
 
         # Mock table.get() for gnoi_halt_in_progress check
         mock_table = MagicMock()
@@ -190,8 +190,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             2, 3   # For _poll_reboot_status
         ]
 
-        # Reboot command success, RebootStatus success
+        # Port probe, Reboot command, RebootStatus success
         mock_execute_command.side_effect = [
+            (0, "time", ""),
             (0, "reboot sent", ""),
             (0, "reboot complete", "")
         ]
@@ -208,11 +209,11 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         self.assertTrue(result)
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
-        self.assertEqual(mock_execute_command.call_count, 2)
+        self.assertEqual(mock_execute_command.call_count, 3)
 
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip')
-    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port')
+    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports')
     @patch('gnoi_shutdown_daemon.time.sleep')
     @patch('gnoi_shutdown_daemon.time.monotonic')
     @patch('gnoi_shutdown_daemon.execute_command')
@@ -223,7 +224,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_chassis = MagicMock()
 
         mock_get_dpu_ip.return_value = "10.0.0.1"
-        mock_get_gnmi_port.return_value = "8080"
+        mock_get_gnmi_port.return_value = ["8080", "50052"]
 
         # Mock table.get() to never return True (simulates timeout in wait)
         mock_table = MagicMock()
@@ -237,8 +238,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             0, 1
         ]
 
-        # Reboot command and status succeed
+        # Port probe, Reboot command, and status succeed
         mock_execute_command.side_effect = [
+            (0, "time", ""),
             (0, "reboot sent", ""),
             (0, "reboot complete", "")
         ]
@@ -271,19 +273,19 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_config = MagicMock()
         mock_config.hget.return_value = "12345"
 
-        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
-        self.assertEqual(port, "12345")
+        ports = gnoi_shutdown_daemon.get_dpu_gnmi_ports(mock_config, "DPU0")
+        self.assertEqual(ports, ["12345", "8080", "50052"])
 
         # Test port fallback
         mock_config = MagicMock()
         mock_config.hget.return_value = None
 
-        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
-        self.assertEqual(port, "8080")
+        ports = gnoi_shutdown_daemon.get_dpu_gnmi_ports(mock_config, "DPU0")
+        self.assertEqual(ports, ["8080", "50052"])
 
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value=None)
-    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080")
+    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports', return_value=["8080", "50052"])
     def test_handle_transition_ip_failure(self, mock_get_gnmi_port, mock_get_dpu_ip, mock_get_halt_timeout):
         """Test handle_transition failure on DPU IP retrieval."""
         mock_db = MagicMock()
@@ -308,15 +310,16 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
 
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
-    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080")
+    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports', return_value=["8080", "50052"])
     @patch('gnoi_shutdown_daemon.execute_command', return_value=(-1, "", "error"))
     def test_send_reboot_command_failure(self, mock_execute, mock_get_port, mock_get_ip):
         """Test failure of _send_reboot_command."""
         handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
-        result = handler._send_reboot_command("DPU0", "10.0.0.1", "8080")
+        result = handler._send_reboot_command("DPU0", "10.0.0.1", "50052")
         self.assertFalse(result)
+        self.assertEqual(mock_execute.call_count, 1)
 
-    def test_get_dpu_gnmi_port_variants(self):
+    def test_get_dpu_gnmi_ports_variants(self):
         """Test DPU gNMI port retrieval with name variants."""
         mock_config = MagicMock()
         mock_config.hget.side_effect = [
@@ -325,8 +328,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             "12345"  # DPU0 succeeds
         ]
 
-        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU0")
-        self.assertEqual(port, "12345")
+        ports = gnoi_shutdown_daemon.get_dpu_gnmi_ports(mock_config, "DPU0")
+        self.assertEqual(ports, ["12345", "8080", "50052"])
         self.assertEqual(mock_config.hget.call_count, 3)
 
     @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
@@ -491,27 +494,42 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         ip = gnoi_shutdown_daemon.get_dpu_ip(mock_config, "DPU1")
         self.assertIsNone(ip)
 
-    def test_get_dpu_gnmi_port_exception(self):
-        """Test get_dpu_gnmi_port when exception occurs."""
+    def test_get_dpu_gnmi_ports_exception(self):
+        """Test get_dpu_gnmi_ports when exception occurs."""
         mock_config = MagicMock()
         mock_config.hget.side_effect = AttributeError("Database error")
 
-        port = gnoi_shutdown_daemon.get_dpu_gnmi_port(mock_config, "DPU1")
-        self.assertEqual(port, "8080")
+        ports = gnoi_shutdown_daemon.get_dpu_gnmi_ports(mock_config, "DPU1")
+        self.assertEqual(ports, ["8080", "50052"])
 
     def test_send_reboot_command_success(self):
         """Test successful _send_reboot_command."""
         with patch('gnoi_shutdown_daemon.execute_command', return_value=(0, "success", "")) as mock_execute_command:
             handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
-            result = handler._send_reboot_command("DPU0", "10.0.0.1", "8080")
+            result = handler._send_reboot_command("DPU0", "10.0.0.1", "50052")
             self.assertTrue(result)
             reboot_cmd = mock_execute_command.call_args.args[0]
             self.assertIn("-insecure", reboot_cmd)
             self.assertNotIn("-notls", reboot_cmd)
 
+    def test_find_working_port_falls_back_to_native_port(self):
+        """Test that a failed configured port probe falls back to native gNMI."""
+        with patch('gnoi_shutdown_daemon.execute_command', side_effect=[
+            (-1, "", "unavailable"),
+            (0, "success", ""),
+        ]) as mock_execute_command:
+            handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
+            result = handler._find_working_port("DPU0", "10.0.0.1", ["8080", "50052"])
+
+        self.assertEqual(result, "50052")
+        commands = [call.args[0] for call in mock_execute_command.call_args_list]
+        self.assertIn("-target=10.0.0.1:8080", commands[0])
+        self.assertIn("-target=10.0.0.1:50052", commands[1])
+        self.assertTrue(all("Reboot" not in command for command in commands))
+
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
-    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', side_effect=Exception("Port lookup failed"))
+    @patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports', side_effect=Exception("Port lookup failed"))
     def test_handle_transition_config_exception(self, mock_get_port, mock_get_ip, mock_get_halt_timeout):
         """Test handle_transition when configuration lookup raises exception."""
         mock_db = MagicMock()
@@ -652,12 +670,13 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock remaining methods to prevent actual gNOI calls
         handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
+        handler._find_working_port = MagicMock(return_value="8080")
         handler._send_reboot_command = MagicMock(return_value=True)
         handler._poll_reboot_status = MagicMock(return_value=True)
         handler._clear_halt_flag = MagicMock(return_value=True)
 
         with patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1"), \
-             patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080"):
+             patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports', return_value=["8080", "50052"]):
             result = handler._handle_transition("DPU0")
 
         # Should proceed with shutdown for Fault state
@@ -700,12 +719,13 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         # Mock remaining methods to prevent actual gNOI calls
         handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
+        handler._find_working_port = MagicMock(return_value="8080")
         handler._send_reboot_command = MagicMock(return_value=True)
         handler._poll_reboot_status = MagicMock(return_value=True)
         handler._clear_halt_flag = MagicMock(return_value=True)
 
         with patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1"), \
-             patch('gnoi_shutdown_daemon.get_dpu_gnmi_port', return_value="8080"):
+             patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports', return_value=["8080", "50052"]):
             result = handler._handle_transition("DPU0")
 
         # Should proceed with shutdown despite oper_status check failure
