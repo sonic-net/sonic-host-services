@@ -190,8 +190,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             2, 3   # For _poll_reboot_status
         ]
 
-        # Port probe, Reboot command, RebootStatus success
+        # Configured port probe fails, native port probe and operations succeed
         mock_execute_command.side_effect = [
+            (-1, "", "unavailable"),
             (0, "time", ""),
             (0, "reboot sent", ""),
             (0, "reboot complete", "")
@@ -209,7 +210,16 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
 
         self.assertTrue(result)
         mock_module.clear_module_gnoi_halt_in_progress.assert_called_once()
-        self.assertEqual(mock_execute_command.call_count, 3)
+        self.assertEqual(mock_execute_command.call_count, 4)
+        commands = [call.args[0] for call in mock_execute_command.call_args_list]
+        self.assertIn("-target=10.0.0.1:8080", commands[0])
+        self.assertIn("-rpc", commands[0])
+        self.assertIn("Time", commands[0])
+        self.assertIn("-target=10.0.0.1:50052", commands[1])
+        self.assertIn("-target=10.0.0.1:50052", commands[2])
+        self.assertIn("Reboot", commands[2])
+        self.assertIn("-target=10.0.0.1:50052", commands[3])
+        self.assertIn("RebootStatus", commands[3])
 
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip')
