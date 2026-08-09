@@ -87,6 +87,7 @@ LIMITS_CONF = "/etc/security/limits.conf"
 TACPLUS_SERVER_PASSKEY_DEFAULT = ""
 TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
 TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+TACPLUS_SECRET_PASSWORD = "ktbSJeed7apq9dZHOD1O5wW9cvSaRWjW767qLyFEurDTSNEvHdYspaCuEzZcMg8R"
 
 # RADIUS
 RADIUS_SERVER_AUTH_PORT_DEFAULT = "1812"
@@ -119,6 +120,15 @@ def signal_handler(sig, frame):
     else:
         syslog.syslog(syslog.LOG_INFO, "HostCfgd: invalid signal - ignoring..")
 
+def decrypt_data(secret):
+    cmd = "echo " + format(secret) + " | openssl enc -aes-128-cbc -a -d -salt -pbkdf2 -pass pass:" + TACPLUS_SECRET_PASSWORD
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    output, errs = proc.communicate()
+
+    if not errs:
+        output = output.decode('utf-8')
+
+    return output, errs
 
 def run_cmd(cmd, log_err=True, raise_exception=False):
     try:
@@ -2301,6 +2311,13 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'SSH Update: key: {}, op: {}, data: {}'.format(key, op, data))
 
     def tacacs_server_handler(self, key, op, data):
+        if 'passkey' in data:
+            passkey, errs = decrypt_data(data['passkey'])
+            if errs or len(passkey) == 0:
+                syslog.syslog(syslog.LOG_WARNING, "{}: decrypt_data failed.".format(key))
+            else:
+                data['passkey'] = passkey
+
         self.aaacfg.tacacs_server_update(key, data)
         log_data = copy.deepcopy(data)
         if 'passkey' in log_data:
@@ -2308,6 +2325,13 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'TACPLUS_SERVER update: key: {}, op: {}, data: {}'.format(key, op, log_data))
 
     def tacacs_global_handler(self, key, op, data):
+        if 'passkey' in data:
+            passkey, errs = decrypt_data(data['passkey'])
+            if errs or len(passkey) == 0:
+                syslog.syslog(syslog.LOG_WARNING, "{}: decrypt_data failed.".format(key))
+            else:
+                data['passkey'] = passkey
+
         self.aaacfg.tacacs_global_update(key, data)
         log_data = copy.deepcopy(data)
         if 'passkey' in log_data:
