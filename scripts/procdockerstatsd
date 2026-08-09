@@ -22,6 +22,10 @@ SYSLOG_IDENTIFIER = "procdockerstatsd"
 
 REDIS_HOSTIP = "127.0.0.1"
 
+STAT_INTERVAL_S = 2 * 60
+MEM_INTERVAL_S = 10 * 60
+TIMEOUT_INTERVAL = 120
+
 
 class ProcDockerStats(daemon_base.DaemonBase):
     all_process_obj = {}
@@ -30,14 +34,29 @@ class ProcDockerStats(daemon_base.DaemonBase):
         super(ProcDockerStats, self).__init__(log_identifier)
         self.state_db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
         self.state_db.connect("STATE_DB")
+        self._mount_points_log_count = 10
+        self._memory_stats_log_count = 10
+        self._stats_update_log_count = 10
 
-    def run_command(self, cmd):
+    def run_command(self, cmd, timeout=None):
         proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE)
-        (stdout, stderr) = proc.communicate()
-        if proc.returncode != 0:
-            self.log_error("Error running command '{}'".format(cmd))
-            return None
+        if timeout is not None:
+            try:
+                (stdout, stderr) = proc.communicate(timeout=timeout)
+                if proc.returncode != 0:
+                    self.log_error("Error running command '{}'".format(cmd))
+                    return None
+                return stdout
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                self.log_error("Command '{}' timed out after {} seconds".format(cmd, timeout))
+                return None
         else:
+            (stdout, stderr) = proc.communicate()
+            if proc.returncode != 0:
+                self.log_error("Error running command '{}'".format(cmd))
+                return None
             return stdout
 
     def format_docker_cmd_output(self, cmdout):
@@ -51,6 +70,42 @@ class ProcDockerStats(daemon_base.DaemonBase):
             docker_data_list.append(docker_data)
         formatted_dict = self.create_docker_dict(docker_data_list)
         return formatted_dict
+
+    def format_process_cmd_output(self, cmdout):
+        lines = cmdout.splitlines()
+        keys = re.split(" +", lines[0])
+        key_list = [key for key in keys if key]
+        process_data = dict()
+        process_data_list = []
+        for line in lines[1:]:
+            values = re.split(" +", line)
+            # To remove extra space before UID
+            val_list = [val for val in values if val]
+            # Merging extra columns created due to space in cmd ouput
+            val_list[8:] = [' '.join(val_list[8:])]
+            process_data = {key: value for key, value in zip(key_list, val_list)}
+            process_data_list.append(process_data)
+        return process_data_list
+
+    def format_mount_cmd_output(self, cmdout):
+        formatted_dict = {}
+        lines = cmdout.splitlines()
+        mount_data_list = []
+        for line in lines[1:]:
+            values = line.split()
+            mount_data_list.append(values)
+        formatted_dict = self.create_mount_dict(mount_data_list)
+        return formatted_dict
+
+    def format_mem_output(self, data):
+        formatted_dict = {}
+        lines = data.splitlines()
+        mem_map = {}
+        for line in lines:
+            key, value = line.split(":")
+            mem_map[key] = value.strip().split()[0]
+        formatted_dict = self.create_mem_dict(mem_map)
+        return formatted_dict 
 
     def convert_to_bytes(self, value):
         UNITS_B = 'B'
@@ -103,6 +158,87 @@ class ProcDockerStats(daemon_base.DaemonBase):
 
                 dockerdict[key]['PIDS'] = row.get('PIDS')
         return dockerdict
+
+    def _get_readonly_map(self):
+        """Parse /proc/mounts and return {mount_path: 'true'/'false'}.
+
+        The first comma-separated option in column 4 is always 'ro' or 'rw'.
+        """
+        readonly_map = {}
+        try:
+            with open('/proc/mounts', 'r') as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        mount_path = parts[1]
+                        first_opt = parts[3].split(',')[0]
+                        readonly_map[mount_path] = 'true' if first_opt == 'ro' else 'false'
+        except OSError as e:
+            self.log_warning("Failed to read /proc/mounts: {}".format(e))
+        return readonly_map
+
+    def create_mount_dict(self, dict_list):
+        """Build MOUNT_POINTS dict from df --output rows.
+
+        Expected column order (indices):
+          0:source  1:fstype  2:size  3:used  4:avail  5:itotal  6:iavail  7:target
+
+        InodeTotal and InodeAvailable come directly from df --output columns 5 and 6.
+        ReadOnly is sourced from /proc/mounts (mount options column).
+        """
+        mountdict = {}
+        readonly_map = self._get_readonly_map()
+
+        for row in dict_list[0:]:
+            if row[1] == "tmpfs" or row[1] == "devtmpfs" or row[1] == "overlay":
+                continue
+            mount_path = row[7]
+            key = 'MOUNT_POINTS|{}'.format(mount_path)
+            mountdict[key] = {}
+            mountdict[key]['Filesystem'] = row[0]
+            mountdict[key]['Type'] = row[1]
+            mountdict[key]['1K-blocks'] = row[2]
+            mountdict[key]['Used'] = row[3]
+            mountdict[key]['Available'] = row[4]
+            mountdict[key]['InodeTotal'] = row[5]
+            mountdict[key]['InodeAvailable'] = row[6]
+            mountdict[key]['ReadOnly'] = readonly_map.get(mount_path, 'false')
+        return mountdict
+
+    def create_mem_dict(self, mem_info):
+        mem_dict = {}
+
+        key = 'MEMORY_STATS|Physical'
+        mem_dict[key] = {}
+        mem_dict[key]['1K-blocks'] = str(mem_info["MemTotal"])
+        mem_dict[key]['Used'] = str(int(mem_info["MemTotal"]) - int(mem_info["MemFree"]))
+
+        key = 'MEMORY_STATS|Virtual'
+        mem_dict[key] = {}
+        mem_dict[key]['1K-blocks'] = str(int(mem_info["MemTotal"]) + int(mem_info["SwapTotal"]))
+        mem_dict[key]['Used'] = str(int(mem_info["MemTotal"]) + int(mem_info["SwapTotal"]) - int(mem_info["MemFree"]) - int(mem_info["SwapFree"]))
+
+        key = 'MEMORY_STATS|Buffer'
+        mem_dict[key] = {}
+        mem_dict[key]['1K-blocks'] = str(mem_info["MemTotal"])
+        mem_dict[key]['Used'] = str(mem_info["Buffers"])
+
+        key = 'MEMORY_STATS|Cached'
+        mem_dict[key] = {}
+        mem_dict[key]['1K-blocks'] = str(mem_info["Cached"])
+        mem_dict[key]['Used'] = str(mem_info["Cached"])
+
+        key = 'MEMORY_STATS|Shared'
+        mem_dict[key] = {}
+        mem_dict[key]['1K-blocks'] = str(mem_info["Shmem"])
+        mem_dict[key]['Used'] = str(mem_info["Shmem"])
+
+        key = 'MEMORY_STATS|Swap'
+        mem_dict[key] = {}
+        mem_dict[key]['1K-blocks'] = str(mem_info["SwapTotal"])
+        mem_dict[key]['Used'] = str(int(mem_info["SwapTotal"]) - int(mem_info["SwapFree"]))
+
+        return mem_dict
 
     def update_dockerstats_command(self):
         cmd = ["docker", "stats", "--no-stream", "-a"]
@@ -213,6 +349,42 @@ class ProcDockerStats(daemon_base.DaemonBase):
         update_value['enabled'] = str(enabled)
         self.batch_update_state_db(fips_db_key, update_value)
 
+    def update_mountpointstats_command(self):
+        cmd = ["df", "--output=source,fstype,size,used,avail,itotal,iavail,target"]
+        data = self.run_command(cmd)
+        if not data:
+            self.log_error("'{}' returned null output for filesystem".format(cmd))
+            return False
+        mountdata = self.format_mount_cmd_output(data)
+        if not mountdata:
+            self.log_error("formatting for filesystem output failed")
+            return False
+        self.state_db.delete_all_by_pattern('STATE_DB', 'MOUNT_POINTS|*')
+        for k1, v1 in mountdata.items():
+            self.batch_update_state_db(k1, v1)
+        if self._mount_points_log_count > 0:
+            self._mount_points_log_count -= 1
+            self.log_info("MOUNT_POINTS updated. {} entries written".format(len(mountdata)))
+        return True
+
+
+    def update_memory_command(self):
+        cmd = ["cat", "/proc/meminfo"]
+        data = self.run_command(cmd)
+        if not data:
+            self.log_error("'{}' returned null output for memory stats".format(cmd))
+            return False 
+        memdata = self.format_mem_output(data)
+        if not memdata:
+            self.log_error("formatting for memory stats failed")
+            return False 
+        for k1, v1 in memdata.items():
+            self.batch_update_state_db(k1, v1)
+        if self._memory_stats_log_count > 0:
+            self._memory_stats_log_count -= 1
+            self.log_info("MEMORY_STATS updated. {} entries written".format(len(memdata)))
+        return True
+
     def update_state_db(self, key1, key2, value2):
         self.state_db.set('STATE_DB', key1, key2, value2)
 
@@ -227,18 +399,49 @@ class ProcDockerStats(daemon_base.DaemonBase):
             print("Must be root to run this daemon")
             sys.exit(1)
 
-        while True:
-            self.update_dockerstats_command()
-            datetimeobj = datetime.utcnow()
-            # Adding key to store latest update time.
-            self.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
-            self.update_processstats_command()
-            self.update_state_db('PROCESS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
-            self.update_fipsstats_command()
-            self.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+        # MEM/MOUNT block runs once every (MEM_INTERVAL_S / STAT_INTERVAL_S) iterations.
+        mem_ticks_per_run = MEM_INTERVAL_S // STAT_INTERVAL_S
+        mem_counter = 0
 
-            # Data need to be updated every 2 mins. hence adding delay of 120 seconds
-            time.sleep(120)
+        while True:
+            datetimeobj = datetime.now()
+            try:
+                self.update_dockerstats_command()
+                self.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+            except Exception as e:
+                self.log_error("Failed to update docker stats: {}".format(repr(e)))
+            try:
+                self.update_processstats_command()
+                self.update_state_db('PROCESS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+            except Exception as e:
+                self.log_error("Failed to update process stats: {}".format(repr(e)))
+            try:
+                self.update_fipsstats_command()
+                self.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+            except Exception as e:
+                self.log_error("Failed to update FIPS stats: {}".format(repr(e)))
+
+            if mem_counter == 0:
+                datetimeobj = datetime.now()
+                try:
+                    self.update_mountpointstats_command()
+                    self.update_state_db('MOUNT_POINTS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+                except Exception as e:
+                    self.log_error("Failed to update mount point stats: {}".format(repr(e)))
+                try:
+                    self.update_memory_command()
+                except Exception as e:
+                    self.log_error("Failed to update memory stats: {}".format(repr(e)))
+
+                if self._stats_update_log_count > 0:
+                    self._stats_update_log_count -= 1
+                    stats_update_time = datetime.now()
+                    self.log_info("All stats update finished at {}. Took {} seconds".format(stats_update_time, stats_update_time - datetimeobj))
+
+            mem_counter = (mem_counter + 1) % mem_ticks_per_run
+
+            # Data is refreshed every STAT_INTERVAL_S seconds (default 2 min).
+            time.sleep(STAT_INTERVAL_S)
 
         self.log_info("Exiting ...")
 
@@ -255,3 +458,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
