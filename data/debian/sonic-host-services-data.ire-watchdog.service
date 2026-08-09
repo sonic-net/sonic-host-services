@@ -1,0 +1,20 @@
+[Unit]
+Description=IRE data-path CRC watchdog (poll-register mode)
+Requires=docker.service database.service
+After=docker.service database.service config-setup.service
+BindsTo=sonic.target
+After=sonic.target
+
+[Service]
+Type=simple
+# Gate to DNX/J3 platforms (switch_type == "voq"). On non-DNX platforms the
+# unit will not start. The daemon itself also exits cleanly if it detects
+# IRE_DATA_PATH_CRC_ERROR_COUNTER isn't a known register on this ASIC.
+ExecCondition=/usr/bin/python3 -c "import sys; from sonic_py_common import device_info; sys.exit(0 if device_info.get_localhost_info('switch_type') == 'voq' else 1)"
+ExecStart=/usr/local/bin/ire_watchdog
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=3
+
+[Install]
+WantedBy=sonic.target
