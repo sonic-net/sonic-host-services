@@ -85,7 +85,7 @@ class TestRecordingWriter(TestCase):
         self.assertTrue(
             writer.submit_event({"event": "stop", "reason": "manual", "text": "你好"})
         )
-        writer.close()
+        self.assertTrue(writer.close())
 
         self.assertFalse(writer.submit_data("rx", b"after close"))
         self.assertFalse(writer.submit_event({"event": "after-close"}))
@@ -337,7 +337,21 @@ class TestRecordingWriter(TestCase):
         writer.shutdown_timeout = 1
         writer._closing = threading.Event()
         writer._thread = threading.current_thread()
-        writer.close()
+        self.assertFalse(writer.close())
+        self.assertTrue(writer._closing.is_set())
+
+    def test_close_reports_incomplete_shutdown_when_writer_remains_alive(self):
+        writer = object.__new__(console_mirror.RecordingWriter)
+        writer._lock = threading.Lock()
+        writer._accepting = True
+        writer._closing = threading.Event()
+        writer.shutdown_timeout = 1
+        writer._thread = mock.Mock()
+        writer._thread.is_alive.return_value = True
+
+        self.assertFalse(writer.close())
+
+        writer._thread.join.assert_called_once_with(1.5)
         self.assertTrue(writer._closing.is_set())
 
 
@@ -656,6 +670,7 @@ class TestMirrorManager(TestCase):
         writer.recording_prefix = "/recordings/line1/session"
         writer.submit_event.return_value = True
         writer.submit_data.return_value = True
+        writer.close.return_value = True
         return writer
 
     def make_manager(self, **overrides):
@@ -1050,6 +1065,20 @@ class TestMirrorManager(TestCase):
         )
         self.assertIs(response["archive_handle"], handle)
         self.assertEqual(manager.state, "idle")
+
+    def test_stop_skips_archive_when_writer_shutdown_is_incomplete(self):
+        manager, _ = self.start_manager()
+        self.writer.close.return_value = False
+
+        error = self.assert_error(
+            "writer_shutdown_incomplete", lambda: manager.stop(archive=True)
+        )
+
+        self.assertIn("archive was skipped", error.message)
+        self.assertIn("source logs were preserved", error.message)
+        self.archiver.submit.assert_not_called()
+        self.assertEqual(manager.state, "idle")
+        self.assertIsNone(manager.writer)
 
     def test_stop_preserves_archive_errors_and_wraps_submission_failures(self):
         expected = console_mirror.MirrorError("archive_queue_full", "full")

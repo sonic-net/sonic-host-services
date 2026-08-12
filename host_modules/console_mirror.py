@@ -456,14 +456,15 @@ class RecordingWriter:
         if self.on_fatal:
             self.on_fatal(self, error)
 
-    def close(self) -> None:
-        """Stop accepting records and wait boundedly for queued writes to finish."""
+    def close(self) -> bool:
+        """Stop accepting records and report whether the writer fully exited."""
         with self._lock:
             self._accepting = False
             self._shutdown_deadline = time.monotonic() + self.shutdown_timeout
             self._closing.set()
         if threading.current_thread() is not self._thread:
             self._thread.join(self.shutdown_timeout + 0.5)
+        return not self._thread.is_alive()
 
 
 @dataclass(frozen=True)
@@ -931,7 +932,7 @@ class MirrorManager:
             self._write_active_state()
             writer.submit_event({"event": "stop", "reason": reason})
 
-        writer.close()
+        writer_closed = writer.close()
 
         with self._lock:
             if self.writer is writer:
@@ -946,6 +947,12 @@ class MirrorManager:
                 "message": "Mirror stopped; recording files retained",
                 "recording_prefix": recording_prefix,
             }
+        if not writer_closed:
+            raise MirrorError(
+                "writer_shutdown_incomplete",
+                "Writer shutdown did not complete; archive was skipped and "
+                "source logs were preserved",
+            )
         assert start_timestamp is not None and direction is not None
         job = ArchiveJob(
             line=self.line,
