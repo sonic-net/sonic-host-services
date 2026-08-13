@@ -537,6 +537,23 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         self.assertIn("-target=10.0.0.1:50052", commands[1])
         self.assertTrue(all("Reboot" not in command for command in commands))
 
+    def test_handle_transition_clears_halt_flag_when_all_ports_fail(self):
+        """Test cleanup when no configured or common gNMI port responds."""
+        handler = gnoi_shutdown_daemon.GnoiRebootHandler(MagicMock(), MagicMock(), MagicMock())
+        handler._should_skip_gnoi_shutdown = MagicMock(return_value=False)
+        handler._wait_for_gnoi_halt_in_progress = MagicMock(return_value=True)
+        handler._find_working_port = MagicMock(return_value=None)
+        handler._clear_halt_flag = MagicMock(return_value=True)
+
+        with patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1"), \
+                patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports', return_value=["8080", "50052"]):
+            result = handler._handle_transition("DPU0")
+
+        self.assertFalse(result)
+        handler._find_working_port.assert_called_once_with(
+            "DPU0", "10.0.0.1", ["8080", "50052"])
+        handler._clear_halt_flag.assert_called_once_with("DPU0")
+
     @patch('gnoi_shutdown_daemon._get_halt_timeout', return_value=60)
     @patch('gnoi_shutdown_daemon.get_dpu_ip', return_value="10.0.0.1")
     @patch('gnoi_shutdown_daemon.get_dpu_gnmi_ports', side_effect=Exception("Port lookup failed"))

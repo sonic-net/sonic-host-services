@@ -253,7 +253,11 @@ class GnoiRebootHandler:
         return False
 
     def _find_working_port(self, dpu_name: str, dpu_ip: str, ports):
-        """Return the first DPU port that responds to side-effect-free System.Time."""
+        """Return the first port that responds to System.Time.
+
+        Each probe can block for STATUS_RPC_TIMEOUT_SEC, so probing two
+        unreachable ports can add up to 20 seconds to graceful shutdown.
+        """
         for port in ports:
             probe_cmd = [
                 "docker", "exec", "gnmi", "gnoi_client",
