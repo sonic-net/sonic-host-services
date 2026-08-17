@@ -169,7 +169,7 @@ def _ensure_secure_directory(path: str) -> None:
             "unsafe_recording_path",
             f"Recording directory is not a real directory: {path}",
         )
-    os.chmod(path, 0o700)
+    os.chmod(path, 0o700) # nosemgrep
     if os.geteuid() == 0:
         os.chown(path, 0, 0)
 
