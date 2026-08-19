@@ -25,7 +25,7 @@ HALT_IN_PROGRESS_POLL_INTERVAL_SEC = 5  # delay between halt_in_progress checks
 STATUS_RPC_TIMEOUT_SEC = 10  # per RebootStatus RPC timeout
 REBOOT_METHOD_HALT = 3  # gNOI System.Reboot method: HALT
 CONFIG_DB_INDEX = 4
-DEFAULT_GNMI_PORT = "8080"  # Default GNMI port for DPU
+COMMON_GNMI_PORTS = ("8080", "50052")
 
 SYSLOG_IDENTIFIER = "gnoi-shutdown-daemon"
 logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
@@ -88,9 +88,10 @@ def get_dpu_ip(config_db, dpu_name: str) -> str:
     return None
 
 
-def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
-    """Retrieve GNMI port from CONFIG_DB DPU table, default to 8080."""
+def get_dpu_gnmi_ports(config_db, dpu_name: str):
+    """Return configured and common DPU gNMI ports in preference order."""
     dpu_name_lower = dpu_name.lower()
+    configured_port = None
 
     try:
         for k in [dpu_name_lower, dpu_name.upper(), dpu_name]:
@@ -99,12 +100,16 @@ def get_dpu_gnmi_port(config_db, dpu_name: str) -> str:
             if gnmi_port:
                 if isinstance(gnmi_port, bytes):
                     gnmi_port = gnmi_port.decode('utf-8')
-                return str(gnmi_port)
+                configured_port = str(gnmi_port)
+                break
     except (AttributeError, KeyError, TypeError) as e:
-        logger.log_warning(f"{dpu_name}: Error getting gNMI port, using default: {e}")
+        logger.log_warning(f"{dpu_name}: Error getting configured gNMI port: {e}")
 
-    logger.log_info(f"{dpu_name}: gNMI port not found, using default {DEFAULT_GNMI_PORT}")
-    return DEFAULT_GNMI_PORT
+    ports = []
+    for port in (configured_port, *COMMON_GNMI_PORTS):
+        if port and port not in ports:
+            ports.append(port)
+    return ports
 
 # ###############
 # gNOI Reboot Handler
@@ -188,13 +193,19 @@ class GnoiRebootHandler:
         dpu_ip = None
         try:
             dpu_ip = get_dpu_ip(config_db, dpu_name)
-            port = get_dpu_gnmi_port(config_db, dpu_name)
+            ports = get_dpu_gnmi_ports(config_db, dpu_name)
             if not dpu_ip:
                 logger.log_error(f"{dpu_name}: IP not found in DHCP_SERVER_IPV4_PORT table (key: bridge-midplane|{dpu_name.lower()}), cannot proceed")
                 self._clear_halt_flag(dpu_name)
                 return False
         except Exception as e:
             logger.log_error(f"{dpu_name}: Failed to get configuration: {e}")
+            self._clear_halt_flag(dpu_name)
+            return False
+
+        port = self._find_working_port(dpu_name, dpu_ip, ports)
+        if port is None:
+            logger.log_error(f"{dpu_name}: No reachable gNMI port found")
             self._clear_halt_flag(dpu_name)
             return False
 
@@ -241,12 +252,32 @@ class GnoiRebootHandler:
 
         return False
 
+    def _find_working_port(self, dpu_name: str, dpu_ip: str, ports):
+        """Return the first port that responds to System.Time.
+
+        Each probe can block for STATUS_RPC_TIMEOUT_SEC, so probing two
+        unreachable ports can add up to 20 seconds to graceful shutdown.
+        """
+        for port in ports:
+            probe_cmd = [
+                "docker", "exec", "gnmi", "gnoi_client",
+                f"-target={dpu_ip}:{port}",
+                "-logtostderr", "-insecure",
+                "-module", "System",
+                "-rpc", "Time",
+            ]
+            rc, out, err = execute_command(probe_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
+            if rc == 0:
+                return port
+            logger.log_warning(f"{dpu_name}: gNMI probe failed (rc={rc}, target={dpu_ip}:{port}): {err}")
+        return None
+
     def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
-        """Send gNOI Reboot HALT command to the DPU."""
+        """Send one gNOI Reboot HALT command to the selected DPU port."""
         reboot_cmd = [
             "docker", "exec", "gnmi", "gnoi_client",
             f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-notls",
+            "-logtostderr", "-insecure",
             "-module", "System",
             "-rpc", "Reboot",
             "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
@@ -263,7 +294,7 @@ class GnoiRebootHandler:
         status_cmd = [
             "docker", "exec", "gnmi", "gnoi_client",
             f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-notls",
+            "-logtostderr", "-insecure",
             "-module", "System",
             "-rpc", "RebootStatus"
         ]
