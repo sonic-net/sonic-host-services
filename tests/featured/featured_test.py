@@ -1051,3 +1051,76 @@ class TestWaitForServiceStable(TestCase):
             assert call_order[0] == ("wait", "bgp@3.service")
             assert call_order[1][0] == "cmd"
             assert "stop" in call_order[1][1]
+
+
+class TestEnableFeatureGeneratedUnit(TestCase):
+    """Tests that enable_feature() skips 'systemctl enable' for generated units.
+
+    Running 'systemctl enable' on a unit whose UnitFileState is 'generated'
+    (unit file only present under /run) fails, so it must not be attempted.
+    """
+
+    def _create_handler(self):
+        feature_state_table_mock = mock.Mock()
+        device_cfg = {"DEVICE_METADATA": {"localhost": {"type": "ToRRouter"}}}
+        handler = featured.FeatureHandler(MockConfigDb(), feature_state_table_mock, device_cfg, False)
+        return handler
+
+    def _run_enable_feature(self, unit_file_state, feature_names=None, feature_suffixes=None):
+        """Runs enable_feature() with a mocked unit file state and returns (result, cmds, set_state_mock)."""
+        handler = self._create_handler()
+        feature = featured.Feature("bgp", {"state": "enabled", "auto_restart": "enabled"})
+
+        cmds = []
+
+        with mock.patch.object(handler, "get_multiasic_feature_instances",
+                               return_value=(feature_names or ["bgp"], feature_suffixes or ["service"])), \
+             mock.patch.object(handler, "get_systemd_unit_state", return_value=unit_file_state), \
+             mock.patch("featured.run_cmd", side_effect=lambda cmd, **kwargs: cmds.append(cmd)), \
+             mock.patch.object(handler, "set_feature_state") as mocked_set_state:
+
+            result = handler.enable_feature(feature)
+
+        return result, cmds, mocked_set_state
+
+    def test_enable_feature_skips_enable_for_generated_unit(self):
+        """UnitFileState 'generated' — unmask and start are run, but enable is skipped."""
+        result, cmds, mocked_set_state = self._run_enable_feature("generated")
+
+        assert result is True
+        assert ["sudo", "systemctl", "unmask", "bgp.service"] in cmds
+        assert ["sudo", "systemctl", "start", "bgp.service"] in cmds
+        assert not any("enable" in cmd for cmd in cmds)
+        mocked_set_state.assert_called_once_with(mock.ANY, featured.FeatureHandler.FEATURE_STATE_ENABLED)
+
+    def test_enable_feature_runs_enable_for_non_generated_unit(self):
+        """UnitFileState 'disabled' — enable is run, confirming the skip is specific to 'generated'."""
+        result, cmds, mocked_set_state = self._run_enable_feature("disabled")
+
+        assert result is True
+        assert cmds == [["sudo", "systemctl", "unmask", "bgp.service"],
+                        ["sudo", "systemctl", "enable", "bgp.service"],
+                        ["sudo", "systemctl", "start", "bgp.service"]]
+        mocked_set_state.assert_called_once_with(mock.ANY, featured.FeatureHandler.FEATURE_STATE_ENABLED)
+
+    def test_enable_feature_skips_enable_for_generated_timer_unit(self):
+        """A generated feature with a .timer unit still unmasks both units and skips enable."""
+        result, cmds, _ = self._run_enable_feature("generated",
+                                                   feature_names=["bgp"],
+                                                   feature_suffixes=["service", "timer"])
+
+        assert result is True
+        assert cmds == [["sudo", "systemctl", "unmask", "bgp.service"],
+                        ["sudo", "systemctl", "unmask", "bgp.timer"],
+                        ["sudo", "systemctl", "start", "bgp.timer"]]
+
+    def test_enable_feature_skips_enable_for_generated_multiasic_instances(self):
+        """Each generated per-ASIC instance is started without being enabled."""
+        result, cmds, _ = self._run_enable_feature("generated",
+                                                   feature_names=["bgp@0", "bgp@1"],
+                                                   feature_suffixes=["service"])
+
+        assert result is True
+        assert not any("enable" in cmd for cmd in cmds)
+        assert ["sudo", "systemctl", "start", "bgp@0.service"] in cmds
+        assert ["sudo", "systemctl", "start", "bgp@1.service"] in cmds
