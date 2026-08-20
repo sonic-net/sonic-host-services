@@ -100,8 +100,10 @@ DEFAULT_BAUD = 9600
 LOGROTATE_DIR = "/etc/logrotate.d"
 LOGROTATE_CONF_PREFIX = "console-"
 DEFAULT_LOG_FILE_TEMPLATE = "/var/log/console-{}.log"
-DEFAULT_LOGROTATE_SIZE = "1M"
-DEFAULT_LOGROTATE_COUNT = 20
+# NOTE: Keep these defaults aligned with src/sonic-utilities/config/console.py
+# (DEFAULT_LOGROTATE_SIZE / DEFAULT_LOGROTATE_COUNT).
+DEFAULT_LOGROTATE_SIZE = "10M"
+DEFAULT_LOGROTATE_COUNT = 10
 
 # Kernel command line path
 PROC_CMDLINE = "/proc/cmdline"
