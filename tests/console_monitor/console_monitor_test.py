@@ -217,8 +217,8 @@ class TestDCEService(TestCase):
         self.assertEqual(configs["1"]["baud"], 9600)
         self.assertEqual(configs["1"]["logging_enabled"], "no")
         self.assertEqual(configs["1"]["log_file"], "/var/log/console-1.log")
-        self.assertEqual(configs["1"]["logrotate_size"], "1M")
-        self.assertEqual(configs["1"]["logrotate_count"], "20")
+        self.assertEqual(configs["1"]["logrotate_size"], "10M")
+        self.assertEqual(configs["1"]["logrotate_count"], "10")
         
         # Verify port 2 config
         self.assertIn("2", configs)
@@ -1575,8 +1575,8 @@ class TestDCEServiceExtended(TestCase):
         self.assertEqual(configs["1"]["baud"], 9600)
         self.assertEqual(configs["1"]["logging_enabled"], "no")
         self.assertEqual(configs["1"]["log_file"], "/var/log/console-1.log")
-        self.assertEqual(configs["1"]["logrotate_size"], "1M")
-        self.assertEqual(configs["1"]["logrotate_count"], "20")
+        self.assertEqual(configs["1"]["logrotate_size"], "10M")
+        self.assertEqual(configs["1"]["logrotate_count"], "10")
         
         # Check port 2
         self.assertIn("2", configs)
@@ -2615,6 +2615,215 @@ class TestLogrotateConfig(TestCase):
                 console_monitor.logrotate_conf_path("1"),
                 "/etc/logrotate.d/console-1",
             )
+
+    def test_default_log_file(self):
+        self.assertEqual(
+            console_monitor.default_log_file("0"),
+            "/var/log/console-0.log",
+        )
+
+
+class TestConsoleLoggingCoverage(TestCase):
+    """Tests for console logging configuration and runtime paths."""
+
+    def setUp(self):
+        MockSubprocess.reset()
+        MockConfigDb.CONFIG_DB = None
+
+    def tearDown(self):
+        MockSubprocess.reset()
+        MockConfigDb.CONFIG_DB = None
+
+    def test_get_logging_configs_includes_enabled_ports_only(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/custom.log",
+                    "logrotate_size": "10M",
+                    "logrotate_count": "5",
+                },
+                "1": {
+                    "logging_enabled": "no",
+                    "log_file": "/var/log/other.log",
+                },
+                "2": {
+                    "logging_enabled": "yes",
+                },
+            },
+        })
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+
+        configs = service._get_logging_configs()
+
+        self.assertEqual(set(configs.keys()), {"0", "2"})
+        self.assertEqual(configs["0"]["log_file"], "/var/log/custom.log")
+        self.assertEqual(configs["0"]["logrotate_size"], "10M")
+        self.assertEqual(configs["0"]["logrotate_count"], 5)
+        self.assertEqual(configs["2"]["log_file"], "/var/log/console-2.log")
+        self.assertEqual(configs["2"]["logrotate_size"], "10M")
+        self.assertEqual(configs["2"]["logrotate_count"], 10)
+
+    def test_get_logging_configs_handles_exception(self):
+        service = console_monitor.DCEService()
+        service.config_db = mock.Mock()
+        service.config_db.get_table.side_effect = RuntimeError("db error")
+
+        configs = service._get_logging_configs()
+
+        self.assertEqual(configs, {})
+
+    def test_console_port_handler_del_logs_warning(self):
+        MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+
+        with mock.patch.object(service, '_sync') as mock_sync:
+            with mock.patch.object(console_monitor.log, 'warning') as mock_warning:
+                service.console_port_handler("0", "DEL", {})
+
+                mock_warning.assert_called_once()
+                mock_sync.assert_called_once()
+
+    def test_console_port_handler_set_reads_full_entry(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "baud_rate": "9600",
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/test.log",
+                },
+            },
+        })
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+
+        with mock.patch.object(service, '_sync'):
+            with mock.patch.object(console_monitor.log, 'info') as mock_info:
+                service.console_port_handler("0", "SET", {"baud_rate": "9600"})
+
+                full_entry_logged = any(
+                    "full entry after change" in str(call)
+                    for call in mock_info.call_args_list
+                )
+                self.assertTrue(full_entry_logged)
+
+    def test_sync_restarts_on_logging_config_change(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "1": {
+                    "baud_rate": "9600",
+                    "logging_enabled": "no",
+                },
+            },
+        })
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        service.active_links = {"1"}
+        service._config_cache = service._get_all_configs()
+
+        MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"]["logging_enabled"] = "yes"
+        MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"]["log_file"] = "/var/log/test.log"
+
+        with mock.patch.object(service, '_sync_logrotate_configs'):
+            with mock.patch.object(service, '_restart_link', return_value=True) as mock_restart:
+                service._sync()
+
+                mock_restart.assert_called_once_with("1")
+
+    def test_sync_logrotate_uses_default_log_file(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                },
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                service._sync_logrotate_configs()
+
+                conf_path = os.path.join(tmpdir, "console-0")
+                with open(conf_path, 'r') as conf_file:
+                    content = conf_file.read()
+
+                self.assertIn("/var/log/console-0.log", content)
+
+    def test_sync_logrotate_removes_config_when_logging_disabled(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console0.log",
+                },
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                service._sync_logrotate_configs()
+
+                conf_path = os.path.join(tmpdir, "console-0")
+                self.assertTrue(os.path.exists(conf_path))
+
+                MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["0"]["logging_enabled"] = "no"
+                service._sync_logrotate_configs()
+
+                self.assertFalse(os.path.exists(conf_path))
+
+    def test_sync_logrotate_write_failure(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console0.log",
+                },
+            },
+        })
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+
+        with mock.patch('builtins.open', side_effect=OSError("permission denied")):
+            with mock.patch.object(console_monitor.log, 'error') as mock_error:
+                service._sync_logrotate_configs()
+
+                self.assertTrue(mock_error.called)
+
+    def test_write_log_handles_oserror(self):
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.log_fd = 12
+
+        with mock.patch('os.write', side_effect=OSError("disk full")):
+            with mock.patch.object(console_monitor.log, 'error') as mock_error:
+                proxy._write_log(b"data")
+
+                mock_error.assert_called_once()
+
+    def test_proxy_initialize_log_open_failure(self):
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+        proxy.baud = 9600
+        proxy.device_path = "/dev/ttyUSB1"
+        proxy.ptm_path = "/dev/ttyUSB1-PTM"
+        proxy.logging_enabled = True
+        proxy.log_file_path = "/var/log/console1.log"
+
+        with mock.patch('os.open', side_effect=[10, 11, OSError("permission denied")]):
+            with mock.patch('console_monitor.configure_serial'):
+                with mock.patch.object(console_monitor.log, 'error') as mock_error:
+                    result = proxy._initialize()
+
+                    self.assertTrue(result)
+                    self.assertEqual(proxy.log_fd, -1)
+                    mock_error.assert_called_once()
 
 
 class TestCalculateFilterTimeout(TestCase):
