@@ -330,6 +330,7 @@ class TestReboot(object):
         """Halt reboot times out with pmon still running and records a failure timestamp."""
         with (
             mock.patch("reboot._run_command") as mock_run_command,
+            mock.patch("time.monotonic") as mock_monotonic,
             mock.patch("time.sleep") as mock_sleep,
             mock.patch("time.time", return_value=TIME),
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=True) as mock_is_halt_command_running,
@@ -338,6 +339,7 @@ class TestReboot(object):
             mock.patch("reboot.get_dpu_halt_services_timeout", return_value=60),
             caplog.at_level(logging.ERROR),
         ):
+            mock_monotonic.side_effect = [0, 0, HALT_TIMEOUT]
             mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
             self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
             mock_run_command.assert_called_once_with("sudo reboot -p")
