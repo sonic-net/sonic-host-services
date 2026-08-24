@@ -948,14 +948,14 @@ class PasswHardening(object):
             self.passwd_aging_expire_modify(curr_expiration, 'MAX_DAYS')
 
             # Aging policy for new users
-            modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " +str(curr_expiration)])
+            modify_single_file_inplace(ETC_LOGIN_DEF, [r"/^PASS_MAX_DAYS/c\PASS_MAX_DAYS " + str(curr_expiration)])
 
         if self.is_passwd_aging_expire_update(curr_expiration_warning, 'WARN_DAYS'):
             # Aging policy for existing users
             self.passwd_aging_expire_modify(curr_expiration_warning, 'WARN_DAYS')
 
             # Aging policy for new users
-            modify_single_file_inplace(ETC_LOGIN_DEF, ["/^PASS_WARN_AGE/c\PASS_WARN_AGE " +str(curr_expiration_warning)])
+            modify_single_file_inplace(ETC_LOGIN_DEF, [r"/^PASS_WARN_AGE/c\PASS_WARN_AGE " + str(curr_expiration_warning)])
 
     def passwd_aging_expire_modify(self, curr_expiration, age_type):
         normal_accounts = self.get_normal_accounts()
