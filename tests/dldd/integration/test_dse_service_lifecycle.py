@@ -11,7 +11,6 @@ from dldd.dse import DSERegistry
 from .conftest import (
     ControlledDSEHook,
     DSE_FAULT_KEY,
-    RunningService,
     dse_integration_rule_document,
     eventually,
     integration_rule_document,
@@ -25,10 +24,9 @@ pytestmark = pytest.mark.dldd_integration
 def test_full_service_expands_samples_and_retires_authoritative_dse_child(
     dse_integration_environment,
 ):
-    state_db = dse_integration_environment["state_db"]
-    hook = dse_integration_environment["source"]
-    running = RunningService(dse_integration_environment["service"]()).start()
-    try:
+    state_db = dse_integration_environment.state_db
+    hook = dse_integration_environment.source
+    with dse_integration_environment.running() as running:
         eventually(
             lambda: running.service.orchestrator is not None
             and {
@@ -46,13 +44,8 @@ def test_full_service_expands_samples_and_retires_authoritative_dse_child(
         assert not state_db.hgetall(DSE_FAULT_KEY)
 
         hook.set_value("DSE_SENSOR0", 20)
-        active = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(DSE_FAULT_KEY)).get("status")
-                == "ACTIVE"
-                else None
-            )
+        active = dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY, status="ACTIVE"
         )
         assert active["component_name"] == "DSE_SENSOR0"
         assert json.loads(active["events"])[0]["value_read"] == "20"
@@ -60,13 +53,8 @@ def test_full_service_expands_samples_and_retires_authoritative_dse_child(
         assert hook.comparator_calls.count("DSE_SENSOR0") >= 2
 
         hook.remove("DSE_SENSOR0")
-        inactive = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(DSE_FAULT_KEY)).get("status")
-                == "INACTIVE"
-                else None
-            )
+        inactive = dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY, status="INACTIVE"
         )
         assert inactive["origin_time"] == active["origin_time"]
         assert json.loads(inactive["repair_actions"]) == []
@@ -80,17 +68,14 @@ def test_full_service_expands_samples_and_retires_authoritative_dse_child(
             )
         )
         assert not running.service.orchestrator.service_diagnostics
-    finally:
-        running.stop()
 
 
 def test_non_authoritative_dse_omission_keeps_child_and_active_fault(
     dse_integration_environment,
 ):
-    state_db = dse_integration_environment["state_db"]
-    hook = dse_integration_environment["source"]
-    running = RunningService(dse_integration_environment["service"]()).start()
-    try:
+    state_db = dse_integration_environment.state_db
+    hook = dse_integration_environment.source
+    with dse_integration_environment.running() as running:
         eventually(
             lambda: running.service.orchestrator is not None
             and any(
@@ -99,13 +84,8 @@ def test_non_authoritative_dse_omission_keeps_child_and_active_fault(
             )
         )
         hook.set_value("DSE_SENSOR0", 20)
-        active = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(DSE_FAULT_KEY)).get("status")
-                == "ACTIVE"
-                else None
-            )
+        active = dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY, status="ACTIVE"
         )
         expansions_before = hook.expansion_calls
         source_reads_before = hook.source_calls.count("DSE_SENSOR0")
@@ -126,41 +106,28 @@ def test_non_authoritative_dse_omission_keeps_child_and_active_fault(
         assert retained["status"] == "ACTIVE"
         assert retained["origin_time"] == active["origin_time"]
         assert not retained.get("reason")
-    finally:
-        running.stop()
 
 
 def test_restart_reconciles_retained_active_dse_fault_after_expansion(
     dse_integration_environment,
 ):
-    state_db = dse_integration_environment["state_db"]
-    hook = dse_integration_environment["source"]
+    state_db = dse_integration_environment.state_db
+    hook = dse_integration_environment.source
     hook.set_value("DSE_SENSOR0", 20)
-    first = RunningService(dse_integration_environment["service"]()).start()
-    try:
-        before = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(DSE_FAULT_KEY)).get("status")
-                == "ACTIVE"
-                else None
-            )
+    with dse_integration_environment.running():
+        before = dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY, status="ACTIVE"
         )
-    finally:
-        first.stop()
 
-    second = RunningService(dse_integration_environment["service"]()).start()
-    try:
-        after = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(DSE_FAULT_KEY)).get("status")
-                == "ACTIVE"
-                and second.service.orchestrator is not None
+    with dse_integration_environment.running() as second:
+        after = dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY,
+            predicate=lambda unused_row: (
+                second.service.orchestrator is not None
                 and (9900002, "DSE_SENSOR0")
                 not in second.service.orchestrator.pending_dynamic_faults
-                else None
-            )
+            ),
+            status="ACTIVE",
         )
         assert after["origin_time"] == before["origin_time"]
         assert after["occurrences"] == before["occurrences"]
@@ -169,53 +136,36 @@ def test_restart_reconciles_retained_active_dse_fault_after_expansion(
         ]
         assert not after.get("reason")
         assert not second.service.orchestrator.service_diagnostics
-    finally:
-        second.stop()
 
 
 def test_restart_authoritative_absence_refreshes_retained_inactive_dse_fault(
     dse_integration_environment,
 ):
-    state_db = dse_integration_environment["state_db"]
-    hook = dse_integration_environment["source"]
+    state_db = dse_integration_environment.state_db
+    hook = dse_integration_environment.source
     hook.set_value("DSE_SENSOR0", 20)
-    first = RunningService(dse_integration_environment["service"]()).start()
-    try:
-        eventually(
-            lambda: state_db.hgetall(DSE_FAULT_KEY).get("status")
-            == "ACTIVE"
+    with dse_integration_environment.running():
+        dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY, status="ACTIVE"
         )
         hook.set_value("DSE_SENSOR0", 0)
-        before = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(DSE_FAULT_KEY)).get("status")
-                == "INACTIVE"
-                else None
-            )
+        before = dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY, status="INACTIVE"
         )
         assert not before.get("reason")
-    finally:
-        first.stop()
 
     hook.remove("DSE_SENSOR0")
-    second = RunningService(dse_integration_environment["service"]()).start()
-    try:
-        after = eventually(
-            lambda: (
-                row
-                if "authoritative DSE discovery"
-                in (row := state_db.hgetall(DSE_FAULT_KEY)).get("reason", "")
-                else None
-            )
+    with dse_integration_environment.running() as second:
+        after = dse_integration_environment.wait_for_row(
+            DSE_FAULT_KEY,
+            predicate=lambda row: "authoritative DSE discovery"
+            in row.get("reason", ""),
         )
         assert after["status"] == "INACTIVE"
         assert after["origin_time"] == before["origin_time"]
         assert after["occurrences"] == before["occurrences"]
         assert state_db.ttls[DSE_FAULT_KEY] == 3600
         assert not second.service.orchestrator.service_diagnostics
-    finally:
-        second.stop()
 
 
 def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
@@ -275,8 +225,7 @@ def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
             "source_unavailable_grace_period": "0",
         },
     )
-    running = RunningService(environment["service"]()).start()
-    try:
+    with environment.running() as running:
         def expanded_rule_items():
             orchestrator = running.service.orchestrator
             if orchestrator is None:
@@ -317,13 +266,9 @@ def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
         }
         eventually(lambda: len(hook.direct_read_calls) >= 2)
         for component in ("DSE_SENSOR0", "DSE_SENSOR1"):
-            eventually(
-                lambda component=component: environment["state_db"]
-                .hgetall(
-                    "FAULT_INFO|{}|SYMPTOM_OVER_THRESHOLD".format(component)
-                )
-                .get("status")
-                == "ACTIVE"
+            environment.wait_for_row(
+                "FAULT_INFO|{}|SYMPTOM_OVER_THRESHOLD".format(component),
+                status="ACTIVE",
             )
 
         def scoped_common_predicates_are_released():
@@ -344,18 +289,15 @@ def test_mixed_dse_and_common_redis_rule_has_only_real_scoped_instances(
             for record in caplog.records
             if record.name == "dldd.monitor"
         )
-    finally:
-        running.stop()
 
 
 def test_empty_dse_inventory_completes_discovery_stabilization(
     dse_integration_environment,
 ):
-    hook = dse_integration_environment["source"]
+    hook = dse_integration_environment.source
     hook.remove("DSE_SENSOR0")
     hook.remove("DSE_SENSOR1")
-    running = RunningService(dse_integration_environment["service"]()).start()
-    try:
+    with dse_integration_environment.running() as running:
         state = eventually(
             lambda: (
                 next(
@@ -376,5 +318,3 @@ def test_empty_dse_inventory_completes_discovery_stabilization(
         assert state.warmup_cycles_completed == 1
         assert hook.expansion_calls >= 2
         assert running.service.orchestrator.work_items == {}
-    finally:
-        running.stop()

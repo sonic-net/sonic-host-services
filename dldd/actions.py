@@ -12,7 +12,12 @@ from queue import Queue
 from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
 from .bounded_calls import BoundedCallGate
-from .command_execution import build_i2c_argv, run_shell_free
+from .command_execution import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    build_i2c_argv,
+    run_checked_shell_free,
+    run_shell_free,
+)
 from .hooks import VendorHookRegistry, operation_hook_name
 from .models import Operation
 from .timestamps import floor_timestamp_fields
@@ -77,20 +82,16 @@ class ActionExecutor:
             argv = action.get("argv")
             if not isinstance(argv, (list, tuple)) or not argv:
                 raise ValueError("CLI action requires argv")
-            result = run_shell_free(
+            return run_checked_shell_free(
                 list(argv),
                 timeout=timeout,
                 max_output_bytes=int(
-                    action.get("max_output_bytes", 1024 * 1024)
-                ),
-            )
-            if result.returncode:
-                raise RuntimeError(
-                    "CLI action exited {}: {}".format(
-                        result.returncode, result.stderr_text()
+                    action.get(
+                        "max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES
                     )
-                )
-            return result.stdout_text()
+                ),
+                error_context="CLI action",
+            )
         if action_type == "i2c":
             return (
                 self.i2c_action(action)

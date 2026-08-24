@@ -777,18 +777,7 @@ def materialize_signature(signature, context=None):
             dse_context = _context_for(signature, context)
             if operation.type == "dse":
                 resolved = registry.resolve_action(operation.command, dse_context)
-                options = dict(operation.options)
-                options.update(dict(resolved.vendor_data))
-                operation = Operation(
-                    type=operation.type,
-                    command=operation.command,
-                    argv=operation.argv,
-                    path=operation.path,
-                    timeout=operation.timeout,
-                    max_output_bytes=operation.max_output_bytes,
-                    executor=resolved.executor,
-                    options=options,
-                )
+                operation = operation.with_resolution(resolved)
             elif operation.type not in ("cli", "i2c"):
                 registry.validate_vendor_operation(operation, dse_context, query=False)
             local_operations.append(operation)
@@ -804,18 +793,7 @@ def materialize_signature(signature, context=None):
             dse_context = _context_for(signature, context)
             if query.type == "dse":
                 resolved = registry.resolve_query(query.command, dse_context)
-                options = dict(query.options)
-                options.update(dict(resolved.vendor_data))
-                query = Operation(
-                    type=query.type,
-                    command=query.command,
-                    argv=query.argv,
-                    path=query.path,
-                    timeout=query.timeout,
-                    max_output_bytes=query.max_output_bytes,
-                    executor=resolved.executor,
-                    options=options,
-                )
+                query = query.with_resolution(resolved)
             elif query.type != "cli":
                 registry.validate_vendor_operation(query, dse_context, query=True)
             queries.append(query)

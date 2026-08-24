@@ -10,11 +10,10 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 from urllib.parse import quote
 
 from .config import DLDDConfig
-from .models import ValueConfig
 from .ownership import DLDD_FAULT_PRODUCER
 from .rule_schema.errors import bound_diagnostic
 from .runtime import FaultRecord
-from .sonic_hash import SonicHashReader
+from .sonic_hash import SonicHashReader, decode_db_hash, decode_db_text
 from .timestamps import floor_timestamp_fields
 
 
@@ -57,21 +56,31 @@ class StateDB:
     """Minimal hash/TTL interface used by the daemon."""
 
     def hset(self, key: str, values: Mapping[str, Any]) -> None:
+        """Merge fields into one hash."""
+
         raise NotImplementedError
 
     def expire(self, key: str, seconds: int) -> None:
+        """Set the hash expiry in seconds."""
+
         raise NotImplementedError
 
     def hset_with_ttl(
         self, key: str, values: Mapping[str, Any], seconds: int
     ) -> None:
+        """Merge fields and set their hash expiry."""
+
         self.hset(key, values)
         self.expire(key, seconds)
 
     def persist(self, key: str) -> None:
+        """Remove any expiry from a hash."""
+
         raise NotImplementedError
 
     def hdel(self, key: str, fields: Iterable[str]) -> None:
+        """Delete selected fields from a hash."""
+
         raise NotImplementedError
 
     def replace_hash(
@@ -84,10 +93,7 @@ class StateDB:
         """
 
         existing = self.hgetall(key)
-        existing_fields = {
-            name.decode() if isinstance(name, bytes) else name
-            for name in existing
-        }
+        existing_fields = {decode_db_text(name) for name in existing}
         stale_fields = existing_fields - set(values)
         self.hset(key, values)
         if stale_fields:
@@ -98,20 +104,30 @@ class StateDB:
             self.expire(key, ttl_seconds)
 
     def delete(self, key: str) -> None:
+        """Delete one key."""
+
         raise NotImplementedError
 
     def delete_many(self, keys: Iterable[str]) -> None:
+        """Delete zero or more keys."""
+
         for key in tuple(keys):
             self.delete(key)
 
     def hgetall(self, key: str) -> Mapping[str, str]:
+        """Return one hash with text field names and values."""
+
         raise NotImplementedError
 
     def keys(self, pattern: str) -> Iterable[str]:
+        """Return text keys matching a database pattern."""
+
         raise NotImplementedError
 
 
 class SonicStateDB(StateDB):
+    """Redis write API paired with normalized SONiC read access."""
+
     def __init__(self, redis_client=None, hash_reader=None) -> None:
         self._redis_client = redis_client
         self._hash_reader = hash_reader or (
@@ -185,10 +201,7 @@ class SonicStateDB(StateDB):
         client = self._db()
         mapping = {name: _redis_value(value) for name, value in values.items()}
         existing = client.hkeys(key)
-        existing_fields = {
-            name.decode() if isinstance(name, bytes) else name
-            for name in existing
-        }
+        existing_fields = {decode_db_text(name) for name in existing}
         stale_fields = tuple(sorted(existing_fields - set(mapping)))
         transaction = client.pipeline(transaction=True)
         transaction.hset(key, mapping=mapping)
@@ -211,10 +224,17 @@ class SonicStateDB(StateDB):
     def hgetall(self, key: str) -> Mapping[str, str]:
         if self._hash_reader is not None:
             return self._hash_reader.read("STATE_DB", key)
-        return self._db().hgetall(key)
+        return decode_db_hash(self._db().hgetall(key))
 
     def keys(self, pattern: str) -> Iterable[str]:
-        return self._db().scan_iter(match=pattern)
+        if self._hash_reader is not None:
+            return self._hash_reader.keys("STATE_DB", pattern)
+        return tuple(
+            sorted(
+                decode_db_text(key)
+                for key in self._db().scan_iter(match=pattern)
+            )
+        )
 
 
 class TelemetryPublisher:
@@ -350,11 +370,7 @@ class TelemetryPublisher:
                 self.RULE_DETAIL_PREFIX + "*",
             ):
                 for raw_key in tuple(self.state_db.keys(pattern)):
-                    key = (
-                        raw_key.decode()
-                        if isinstance(raw_key, bytes)
-                        else raw_key
-                    )
+                    key = decode_db_text(raw_key)
                     if key not in keep:
                         self.state_db.delete(key)
             return True
@@ -370,10 +386,8 @@ class TelemetryPublisher:
                 self.RULE_DETAIL_PREFIX + "*",
             ):
                 keys.update(
-                    raw_key.decode()
-                    if isinstance(raw_key, bytes)
-                    else raw_key
-                    for raw_key in self.state_db.keys(pattern)
+                    decode_db_text(key)
+                    for key in self.state_db.keys(pattern)
                 )
             for key in keys:
                 self.state_db.delete(key)
@@ -465,12 +479,10 @@ class TelemetryPublisher:
         keys = tuple(self.state_db.keys("FAULT_INFO|*"))
         rows = []
         for raw_key in keys:
-            key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
-            raw = self.state_db.hgetall(key)
+            key = decode_db_text(raw_key)
+            raw = decode_db_hash(self.state_db.hgetall(key))
             decoded: Dict[str, Any] = {}
-            for raw_name, raw_value in raw.items():
-                name = raw_name.decode() if isinstance(raw_name, bytes) else raw_name
-                value = raw_value.decode() if isinstance(raw_value, bytes) else raw_value
+            for name, value in raw.items():
                 if name in (
                     "events",
                     "repair_actions",
@@ -486,7 +498,3 @@ class TelemetryPublisher:
             decoded["redis_key"] = key
             rows.append(decoded)
         return tuple(rows)
-
-
-def value_config_payload(config: ValueConfig) -> Mapping[str, Any]:
-    return config.as_payload()

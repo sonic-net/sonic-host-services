@@ -245,6 +245,8 @@ def build_plans(
     plan_generation: str,
     polling_intervals: Mapping[str, float],
 ) -> PlanBundle:
+    """Materialize immutable work and owning monitor plans for one generation."""
+
     materialized_rules = tuple(materialized_rules)
     if not materialized_rules:
         raise ValueError("materialized rules cannot be empty")

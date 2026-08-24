@@ -67,11 +67,6 @@ The checked-in rule fixtures have deliberately different deployment scopes:
   `DLDD_RULE_INSTANCE_TEST`, so operator output must identify the broken work
   as `9999302@DLDD_RULE_INSTANCE_TEST`. Use the fixture in an isolated lab
   because an external controller could consume its recommendations.
-- `fixtures/localized-broken-rule-types.yaml` is the common validation failure
-  corpus. It is qualification-only and must not be installed. Unique identities
-  prove Pydantic, materialization, and generic preflight failures remain
-  localized; the schema-valid preflight cases are asserted separately from
-  schema and materialization failures.
 - `fixtures/dut-unsupported-extension-rules.yaml` is the software-pinned DUT
   extension failure catalog. Run it only with `activation-dry-run`; never
   install it or use hardware-probe/e2e modes. One Redis control must survive
@@ -79,13 +74,19 @@ The checked-in rule fixtures have deliberately different deployment scopes:
   localized. Resolution details belong to the vendor implementation, so common
   tests assert categories rather than vendor error text.
 
-The conformance rules use metadata tags as machine-checked capability labels.
-Tests also inspect the actual event/evaluation/operation fields, so a label
-cannot claim a capability that the rule does not contain. Fatal
-envelope cases such as an unsupported `schema_version`, duplicate rule
-identity, duplicate YAML key, or forbidden alias remain separate parser/unit
-inputs because any one of them correctly rejects the complete file and cannot
-coexist in a degraded-but-usable rules generation.
+Conformance tests derive finite wire values from the installed contract and
+inspect the actual event, evaluation, and operation fields. Metadata tags stay
+descriptive rather than forming a second coverage authority. Fatal envelope
+cases such as an unsupported `schema_version`, duplicate rule identity,
+duplicate YAML key, or forbidden alias remain separate parser/unit inputs
+because any one of them correctly rejects the complete file and cannot coexist
+in a degraded-but-usable rules generation.
+
+Rule-local failures are synthesized from the canonical valid rule fixture with
+small named mutation tables. Missing, unsupported, semantic, materialization,
+and preflight failures remain independently identifiable without duplicating
+complete rule documents. Mixed valid/broken inputs still prove that one bad
+rule does not prevent usable siblings from activating.
 
 ## Runtime integration tests
 

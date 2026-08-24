@@ -6,8 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from dldd import cli as dldd_cli
-from dldd import preflight as dldd_preflight
 from dldd import service as dldd_service
 from dldd.artifacts import (
     DEFAULT_ARTIFACT_DIRECTORY,
@@ -16,12 +14,11 @@ from dldd.artifacts import (
 )
 from dldd.config import ConfigDBProvider, DLDDConfig
 from dldd.dse import DSERegistry
-from dldd.hooks import VendorHook, VendorHookError, VendorHookRegistry
+from dldd.hooks import VendorHookRegistry
 from dldd.lifecycle import RulePaths
 from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
 from dldd.planner import build_plans
-from dldd.preflight import validate_runtime_operation_hooks
 from dldd.runtime import (
     MonitorExecutionPlan,
     MonitorWorkState,
@@ -355,7 +352,7 @@ def test_ingestion_broken_rule_and_external_byte_cap_contract(
     assert all("\0" not in record["rule"] for record in records)
 
 
-def test_service_and_shared_activation_preflight_contract(
+def test_service_translates_preflight_failures_into_candidate(
     tmp_path, monkeypatch
 ):
     extensions = PlatformExtensions(
@@ -369,164 +366,53 @@ def test_service_and_shared_activation_preflight_contract(
         state_db=object(),
         extensions=extensions,
     )
-    materialized = SimpleNamespace(
+    accepted = SimpleNamespace(
         signature=SimpleNamespace(
             metadata=SimpleNamespace(
-                id=1000001, name="NO_READ", version="1.0.0"
-            ),
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(local_actions=None),
-                log_collection=None,
-            ),
+                id=1000001, name="ACCEPTED", version="1.0.0"
+            )
         )
     )
-    validation = SimpleNamespace(
-        schema_version="0.0.1",
-        materialized_rules=(materialized,),
-        broken_rules=(),
-        file_errors=(),
-        file_valid=True,
-        source_lines={"$": 1},
-    )
-    item = SimpleNamespace(
-        source_type="redis",
-        rule_id=1000001,
-        rule_name="NO_READ",
-        correlation_key="1000001:1",
-    )
-    calls = []
-
-    class NoReadAdapter(object):
-        def validate(self, received):
-            calls.append(("validate", received.correlation_key))
-
-        def get_value(self, unused_item):
-            pytest.fail("service activation read a source value")
-
-        def collect(self, unused_item):
-            pytest.fail("service activation collected a source")
-
-    monkeypatch.setattr(dldd_service, "load_rules", lambda *args: validation)
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_plans",
-        lambda *args, **kwargs: SimpleNamespace(
-            work_items={item.correlation_key: item}, templates={}
-        ),
-    )
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: {"redis": NoReadAdapter()},
-    )
-
-    candidate = service._validate_candidate("rules.yaml", "dse.yaml")
-
-    assert candidate.activatable
-    assert candidate.usable_rule_count == 1
-    assert calls == [("validate", item.correlation_key)]
-
-
-    validation = SimpleNamespace(materialized_rules=())
-    plan = SimpleNamespace(work_items={}, templates={})
-    adapters = {"redis": object()}
-    extensions = SimpleNamespace(
-        vendor_hooks=VendorHookRegistry(),
-        dse_registry=SimpleNamespace(source_types=()),
-    )
-    monkeypatch.setattr(
-        dldd_preflight, "build_plans", lambda *args, **kwargs: plan
-    )
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: adapters,
-    )
-
-    result = dldd_preflight.preflight_activation(
-        validation,
-        extensions,
-        {"redis": 60, "file": 60, "common": 60},
-    )
-
-    assert result.validation is validation
-    assert result.plan is plan
-    assert result.adapters is adapters
-    assert result.failures == ()
-
-
-    extensions = PlatformExtensions(
-        PlatformIdentity("test", "product", "software"),
-        DSERegistry(),
-        VendorHookRegistry(),
-        ExactCompatibilityMatcher(),
-    )
-    service = DLDDService(
-        paths=RulePaths(str(tmp_path)),
-        state_db=object(),
-        extensions=extensions,
-    )
-    materialized = SimpleNamespace(
+    rejected = SimpleNamespace(
         signature=SimpleNamespace(
             metadata=SimpleNamespace(
-                id=1000001, name="BUGGY", version="1.0.0"
-            ),
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(local_actions=None),
-                log_collection=None,
-            ),
+                id=1000002, name="REJECTED", version="2.0.0"
+            )
         )
     )
     validation = ValidationResult(
         schema_version="0.0.1",
         ruleset=None,
-        materialized_rules=(materialized,),
-        source_lines={"$": 1},
+        materialized_rules=(accepted, rejected),
+        source_lines={"$": 1, "$.signatures": 7},
     )
-    item = SimpleNamespace(
-        source_type="redis",
-        rule_id=1000001,
-        rule_name="BUGGY",
-        correlation_key="1000001:1",
-    )
-
-    class BuggyAdapter(object):
-        def validate(self, unused_item):
-            raise RuntimeError("adapter implementation bug")
 
     monkeypatch.setattr(dldd_service, "load_rules", lambda *args: validation)
     monkeypatch.setattr(
-        dldd_preflight,
-        "build_plans",
+        dldd_service,
+        "preflight_activation",
         lambda *args, **kwargs: SimpleNamespace(
-            work_items={item.correlation_key: item}, templates={}
+            failures=(
+                SimpleNamespace(
+                    rule_id=1000002,
+                    rule_name="REJECTED",
+                    message="unsupported source binding",
+                ),
+            )
         ),
-    )
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: {"redis": BuggyAdapter()},
-    )
-
-    with pytest.raises(RuntimeError, match="adapter implementation bug"):
-        service._validate_candidate("rules.yaml", "dse.yaml")
-
-    class RejectingAdapter(object):
-        def validate(self, unused_item):
-            raise ValueError("unsupported source binding")
-
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: {"redis": RejectingAdapter()},
     )
     monkeypatch.setattr(dldd_service.time, "time", lambda: 6789.0)
 
     candidate = service._validate_candidate("rules.yaml", "dse.yaml")
 
-    assert candidate.usable_rule_count == 0
+    assert candidate.activatable
+    assert candidate.usable_rule_count == 1
+    assert candidate.payload.materialized_rules == (accepted,)
+    assert candidate.broken_rules[0]["rule"] == "REJECTED"
+    assert candidate.broken_rules[0]["rule_id"] == 1000002
     assert candidate.broken_rules[0]["last_attempt"] == 6789.0
     assert "unsupported source binding" in candidate.broken_rules[0]["reason"]
+    assert candidate.payload.broken_rules[0].issues[0].line == 7
 
 
 def _rule_status_fixture(work_state=MonitorWorkState.READY):
@@ -868,42 +754,6 @@ def test_inflight_status_contract(caplog):
     )
 
 
-def test_clear_state_stops_and_restarts_active_service(monkeypatch):
-    calls = []
-    cleared = []
-
-    def run(command, **kwargs):
-        calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(dldd_cli.subprocess, "run", run)
-    monkeypatch.setattr(dldd_cli, "SonicStateDB", lambda: "state-db")
-    monkeypatch.setattr(
-        dldd_cli,
-        "clear_runtime_state",
-        lambda state_db, state_file, **kwargs: (
-            cleared.append((state_db, state_file, kwargs))
-            or SimpleNamespace(redis_keys=7, faults=2, artifacts=3)
-        ),
-    )
-
-    status = dldd_cli.clear_state(SimpleNamespace(all=True))
-
-    assert status == 0
-    assert [call[0] for call in calls] == [
-        ["/bin/systemctl", "is-active", "--quiet", "dldd.service"],
-        ["/bin/systemctl", "stop", "dldd.service"],
-        ["/bin/systemctl", "start", "dldd.service"],
-    ]
-    assert cleared == [
-        (
-            "state-db",
-            "/var/lib/sonic/dld_state.json",
-            {"include_faults": True, "include_artifacts": True},
-        )
-    ]
-
-
 def test_start_does_not_repeat_candidate_adapter_preflight(
     tmp_path, monkeypatch
 ):
@@ -1139,261 +989,3 @@ def test_crash_state_persists_only_broken_not_degraded_records():
             False,
         )
     ]
-
-
-class RuntimeOperationHook(VendorHook):
-    def collect(self, operation):
-        return None
-
-    def execute_action(self, action):
-        return {}
-
-
-class RejectingI2CHook(RuntimeOperationHook):
-    def validate_source(self, operation):
-        raise ValueError("logical bus is not mapped")
-
-
-def test_activation_preflight_runtime_operation_hook_contract():
-    def materialized(action=None, query=None):
-        return SimpleNamespace(
-            signature=SimpleNamespace(
-                actions=SimpleNamespace(
-                    repair_actions=SimpleNamespace(
-                        local_actions=(
-                            SimpleNamespace(action_list=(action,))
-                            if action is not None
-                            else None
-                        )
-                    ),
-                    log_collection=(
-                        SimpleNamespace(queries=(query,))
-                        if query is not None
-                        else None
-                    ),
-                )
-            )
-        )
-
-    action = SimpleNamespace(type="vendor_reset", executor=None, options={})
-    with pytest.raises(VendorHookError, match="not registered"):
-        validate_runtime_operation_hooks(
-            materialized(action=action), VendorHookRegistry()
-        )
-
-    query = SimpleNamespace(
-        type="vendor_dump", executor=None, options={"hook": "diagnostics"}
-    )
-    with pytest.raises(VendorHookError, match="diagnostics"):
-        validate_runtime_operation_hooks(
-            materialized(query=query), VendorHookRegistry()
-        )
-
-    action = SimpleNamespace(
-        type="vendor_reset", executor=None, options={"hook": "operations"}
-    )
-    query = SimpleNamespace(
-        type="vendor_dump", executor=None, options={"hook": "operations"}
-    )
-    hooks = VendorHookRegistry()
-    hooks.register("operations", RuntimeOperationHook())
-
-    validate_runtime_operation_hooks(
-        materialized(action=action, query=query), hooks
-    )
-
-    operation = SimpleNamespace(
-        type="i2c",
-        executor=None,
-        options={},
-        path={"bus": "IO-MUX-6"},
-    )
-    hooks = VendorHookRegistry()
-    hooks.register("i2c", RejectingI2CHook())
-
-    with pytest.raises(ValueError, match="not mapped"):
-        validate_runtime_operation_hooks(materialized(action=operation), hooks)
-
-
-def test_activation_dry_run_validates_adapter_without_reading(
-    monkeypatch, capsys
-):
-    calls = []
-
-    class NoReadAdapter(object):
-        def validate(self, item):
-            calls.append(("validate", item.correlation_key))
-
-        def get_value(self, unused_item):
-            pytest.fail("activation dry-run read a source value")
-
-        def collect(self, unused_item):
-            pytest.fail("activation dry-run collected a source")
-
-    materialized = SimpleNamespace(
-        signature=SimpleNamespace(
-            metadata=SimpleNamespace(
-                id=1000001, name="NO_READ", version="1.0.0"
-            ),
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(local_actions=None),
-                log_collection=None,
-            ),
-        )
-    )
-    result = SimpleNamespace(
-        schema_version="0.0.1",
-        ruleset=None,
-        materialized_rules=(materialized,),
-        broken_rules=(),
-        file_errors=(),
-        file_valid=True,
-        activation_valid=True,
-        source_lines={"$": 1},
-    )
-    item = SimpleNamespace(
-        source_type="redis",
-        rule_id=1000001,
-        correlation_key="1000001:1",
-    )
-    extensions = SimpleNamespace(
-        dse_registry=SimpleNamespace(source_types=()),
-        vendor_hooks=VendorHookRegistry(),
-        compatibility_matcher=SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        dldd_cli,
-        "detect_identity",
-        lambda: PlatformIdentity("test", "product", "software"),
-    )
-    monkeypatch.setattr(dldd_cli, "load_extensions", lambda *args: extensions)
-    monkeypatch.setattr(dldd_cli, "load_rules", lambda *args, **kwargs: result)
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_plans",
-        lambda *args, **kwargs: SimpleNamespace(
-            work_items={item.correlation_key: item}, templates={}
-        ),
-    )
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: {"redis": NoReadAdapter()},
-    )
-    args = SimpleNamespace(
-        mode="activation-dry-run",
-        platform_dir=None,
-        dse=None,
-        file="rules.yaml",
-        json=True,
-        verbose=False,
-    )
-
-    assert dldd_cli.validate_rules(args) == 0
-    assert calls == [("validate", item.correlation_key)]
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["probe_results"] == [
-        {"correlation_key": item.correlation_key, "state": "VALID"}
-    ]
-
-    class BuggyAdapter(object):
-        def validate(self, unused_item):
-            raise RuntimeError("adapter implementation bug")
-
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: {"redis": BuggyAdapter()},
-    )
-    with pytest.raises(RuntimeError, match="adapter implementation bug"):
-        dldd_cli.validate_rules(args)
-
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: {},
-    )
-    assert dldd_cli.validate_rules(args) == 1
-    payload = json.loads(capsys.readouterr().out)
-    issue = payload["broken_rules"][0]["issues"][0]
-    assert issue["code"] == "activation_preflight_failed"
-    assert "no adapter is registered" in issue["message"]
-
-
-    operation = SimpleNamespace(
-        type="vendor_reset", executor=None, options={}
-    )
-    materialized = SimpleNamespace(
-        signature=SimpleNamespace(
-            metadata=SimpleNamespace(
-                id=1000001, name="VENDOR_RESET", version="1.0.0"
-            ),
-            actions=SimpleNamespace(
-                repair_actions=SimpleNamespace(
-                    local_actions=SimpleNamespace(action_list=(operation,))
-                ),
-                log_collection=None,
-            ),
-        )
-    )
-    result = SimpleNamespace(
-        schema_version="0.0.1",
-        ruleset=None,
-        materialized_rules=(materialized,),
-        broken_rules=(),
-        file_errors=(),
-        file_valid=True,
-        activation_valid=True,
-        source_lines={"$": 1, "$.signatures": 2},
-    )
-    extensions = SimpleNamespace(
-        dse_registry=SimpleNamespace(source_types=()),
-        vendor_hooks=VendorHookRegistry(),
-        compatibility_matcher=SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        dldd_cli,
-        "detect_identity",
-        lambda: PlatformIdentity("test", "product", "software"),
-    )
-    monkeypatch.setattr(dldd_cli, "load_extensions", lambda *args: extensions)
-    monkeypatch.setattr(dldd_cli, "load_rules", lambda *args, **kwargs: result)
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_plans",
-        lambda *args, **kwargs: SimpleNamespace(work_items={}, templates={}),
-    )
-    monkeypatch.setattr(
-        dldd_preflight,
-        "build_adapter_registry",
-        lambda unused_extensions: {},
-    )
-    args = SimpleNamespace(
-        mode="activation-dry-run",
-        platform_dir=None,
-        dse=None,
-        file="rules.yaml",
-        json=True,
-        verbose=False,
-    )
-
-    status = dldd_cli.validate_rules(args)
-    payload = json.loads(capsys.readouterr().out)
-
-    assert status == 1
-    assert payload["rules_parsed_successfully"] == 0
-    assert payload["rule_level_result"] == "FAILED"
-    assert payload["broken_rules"][0]["issues"][0]["code"] == (
-        "activation_preflight_failed"
-    )
-    assert payload["broken_rules"][0]["issues"][0]["line"] == 2
-
-    args.json = False
-    status = dldd_cli.validate_rules(args)
-    output = capsys.readouterr().out
-
-    assert status == 1
-    assert "Rules failed validation: 1" in output
-    assert "activation_preflight_failed" in output
-    assert "vendor hook is not registered: vendor_reset" in output
-    assert "(line 2)" in output

@@ -971,26 +971,6 @@ class MonitorThread(threading.Thread):
         return True
 
 
-def command_for_event(
-    event: FaultEvidenceEvent,
-    command: MonitorCommandType,
-    target: MonitorWorkState,
-    reason: str,
-    **kwargs
-) -> MonitorControlCommand:
-    return _new_monitor_command(
-        monitor_id=event.monitor_id,
-        plan_generation=event.plan_generation,
-        correlation_key=event.correlation_key,
-        command=command,
-        target=target,
-        reason=reason,
-        expected_work_state_generation=event.work_state_generation,
-        evidence_sequence=event.sequence,
-        **kwargs
-    )
-
-
 def command_for_plan(
     plan: MonitorExecutionPlan,
     correlation_key: str,

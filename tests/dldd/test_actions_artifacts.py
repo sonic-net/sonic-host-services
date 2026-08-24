@@ -103,22 +103,27 @@ def test_action_payload_interface_and_executor_contract(monkeypatch):
         calls.append((argv, kwargs))
         return SimpleNamespace(
             returncode=0,
-            stdout_text=lambda: "complete",
-            stderr_text=lambda: "",
+            stdout_text=lambda *args: "complete",
+            stderr_text=lambda *args: "",
         )
 
-    monkeypatch.setattr("dldd.actions.run_shell_free", run)
+    monkeypatch.setattr("dldd.command_execution.run_shell_free", run)
     assert executor.execute(
         {"type": "cli", "argv": ["check"], "max_output_bytes": 17}, 2
     ) == "complete"
-    assert calls == [(["check"], {"timeout": 2, "max_output_bytes": 17})]
+    assert calls == [
+        (
+            ["check"],
+            {"timeout": 2, "max_output_bytes": 17, "runner": None},
+        )
+    ]
 
     monkeypatch.setattr(
-        "dldd.actions.run_shell_free",
+        "dldd.command_execution.run_shell_free",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=3,
-            stdout_text=lambda: "",
-            stderr_text=lambda: "permission denied",
+            stdout_text=lambda *args: "",
+            stderr_text=lambda *args: "permission denied",
         ),
     )
     with pytest.raises(RuntimeError, match="exited 3: permission denied"):
@@ -567,11 +572,11 @@ def test_artifact_query_validation_and_dispatch_contract(tmp_path, monkeypatch):
         calls.append((argv, kwargs))
         return SimpleNamespace(
             returncode=0,
-            stdout_text=lambda: "diagnostics",
-            stderr_text=lambda: "",
+            stdout_text=lambda *args: "diagnostics",
+            stderr_text=lambda *args: "",
         )
 
-    monkeypatch.setattr("dldd.artifacts.run_shell_free", successful)
+    monkeypatch.setattr("dldd.command_execution.run_shell_free", successful)
     assert FilesystemArtifactClient._run_query(
         {
             "type": "cli",
@@ -583,16 +588,16 @@ def test_artifact_query_validation_and_dispatch_contract(tmp_path, monkeypatch):
     assert calls == [
         (
             ["show", "platform"],
-            {"timeout": 3, "max_output_bytes": 19},
+            {"timeout": 3, "max_output_bytes": 19, "runner": None},
         )
     ]
 
     monkeypatch.setattr(
-        "dldd.artifacts.run_shell_free",
+        "dldd.command_execution.run_shell_free",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=1,
-            stdout_text=lambda: "",
-            stderr_text=lambda: "query failed",
+            stdout_text=lambda *args: "",
+            stderr_text=lambda *args: "query failed",
         ),
     )
     with pytest.raises(RuntimeError, match="query failed"):

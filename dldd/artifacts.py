@@ -20,7 +20,7 @@ from queue import Full, Queue
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from .bounded_calls import BoundedCallGate
-from .command_execution import run_shell_free
+from .command_execution import DEFAULT_MAX_OUTPUT_BYTES, run_checked_shell_free
 from .filesystem import atomic_write_json
 from .models import Operation
 from .timestamps import floor_timestamp_fields
@@ -62,9 +62,13 @@ class HealthzArtifactClient:
         logs: Iterable[str],
         queries: Iterable[Mapping[str, Any]],
     ) -> ArtifactRequest:
+        """Queue one bounded artifact request and return its initial state."""
+
         raise NotImplementedError
 
     def status(self, artifact_id: str) -> ArtifactRequest:
+        """Return the latest state for one artifact identifier."""
+
         raise NotImplementedError
 
     def shutdown(self, wait: bool = True) -> None:
@@ -526,13 +530,10 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             return resolved_executor(operation)
         if query.get("type") != "cli":
             raise RuntimeError("a query runner must be registered for non-CLI queries")
-        result = run_shell_free(
+        return run_checked_shell_free(
             list(query["argv"]),
             timeout=query.get("timeout"),
             max_output_bytes=int(
-                query.get("max_output_bytes", 1024 * 1024)
+                query.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
             ),
         )
-        if result.returncode:
-            raise RuntimeError(result.stderr_text())
-        return result.stdout_text()

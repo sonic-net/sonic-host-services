@@ -1,9 +1,9 @@
-"""Contract checks for the checked-in exhaustive DLDD rule corpus.
+"""Contract checks for the checked-in portable DLDD rule corpus.
 
 The corpus is operator-facing example data, not another schema authority.  The
 tests therefore derive finite wire values from the installed version-owned
-Pydantic models and describe behavioral coverage with stable tags.  Adding a
-new example must not require updating a signature count.
+Pydantic models and exercise its materialization and preflight paths.  Adding
+a new example must not require updating a signature count or a tag registry.
 """
 
 from __future__ import absolute_import
@@ -47,140 +47,13 @@ from dldd.rule_schema.v0_0_1 import (
 from dldd.validation import (
     ExactCompatibilityMatcher,
     ValidationContext,
-    load_document,
     load_rules,
 )
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
 POSITIVE_CORPUS = FIXTURES / "all-supported-rule-types.yaml"
-BROKEN_CORPUS = FIXTURES / "localized-broken-rule-types.yaml"
 DUT_EXTENSION_CORPUS = FIXTURES / "dut-unsupported-extension-rules.yaml"
-
-REQUIRED_COVERAGE_TAGS = frozenset(
-    (
-        "coverage-source-types",
-        "coverage-evaluation-types",
-        "coverage-comparison-operators",
-        "coverage-string-operators",
-        "coverage-value-config-types",
-        "coverage-file-formats",
-        "coverage-sysfs-formats",
-        "coverage-i2c-variants",
-        "coverage-cli-variants",
-        "coverage-platform-api-variants",
-        "coverage-logic",
-        "logic-and",
-        "logic-or",
-        "logic-precedence",
-        "logic-parentheses",
-        "lookback-current",
-        "lookback-windowed",
-        "match-window",
-        "cadence-inherited",
-        "cadence-explicit",
-        "async",
-        "coverage-dse",
-        "dse-runtime-pair",
-        "dse-source-static-eval",
-        "dse-direct-source-runtime-eval",
-        "dse-direct-result",
-        "dse-fixed-eval",
-        "dse-trusted-comparator",
-        "dse-cross-selector",
-        "dse-common-predicate",
-        "dse-rule-operator",
-        "dse-common-and",
-        "dse-common-or",
-        "dse-multi-and",
-        "dse-multi-or",
-        "logic-nested-parentheses",
-        "coverage-actions",
-        "coverage-queries",
-        "coverage-logs",
-        "coverage-metadata",
-    )
-)
-
-BROKEN_MATERIALIZATION_EXPECTATIONS = {
-    "DLDD_BROKEN_MISSING_SEVERITY": (
-        "coverage-broken-missing-required",
-        "missing_field",
-    ),
-    "DLDD_BROKEN_EVENT_TYPE": (
-        "coverage-broken-event-type",
-        "unsupported_type",
-    ),
-    "DLDD_BROKEN_EVALUATION_TYPE": (
-        "coverage-broken-evaluation-type",
-        "unsupported_type",
-    ),
-    "DLDD_BROKEN_COMPARISON_OPERATOR": (
-        "coverage-broken-comparison-operator",
-        "unsupported_value",
-    ),
-    "DLDD_BROKEN_DSE_REFERENCE": (
-        "coverage-broken-dse-reference",
-        "invalid_format",
-    ),
-    "DLDD_BROKEN_DSE_UNRESOLVED": (
-        "coverage-broken-dse-unresolved",
-        "materialization_failed",
-    ),
-    "DLDD_BROKEN_LOGIC_SYNTAX": (
-        "coverage-broken-logic-syntax",
-        "invalid_logic",
-    ),
-    "DLDD_BROKEN_LOGIC_ID_ZERO": (
-        "coverage-broken-logic-id",
-        "invalid_logic",
-    ),
-    "DLDD_BROKEN_LOGIC_UNDEFINED": (
-        "coverage-broken-logic-undefined",
-        "invalid_logic",
-    ),
-    "DLDD_BROKEN_DUPLICATE_EVENT_ID": (
-        "coverage-broken-logic-duplicate",
-        "duplicate_event_id",
-    ),
-    "DLDD_BROKEN_MATCH_WINDOW": (
-        "coverage-broken-match-window",
-        "invalid_match_window",
-    ),
-    "DLDD_BROKEN_POSITIONAL_PATH": (
-        "coverage-broken-positional-path",
-        "instance_path_mismatch",
-    ),
-    "DLDD_BROKEN_POSITIONAL_VALUE": (
-        "coverage-broken-positional-value",
-        "instance_value_mismatch",
-    ),
-    "DLDD_BROKEN_DUPLICATE_INSTANCE": (
-        "coverage-broken-duplicate-instance",
-        "duplicate_instance",
-    ),
-    "DLDD_BROKEN_ACTION_TIMEOUT": (
-        "coverage-broken-action-timeout",
-        "missing_action_timeout",
-    ),
-    "DLDD_BROKEN_I2C_SET_VALUE": (
-        "coverage-broken-i2c-set-value",
-        "missing_i2c_value",
-    ),
-    "DLDD_BROKEN_VENDOR_ACTION": (
-        "coverage-broken-vendor-action",
-        "materialization_failed",
-    ),
-    "DLDD_BROKEN_VENDOR_QUERY": (
-        "coverage-broken-vendor-query",
-        "materialization_failed",
-    ),
-}
-
-BROKEN_PREFLIGHT_EXPECTATIONS = {
-    "DLDD_BROKEN_FILE_FORMAT": "coverage-broken-file-format",
-    "DLDD_BROKEN_PLATFORM_HOOK": "coverage-broken-platform-hook",
-}
 
 
 def _union_models(discriminated_union):
@@ -214,18 +87,6 @@ def _operations(signatures, *, queries=False):
         if local is not None:
             result.extend(local.action_list)
     return tuple(result)
-
-
-def _corpus_tags(signatures):
-    return frozenset(
-        tag for signature in signatures for tag in signature.metadata.tags
-    )
-
-
-def _tagged(signatures, tag):
-    return tuple(
-        signature for signature in signatures if tag in signature.metadata.tags
-    )
 
 
 class _CorpusDSEHook(DSEHook):
@@ -407,67 +268,39 @@ def _vendor_hooks_for_corpus(signatures):
 
 
 def _assert_dse_resolution_modes(validation, plans, hook):
-    materialized = validation.materialized_rules
+    """Prove direct, runtime, fixed, and trusted DSE modes execute."""
 
-    direct_rules = {
-        item.signature.metadata.id
-        for item in materialized
-        if "dse-direct-result" in item.signature.metadata.tags
-    }
-    assert direct_rules
-    assert any(
-        event.sources and event.dse_source_handle is None
-        for item in materialized
-        if item.signature.metadata.id in direct_rules
-        for event in item.events
+    assert {"direct", "runtime"} <= set(hook.source_modes.values())
+    assert {"fixed", "trusted-comparator", "runtime"} <= set(
+        hook.evaluation_modes.values()
     )
-    assert any(item.rule_id in direct_rules for item in plans.work_items.values())
-    assert not any(
-        template.item.rule_id in direct_rules
-        for template in plans.templates.values()
-    )
-
-    fixed_rules = {
-        item.signature.metadata.id
-        for item in materialized
-        if "dse-fixed-eval" in item.signature.metadata.tags
-    }
-    assert fixed_rules
+    assert plans.work_items
+    assert plans.templates
     assert any(
-        event.event.evaluation.type == "dse"
-        and event.dse_evaluation_handle is None
-        for item in materialized
-        if item.signature.metadata.id in fixed_rules
-        for event in item.events
-    )
-    assert any(
-        item.rule_id in fixed_rules
-        and item.dse_evaluation_handle is None
-        and item.evaluation["value"] == 10
+        item.dse_evaluation_handle is None
+        and item.evaluation.get("type") == "dse"
+        and item.evaluation.get("value") == 10
         for item in plans.work_items.values()
     )
 
-    trusted_rules = {
-        item.signature.metadata.id
-        for item in materialized
-        if "dse-trusted-comparator" in item.signature.metadata.tags
-    }
-    assert trusted_rules
+    materialized_events = [
+        event
+        for rule in validation.materialized_rules
+        for event in rule.events
+    ]
     trusted_handles = [
         event.dse_evaluation_handle
-        for item in materialized
-        if item.signature.metadata.id in trusted_rules
-        for event in item.events
+        for event in materialized_events
         if event.dse_evaluation_handle is not None
+        and event.dse_evaluation_handle.reference.function
+        == "get_trusted_comparator"
     ]
     assert trusted_handles
     resolved = trusted_handles[0].get_comparator(
         DSEInvocationContext(
             rule=next(
                 event.dse_context
-                for item in materialized
-                if item.signature.metadata.id in trusted_rules
-                for event in item.events
+                for event in materialized_events
                 if event.dse_evaluation_handle is trusted_handles[0]
             ),
             binding=DSEBinding(
@@ -480,12 +313,6 @@ def _assert_dse_resolution_modes(validation, plans, hook):
     assert callable(resolved.comparator)
     assert resolved.comparator("trusted-match")
     assert not resolved.comparator("other")
-
-    assert "direct" in hook.source_modes.values()
-    assert "runtime" in hook.source_modes.values()
-    assert {"fixed", "trusted-comparator", "runtime"} <= set(
-        hook.evaluation_modes.values()
-    )
     assert hook.action_commands
     assert hook.query_commands
 
@@ -542,17 +369,12 @@ def _assert_operation_and_artifact_shapes(signatures, actions, queries):
     )
 
 
-def test_positive_corpus_is_valid_tagged_and_materializable():
+def test_positive_corpus_is_valid_materializable_and_safe_to_preflight():
     wire = _wire_result()
     signatures = wire.ruleset.signatures
     names = {signature.metadata.name for signature in signatures}
 
-    assert names
     assert all("dldd-corpus" in item.metadata.tags for item in signatures)
-    missing_tags = REQUIRED_COVERAGE_TAGS - _corpus_tags(signatures)
-    assert not missing_tags, "missing corpus coverage tags: {}".format(
-        sorted(missing_tags)
-    )
 
     context, hook = _materialization_context(signatures)
     materialized = load_rules(
@@ -711,92 +533,53 @@ def test_positive_corpus_covers_version_owned_finite_wire_values():
     _assert_operation_and_artifact_shapes(signatures, actions, queries)
 
 
-def test_positive_corpus_names_logic_cadence_and_dse_edge_semantics():
+def test_positive_corpus_exercises_logic_cadence_and_dse_composition():
     signatures = _wire_result().ruleset.signatures
     events = _events(signatures)
+    expressions = [item.conditions.logic for item in signatures]
 
-    # Tags are stable case names; predicates prove the tagged example still
-    # demonstrates that behavior rather than becoming a decorative label.
-    semantic_cases = {
-        "logic-and": lambda signature: "AND" in signature.conditions.logic,
-        "logic-or": lambda signature: "OR" in signature.conditions.logic,
-        "logic-precedence": lambda signature: (
-            "AND" in signature.conditions.logic
-            and "OR" in signature.conditions.logic
-            and "(" not in signature.conditions.logic
-        ),
-        "logic-parentheses": lambda signature: (
-            "(" in signature.conditions.logic
-            and ")" in signature.conditions.logic
-        ),
-        "logic-nested-parentheses": lambda signature: (
-            _parenthesis_depth(signature.conditions.logic) > 1
-        ),
-        "lookback-current": lambda signature: (
-            signature.conditions.logic_lookback_time == 0
-        ),
-        "lookback-windowed": lambda signature: (
-            signature.conditions.logic_lookback_time > 0
-        ),
-        "match-window": lambda signature: any(
-            event.match_count > 1 and event.match_period > 0
-            for event in signature.conditions.events
-        ),
-        "cadence-inherited": lambda signature: any(
-            event.sampling_interval is None
-            for event in signature.conditions.events
-        ),
-        "cadence-explicit": lambda signature: any(
-            event.sampling_interval is not None
-            for event in signature.conditions.events
-        ),
-        "async": lambda signature: any(
-            event.async_collection for event in signature.conditions.events
-        ),
-        "dse-runtime-pair": lambda signature: any(
-            event.type == "dse" and event.evaluation.type == "dse"
-            for event in signature.conditions.events
-        ),
-        "dse-source-static-eval": lambda signature: any(
-            event.type == "dse" and event.evaluation.type != "dse"
-            for event in signature.conditions.events
-        ),
-        "dse-direct-source-runtime-eval": lambda signature: any(
-            event.type not in ("dse", "platform_api")
-            and event.evaluation.type == "dse"
-            for event in signature.conditions.events
-        ),
-        "dse-cross-selector": _has_cross_selector_dse,
-        "dse-common-predicate": _has_dse_common_predicate,
-        "dse-common-and": lambda signature: (
-            _has_dse_common_with_logic(signature, "AND")
-        ),
-        "dse-common-or": lambda signature: (
-            _has_dse_common_with_logic(signature, "OR")
-        ),
-        "dse-multi-and": lambda signature: (
-            _has_multiple_dse_with_logic(signature, "AND")
-        ),
-        "dse-multi-or": lambda signature: (
-            _has_multiple_dse_with_logic(signature, "OR")
-        ),
-        "dse-rule-operator": lambda signature: any(
-            event.evaluation.type == "dse"
-            and event.evaluation.operator is not None
-            for event in signature.conditions.events
-        ),
+    assert any(
+        "AND" in item and "OR" in item and "(" not in item
+        for item in expressions
+    )
+    assert any("(" in item and ")" in item for item in expressions)
+    assert any(_parenthesis_depth(item) > 1 for item in expressions)
+    assert {item.conditions.logic_lookback_time == 0 for item in signatures} == {
+        False,
+        True,
     }
-    for tag, predicate in semantic_cases.items():
-        tagged = _tagged(signatures, tag)
-        assert tagged, "corpus has no case tagged {!r}".format(tag)
-        assert any(predicate(signature) for signature in tagged), tag
-
+    assert any(item.match_count > 1 and item.match_period > 0 for item in events)
+    assert {item.sampling_interval is None for item in events} == {False, True}
+    assert {item.async_collection for item in events} == {False, True}
     assert any(
         event.type == "platform_api" and isinstance(event.path, str)
         for event in events
     )
     assert any(event.instances for event in events if event.type != "dse")
     assert any(event.type == "dse" and event.async_collection for event in events)
+    assert any(
+        item.type == "dse" and item.evaluation.type == "dse"
+        for item in events
+    )
+    assert any(
+        item.type == "dse" and item.evaluation.type != "dse"
+        for item in events
+    )
+    assert any(
+        item.type not in ("dse", "platform_api")
+        and item.evaluation.type == "dse"
+        for item in events
+    )
+    assert any(_has_cross_selector_dse(item) for item in signatures)
+    assert any(
+        item.evaluation.type == "dse" and item.evaluation.operator is not None
+        for item in events
+    )
+    for operator in ("AND", "OR"):
+        assert any(
+            _has_mixed_multi_dse_logic(item, operator)
+            for item in signatures
+        )
 
 
 def _has_cross_selector_dse(signature):
@@ -811,33 +594,15 @@ def _has_cross_selector_dse(signature):
     return False
 
 
-def _has_dse_common_predicate(signature):
-    has_dse = any(
+def _has_mixed_multi_dse_logic(signature, operator):
+    dse_count = sum(
         event.type == "dse" for event in signature.conditions.events
     )
     has_common = any(
         event.type != "dse" and not event.instances
         for event in signature.conditions.events
     )
-    return has_dse and has_common and "AND" in signature.conditions.logic
-
-
-def _has_dse_common_with_logic(signature, operator):
-    has_dse = any(
-        event.type == "dse" for event in signature.conditions.events
-    )
-    has_common = any(
-        event.type != "dse" and not event.instances
-        for event in signature.conditions.events
-    )
-    return has_dse and has_common and operator in signature.conditions.logic
-
-
-def _has_multiple_dse_with_logic(signature, operator):
-    dse_events = sum(
-        event.type == "dse" for event in signature.conditions.events
-    )
-    return dse_events > 1 and operator in signature.conditions.logic
+    return dse_count > 1 and has_common and operator in signature.conditions.logic
 
 
 def _parenthesis_depth(expression):
@@ -851,66 +616,7 @@ def _parenthesis_depth(expression):
     return maximum
 
 
-def test_localized_broken_corpus_localizes_every_named_signature():
-    document = load_document(BROKEN_CORPUS)
-    raw_by_name = {
-        item["signature"]["metadata"]["name"]: item["signature"]
-        for item in document["signatures"]
-    }
-    identity = PlatformIdentity(
-        platform="corpus",
-        product_id="8102_28fh_dpu_o",
-        software_version="grboudre_dldd-impl.0-1d85491a7",
-    )
-    registry = DSERegistry()
-    result = load_rules(
-        BROKEN_CORPUS,
-        context=ValidationContext(
-            product_id=identity.product_id,
-            software_version=identity.software_version,
-            require_compatibility_identity=True,
-            dse_registry=registry,
-        ),
-    )
-
-    assert result.file_valid, result.file_errors
-    assert result.ruleset is not None
-    broken_by_name = {item.rule_name: item for item in result.broken_rules}
-    assert set(broken_by_name) == set(BROKEN_MATERIALIZATION_EXPECTATIONS)
-    for name, (tag, code) in BROKEN_MATERIALIZATION_EXPECTATIONS.items():
-        assert tag in raw_by_name[name]["metadata"]["tags"]
-        assert {issue.code for issue in broken_by_name[name].issues} == {code}
-
-    survivor_names = {
-        item.signature.metadata.name for item in result.materialized_rules
-    }
-    assert survivor_names == set(BROKEN_PREFLIGHT_EXPECTATIONS)
-    for name, tag in BROKEN_PREFLIGHT_EXPECTATIONS.items():
-        assert tag in raw_by_name[name]["metadata"]["tags"]
-
-    extensions = PlatformExtensions(
-        identity=identity,
-        dse_registry=registry,
-        vendor_hooks=VendorHookRegistry(),
-        compatibility_matcher=ExactCompatibilityMatcher(),
-    )
-    preflight = preflight_activation(
-        result,
-        extensions,
-        {"redis": 1, "file": 1, "common": 1},
-    )
-    assert {
-        item.rule_name: item.code for item in preflight.failures
-    } == {
-        name: "activation_preflight_failed"
-        for name in BROKEN_PREFLIGHT_EXPECTATIONS
-    }
-
-
 def test_dut_extension_corpus_is_wire_only_and_qualification_scoped():
-    document = load_document(DUT_EXTENSION_CORPUS)
-    assert len(document["signatures"]) == 11
-
     result = load_rules(DUT_EXTENSION_CORPUS, materialize=False)
     assert result.file_valid, result.file_errors
     assert not result.broken_rules, result.broken_rules

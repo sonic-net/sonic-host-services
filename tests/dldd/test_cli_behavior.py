@@ -170,7 +170,7 @@ def test_preflight_rejection_skip_and_json_output_contract(
         correlation_key="1000001:preflight",
         rule_name="REJECTED_RULE",
         rule_id=1000001,
-        code="adapter_validation_failed",
+        code="activation_preflight_failed",
         message="unsupported live source",
     )
     preflight = SimpleNamespace(
@@ -205,9 +205,20 @@ def test_preflight_rejection_skip_and_json_output_contract(
             "state": "FAILED",
         }
     ]
-    assert payload["broken_rules"][0]["issues"][0]["code"] == (
-        "adapter_validation_failed"
+    issue = payload["broken_rules"][0]["issues"][0]
+    assert issue["code"] == "activation_preflight_failed"
+    assert issue["line"] == 2
+
+    status = dldd_cli.validate_rules(
+        _args("activation-dry-run", json=False)
     )
+    output = capsys.readouterr().out
+
+    assert status == 1
+    assert "Rules failed validation: 1" in output
+    assert "activation_preflight_failed" in output
+    assert "unsupported live source" in output
+    assert "(line 2)" in output
 
 
     rule = _materialized_rule(name="REJECTED_RULE")
@@ -400,6 +411,37 @@ def test_clear_state_and_main_dispatch_contract(monkeypatch, capsys, caplog):
         ["/bin/systemctl", "is-active", "--quiet", "dldd.service"]
     ]
     assert "1 Redis key(s), 0 fault(s)" in capsys.readouterr().out
+
+    calls = []
+    cleared = []
+
+    def run_active(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(dldd_cli.subprocess, "run", run_active)
+    monkeypatch.setattr(
+        dldd_cli,
+        "clear_runtime_state",
+        lambda state_db, state_file, **kwargs: (
+            cleared.append((state_db, state_file, kwargs))
+            or SimpleNamespace(redis_keys=7, faults=2, artifacts=3)
+        ),
+    )
+
+    assert dldd_cli.clear_state(SimpleNamespace(all=True)) == 0
+    assert calls == [
+        ["/bin/systemctl", "is-active", "--quiet", "dldd.service"],
+        ["/bin/systemctl", "stop", "dldd.service"],
+        ["/bin/systemctl", "start", "dldd.service"],
+    ]
+    assert cleared == [
+        (
+            "state-db",
+            "/var/lib/sonic/dld_state.json",
+            {"include_faults": True, "include_artifacts": True},
+        )
+    ]
 
     for failure_stage in ("stop", "clear", "restart"):
         calls = []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import fnmatch
 import json
 from pathlib import Path
@@ -21,12 +22,38 @@ def load_valid_rules_document():
     return json.loads(_VALID_RULE_FIXTURE.read_text(encoding="utf-8"))
 
 
-def valid_rule_event(document):
-    """Return the first event from a canonical rules document."""
+def valid_rule_signature(document, index=0):
+    """Return a mutable signature mapping from a canonical rules document."""
 
-    return document["signatures"][0]["signature"]["conditions"]["events"][0][
-        "event"
-    ]
+    return document["signatures"][index]["signature"]
+
+
+def valid_rule_event(document, rule_index=0, event_index=0):
+    """Return a mutable event mapping from a canonical rules document."""
+
+    return valid_rule_signature(document, rule_index)["conditions"]["events"][
+        event_index
+    ]["event"]
+
+
+def valid_rule_action(document, rule_index=0, action_index=0):
+    """Return a mutable local-action mapping from a canonical rules document."""
+
+    actions = valid_rule_signature(document, rule_index)["actions"]
+    return actions["repair_actions"]["local_actions"]["action_list"][
+        action_index
+    ]["action"]
+
+
+def append_rule(document, *, name, rule_id, source_index=0):
+    """Append and return a uniquely identified copy of an existing rule."""
+
+    wrapper = deepcopy(document["signatures"][source_index])
+    metadata = wrapper["signature"]["metadata"]
+    metadata["name"] = name
+    metadata["id"] = rule_id
+    document["signatures"].append(wrapper)
+    return wrapper["signature"]
 
 
 class FakeStateDB(StateDB):

@@ -2,26 +2,19 @@ from __future__ import absolute_import
 
 import builtins
 import json
-from queue import Queue
 import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from dldd.config import DLDDConfig
-from dldd.correlation import CorrelationEngine
-from dldd.models import ValueConfig
-from dldd.orchestrator import PrimaryOrchestrator
-from dldd.planner import build_plans
 from dldd.runtime import FaultRecord
 from dldd.sonic_hash import SonicHashReader
 from dldd.telemetry import (
     SonicStateDB,
     StateDB,
     TelemetryPublisher,
-    value_config_payload,
 )
-from dldd.validation import load_rules
 from tests.dldd_fakes import FakeStateDB
 
 
@@ -116,7 +109,7 @@ def fault(status="ACTIVE"):
     )
 
 
-def test_state_db_interface_and_value_config_serialization_contract():
+def test_state_db_interface_contract():
     for operation in (
         lambda database: database.hset("KEY", {}),
         lambda database: database.expire("KEY", 1),
@@ -128,16 +121,6 @@ def test_state_db_interface_and_value_config_serialization_contract():
     ):
         with pytest.raises(NotImplementedError):
             operation(StateDB())
-
-    assert value_config_payload(
-        ValueConfig(type="float", unit="C", scaling=0.5)
-    ) == {
-        "type": "float",
-        "unit": "C",
-        "scaling": 0.5,
-        "encoding": "N/A",
-    }
-
 
 def test_status_publication_ttl_failure_and_reason_boundary_contract(caplog):
     database = FakeStateDB()
@@ -555,7 +538,7 @@ def test_production_state_db_hash_replacement_and_transaction_contract():
     database.persist("KEY")
     database.hdel("KEY", ())
     database.hdel("KEY", ("old",))
-    assert database.hgetall("KEY") == {b"status": b"ACTIVE"}
+    assert database.hgetall("KEY") == {"status": "ACTIVE"}
     database.delete("KEY")
     database.delete_many(())
 
@@ -668,7 +651,7 @@ def test_fault_scan_iteration_failure_and_malformed_payload_contract():
     database = SonicStateDB(client)
 
     assert list(database.keys("FAULT_INFO|*")) == [
-        b"FAULT_INFO|PSU0|SYMPTOM"
+        "FAULT_INFO|PSU0|SYMPTOM"
     ]
     assert client.scan_pattern == "FAULT_INFO|*"
 
@@ -758,134 +741,3 @@ def test_fault_scan_iteration_failure_and_malformed_payload_contract():
     record = fault()
     record.component_name = "PSU|0"
     assert record.redis_key == "FAULT_INFO|PSU%7C0|SYMPTOM_OVER_THRESHOLD"
-
-
-def test_active_fault_reconciliation_recheck_and_timeout_contract():
-    database = FakeStateDB()
-    config = DLDDConfig()
-    publisher = TelemetryPublisher(database, config)
-    record = fault()
-    record.component_name = "PSU"
-    publisher.publish_fault(record)
-    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
-    bundle = build_plans(
-        rules.materialized_rules,
-        "sha256:test",
-        {"redis": 60, "file": 60, "common": 60},
-    )
-    orchestrator = PrimaryOrchestrator(
-        Queue(),
-        bundle.monitor_plans,
-        bundle.work_items,
-        CorrelationEngine(bundle.signatures),
-        publisher,
-        config,
-        "sha256:test",
-    )
-    orchestrator.reconcile_existing_faults()
-    assert (1000001, "PSU") in orchestrator.reconciliation
-    command = bundle.monitor_plans["redis"].control_queue.get_nowait()
-    assert command.command.value == "RECHECK_ONCE"
-
-    database = FakeStateDB()
-    config = DLDDConfig(fault_evidence_ack_timeout=1)
-    publisher = TelemetryPublisher(database, config)
-    record = fault()
-    record.component_name = "PSU"
-    publisher.publish_fault(record)
-    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
-    bundle = build_plans(
-        rules.materialized_rules,
-        "sha256:test",
-        {"redis": 60, "file": 60, "common": 60},
-    )
-    clock = [0.0]
-    orchestrator = PrimaryOrchestrator(
-        Queue(),
-        bundle.monitor_plans,
-        bundle.work_items,
-        CorrelationEngine(bundle.signatures),
-        publisher,
-        config,
-        "sha256:test",
-        clock=lambda: clock[0],
-    )
-    orchestrator.reconcile_existing_faults()
-
-    clock[0] = 1.0
-    orchestrator.tick()
-    clock[0] = 2.0
-    orchestrator.tick()
-
-    assert (1000001, "PSU") not in orchestrator.reconciliation
-    assert any(key[2] == 1000001 for key in orchestrator.arbiter._active)
-    assert orchestrator.faults[(1000001, "PSU")].stale_source is True
-
-
-def test_inactive_fault_reconciliation_history_and_config_ttl_contract():
-    database = FakeStateDB()
-    config = DLDDConfig()
-    publisher = TelemetryPublisher(database, config)
-    record = fault("INACTIVE")
-    record.component_name = "PSU"
-    record.occurrences = 4
-    record.reason = "authoritative DSE discovery removed the instance"
-    publisher.publish_fault(record)
-    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
-    bundle = build_plans(
-        rules.materialized_rules,
-        "sha256:test",
-        {"redis": 60, "file": 60, "common": 60},
-    )
-    orchestrator = PrimaryOrchestrator(
-        Queue(),
-        bundle.monitor_plans,
-        bundle.work_items,
-        CorrelationEngine(bundle.signatures),
-        publisher,
-        config,
-        "sha256:test",
-    )
-
-    orchestrator.reconcile_existing_faults()
-
-    loaded = orchestrator.faults[(1000001, "PSU")]
-    assert loaded.status == "INACTIVE"
-    assert loaded.occurrences == 4
-    assert loaded.reason == "authoritative DSE discovery removed the instance"
-    assert bundle.monitor_plans["redis"].control_queue.empty()
-
-    database = FakeStateDB()
-    initial = DLDDConfig(inactive_fault_retention_period=3600)
-    publisher = TelemetryPublisher(database, initial)
-    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
-    bundle = build_plans(
-        rules.materialized_rules,
-        "sha256:test",
-        {"redis": 60, "file": 60, "common": 60},
-    )
-    orchestrator = PrimaryOrchestrator(
-        Queue(),
-        bundle.monitor_plans,
-        bundle.work_items,
-        CorrelationEngine(bundle.signatures),
-        publisher,
-        initial,
-        "sha256:test",
-    )
-    record = fault("INACTIVE")
-    record.component_name = "PSU"
-    identity = (record.rule_id, record.component_name)
-    orchestrator.faults[identity] = record
-    orchestrator.published_by_key[
-        (record.component_name, record.symptom)
-    ] = record.rule_id
-    publisher.publish_fault(record)
-
-    updated = DLDDConfig(inactive_fault_retention_period=42)
-    publisher.config = updated
-    orchestrator.queue_config_update(updated)
-    orchestrator.tick()
-
-    assert orchestrator.config is updated
-    assert database.ttls[record.redis_key] == 42

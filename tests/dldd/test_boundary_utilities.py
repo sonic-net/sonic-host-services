@@ -12,7 +12,11 @@ import pytest
 from dldd import filesystem as dldd_filesystem
 from dldd import platform as dldd_platform
 from dldd.bounded_calls import BoundedCallGate
-from dldd.command_execution import build_i2c_argv, run_shell_free
+from dldd.command_execution import (
+    build_i2c_argv,
+    run_checked_shell_free,
+    run_shell_free,
+)
 from dldd.dse import DSERegistry
 from dldd.filesystem import atomic_copy, atomic_write_json
 from dldd.hooks import VendorHookRegistry
@@ -71,6 +75,21 @@ def test_shell_free_runner_and_i2c_argv_command_contract():
 
     assert absent.stdout == b""
     assert absent.stderr == b""
+
+    assert run_checked_shell_free(
+        ["diagnostic"],
+        runner=lambda argv, **kwargs: SimpleNamespace(
+            returncode=0, stdout=b"ready", stderr=b""
+        ),
+    ) == "ready"
+    with pytest.raises(RuntimeError, match="probe exited 7: failed"):
+        run_checked_shell_free(
+            ["diagnostic"],
+            runner=lambda argv, **kwargs: SimpleNamespace(
+                returncode=7, stdout=b"", stderr=b"failed"
+            ),
+            error_context="probe",
+        )
 
     for argv in ("echo unsafe", b"echo unsafe", (), ("",), ("valid", 1)):
         with pytest.raises(ValueError, match="argv"):

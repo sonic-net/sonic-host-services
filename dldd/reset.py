@@ -8,6 +8,7 @@ from typing import Iterable
 
 from .artifacts import DEFAULT_ARTIFACT_DIRECTORY
 from .ownership import is_dldd_fault_payload
+from .sonic_hash import decode_db_text
 from .telemetry import StateDB, TelemetryPublisher
 
 
@@ -19,14 +20,8 @@ class ResetResult:
     local_state_removed: bool
 
 
-def _text(value) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
-    return str(value)
-
-
 def _keys(state_db: StateDB, pattern: str) -> Iterable[str]:
-    return tuple(_text(key) for key in state_db.keys(pattern))
+    return tuple(decode_db_text(key) for key in state_db.keys(pattern))
 
 
 def _clear_artifacts(directory: str) -> int:

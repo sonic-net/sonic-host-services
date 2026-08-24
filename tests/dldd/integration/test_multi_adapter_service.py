@@ -21,8 +21,8 @@ from .conftest import (
     BlockingConfigDB,
     CONFIG_VALUES,
     ControlledHashSource,
+    IntegrationEnvironment,
     NullArtifactClient,
-    RunningService,
     SOURCE_KEY,
     eventually,
     integration_rule_document,
@@ -201,7 +201,7 @@ def _multi_adapter_document(file_path, sysfs_path):
     return base
 
 
-def _make_service(tmp_path):
+def _make_environment(tmp_path):
     file_path = tmp_path / "file-sensor"
     sysfs_path = tmp_path / "sys" / "devices" / "synthetic-sensor"
     file_path.write_text("5\n", encoding="ascii")
@@ -238,18 +238,33 @@ def _make_service(tmp_path):
         vendor_hooks,
         ExactCompatibilityMatcher(),
     )
-    stop_event = Event()
-    config_db = BlockingConfigDB(stop_event, CONFIG_VALUES)
-    service = MultiAdapterIntegrationService(
-        redis_source,
+    config_dbs = []
+
+    def service():
+        stop_event = Event()
+        config_db = BlockingConfigDB(stop_event, CONFIG_VALUES)
+        config_dbs.append(config_db)
+        return MultiAdapterIntegrationService(
+            redis_source,
+            transports,
+            paths=paths,
+            config_db=config_db,
+            state_db=state_db,
+            extensions=extensions,
+            stop_event=stop_event,
+        )
+
+    return (
+        IntegrationEnvironment(
+            paths,
+            redis_source,
+            state_db,
+            service,
+            config_dbs,
+        ),
         transports,
-        paths=paths,
-        config_db=config_db,
-        state_db=state_db,
-        extensions=extensions,
-        stop_event=stop_event,
+        platform_hook,
     )
-    return service, state_db, redis_source, transports, platform_hook
 
 
 def _successful_source_types(service):
@@ -280,9 +295,11 @@ def _fault_rows(state_db):
 def test_threaded_service_spans_all_direct_adapters_without_false_faults(
     tmp_path,
 ):
-    service, state_db, redis_source, transports, hook = _make_service(tmp_path)
-    running = RunningService(service).start()
-    try:
+    environment, transports, hook = _make_environment(tmp_path)
+    state_db = environment.state_db
+    redis_source = environment.source
+    with environment.running() as running:
+        service = running.service
         eventually(
             lambda: _successful_source_types(service) == SOURCE_TYPES
         )
@@ -341,15 +358,8 @@ def test_threaded_service_spans_all_direct_adapters_without_false_faults(
         # Drive one transport through a real MATCH -> fault -> NO_MATCH clear
         # cycle while every other transport remains healthy.
         transports.set_value("cli", 20)
-        active = eventually(
-            lambda: (
-                row
-                if (
-                    row := state_db.hgetall(CLI_FAULT_KEY)
-                ).get("status")
-                == "ACTIVE"
-                else None
-            )
+        active = environment.wait_for_row(
+            CLI_FAULT_KEY, status="ACTIVE"
         )
         assert active["rule"] == "DLDD_INTEGRATION_CLI"
         assert active["component_type"] == "CLI_SENSOR"
@@ -361,15 +371,8 @@ def test_threaded_service_spans_all_direct_adapters_without_false_faults(
         )["active_faults"] == "1"
 
         transports.set_value("cli", 5)
-        inactive = eventually(
-            lambda: (
-                row
-                if (
-                    row := state_db.hgetall(CLI_FAULT_KEY)
-                ).get("status")
-                == "INACTIVE"
-                else None
-            )
+        inactive = environment.wait_for_row(
+            CLI_FAULT_KEY, status="INACTIVE"
         )
         assert inactive["origin_time"] == active["origin_time"]
         assert inactive["occurrences"] == active["occurrences"]
@@ -382,8 +385,6 @@ def test_threaded_service_spans_all_direct_adapters_without_false_faults(
         assert cleared_status["active_faults"] == "0"
         assert _successful_source_types(service) == SOURCE_TYPES
         assert running.error is None
-    finally:
-        running.stop()
 
     persisted = json.loads(
         Path(service.paths.state_file).read_text(encoding="utf-8")

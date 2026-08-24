@@ -7,36 +7,23 @@ import time
 import pytest
 
 from dldd.service import TelemetryUnavailable
-from .conftest import FAULT_KEY, RunningService, eventually
+from .conftest import FAULT_KEY, eventually
 
 
 pytestmark = pytest.mark.dldd_integration
 
 
-def _row(database, key):
-    return database.hgetall(key)
-
-
 def test_full_service_detects_fake_fault_clears_and_stops_cleanly(
     integration_environment,
 ):
-    state_db = integration_environment["state_db"]
-    source = integration_environment["source"]
-    running = RunningService(integration_environment["service"]()).start()
-    try:
-        eventually(
-            lambda: _row(state_db, "DLDD_STATUS|process_state").get("state")
-            == "OK"
-        )
-        assert not _row(state_db, FAULT_KEY)
+    source = integration_environment.source
+    with integration_environment.running():
+        integration_environment.wait_for_status("OK")
+        assert not integration_environment.row(FAULT_KEY)
 
         source.set_value(20)
-        active = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, FAULT_KEY)).get("status") == "ACTIVE"
-                else None
-            )
+        active = integration_environment.wait_for_row(
+            FAULT_KEY, status="ACTIVE"
         )
         assert active["producer"] == "dldd"
         assert active["rule"] == "DLDD_INTEGRATION_THRESHOLD"
@@ -45,20 +32,14 @@ def test_full_service_detects_fake_fault_clears_and_stops_cleanly(
         assert json.loads(active["events"])[0]["value_read"] == "20"
 
         source.set_value(5)
-        inactive = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, FAULT_KEY)).get("status") == "INACTIVE"
-                else None
-            )
+        inactive = integration_environment.wait_for_row(
+            FAULT_KEY, status="INACTIVE"
         )
         assert inactive["origin_time"] == active["origin_time"]
         assert inactive["occurrences"] == active["occurrences"]
-    finally:
-        running.stop()
 
     persisted = json.loads(
-        Path(integration_environment["paths"].state_file).read_text(
+        Path(integration_environment.paths.state_file).read_text(
             encoding="utf-8"
         )
     )
@@ -68,14 +49,9 @@ def test_full_service_detects_fake_fault_clears_and_stops_cleanly(
 def test_full_service_survives_source_read_error_and_recovers(
     integration_environment,
 ):
-    state_db = integration_environment["state_db"]
-    source = integration_environment["source"]
-    running = RunningService(integration_environment["service"]()).start()
-    try:
-        eventually(
-            lambda: _row(state_db, "DLDD_STATUS|process_state").get("state")
-            == "OK"
-        )
+    source = integration_environment.source
+    with integration_environment.running() as running:
+        integration_environment.wait_for_status("OK")
         source.fail_with(RuntimeError("synthetic STATE_DB read failure"))
         unavailable = eventually(
             lambda: (
@@ -94,11 +70,11 @@ def test_full_service_survives_source_read_error_and_recovers(
         assert unavailable["state"] == "UNAVAILABLE"
         assert "synthetic STATE_DB read failure" in unavailable["reason"]
         assert running.service._publish_status() is True
-        degraded = _row(state_db, "DLDD_STATUS|process_state")
+        degraded = integration_environment.row("DLDD_STATUS|process_state")
         assert degraded["state"] == "DEGRADED"
         source_status = json.loads(degraded["source_status"])
         assert source_status[0]["state"] == "UNAVAILABLE"
-        assert not _row(state_db, FAULT_KEY)
+        assert not integration_environment.row(FAULT_KEY)
 
         source.recover()
         eventually(
@@ -112,37 +88,35 @@ def test_full_service_survives_source_read_error_and_recovers(
             )
         )
         assert running.service._publish_status() is True
-        assert _row(state_db, "DLDD_STATUS|process_state")["state"] == "OK"
-    finally:
-        running.stop()
+        assert integration_environment.row("DLDD_STATUS|process_state")[
+            "state"
+        ] == "OK"
 
 
 def test_full_service_recovers_from_transient_database_read_error(
     integration_environment,
 ):
-    state_db = integration_environment["state_db"]
+    state_db = integration_environment.state_db
     state_db.fail_reads_with(RuntimeError("synthetic STATE_DB read failure"))
-    running = RunningService(integration_environment["service"]()).start()
-    try:
+    with integration_environment.running() as running:
         eventually(lambda: state_db.read_failures > 0)
         state_db.clear_failures()
         eventually(
-            lambda: _row(state_db, "DLDD_STATUS|process_state").get("state")
-            == "OK"
-            and bool(_row(state_db, "DLDD_RULE_STATUS|active"))
+            lambda: integration_environment.row(
+                "DLDD_STATUS|process_state"
+            ).get("state") == "OK"
+            and bool(integration_environment.row("DLDD_RULE_STATUS|active"))
         )
         assert running.thread.is_alive()
         assert running.error is None
-    finally:
-        running.stop()
 
 
 def test_full_service_stops_uncleanly_after_persistent_database_write_error(
     integration_environment,
 ):
-    state_db = integration_environment["state_db"]
+    state_db = integration_environment.state_db
     state_db.fail_writes_with(RuntimeError("synthetic STATE_DB write failure"))
-    service = integration_environment["service"]()
+    service = integration_environment.new_service()
     original_publish = service._publish_status
     attempts = []
 
@@ -151,7 +125,7 @@ def test_full_service_stops_uncleanly_after_persistent_database_write_error(
         return original_publish()
 
     service._publish_status = publish_status
-    running = RunningService(service).start()
+    running = integration_environment.running(service).start()
 
     error = running.wait_stopped(timeout=8)
 
@@ -162,7 +136,7 @@ def test_full_service_stops_uncleanly_after_persistent_database_write_error(
         for earlier, later in zip(attempts, attempts[1:])
     )
     persisted = json.loads(
-        Path(integration_environment["paths"].state_file).read_text(
+        Path(integration_environment.paths.state_file).read_text(
             encoding="utf-8"
         )
     )
@@ -172,9 +146,9 @@ def test_full_service_stops_uncleanly_after_persistent_database_write_error(
 def test_full_service_stops_before_monitors_after_persistent_fault_scan_error(
     integration_environment,
 ):
-    state_db = integration_environment["state_db"]
+    state_db = integration_environment.state_db
     state_db.fail_reads_with(RuntimeError("persistent fault scan failure"))
-    running = RunningService(integration_environment["service"]()).start()
+    running = integration_environment.running().start()
 
     error = running.wait_stopped(timeout=8)
 
@@ -187,38 +161,26 @@ def test_full_service_stops_before_monitors_after_persistent_fault_scan_error(
 def test_full_service_restart_reconciles_existing_active_fault(
     integration_environment,
 ):
-    state_db = integration_environment["state_db"]
-    source = integration_environment["source"]
+    state_db = integration_environment.state_db
+    source = integration_environment.source
     source.set_value(20)
-    first = RunningService(integration_environment["service"]()).start()
-    try:
-        before = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, FAULT_KEY)).get("status") == "ACTIVE"
-                else None
-            )
+    with integration_environment.running():
+        before = integration_environment.wait_for_row(
+            FAULT_KEY, status="ACTIVE"
         )
-    finally:
-        first.stop()
 
     state_db.fail_reads_with(RuntimeError("restart fault scan unavailable"))
-    second = RunningService(integration_environment["service"]()).start()
-    try:
+    with integration_environment.running() as second:
         eventually(lambda: state_db.read_failures > 0)
         assert not second.service.monitors
         state_db.clear_failures()
-        after = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, FAULT_KEY)).get("status") == "ACTIVE"
-                and _row(state_db, "DLDD_STATUS|process_state").get("state")
-                == "OK"
-                else None
-            )
+        after = integration_environment.wait_for_row(
+            FAULT_KEY,
+            predicate=lambda unused_row: integration_environment.row(
+                "DLDD_STATUS|process_state"
+            ).get("state") == "OK",
+            status="ACTIVE",
         )
         assert after["origin_time"] == before["origin_time"]
         assert after["occurrences"] == before["occurrences"]
         assert after["active_rules_checksum"] == before["active_rules_checksum"]
-    finally:
-        second.stop()

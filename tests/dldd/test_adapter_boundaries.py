@@ -255,6 +255,10 @@ def test_redis_and_file_adapter_validation_collection_and_failure_contract(
         def read(self, database, key):
             raise SonicHashReaderError("STATE_DB disconnected")
 
+    class EmptyHashReader(object):
+        def read(self, database, key):
+            return {}
+
     item = _item(
         source={
             "database": "STATE_DB",
@@ -264,6 +268,31 @@ def test_redis_and_file_adapter_validation_collection_and_failure_contract(
     )
     with pytest.raises(SourceUnavailable, match="disconnected"):
         RedisAdapter(hash_reader=FailedHashReader()).get_value(item)
+    with pytest.raises(SourceUnavailable, match="Redis key is unavailable"):
+        RedisAdapter(hash_reader=EmptyHashReader()).get_value(item)
+
+    calls = []
+
+    class RecordingHashReader(object):
+        def read(self, database, key):
+            calls.append((database, key))
+            return {"value": {"rails": [{"voltage": "51.5"}]}}
+
+    item = _item(
+        source={
+            "database": "STATE_DB",
+            "table": "SENSOR_INFO",
+            "key": "SENSOR_INFO|0",
+            "path": ["value", "rails", "0", "voltage"],
+        },
+        evaluation={"type": "comparison", "operator": ">", "value": 50.0},
+        value_config=ValueConfig(type="float", unit="volts"),
+    )
+    assert item.source["path"] == ("value", "rails", "0", "voltage")
+    collected = RedisAdapter(hash_reader=RecordingHashReader()).collect(item)
+    assert collected.result is EvaluationResultType.MATCH
+    assert collected.value.normalized == 51.5
+    assert calls == [("STATE_DB", "SENSOR_INFO|0")]
 
 
     # File-backed sources validate format, collection, and unavailable paths.
@@ -293,6 +322,7 @@ def test_redis_and_file_adapter_validation_collection_and_failure_contract(
 
     for format_name, contents, expected in (
         ("text", " value \n", "value"),
+        ("json", '{"value": 7}\n', {"value": 7}),
         ("yaml", "value: 7\n", {"value": 7}),
         ("int", "0x10\n", 16),
         ("float", "1.25\n", 1.25),
@@ -361,6 +391,8 @@ def test_cli_and_i2c_command_adapter_validation_and_failure_contract(monkeypatch
         source_type="cli",
         source={"argv": ["diagnostic"], "timeout": 2, "max_output_bytes": 32},
     )
+    assert item.source["argv"] == ("diagnostic",)
+    CLIAdapter(runner).validate(item)
     with pytest.raises(AdapterError, match="exited 2: denied"):
         CLIAdapter(runner).get_value(item)
     assert calls[0][1]["shell"] is False
@@ -391,6 +423,16 @@ def test_cli_and_i2c_command_adapter_validation_and_failure_contract(monkeypatch
     )
     with pytest.raises(SourceUnavailable, match="bus unavailable"):
         I2CAdapter._i2cget(source)
+
+    # Without a vendor bus hook, validation and collection use the configured bus.
+    observed = []
+    adapter = I2CAdapter(
+        lambda operation: observed.append(operation["bus"]) or "0x80"
+    )
+    item = _item(source_type="i2c", source=source)
+    adapter.validate(item)
+    assert adapter.get_value(item) == "0x80"
+    assert observed == ["6"]
 
     for source, error in (
         ({}, "read-only"),
@@ -452,6 +494,7 @@ class RecordingHook(VendorHook):
         self.collected = []
 
     def validate_source(self, source):
+        super().validate_source(source)
         self.validated.append(source)
 
     def collect(self, source):
@@ -492,3 +535,12 @@ def test_platform_and_vendor_adapters_require_and_dispatch_registered_hooks():
     assert vendor.get_value(explicit) == 7
     assert hook.validated == [platform_item.source, explicit.source]
     assert hook.collected == [platform_item.source, explicit.source]
+
+    class RejectingHook(RecordingHook):
+        def validate_source(self, source):
+            raise ValueError("platform source requires value")
+
+    hooks.register("rejecting", RejectingHook())
+    rejected = _item(source_type="platform_api", source={"hook": "rejecting"})
+    with pytest.raises(ValueError, match="requires value"):
+        PlatformAPIAdapter(hooks).validate(rejected)

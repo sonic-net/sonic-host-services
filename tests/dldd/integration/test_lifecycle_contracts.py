@@ -12,7 +12,6 @@ from dldd.reset import clear_runtime_state
 from .conftest import (
     CONFIG_VALUES,
     FAULT_KEY,
-    RunningService,
     eventually,
     integration_rule_document,
 )
@@ -21,15 +20,11 @@ from .conftest import (
 pytestmark = pytest.mark.dldd_integration
 
 
-def _row(database, key):
-    return database.hgetall(key)
-
-
 def test_no_rules_source_stops_service_cleanly_without_fatal_status(
     integration_environment_factory,
 ):
     environment = integration_environment_factory(document=None)
-    running = RunningService(environment["service"]()).start()
+    running = environment.running().start()
 
     error = running.wait_stopped()
 
@@ -37,8 +32,8 @@ def test_no_rules_source_stops_service_cleanly_without_fatal_status(
     assert running.service.stop_event.is_set()
     assert running.service.activation is None
     assert running.service.orchestrator is None
-    assert not _row(environment["state_db"], "DLDD_STATUS|process_state")
-    assert not Path(environment["paths"].state_file).exists()
+    assert not environment.row("DLDD_STATUS|process_state")
+    assert not Path(environment.paths.state_file).exists()
 
 
 def test_present_invalid_candidate_without_fallback_stays_fatal(
@@ -47,18 +42,8 @@ def test_present_invalid_candidate_without_fallback_stays_fatal(
     invalid = deepcopy(integration_rule_document())
     del invalid["signatures"][0]["signature"]["metadata"]["severity"]
     environment = integration_environment_factory(document=invalid)
-    running = RunningService(environment["service"]()).start()
-    try:
-        status = eventually(
-            lambda: (
-                row
-                if (row := _row(
-                    environment["state_db"], "DLDD_STATUS|process_state"
-                )).get("state")
-                == "BROKEN|FATAL"
-                else None
-            )
-        )
+    with environment.running() as running:
+        status = environment.wait_for_status("BROKEN|FATAL")
 
         assert running.thread.is_alive()
         assert running.service.activation is None
@@ -68,14 +53,12 @@ def test_present_invalid_candidate_without_fallback_stays_fatal(
         assert status["reason"] == running.service.fatal_reason
 
         manifest = json.loads(
-            Path(environment["paths"].manifest).read_text(encoding="utf-8")
+            Path(environment.paths.manifest).read_text(encoding="utf-8")
         )
         assert manifest["last_failure"]["errors"]
         assert "packaged candidate rejected" in manifest["last_failure"][
             "errors"
         ][0]
-    finally:
-        running.stop()
 
 
 def test_invalid_packaged_candidate_is_recorded_and_valid_active_fallback_runs(
@@ -84,7 +67,7 @@ def test_invalid_packaged_candidate_is_recorded_and_valid_active_fallback_runs(
     invalid = deepcopy(integration_rule_document())
     del invalid["signatures"][0]["signature"]["metadata"]["severity"]
     environment = integration_environment_factory(document=invalid)
-    paths = environment["paths"]
+    paths = environment.paths
     active = Path(paths.active)
     active.parent.mkdir(parents=True, exist_ok=True)
     active.write_text(
@@ -92,18 +75,8 @@ def test_invalid_packaged_candidate_is_recorded_and_valid_active_fallback_runs(
         encoding="utf-8",
     )
 
-    running = RunningService(environment["service"]()).start()
-    try:
-        status = eventually(
-            lambda: (
-                row
-                if (row := _row(
-                    environment["state_db"], "DLDD_STATUS|process_state"
-                )).get("state")
-                == "OK"
-                else None
-            )
-        )
+    with environment.running() as running:
+        status = environment.wait_for_status("OK")
         assert running.service.activation.source == "active"
         assert running.service.activation.fallback_used is True
         assert status["active_rules_source"] == "active"
@@ -122,8 +95,6 @@ def test_invalid_packaged_candidate_is_recorded_and_valid_active_fallback_runs(
         assert activated["source"] == "active"
         assert activated["activation_result"] == "ACTIVATED"
         assert activated["fallback_used"] is True
-    finally:
-        running.stop()
 
 
 def test_mixed_valid_and_broken_rules_activate_valid_work_and_localize_failure(
@@ -140,20 +111,10 @@ def test_mixed_valid_and_broken_rules_activate_valid_work_and_localize_failure(
     document["signatures"].append(broken)
 
     environment = integration_environment_factory(document=document)
-    state_db = environment["state_db"]
-    source = environment["source"]
-    running = RunningService(environment["service"]()).start()
-    try:
-        status = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, "DLDD_STATUS|process_state")).get(
-                    "state"
-                )
-                == "DEGRADED"
-                else None
-            )
-        )
+    state_db = environment.state_db
+    source = environment.source
+    with environment.running() as running:
+        status = environment.wait_for_status("DEGRADED")
 
         activation = running.service.activation
         assert activation is not None
@@ -177,25 +138,16 @@ def test_mixed_valid_and_broken_rules_activate_valid_work_and_localize_failure(
         assert running.error is None
 
         source.set_value(20)
-        active = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, FAULT_KEY)).get("status")
-                == "ACTIVE"
-                else None
-            )
-        )
+        active = environment.wait_for_row(FAULT_KEY, status="ACTIVE")
         assert active["rule"] == "DLDD_INTEGRATION_THRESHOLD"
         assert active["rule_id"] == "9900001"
         assert state_db.keys("FAULT_INFO|*") == [FAULT_KEY]
 
         assert running.service._publish_status() is True
-        valid_status = _row(
-            state_db,
+        valid_status = environment.row(
             "DLDD_RULE_STATUS|rule|DLDD_INTEGRATION_THRESHOLD",
         )
-        broken_status = _row(
-            state_db,
+        broken_status = environment.row(
             "DLDD_RULE_STATUS|rule|DLDD_INTEGRATION_BROKEN",
         )
         assert valid_status["health"] == "OK"
@@ -205,8 +157,6 @@ def test_mixed_valid_and_broken_rules_activate_valid_work_and_localize_failure(
         assert broken_status["work_items_total"] == "0"
         assert "metadata.severity" in broken_status["reason"]
         assert "missing_field" in broken_status["reason"]
-    finally:
-        running.stop()
 
 
 @pytest.mark.parametrize(
@@ -222,43 +172,27 @@ def test_restart_retires_stale_active_fault_as_retained_inactive_row(
     stale_field,
     stale_value,
 ):
-    state_db = integration_environment["state_db"]
-    source = integration_environment["source"]
+    state_db = integration_environment.state_db
+    source = integration_environment.source
     source.set_value(20)
-    first = RunningService(integration_environment["service"]()).start()
-    try:
-        original = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, FAULT_KEY)).get("status")
-                == "ACTIVE"
-                else None
-            )
+    with integration_environment.running():
+        original = integration_environment.wait_for_row(
+            FAULT_KEY, status="ACTIVE"
         )
-    finally:
-        first.stop()
 
     state_db.hset(FAULT_KEY, {stale_field: stale_value})
     source.set_value(5)
-    second = RunningService(integration_environment["service"]()).start()
-    try:
-        retired = eventually(
-            lambda: (
-                row
-                if (row := _row(state_db, FAULT_KEY)).get("status")
-                == "INACTIVE"
-                and row.get("reason")
-                == "stale rule/source after DLDD restart"
-                else None
-            )
+    with integration_environment.running():
+        retired = integration_environment.wait_for_row(
+            FAULT_KEY,
+            status="INACTIVE",
+            reason="stale rule/source after DLDD restart",
         )
         assert retired[stale_field] == stale_value
         assert retired["origin_time"] == original["origin_time"]
         assert retired["occurrences"] == original["occurrences"]
         assert json.loads(retired["repair_actions"]) == []
         assert state_db.ttls[FAULT_KEY] == 3600
-    finally:
-        second.stop()
 
 
 def test_default_and_full_reset_preserve_foreign_fault_ownership(
@@ -267,16 +201,11 @@ def test_default_and_full_reset_preserve_foreign_fault_ownership(
     environment = integration_environment_factory(
         document=integration_rule_document()
     )
-    state_db = environment["state_db"]
-    source = environment["source"]
+    state_db = environment.state_db
+    source = environment.source
     source.set_value(20)
-    running = RunningService(environment["service"]()).start()
-    try:
-        eventually(
-            lambda: _row(state_db, FAULT_KEY).get("status") == "ACTIVE"
-        )
-    finally:
-        running.stop()
+    with environment.running():
+        environment.wait_for_row(FAULT_KEY, status="ACTIVE")
 
     foreign_key = "FAULT_INFO|FOREIGN|SYMPTOM_UNKNOWN"
     state_db.hset(
@@ -288,19 +217,19 @@ def test_default_and_full_reset_preserve_foreign_fault_ownership(
             "component_name": "FOREIGN",
         },
     )
-    paths = environment["paths"]
+    paths = environment.paths
     assert Path(paths.state_file).exists()
-    assert _row(state_db, "DLDD_STATUS|process_state")
-    assert _row(state_db, "DLDD_RULE_STATUS|active")
+    assert environment.row("DLDD_STATUS|process_state")
+    assert environment.row("DLDD_RULE_STATUS|active")
 
     default_result = clear_runtime_state(state_db, paths.state_file)
 
     assert default_result.faults == 0
     assert default_result.local_state_removed is True
-    assert _row(state_db, FAULT_KEY)["producer"] == "dldd"
-    assert _row(state_db, foreign_key)["producer"] == "another-service"
-    assert not _row(state_db, "DLDD_STATUS|process_state")
-    assert not _row(state_db, "DLDD_RULE_STATUS|active")
+    assert environment.row(FAULT_KEY)["producer"] == "dldd"
+    assert environment.row(foreign_key)["producer"] == "another-service"
+    assert not environment.row("DLDD_STATUS|process_state")
+    assert not environment.row("DLDD_RULE_STATUS|active")
     assert Path(paths.packaged).exists()
 
     Path(paths.state_file).write_text("{}", encoding="utf-8")
@@ -322,8 +251,8 @@ def test_default_and_full_reset_preserve_foreign_fault_ownership(
     assert full_result.faults == 1
     assert full_result.artifacts == 1
     assert full_result.local_state_removed is True
-    assert not _row(state_db, FAULT_KEY)
-    assert _row(state_db, foreign_key)["producer"] == "another-service"
+    assert not environment.row(FAULT_KEY)
+    assert environment.row(foreign_key)["producer"] == "another-service"
     assert not owned_artifact.exists()
     assert foreign_artifact.exists()
     assert Path(paths.packaged).exists()
@@ -340,14 +269,9 @@ def test_retryable_source_failure_degrades_then_breaks_and_crosses_fatal_limit(
     environment = integration_environment_factory(
         document=integration_rule_document(), config_values=config
     )
-    state_db = environment["state_db"]
-    source = environment["source"]
-    running = RunningService(environment["service"]()).start()
-    try:
-        eventually(
-            lambda: _row(state_db, "DLDD_STATUS|process_state").get("state")
-            == "OK"
-        )
+    source = environment.source
+    with environment.running() as running:
+        environment.wait_for_status("OK")
         source.fail_with(RuntimeError("synthetic retryable source failure"))
 
         degraded = eventually(
@@ -367,7 +291,7 @@ def test_retryable_source_failure_degrades_then_breaks_and_crosses_fatal_limit(
         assert degraded["failure_count"] == 1
         assert running.service.orchestrator.service_state() == "DEGRADED"
         assert running.service._publish_status() is True
-        assert _row(state_db, "DLDD_STATUS|process_state")["state"] == (
+        assert environment.row("DLDD_STATUS|process_state")["state"] == (
             "DEGRADED"
         )
 
@@ -389,8 +313,6 @@ def test_retryable_source_failure_degrades_then_breaks_and_crosses_fatal_limit(
         assert "synthetic retryable source failure" in broken["reason"]
         assert running.service.orchestrator.service_state() == "BROKEN|FATAL"
         assert running.service._publish_status() is True
-        status = _row(state_db, "DLDD_STATUS|process_state")
+        status = environment.row("DLDD_STATUS|process_state")
         assert status["state"] == "BROKEN|FATAL"
         assert json.loads(status["broken_rules"])[0]["state"] == "BROKEN"
-    finally:
-        running.stop()

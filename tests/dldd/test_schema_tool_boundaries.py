@@ -11,8 +11,6 @@ from dldd.rule_schema import (
     ContractRegistry,
     ContractRegistryError,
 )
-from dldd.rule_schema import registry as schema_registry
-from dldd.rule_schema.errors import append_path_component
 from dldd.rule_schema.generate import main as generate_main
 
 
@@ -65,12 +63,6 @@ def test_contract_registry_lookup_shape_validation_and_diagnostic_paths():
     assert DEFAULT_CONTRACT_REGISTRY.get(version) is contract
     assert DEFAULT_CONTRACT_REGISTRY.get("not-installed") is None
 
-    class StringVersion(BaseModel):
-        schema_version: str
-
-    assert schema_registry._literal_version(object) is None
-    assert schema_registry._literal_version(StringVersion) is None
-
     # Registry rejects malformed keys and adapter/model shapes.
     version = DEFAULT_CONTRACT_REGISTRY.versions[0]
     installed = DEFAULT_CONTRACT_REGISTRY.require_exact(version)
@@ -113,7 +105,3 @@ def test_contract_registry_lookup_shape_validation_and_diagnostic_paths():
                 version: replace(installed, envelope="not-an-adapter")
             }
         )
-
-    # Non-string mapping keys use stable JSONPath-compatible components.
-    assert append_path_component("$", True) == "$[1]"
-    assert append_path_component("$", (1, 2)) == '$["(1, 2)"]'

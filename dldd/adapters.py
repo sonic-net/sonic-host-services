@@ -14,7 +14,12 @@ from .dse import (
     DSEInvocationContext,
     validate_resolved_evaluation,
 )
-from .command_execution import build_i2c_argv, run_shell_free
+from .command_execution import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    build_i2c_argv,
+    run_checked_shell_free,
+    run_shell_free,
+)
 from .evaluators import EvaluationContractError, evaluate, parse_integer
 from .hooks import VendorHookRegistry
 from .models import ValueConfig
@@ -100,9 +105,13 @@ def _condition_config(evaluator: Mapping[str, Any]) -> ValueConfig:
 
 
 class DataSourceAdapter(ABC):
+    """Validate, collect, normalize, and evaluate one source type."""
+
     source_type = ""
 
     def validate(self, item: MonitorWorkItem) -> None:
+        """Reject work that cannot be executed by this adapter."""
+
         if item.source_type != self.source_type:
             raise ValueError(
                 "{} adapter cannot handle {}".format(self.source_type, item.source_type)
@@ -110,9 +119,13 @@ class DataSourceAdapter(ABC):
 
     @abstractmethod
     def get_value(self, item: MonitorWorkItem) -> Any:
+        """Read one raw source value without applying its evaluator."""
+
         raise NotImplementedError
 
     def get_evaluator(self, item: MonitorWorkItem) -> Mapping[str, Any]:
+        """Return the effective static or runtime-resolved evaluator."""
+
         handle = item.dse_evaluation_handle
         if handle is not None:
             binding = item.dse_binding or DSEBinding(
@@ -151,11 +164,15 @@ class DataSourceAdapter(ABC):
         return item.evaluation
 
     def run_evaluation(self, value: CollectedValue, evaluator: Mapping[str, Any]) -> bool:
+        """Evaluate one normalized value using the common rule contract."""
+
         if isinstance(value.normalized, list):
             return any(evaluate(evaluator, item) for item in value.normalized)
         return evaluate(evaluator, value.normalized)
 
     def collect(self, item: MonitorWorkItem) -> EvaluationResult:
+        """Collect and evaluate one item, localizing boundary failures."""
+
         started = time.time()
         try:
             raw = self.get_value(item)
@@ -339,28 +356,26 @@ class CLIAdapter(DataSourceAdapter):
         timeout = item.source.get("timeout", 30)
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             raise ValueError("CLI source timeout must be positive")
-        max_output = item.source.get("max_output_bytes", 1024 * 1024)
+        max_output = item.source.get(
+            "max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES
+        )
         if not isinstance(max_output, int) or isinstance(max_output, bool) or max_output <= 0:
             raise ValueError("CLI source max_output_bytes must be a positive integer")
 
     def get_value(self, item: MonitorWorkItem) -> Any:
         argv = list(item.source["argv"])
         timeout = item.source.get("timeout", 30)
-        max_output = int(item.source.get("max_output_bytes", 1024 * 1024))
-        result = run_shell_free(
+        max_output = int(
+            item.source.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+        )
+        stdout = run_checked_shell_free(
             argv,
             timeout=timeout,
             max_output_bytes=max_output,
             runner=self._runner,
-        )
-        if result.returncode != 0:
-            raise AdapterError(
-                "CLI source exited {}: {}".format(
-                    result.returncode, result.stderr_text()
-                )
-            )
-        stdout = result.stdout_text(
-            item.source.get("encoding", "utf-8"), "replace"
+            error_type=AdapterError,
+            error_context="CLI source",
+            encoding=item.source.get("encoding", "utf-8"),
         )
         return _extract_path(stdout.strip(), item.source.get("path"))
 
@@ -481,6 +496,8 @@ def adapter_map(
     hooks: Optional[VendorHookRegistry] = None,
     redis_reader: Optional[Callable[[str, str, str], Any]] = None,
 ) -> Dict[str, DataSourceAdapter]:
+    """Build the complete adapter registry for one service generation."""
+
     hooks = hooks or VendorHookRegistry()
     return {
         "redis": RedisAdapter(redis_reader),

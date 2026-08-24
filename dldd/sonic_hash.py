@@ -6,7 +6,24 @@ from threading import RLock
 
 
 class SonicHashReaderError(RuntimeError):
-    pass
+    """Raised when the SONiC database read boundary is unavailable."""
+
+
+def decode_db_text(value) -> str:
+    """Normalize a SONiC database key or field to replacement-safe text."""
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def decode_db_hash(row):
+    """Normalize one database hash without leaking backend byte values."""
+
+    return {
+        decode_db_text(name): decode_db_text(value)
+        for name, value in (row or {}).items()
+    }
 
 
 class SonicHashReader:
@@ -35,12 +52,6 @@ class SonicHashReader:
         self._connector = swsscommon.SonicV2Connector(host="127.0.0.1")
         return self._connector
 
-    @staticmethod
-    def _text(value):
-        if isinstance(value, bytes):
-            return value.decode("utf-8", "replace")
-        return str(value)
-
     def _connected_connector(self, database: str):
         if not isinstance(database, str) or not database:
             raise ValueError("database must be a non-empty string")
@@ -51,15 +62,13 @@ class SonicHashReader:
         return connector
 
     def read(self, database: str, key: str):
+        """Return one normalized hash, connecting to its database lazily."""
+
         if not isinstance(key, str) or not key:
             raise ValueError("hash key must be a non-empty string")
         with self._lock:
             connector = self._connected_connector(database)
-            row = connector.get_all(database, key) or {}
-            return {
-                self._text(name): self._text(value)
-                for name, value in row.items()
-            }
+            return decode_db_hash(connector.get_all(database, key))
 
     def keys(self, database: str, pattern: str):
         """Return stable text keys matching ``pattern`` from one database."""
@@ -70,7 +79,7 @@ class SonicHashReader:
             connector = self._connected_connector(database)
             return tuple(
                 sorted(
-                    self._text(item)
+                    decode_db_text(item)
                     for item in (connector.keys(database, pattern) or ())
                 )
             )

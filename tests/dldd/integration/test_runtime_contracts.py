@@ -4,7 +4,6 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 from queue import Queue
-from threading import Event
 import time
 
 import pytest
@@ -12,24 +11,18 @@ import pytest
 from dldd.adapters import RedisAdapter
 from dldd.correlation import CorrelationEngine
 from dldd.monitor import (
-    AsyncCollectionPool,
     MonitorThread,
-    command_for_event,
+    command_for_plan,
 )
 from dldd.runtime import (
-    EvaluationResult,
-    EvaluationResultType,
     MonitorCommandType,
-    MonitorExecutionPlan,
     MonitorWorkState,
-    MonitorWorkStateRecord,
 )
 from dldd.validation import validate_document
 from dldd.planner import build_plans
 
 from .conftest import (
     FAULT_KEY,
-    RunningService,
     eventually,
     integration_rule_document,
 )
@@ -52,14 +45,9 @@ def test_real_service_action_waits_then_rechecks_async_event_before_publication(
         ],
     }
     environment = integration_environment_factory(document=document)
-    source = environment["source"]
-    state_db = environment["state_db"]
-    running = RunningService(environment["service"]()).start()
-    try:
-        eventually(
-            lambda: state_db.hgetall("DLDD_STATUS|process_state").get("state")
-            == "OK"
-        )
+    source = environment.source
+    with environment.running() as running:
+        environment.wait_for_status("OK")
         source.set_value(20)
         pending = eventually(
             lambda: (
@@ -69,124 +57,15 @@ def test_real_service_action_waits_then_rechecks_async_event_before_publication(
             )
         )
         assert pending.phase in ("ACTIONS", "WAITING_FOR_RECHECK")
-        assert not state_db.hgetall(FAULT_KEY)
+        assert not environment.row(FAULT_KEY)
 
-        active = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(FAULT_KEY)).get("status")
-                == "ACTIVE"
-                else None
-            )
-        )
+        active = environment.wait_for_row(FAULT_KEY, status="ACTIVE")
         actions = json.loads(active["actions_taken"])
         assert actions and actions[0]["status"] == "SUCCESS"
         assert json.loads(active["local_action_state"])["state"] == "COMPLETED"
         # Startup/normal detection plus the post-wait RECHECK_ONCE must all
         # reach the same live source callback before publication.
         assert len(source.read_calls) >= 3
-    finally:
-        running.stop()
-
-
-def _successful_result():
-    return EvaluationResult(EvaluationResultType.NO_MATCH, completed_at=time.time())
-
-
-def test_async_pool_single_flight_saturation_and_reserved_recheck_priority():
-    release = Event()
-    active_started = Event()
-    completions = Queue()
-    order = []
-    pool = AsyncCollectionPool(max_workers=1, max_pending=2, recheck_reserve=1)
-
-    def active():
-        order.append("active")
-        active_started.set()
-        release.wait(2)
-        return _successful_result()
-
-    def named(name):
-        def collect():
-            order.append(name)
-            return _successful_result()
-
-        return collect
-
-    try:
-        assert pool.submit("active", active, completions)
-        assert active_started.wait(1)
-        assert pool.submit("normal", named("normal"), completions)
-        assert not pool.submit("overflow", named("overflow"), completions)
-        assert pool.submit(
-            "recheck",
-            named("recheck"),
-            completions,
-            high_priority=True,
-        )
-        release.set()
-        tokens = [completions.get(timeout=2).token for unused in range(3)]
-        assert tokens == ["active", "recheck", "normal"]
-        assert order == ["active", "recheck", "normal"]
-    finally:
-        release.set()
-        pool.shutdown()
-
-    rules = validate_document(integration_rule_document())
-    bundle = build_plans(
-        rules.materialized_rules,
-        "integration-single-flight",
-        {"redis": 60, "file": 60, "common": 60},
-    )
-    original = next(iter(bundle.work_items.values()))
-    item = replace(original, async_collection=True)
-    plan = MonitorExecutionPlan(
-        "redis",
-        "redis",
-        60,
-        "integration-single-flight",
-        {item.correlation_key: item},
-        {item.correlation_key: MonitorWorkStateRecord()},
-        Queue(),
-    )
-    started = Event()
-    finish = Event()
-    calls = []
-
-    class BlockingAdapter(object):
-        def collect(self, unused_item):
-            calls.append("collect")
-            started.set()
-            finish.wait(2)
-            return _successful_result()
-
-    pool = AsyncCollectionPool(max_workers=1, max_pending=0)
-    monitor = MonitorThread(
-        plan,
-        {"redis": BlockingAdapter()},
-        Queue(),
-        async_collection_pool=pool,
-    )
-    try:
-        monitor.poll_once()
-        assert started.wait(1)
-        monitor.poll_once()
-        assert calls == ["collect"]
-        assert plan.state_by_key[item.correlation_key].state is (
-            MonitorWorkState.COLLECTING
-        )
-        finish.set()
-        eventually(
-            lambda: (
-                monitor.drain_async_completions()
-                or plan.state_by_key[item.correlation_key].state
-                is MonitorWorkState.READY
-            )
-        )
-        assert calls == ["collect"]
-    finally:
-        finish.set()
-        pool.shutdown()
 
 
 class _Clock(object):
@@ -256,11 +135,13 @@ def test_monitor_and_correlation_apply_current_truth_and_positive_lookback(
     first_decision = correlation.consume(old_match)
     assert first_decision is not None and not first_decision.active
     assert monitor.apply_command(
-        command_for_event(
-            old_match,
+        command_for_plan(
+            monitor.plan,
+            old_match.correlation_key,
             MonitorCommandType.RESUME,
             MonitorWorkState.READY,
             "integration evidence accepted",
+            evidence=old_match,
         )
     )
 
@@ -276,11 +157,13 @@ def test_monitor_and_correlation_apply_current_truth_and_positive_lookback(
 
     if lookback == 0:
         assert monitor.apply_command(
-            command_for_event(
-                new_match,
+            command_for_plan(
+                monitor.plan,
+                new_match.correlation_key,
                 MonitorCommandType.RESUME,
                 MonitorWorkState.READY,
                 "integration evidence accepted",
+                evidence=new_match,
             )
         )
         values["DLDD_TEST_SENSOR|B"] = "5"
@@ -293,11 +176,13 @@ def test_monitor_and_correlation_apply_current_truth_and_positive_lookback(
             if result is not None:
                 decisions.append(result)
             assert monitor.apply_command(
-                command_for_event(
-                    event,
+                command_for_plan(
+                    monitor.plan,
+                    event.correlation_key,
                     MonitorCommandType.RESUME,
                     MonitorWorkState.READY,
                     "integration evidence accepted",
+                    evidence=event,
                 )
             )
 
@@ -321,8 +206,7 @@ def test_live_config_update_changes_inherited_cadence_without_postponing_due_wor
     environment = integration_environment_factory(
         document=document, config_values=initial_config
     )
-    running = RunningService(environment["service"]()).start()
-    try:
+    with environment.running() as running:
         plan = eventually(
             lambda: (
                 running.service.monitors[0].plan
@@ -355,5 +239,3 @@ def test_live_config_update_changes_inherited_cadence_without_postponing_due_wor
         )
         eventually(lambda: plan.polling_intervals["redis"] == 20.0)
         assert state.next_sample_due <= shortened
-    finally:
-        running.stop()

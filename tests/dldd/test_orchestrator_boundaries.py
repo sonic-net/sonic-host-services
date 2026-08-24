@@ -747,7 +747,13 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     """Restore retained state, clear no-match faults, and publish staleness."""
 
     first, bundle, item, database, _ = runtime_fixture()
-    identity, inactive = active_record(first, item, status="INACTIVE")
+    identity, inactive = active_record(
+        first,
+        item,
+        status="INACTIVE",
+        occurrences=4,
+        reason="authoritative DSE discovery removed the instance",
+    )
     first.telemetry.publish_fault(inactive)
 
     second = PrimaryOrchestrator(
@@ -763,7 +769,12 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     )
     second.reconcile_existing_faults()
     assert second.faults[identity].status == "INACTIVE"
+    assert second.faults[identity].occurrences == 4
+    assert second.faults[identity].reason == (
+        "authoritative DSE discovery removed the instance"
+    )
     assert identity not in second.reconciliation
+    assert bundle.monitor_plans["redis"].control_queue.empty()
 
     inactive.status = "ACTIVE"
     first.telemetry.publish_fault(inactive)
@@ -780,6 +791,9 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     )
     third.reconcile_existing_faults()
     assert identity in third.reconciliation
+    assert bundle.monitor_plans[
+        "redis"
+    ].control_queue.get_nowait().command.value == "RECHECK_ONCE"
 
     # No evidence preserves active state and schedules periodic confirmation.
     orchestrator, bundle, item, _, _ = runtime_fixture()

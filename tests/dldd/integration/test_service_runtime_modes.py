@@ -11,7 +11,6 @@ from dldd.runtime import MonitorWorkState
 from .conftest import (
     FAULT_KEY,
     ControlledHashSource,
-    RunningService,
     eventually,
     integration_rule_document,
 )
@@ -59,9 +58,8 @@ def test_expected_maintenance_suspends_without_breaking_then_recovers(
     environment = integration_environment_factory(
         document=integration_rule_document(), vendor_hooks=hooks
     )
-    source = environment["source"]
-    running = RunningService(environment["service"]()).start()
-    try:
+    source = environment.source
+    with environment.running() as running:
         eventually(
             lambda: running.service.orchestrator is not None
             and running.service.orchestrator.service_state() == "OK"
@@ -78,7 +76,7 @@ def test_expected_maintenance_suspends_without_breaking_then_recovers(
         plan = running.service.monitors[0].plan
         state = next(iter(plan.state_by_key.values()))
         eventually(lambda: state.state is MonitorWorkState.SUSPENDED)
-        assert not environment["state_db"].hgetall(FAULT_KEY)
+        assert not environment.row(FAULT_KEY)
         assert hook.operations[-1]["operation"] == "is_expected_maintenance"
 
         hook.fail_with(RuntimeError("platform lifecycle unavailable"))
@@ -111,8 +109,6 @@ def test_expected_maintenance_suspends_without_breaking_then_recovers(
         )
         eventually(lambda: state.state is MonitorWorkState.READY)
         assert running.service.orchestrator.service_state() == "OK"
-    finally:
-        running.stop()
 
 
 def _arbitration_document():
@@ -152,36 +148,22 @@ def test_fault_arbiter_publishes_winner_then_promotes_active_alternate(
     environment = integration_environment_factory(
         document=_arbitration_document(), source=source
     )
-    state_db = environment["state_db"]
-    running = RunningService(environment["service"]()).start()
-    try:
-        high = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(FAULT_KEY)).get("rule")
-                == "DLDD_ARBITRATION_HIGH"
-                else None
-            )
+    with environment.running() as running:
+        high = environment.wait_for_row(
+            FAULT_KEY, rule="DLDD_ARBITRATION_HIGH"
         )
         assert high["status"] == "ACTIVE"
         origin = high["origin_time"]
 
         source.set_value(5, "DLDD_TEST_SENSOR|HIGH")
-        promoted = eventually(
-            lambda: (
-                row
-                if (row := state_db.hgetall(FAULT_KEY)).get("rule")
-                == "DLDD_ARBITRATION_LOW"
-                else None
-            )
+        promoted = environment.wait_for_row(
+            FAULT_KEY, rule="DLDD_ARBITRATION_LOW"
         )
         assert promoted["status"] == "ACTIVE"
         assert promoted["origin_time"] == origin
         assert running.service.orchestrator.published_by_key[
             ("TEST_SENSOR", "SYMPTOM_OVER_THRESHOLD")
         ] == 9900102
-    finally:
-        running.stop()
 
 
 def test_service_restarts_one_orderly_stopped_monitor_with_same_plan(
@@ -190,7 +172,7 @@ def test_service_restarts_one_orderly_stopped_monitor_with_same_plan(
     environment = integration_environment_factory(
         document=integration_rule_document()
     )
-    service = environment["service"]()
+    service = environment.new_service()
     original_new_monitor = service._new_monitor
     created = []
 
@@ -204,8 +186,7 @@ def test_service_restarts_one_orderly_stopped_monitor_with_same_plan(
         return monitor
 
     service._new_monitor = controlled_new_monitor
-    running = RunningService(service).start()
-    try:
+    with environment.running(service) as running:
         replacement = eventually(
             lambda: (
                 service.monitors[0]
@@ -220,12 +201,5 @@ def test_service_restarts_one_orderly_stopped_monitor_with_same_plan(
             "stopped unexpectedly and was restarted" in item.get("reason", "")
             for item in replacement.diagnostics
         )
-        eventually(
-            lambda: environment["state_db"]
-            .hgetall("DLDD_STATUS|process_state")
-            .get("state")
-            == "OK"
-        )
+        environment.wait_for_status("OK")
         assert running.thread.is_alive()
-    finally:
-        running.stop()

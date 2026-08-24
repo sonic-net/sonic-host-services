@@ -8,7 +8,11 @@ import pytest
 
 from dldd import cli as dldd_cli
 from dldd.validation import load_rules
-from tests.dldd_fakes import load_valid_rules_document as _document
+from tests.dldd_fakes import (
+    load_valid_rules_document as _document,
+    valid_rule_action,
+    valid_rule_event,
+)
 
 
 def _line_containing(text, value):
@@ -23,9 +27,7 @@ def test_nested_json_yaml_and_vendor_issues_use_exact_source_lines():
     """Resolve exact and nearest-parent lines across JSON and YAML paths."""
 
     document = _document()
-    evaluation = document["signatures"][0]["signature"]["conditions"][
-        "events"
-    ][0]["event"]["evaluation"]
+    evaluation = valid_rule_event(document)["evaluation"]
     evaluation["operator"] = "bogus"
     source = json.dumps(document, indent=2)
 
@@ -56,9 +58,7 @@ def test_nested_json_yaml_and_vendor_issues_use_exact_source_lines():
     # Exotic vendor keys retain their exact YAML line.
     yaml = pytest.importorskip("yaml")
     document = _document()
-    action = document["signatures"][0]["signature"]["actions"][
-        "repair_actions"
-    ]["local_actions"]["action_list"][0]["action"]
+    action = valid_rule_action(document)
     action.clear()
     action.update(
         {
@@ -76,6 +76,16 @@ def test_nested_json_yaml_and_vendor_issues_use_exact_source_lines():
     )
 
     assert issue.line == _line_containing(source, "x.y:")
+
+    # Non-string keys retain a stable JSONPath and source line.
+    result = load_rules(
+        "schema_version: '0.0.1'\n"
+        "signatures: []\n"
+        "123: value\n"
+    )
+    issue = next(item for item in result.file_errors if item.path == "$[123]")
+    assert issue.line == 3
+    assert result.source_lines["$[123]"] == 3
 
 
 def test_parse_and_empty_file_errors_use_stable_source_lines():
@@ -107,9 +117,7 @@ def test_parse_and_empty_file_errors_use_stable_source_lines():
 
 def test_cli_json_and_text_output_include_issue_line(tmp_path, capsys):
     document = _document()
-    evaluation = document["signatures"][0]["signature"]["conditions"][
-        "events"
-    ][0]["event"]["evaluation"]
+    evaluation = valid_rule_event(document)["evaluation"]
     evaluation["operator"] = "bogus"
     source = json.dumps(document, indent=2)
     expected_line = _line_containing(source, '"operator": "bogus"')

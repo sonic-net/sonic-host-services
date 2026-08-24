@@ -34,6 +34,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 FAULT_KEY = "FAULT_INFO|TEST_SENSOR|SYMPTOM_OVER_THRESHOLD"
 SOURCE_KEY = "DLDD_TEST_SENSOR|SENSOR0"
 DSE_FAULT_KEY = "FAULT_INFO|DSE_SENSOR0|SYMPTOM_OVER_THRESHOLD"
+STATUS_KEY = "DLDD_STATUS|process_state"
 
 CONFIG_VALUES = {
     "redis_monitor_polling_interval": "1",
@@ -240,6 +241,8 @@ class IntegrationService(DLDDService):
 
 
 class RunningService(object):
+    """Own one background service thread and surface its terminal error."""
+
     def __init__(self, service):
         self.service = service
         self.error = None
@@ -252,10 +255,25 @@ class RunningService(object):
             self.error = error
 
     def start(self):
+        """Start the service thread and return this lifecycle handle."""
+
         self.thread.start()
         return self
 
+    def __enter__(self):
+        """Start the service for a ``with`` block."""
+
+        return self.start()
+
+    def __exit__(self, unused_type, unused_value, unused_traceback):
+        """Stop the service and propagate test or service failures."""
+
+        self.stop()
+        return False
+
     def stop(self, timeout=10):
+        """Request shutdown, wait for the thread, and raise its error."""
+
         self.service.stop_event.set()
         self.thread.join(timeout)
         assert not self.thread.is_alive(), "DLDD service did not stop in time"
@@ -263,9 +281,57 @@ class RunningService(object):
             raise self.error
 
     def wait_stopped(self, timeout=10):
+        """Wait for a naturally stopping service and return its error."""
+
         self.thread.join(timeout)
         assert not self.thread.is_alive(), "DLDD service did not stop in time"
         return self.error
+
+
+class IntegrationEnvironment(object):
+    """Compose one deterministic service environment and its common probes."""
+
+    def __init__(self, paths, source, state_db, service_factory, config_dbs):
+        self.paths = paths
+        self.source = source
+        self.state_db = state_db
+        self._service_factory = service_factory
+        self.config_dbs = config_dbs
+
+    def new_service(self):
+        """Construct a fresh service sharing this environment's durable state."""
+
+        return self._service_factory()
+
+    def running(self, service=None):
+        """Return a context-managed handle for a fresh or supplied service."""
+
+        return RunningService(service or self.new_service())
+
+    def row(self, key):
+        """Read one Redis-accurate hash from the environment State DB."""
+
+        return self.state_db.hgetall(key)
+
+    def wait_for_row(self, key, predicate=None, timeout=8, **expected):
+        """Wait for a row matching every field and optional predicate."""
+
+        def matching_row():
+            row = self.row(key)
+            if not row:
+                return None
+            if any(row.get(field) != value for field, value in expected.items()):
+                return None
+            if predicate is not None and not predicate(row):
+                return None
+            return row
+
+        return eventually(matching_row, timeout=timeout)
+
+    def wait_for_status(self, state, timeout=8):
+        """Wait for and return the process-status row in ``state``."""
+
+        return self.wait_for_row(STATUS_KEY, state=state, timeout=timeout)
 
 
 def eventually(predicate, timeout=8, interval=0.02):
@@ -391,13 +457,13 @@ def _make_environment(
             stop_event=stop_event,
         )
 
-    return {
-        "paths": paths,
-        "source": source,
-        "state_db": state_db,
-        "service": service,
-        "config_dbs": config_dbs,
-    }
+    return IntegrationEnvironment(
+        paths,
+        source,
+        state_db,
+        service,
+        config_dbs,
+    )
 
 
 @pytest.fixture

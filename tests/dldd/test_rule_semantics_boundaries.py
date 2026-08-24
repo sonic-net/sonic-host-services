@@ -1,7 +1,6 @@
 from __future__ import absolute_import
 
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,21 +14,13 @@ from dldd.hooks import VendorHook, VendorHookError, VendorHookRegistry
 from dldd.logic import (
     MAX_LOGIC_CHARACTERS,
     MAX_LOGIC_TOKENS,
-    EventReference,
     LogicSyntaxError,
     collect_event_ids,
     evaluate_logic,
     parse_logic,
 )
 from dldd.models import ResolvedSource, ValueConfig
-from dldd.planner import (
-    _canonical_binding_value,
-    _component_name,
-    _evaluation_mapping,
-    _source_mapping,
-    build_plans,
-)
-from dldd.timestamps import floor_timestamp_fields
+from dldd.planner import build_plans
 from dldd.validation import load_rules
 
 
@@ -225,54 +216,8 @@ def test_logic_parser_enforces_limits_tokens_and_tree_contracts():
         parse_logic("9" * 1000)
 
 
-def test_planner_canonicalizes_bindings_evaluations_and_value_config():
-    assert _component_name(None, "SENSOR") == "SENSOR"
-    assert _component_name("SENSOR0:path", "SENSOR") == "SENSOR0"
-
-    platform = ResolvedSource(type="platform_api", path="read_temperature")
-    literal = ResolvedSource(type="vendor", path=7, vendor_data={"unit": "C"})
-    assert _source_mapping(platform) == {
-        "hook": "platform",
-        "operation": "read_temperature",
-    }
-    assert _source_mapping(literal) == {"value": 7, "unit": "C"}
-
-    def callback():
-        return None
-
-    canonical = _canonical_binding_value(
-        {
-            "bytes": b"\x00\xff",
-            "values": (None, True, 7, 1.5, "text"),
-            "callback": callback,
-            "opaque": object(),
-        }
-    )
-    assert canonical["bytes"] == {"bytes_hex": "00ff"}
-    assert canonical["values"] == [None, True, 7, 1.5, "text"]
-    assert canonical["callback"]["callable"].endswith(".callback")
-    assert canonical["opaque"]["object_type"] == "builtins.object"
-
-    comparator = lambda actual: bool(actual)
-    event = SimpleNamespace(
-        evaluation=SimpleNamespace(
-            type="mask",
-            value="0x80",
-            value_configs=ValueConfig(type="int", unit="bits"),
-            operator=None,
-            logic="&",
-            unit="bits",
-            comparator=comparator,
-            case_sensitive=True,
-        )
-    )
-
-    mapping = _evaluation_mapping(event, 0)
-
-    assert mapping["logic"] == "&"
-    assert mapping["unit"] == "bits"
-    assert mapping["comparator"] is comparator
-    assert "operator" not in mapping
+def test_planner_merges_source_value_metadata_through_public_planning_api():
+    """Prefer source metadata when the rule leaves value fields unspecified."""
 
     validation = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     materialized = validation.materialized_rules[0]
@@ -311,16 +256,4 @@ def test_planner_canonicalizes_bindings_evaluations_and_value_config():
         unit="C",
         scaling=0.001,
         encoding="N/A",
-    )
-
-
-def test_timestamp_flooring_preserves_tuple_shape_recursively():
-    value = (
-        {"observed_at": 10.9, "duration": 1.25},
-        [{"hold-deadline": 20.8}],
-    )
-
-    assert floor_timestamp_fields(value) == (
-        {"observed_at": 10, "duration": 1.25},
-        [{"hold-deadline": 20}],
     )

@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import replace
 import json
 import logging
 from pathlib import Path
@@ -24,17 +24,10 @@ from dldd.dse import (
     ResolvedEvaluation,
     parse_reference,
 )
-from dldd.models import ResolvedSource, ValueConfig, to_mutable
+from dldd.models import ResolvedSource, ValueConfig
 from dldd.platform import PlatformIdentity, load_extensions
 from dldd.planner import build_plans
-from dldd.rule_schema import DEFAULT_CONTRACT_REGISTRY
-from dldd.rule_schema.generate import (
-    GENERATED_WARNING,
-    JSON_SCHEMA_DIALECT,
-    default_output_path,
-    generate_schema,
-    render_schema,
-)
+from dldd.rule_schema.v0_0_1 import MAX_REGEX_CHARACTERS
 from dldd.runtime import EvaluationResultType, make_rule_instance_id
 from dldd.validation import (
     CompatibilityMatcher,
@@ -42,6 +35,11 @@ from dldd.validation import (
     load_document,
     load_rules,
     validate_document,
+)
+from tests.dldd_fakes import (
+    append_rule,
+    valid_rule_action,
+    valid_rule_event as event,
 )
 
 
@@ -51,12 +49,6 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def load_fixture(name="valid-redis-rule.json"):
     with (FIXTURES / name).open() as stream:
         return json.load(stream)
-
-
-def event(document, signature=0, index=0):
-    return document["signatures"][signature]["signature"]["conditions"][
-        "events"
-    ][index]["event"]
 
 
 class SensorDSEHook(DSEHook):
@@ -108,24 +100,6 @@ class RecordingDirectSensorDSEHook(DirectSensorDSEHook):
             )
 
         return DSEEvaluationHandle(reference, get_comparator)
-
-
-def test_pydantic_contract_is_runtime_authority_and_schema_is_derivative():
-    assert DEFAULT_CONTRACT_REGISTRY.versions == ("0.0.1",)
-    contract = DEFAULT_CONTRACT_REGISTRY.require_exact("0.0.1")
-
-    envelope = contract.validate_envelope(load_fixture())
-
-    assert envelope.schema_version == "0.0.1"
-    assert len(envelope.signatures) == 1
-
-    schema = generate_schema("0.0.1")
-    assert schema["$schema"] == JSON_SCHEMA_DIALECT
-    assert schema["properties"]["schema_version"]["const"] == "0.0.1"
-    assert schema["x-dldd-schema-version"] == "0.0.1"
-    assert schema["x-generated-warning"] == GENERATED_WARNING
-    assert "does not load this file at runtime" in GENERATED_WARNING
-    assert default_output_path("0.0.1").read_text() == render_schema("0.0.1")
 
 
 @pytest.mark.parametrize(
@@ -656,120 +630,6 @@ def test_event_async_collection_is_optional_strict_and_materialized(value, valid
         }
 
 
-def test_optional_timeout_and_vendor_payload_boundary_contract():
-    """Distinguish omission from null while preserving closed/vendor fields."""
-
-    document = load_fixture()
-    del document["local_action_default_timeout"]
-    action = document["signatures"][0]["signature"]["actions"][
-        "repair_actions"
-    ]["local_actions"]["action_list"][0]["action"]
-    action["timeout"] = 30
-
-    omitted = validate_document(document)
-    assert omitted.activation_valid
-    assert omitted.ruleset.local_action_default_timeout is None
-
-    document["local_action_default_timeout"] = None
-    explicit_null = validate_document(document)
-    assert not explicit_null.file_valid
-    assert [
-        (issue.code, issue.path) for issue in explicit_null.file_errors
-    ] == [("invalid_type", "$.local_action_default_timeout")]
-
-    # Core contracts are closed while vendor operation payloads remain open.
-    document = load_fixture()
-    document["unexpected_root_field"] = True
-
-    file_failure = validate_document(document)
-    assert [(issue.code, issue.path) for issue in file_failure.file_errors] == [
-        ("unknown_field", "$.unexpected_root_field")
-    ]
-
-    del document["unexpected_root_field"]
-    event(document)["unexpected_event_field"] = True
-    rule_failure = validate_document(document)
-    assert [
-        (issue.code, issue.path) for issue in rule_failure.broken_rules[0].issues
-    ] == [
-        (
-            "unknown_field",
-            "$.signatures[0].signature.conditions.events[0].event."
-            "unexpected_event_field",
-        )
-    ]
-
-    del event(document)["unexpected_event_field"]
-    action = document["signatures"][0]["signature"]["actions"][
-        "repair_actions"
-    ]["local_actions"]["action_list"][0]["action"]
-    action.clear()
-    action.update(
-        {
-            "type": "vendor_reset",
-            "timeout": 10,
-            "token": "safe",
-            "policy": {
-                "attempts": 2,
-                "flags": [True, None, "cold"],
-            },
-        }
-    )
-
-    vendor = validate_document(document, materialize=False)
-    assert vendor.file_valid
-    assert not vendor.broken_rules
-    operation = vendor.ruleset.signatures[0].actions.repair_actions
-    operation = operation.local_actions.action_list[0]
-    assert operation.options["token"] == "safe"
-    assert operation.options["policy"]["attempts"] == 2
-    assert operation.options["policy"]["flags"] == (True, None, "cold")
-
-
-@pytest.mark.parametrize(
-    "mutation, expected_path",
-    (
-        pytest.param(
-            lambda doc: doc["signatures"][0]["signature"]["metadata"].update(
-                {"id": "1000001"}
-            ),
-            "$.signatures[0].signature.metadata.id",
-            id="string-rule-id",
-        ),
-        pytest.param(
-            lambda doc: event(doc).update({"match_count": True}),
-            "$.signatures[0].signature.conditions.events[0].event.match_count",
-            id="boolean-match-count",
-        ),
-        pytest.param(
-            lambda doc: event(doc).update(
-                {
-                    "evaluation": {
-                        "type": "string",
-                        "operator": "equals",
-                        "value": "fault",
-                        "case_sensitive": 1,
-                    }
-                }
-            ),
-            "$.signatures[0].signature.conditions.events[0].event.evaluation."
-            "case_sensitive",
-            id="non-boolean-case-sensitive",
-        ),
-    ),
-)
-def test_core_scalar_fields_do_not_coerce(mutation, expected_path):
-    document = load_fixture()
-    mutation(document)
-
-    result = validate_document(document)
-
-    assert any(
-        issue.code == "invalid_type" and issue.path == expected_path
-        for issue in result.broken_rules[0].issues
-    )
-
-
 @pytest.mark.parametrize(
     "operation_type, expected_field",
     (
@@ -825,6 +685,55 @@ def test_platform_vendor_positional_lists_must_match_instances():
     )
 
 
+class RecordingVendorSourceHook(DSEHook):
+    """Record side-effect-free validation of direct vendor source mappings."""
+
+    def __init__(self):
+        self.validated_sources = []
+
+    def resolve_source(self, reference, context):
+        raise AssertionError("direct source unexpectedly used DSE resolution")
+
+    def resolve_evaluation(self, reference, context):
+        raise AssertionError("direct source unexpectedly resolved an evaluator")
+
+    def validate_resolved_source(self, source, context):
+        self.validated_sources.append((source, context))
+
+
+def test_direct_vendor_source_requires_and_uses_an_advertised_typed_hook():
+    document = load_fixture()
+    event(document).update(type="platform_api", path={"hook": "read_fault"})
+
+    missing = validate_document(
+        document,
+        ValidationContext(
+            dse_registry=DSERegistry(source_types=("platform_api",))
+        ),
+    )
+    assert not missing.activation_valid
+    assert "requires an installed DSE hook" in (
+        missing.broken_rules[0].issues[0].message
+    )
+
+    hook = RecordingVendorSourceHook()
+    supported = validate_document(
+        document,
+        ValidationContext(
+            dse_registry=DSERegistry(
+                hook=hook,
+                source_types=("platform_api",),
+            )
+        ),
+    )
+
+    assert supported.activation_valid
+    assert len(hook.validated_sources) == 1
+    source, context = hook.validated_sources[0]
+    assert source.type == "platform_api"
+    assert context.rule_name == "PSU_OV_FAULT"
+
+
 def test_i2c_set_action_rejects_explicit_null_value():
     document = load_fixture()
     action = document["signatures"][0]["signature"]["actions"][
@@ -855,34 +764,16 @@ def test_i2c_set_action_rejects_explicit_null_value():
     )
 
 
-def test_rule_loader_safely_accepts_json_yaml_and_rejects_file_gate_errors():
-    result = load_rules(json.dumps(load_fixture()))
-
-    assert result.activation_valid
-
-    yaml = pytest.importorskip("yaml")
-    result = load_rules(yaml.safe_dump(load_fixture()))
-
-    assert result.activation_valid
-    assert load_rules("!!python/object/apply:os.system ['echo unsafe']").file_errors
-
-    assert load_rules("{not json").file_errors[0].code == "parse_error"
-    assert validate_document([]).file_errors[0].code == "invalid_top_level"
-    unsupported = {"schema_version": "9.0.0", "signatures": [{}]}
-    assert validate_document(unsupported).file_errors
-
-
 @pytest.mark.parametrize("scenario", ("duplicate", "mixed", "zero-usable"))
 def test_validation_localizes_rule_failures_and_enforces_activation_guard(scenario):
-    if scenario == "zero-usable":
-        document = load_fixture("invalid-unknown-event.json")
+    document = load_fixture()
+    if scenario == "duplicate":
+        document["signatures"].append(deepcopy(document["signatures"][0]))
+    elif scenario == "mixed":
+        append_rule(document, name="BAD_SOURCE", rule_id=1000002)
+        event(document, rule_index=1).update(type="not-installed", path={})
     else:
-        document = load_fixture()
-        if scenario == "duplicate":
-            document["signatures"].append(deepcopy(document["signatures"][0]))
-        else:
-            bad = load_fixture("invalid-unknown-event.json")["signatures"][0]
-            document["signatures"].append(bad)
+        event(document).update(type="not-installed", path={})
 
     result = validate_document(document)
     if scenario == "duplicate":
@@ -916,6 +807,29 @@ def test_local_action_requires_timeout_or_file_default():
     }
 
 
+def _duplicate_first_event(document):
+    conditions = document["signatures"][0]["signature"]["conditions"]
+    conditions["events"].append(deepcopy(conditions["events"][0]))
+
+
+def _set_i2c_action_without_value(document):
+    action = valid_rule_action(document)
+    action.clear()
+    action.update(
+        {
+            "type": "i2c",
+            "timeout": 10,
+            "path": {
+                "bus": "IO-MUX-6",
+                "chip_addr": "0x58",
+                "i2c_type": "set",
+                "command": "0x7A",
+                "size": "b",
+            },
+        }
+    )
+
+
 @pytest.mark.parametrize(
     "mutation, expected_code",
     (
@@ -942,6 +856,56 @@ def test_local_action_requires_timeout_or_file_default():
             ),
             "invalid_regex",
             id="invalid-regex-expression",
+        ),
+        pytest.param(
+            lambda doc: event(doc).update(
+                match_count=2,
+                match_period=0,
+            ),
+            "invalid_match_window",
+            id="invalid-current-state-match-window",
+        ),
+        pytest.param(
+            lambda doc: event(doc).update(
+                instances=["SENSOR0:first", "SENSOR0:second"]
+            ),
+            "duplicate_instance",
+            id="duplicate-instance",
+        ),
+        pytest.param(
+            _duplicate_first_event,
+            "duplicate_event_id",
+            id="duplicate-event-id",
+        ),
+        pytest.param(
+            lambda doc: event(doc).update(
+                evaluation={"type": "not-installed", "value": 1}
+            ),
+            "unsupported_type",
+            id="unknown-evaluation-type",
+        ),
+        pytest.param(
+            lambda doc: event(doc).update(
+                evaluation={
+                    "type": "string",
+                    "operator": "regex",
+                    "value": "a" * (MAX_REGEX_CHARACTERS + 1),
+                }
+            ),
+            "invalid_regex",
+            id="oversized-regex",
+        ),
+        pytest.param(
+            _set_i2c_action_without_value,
+            "missing_i2c_value",
+            id="i2c-set-without-value",
+        ),
+        pytest.param(
+            lambda doc: doc["signatures"][0]["signature"]["actions"].update(
+                log_collection={}
+            ),
+            "empty_log_collection",
+            id="empty-log-collection",
         ),
     ),
 )
@@ -1468,25 +1432,45 @@ class ComparatorHook(FakeHook):
         return ResolvedEvaluation(comparator=lambda value: value == "fault")
 
 
-@pytest.mark.parametrize("mode", ("mismatch", "missing-identity"))
+def test_compatibility_matcher_requires_a_platform_implementation():
+    with pytest.raises(NotImplementedError):
+        CompatibilityMatcher.product_matches(None, "product", ())
+    with pytest.raises(NotImplementedError):
+        CompatibilityMatcher.software_matches(None, "version", ())
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("product-mismatch", "software-mismatch", "missing-product", "missing-software"),
+)
 def test_platform_compatibility_and_identity_fail_only_the_affected_rule(mode):
-    context = (
-        ValidationContext(
+    if mode == "product-mismatch":
+        context = ValidationContext(
             product_id="OTHER-PRODUCT", software_version="202311.3.0.1"
         )
-        if mode == "mismatch"
-        else ValidationContext(require_compatibility_identity=True)
-    )
+        expected = "does not apply to product"
+    elif mode == "software-mismatch":
+        context = ValidationContext(
+            product_id="PRODUCT-A", software_version="not-supported"
+        )
+        expected = "does not apply to software"
+    elif mode == "missing-product":
+        context = ValidationContext(
+            software_version="202311.3.0.1",
+            require_compatibility_identity=True,
+        )
+        expected = "product identity is unavailable"
+    else:
+        context = ValidationContext(
+            product_id="PRODUCT-A",
+            require_compatibility_identity=True,
+        )
+        expected = "software version is unavailable"
 
     result = validate_document(load_fixture(), context=context)
 
     assert result.file_valid
     assert not result.activation_valid
-    expected = (
-        "does not apply to product"
-        if mode == "mismatch"
-        else "product identity is unavailable"
-    )
     assert expected in result.broken_rules[0].issues[0].message
 
 
@@ -1592,16 +1576,3 @@ def test_vendor_operations_require_explicit_advertisement_and_hook_validation(mo
     if mode == "i2c-query":
         query = supported.ruleset.signatures[0].actions.log_collection.queries[0]
         assert query.path["command"] == "0x7A"
-
-
-def test_rule_models_are_frozen():
-    result = validate_document(load_fixture())
-    metadata = result.ruleset.signatures[0].metadata
-
-    with pytest.raises(FrozenInstanceError):
-        metadata.priority = 9
-
-    source = result.materialized_rules[0].events[0].sources[0]
-    with pytest.raises(TypeError):
-        source.path["database"] = "CONFIG_DB"
-    assert to_mutable(source)["path"]["database"] == "STATE_DB"

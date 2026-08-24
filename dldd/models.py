@@ -2,7 +2,7 @@
 
 from __future__ import absolute_import
 
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 import math
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Tuple, Union
@@ -238,6 +238,18 @@ class Operation(object):
             payload["executor"] = self.executor
             payload["materialized_operation"] = self
         return payload
+
+    def with_resolution(self, resolution) -> "Operation":
+        """Return an immutable operation bound to one trusted DSE result.
+
+        Resolution metadata intentionally overlays rule-provided extension
+        options because the installed vendor implementation owns the runtime
+        binding.  The original operation remains unchanged.
+        """
+
+        options = dict(self.options)
+        options.update(dict(resolution.vendor_data))
+        return replace(self, executor=resolution.executor, options=options)
 
 
 @dataclass(frozen=True)

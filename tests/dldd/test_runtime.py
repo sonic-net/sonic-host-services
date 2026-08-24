@@ -4,7 +4,6 @@ from dataclasses import replace
 from copy import deepcopy
 import json
 from queue import Empty, Queue
-import subprocess
 from threading import Event as ThreadEvent, Thread
 import time
 from types import SimpleNamespace
@@ -12,13 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from dldd.adapters import (
-    CLIAdapter,
     DSEAdapter,
-    FileAdapter,
-    I2CAdapter,
-    PlatformAPIAdapter,
-    RedisAdapter,
-    SysfsAdapter,
     adapter_map,
 )
 from dldd.correlation import CorrelationEngine
@@ -38,10 +31,8 @@ from dldd.monitor import (
     AsyncCollectionCompletion,
     AsyncCollectionPool,
     MonitorThread,
-    command_for_event,
     command_for_plan,
 )
-from dldd.hooks import VendorHook, VendorHookRegistry
 from dldd.models import ValueConfig
 from dldd.planner import build_plans, work_items_for_dse_expansion
 from dldd.runtime import (
@@ -167,6 +158,26 @@ def test_execution_plan_runtime_contract():
     with pytest.raises(TypeError):
         item.source["new"] = "value"
 
+    source = {"binding": {"path": ["rails", {"field": "voltage"}]}}
+    evaluation = {
+        "type": "comparison",
+        "operator": ">",
+        "value": 50,
+        "value_configs": {"metadata": ["vendor", {"unit": "volts"}]},
+    }
+    item = replace(work_item(), source=source, evaluation=evaluation)
+
+    source["binding"]["path"][1]["field"] = "current"
+    evaluation["value_configs"]["metadata"][1]["unit"] = "amps"
+    assert item.source["binding"]["path"][1]["field"] == "voltage"
+    assert item.evaluation["value_configs"]["metadata"][1]["unit"] == "volts"
+    assert item.source["binding"]["path"][:1] == ("rails",)
+
+    with pytest.raises(TypeError):
+        item.source["binding"]["path"][1]["field"] = "power"
+    with pytest.raises(TypeError):
+        item.evaluation["value_configs"]["metadata"][0] = "platform"
+
 
 def test_value_and_evaluation_contracts():
     """Exercise canonical values and every evaluator, including regex limits."""
@@ -240,11 +251,13 @@ def test_monitor_evidence_ownership_and_stale_acknowledgement():
     monitor.poll_once()
     assert len(adapter.results) == 1
     monitor.plan.control_queue.put(
-        command_for_event(
-            matched,
+        command_for_plan(
+            monitor.plan,
+            matched.correlation_key,
             MonitorCommandType.RESUME,
             MonitorWorkState.READY,
             "processed",
+            evidence=matched,
         )
     )
     monitor.drain_control_queue()
@@ -262,11 +275,13 @@ def test_monitor_evidence_ownership_and_stale_acknowledgement():
     )
     monitor.poll_once()
     event = evidence.get_nowait()
-    command = command_for_event(
-        event,
+    command = command_for_plan(
+        monitor.plan,
+        event.correlation_key,
         MonitorCommandType.RESUME,
         MonitorWorkState.READY,
         "processed",
+        evidence=event,
     )
     state = monitor.plan.state_by_key[item.correlation_key]
     state.work_state_generation += 1
@@ -456,11 +471,13 @@ def test_monitor_result_publication_recovery_and_backpressure_lifecycle():
     monitor.poll_once()
     unavailable_event = evidence.get_nowait()
     monitor.apply_command(
-        command_for_event(
-            unavailable_event,
+        command_for_plan(
+            monitor.plan,
+            unavailable_event.correlation_key,
             MonitorCommandType.RESUME,
             MonitorWorkState.DEGRADED,
             "retry",
+            evidence=unavailable_event,
         )
     )
     monitor.poll_once()
@@ -1724,102 +1741,6 @@ def test_expired_monitor_evidence_ownership_recovers_to_ready():
         assert monitor.diagnostics[-1]["state"] == work_state.value
 
 
-def test_static_validation_and_redis_adapter_contracts():
-    """Validate static rules and Redis key, path, reader, and absence behavior."""
-
-    validated = load_rules(
-        "tests/dldd/fixtures/valid-psu-hld.yaml", materialize=False
-    )
-    assert validated.file_valid
-    assert validated.ruleset is not None
-    assert len(validated.ruleset.signatures) == 1
-
-    # Legacy injected readers receive table and full key while resolving paths.
-    calls = []
-
-    def reader(database, table, key):
-        calls.append((database, table, key))
-        return {"value": '{"output_voltage": 51.5}'}
-
-    base = work_item()
-    redis_item = MonitorWorkItem(
-        rule_id=base.rule_id,
-        rule_name=base.rule_name,
-        rule_version=base.rule_version,
-        schema_version=base.schema_version,
-        severity=base.severity,
-        priority=base.priority,
-        symptom=base.symptom,
-        error_type=base.error_type,
-        component_type=base.component_type,
-        component_name=base.component_name,
-        event_id=base.event_id,
-        correlation_key=base.correlation_key,
-        source_id=base.source_id,
-        source_type="redis",
-        source={
-            "database": "STATE_DB",
-            "table": "PSU_INFO",
-            "key": "PSU_INFO|PSU0",
-            "path": "value/output_voltage",
-        },
-        evaluation={"type": "comparison", "operator": ">", "value": 50.0},
-        value_config=ValueConfig(type="float", unit="volts"),
-    )
-    collected = RedisAdapter(reader).collect(redis_item)
-    assert collected.result == EvaluationResultType.MATCH
-    assert collected.value.normalized == 51.5
-    assert calls == [("STATE_DB", "PSU_INFO", "PSU_INFO|PSU0")]
-
-    # The common hash reader receives a complete key and supports path tuples.
-    calls = []
-
-    class HashReader(object):
-        def read(self, database, key):
-            calls.append((database, key))
-            return {"value": {"rails": [{"voltage": "51.5"}]}}
-
-    item = replace(
-        work_item(),
-        source_type="redis",
-        source={
-            "database": "STATE_DB",
-            "table": "PSU_INFO",
-            "key": "PSU_INFO|PSU0",
-            "path": ("value", "rails", "0", "voltage"),
-        },
-        evaluation={"type": "comparison", "operator": ">", "value": 50.0},
-        value_config=ValueConfig(type="float", unit="volts"),
-    )
-
-    collected = RedisAdapter(hash_reader=HashReader()).collect(item)
-
-    assert collected.result == EvaluationResultType.MATCH
-    assert collected.value.normalized == 51.5
-    assert calls == [("STATE_DB", "PSU_INFO|PSU0")]
-
-    # An absent Redis hash is transport unavailability, not a value mismatch.
-    class EmptyHashReader(object):
-        def read(self, unused_database, unused_key):
-            return {}
-
-    item = replace(
-        work_item(),
-        source_type="redis",
-        source={
-            "database": "STATE_DB",
-            "table": "PSU_INFO",
-            "key": "PSU_INFO|PSU0",
-            "path": None,
-        },
-    )
-
-    assert (
-        RedisAdapter(hash_reader=EmptyHashReader()).collect(item).result
-        == EvaluationResultType.SOURCE_UNAVAILABLE
-    )
-
-
 class _Clock:
     def __init__(self, value=0.0):
         self.value = value
@@ -2660,145 +2581,3 @@ def test_mixed_dse_clones_follow_source_defaults_and_atomic_updates():
         3: {200.0},
         4: {17.0},
     }
-
-
-class CollectingHook(VendorHook):
-    def collect(self, operation):
-        return operation["value"]
-
-    def execute_action(self, action):
-        return {}
-
-
-class ValidatingHook(CollectingHook):
-    def validate_source(self, operation):
-        if "value" not in operation:
-            raise ValueError("platform source requires value")
-
-
-class I2CResolvingHook(CollectingHook):
-    def __init__(self):
-        self.validated = []
-
-    def validate_source(self, operation):
-        self.validated.append(operation["bus"])
-
-    def resolve_i2c_bus(self, bus, operation):
-        return "6" if bus == "IO-MUX-6" else bus
-
-
-def test_builtin_adapter_validation_and_collection_contracts(tmp_path):
-    """Exercise every built-in adapter plus its key negative preflight paths."""
-
-    base = work_item()
-    source_file = tmp_path / "source.json"
-    source_file.write_text('{"reading": 5}')
-    file_item = replace(
-        base,
-        source_type="file",
-        source={"file": str(source_file), "format": "json", "path": "reading"},
-        evaluation={"type": "comparison", "operator": ">", "value": 4},
-    )
-    sysfs_file = tmp_path / "sysfs"
-    sysfs_file.write_text("5")
-    sysfs_item = replace(
-        base,
-        source_type="sysfs",
-        source={"file": str(sysfs_file), "format": "integer"},
-        evaluation={"type": "comparison", "operator": ">", "value": 4},
-    )
-    cli_item = replace(
-        base,
-        source_type="cli",
-        source={"argv": ["diagnostic"], "timeout": 1, "max_output_bytes": 32},
-        evaluation={"type": "comparison", "operator": ">", "value": 4},
-    )
-    i2c_item = replace(
-        base,
-        source_type="i2c",
-        source={
-            "i2c_type": "get",
-            "bus": "6",
-            "chip_addr": "0x58",
-            "command": "0x7a",
-            "size": "b",
-        },
-        evaluation={"type": "mask", "logic": "&", "value": "0x80"},
-    )
-    hooks = VendorHookRegistry()
-    hooks.register("platform", CollectingHook())
-    platform_item = replace(
-        base,
-        source_type="platform_api",
-        source={"hook": "platform", "value": 5},
-        evaluation={"type": "comparison", "operator": ">", "value": 4},
-    )
-    adapters = (
-        (FileAdapter(), file_item),
-        (SysfsAdapter(), sysfs_item),
-        (
-            CLIAdapter(
-                lambda argv, **kwargs: subprocess.CompletedProcess(
-                    argv, 0, stdout=b"5", stderr=b""
-                )
-            ),
-            cli_item,
-        ),
-        (I2CAdapter(lambda source: "0x80"), i2c_item),
-        (PlatformAPIAdapter(hooks), platform_item),
-    )
-
-    for adapter, item in adapters:
-        adapter.validate(item)
-        assert adapter.collect(item).result == EvaluationResultType.MATCH
-
-    # Invalid file formats fail activation before polling starts.
-    item = replace(
-        work_item(),
-        source_type="file",
-        source={"file": str(tmp_path / "source"), "format": "pickle"},
-    )
-
-    with pytest.raises(ValueError, match="unsupported file format"):
-        FileAdapter().validate(item)
-
-    # Platform hooks own validation of their vendor source fields.
-    hooks = VendorHookRegistry()
-    hooks.register("platform", ValidatingHook())
-    item = replace(
-        work_item(),
-        source_type="platform_api",
-        source={"hook": "platform"},
-    )
-
-    with pytest.raises(ValueError, match="requires value"):
-        PlatformAPIAdapter(hooks).validate(item)
-
-    # I2C hooks validate the logical bus and resolve it only for collection.
-    observed = []
-    hook = I2CResolvingHook()
-    hooks = VendorHookRegistry()
-    hooks.register("i2c", hook)
-    item = replace(
-        work_item(),
-        source_type="i2c",
-        source={
-            "i2c_type": "get",
-            "bus": "IO-MUX-6",
-            "chip_addr": "0x58",
-            "command": "0x7a",
-            "size": "b",
-        },
-        evaluation={"type": "mask", "logic": "&", "value": "0x80"},
-    )
-    adapter = I2CAdapter(
-        lambda source: observed.append(source["bus"]) or "0x80",
-        hooks=hooks,
-    )
-
-    adapter.validate(item)
-    result = adapter.collect(item)
-
-    assert result.result == EvaluationResultType.MATCH
-    assert hook.validated == ["IO-MUX-6"]
-    assert observed == ["6"]

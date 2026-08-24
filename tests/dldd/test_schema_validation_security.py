@@ -6,7 +6,6 @@ from dataclasses import asdict, replace
 from datetime import date
 from io import BytesIO
 import json
-import os
 from pathlib import Path
 import pkgutil
 from typing import Literal
@@ -14,12 +13,6 @@ from typing import Literal
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from dldd.lifecycle import (
-    CandidateValidation,
-    RuleGenerationManager,
-    RulePaths,
-    sha256_file,
-)
 from dldd.logic import MAX_LOGIC_NESTING
 from dldd.planner import build_plans
 from dldd.rule_schema import (
@@ -76,47 +69,6 @@ def _file_unit_schema_violation(wrapper):
         # optional field is present.
         "unit": "",
     }
-
-
-def _candidate_validation(path, unused_dse):
-    result = load_rules(path)
-    broken = tuple(
-        {
-            "rule": item.rule_name,
-            "rule_id": item.rule_id,
-            "reason": "; ".join(str(issue) for issue in item.issues),
-        }
-        for item in result.broken_rules
-    )
-    errors = tuple(str(issue) for issue in result.file_errors)
-    if not result.materialized_rules:
-        errors += tuple(item["reason"] for item in broken)
-    return CandidateValidation(
-        file_valid=result.file_valid,
-        usable_rule_count=len(result.materialized_rules),
-        schema_version=result.schema_version or "",
-        broken_rules=broken,
-        errors=errors,
-        payload=result,
-    )
-
-
-def _lifecycle_paths(tmp_path):
-    platform = tmp_path / "platform"
-    platform.mkdir()
-    return RulePaths(
-        str(platform),
-        inbox=str(tmp_path / "inbox" / "dld_rules.yaml"),
-        rules_dir=str(tmp_path / "rules"),
-        state_file=str(tmp_path / "state.json"),
-    )
-
-
-def _accept_inbox(paths):
-    os.makedirs(os.path.dirname(paths.watcher_state), exist_ok=True)
-    Path(paths.watcher_state).write_text(
-        json.dumps({"last_restart_checksum": sha256_file(paths.inbox)})
-    )
 
 
 def test_generated_schema_and_exact_registry_dispatch_contract(
@@ -207,6 +159,14 @@ def test_generated_schema_and_exact_registry_dispatch_contract(
         assert not result.file_valid
         assert [(issue.code, issue.path) for issue in result.file_errors] == [
             ("unsupported_schema_version", "$.schema_version")
+        ]
+
+    for version in (None, 1, [], {}):
+        document = _document()
+        document["schema_version"] = version
+        result = validate_document(document, materialize=False)
+        assert [(issue.code, issue.path) for issue in result.file_errors] == [
+            ("missing_schema_version", "$.schema_version")
         ]
 
     # Registry provenance reaches every runtime object and rejects bad shapes.
@@ -327,6 +287,14 @@ def test_file_and_rule_wire_errors_are_localized_and_bounded():
             ),
             "unknown_field",
             "$.signatures[1].signature.metadata.future_option",
+            "python",
+        ),
+        (
+            lambda wrapper: wrapper["signature"]["conditions"]["events"][0][
+                "event"
+            ].update({"future_option": "not-installed"}),
+            "unknown_field",
+            "$.signatures[1].signature.conditions.events[0].event.future_option",
             "python",
         ),
         (
@@ -796,6 +764,22 @@ def test_diagnostic_redaction_bounding_and_identity_contract():
     assert len({item.rule_name for item in result.broken_rules}) == MAX_SIGNATURES
     assert all("\0" not in item.rule_name for item in result.broken_rules)
 
+    # Invalid metadata cannot become an unbounded or misleading rule identity.
+    for mode, expected_rule_id in (("mapping", None), ("name", 1000001)):
+        document = _document()
+        metadata = document["signatures"][0]["signature"]["metadata"]
+        if mode == "mapping":
+            document["signatures"][0]["signature"]["metadata"] = []
+        else:
+            metadata["name"] = 123
+
+        result = validate_document(document, materialize=False)
+
+        assert result.file_valid
+        assert result.broken_rules[0].rule_name == "signature[0]"
+        assert result.broken_rules[0].rule_id == expected_rule_id
+        assert result.broken_rules[0].issues[0].code == "invalid_type"
+
 
 def test_expression_limits_and_stable_source_diagnostics():
     """Localize bounded logic/regex errors with stable paths and lines."""
@@ -905,6 +889,18 @@ def test_source_parsing_rejects_ambiguous_nonfinite_and_oversized_input():
         # JSON has no source offsets; YAML reports the second key line.
         assert issue.line == line
 
+    # YAML construction rejects keys that cannot form a safe mapping.
+    pytest.importorskip("yaml")
+    result = load_rules(
+        "schema_version: '0.0.1'\n"
+        "? [not, hashable]\n"
+        ": value\n"
+        "signatures: []\n"
+    )
+    assert result.file_errors[0].code == "parse_error"
+    assert "found unhashable key" in result.file_errors[0].message
+    assert result.file_errors[0].line == 2
+
     # Nonfinite values and keys are rejected consistently across formats.
     for source in (
         '{"schema_version":"0.0.1","value":NaN,"signatures":[]}',
@@ -944,6 +940,14 @@ def test_source_parsing_rejects_ambiguous_nonfinite_and_oversized_input():
         assert "exceeds {} bytes".format(MAX_SOURCE_BYTES) in (
             result.file_errors[0].message
         )
+
+    class InvalidStream(object):
+        def read(self, unused_limit):
+            return object()
+
+    for source in (object(), InvalidStream(), b"\xff"):
+        result = load_rules(source)
+        assert result.file_errors[0].code == "parse_error"
 
 
 def test_document_resource_alias_and_rule_count_limits():
@@ -1042,53 +1046,3 @@ def test_document_resource_alias_and_rule_count_limits():
         == "$.signatures[1].signature.conditions.events"
         for issue in result.broken_rules[0].issues
     )
-
-
-def test_schema_validation_drives_lifecycle_candidate_selection(tmp_path):
-    for scenario in ("fallback", "degraded"):
-        scenario_root = tmp_path / scenario
-        scenario_root.mkdir()
-        paths = _lifecycle_paths(scenario_root)
-        os.makedirs(os.path.dirname(paths.inbox), exist_ok=True)
-        if scenario == "fallback":
-            os.makedirs(paths.rules_dir, exist_ok=True)
-            active_source = json.dumps(_document(), sort_keys=True)
-            Path(paths.active).write_text(active_source)
-            candidate = _document()
-            del candidate["signatures"][0]["signature"]["metadata"][
-                "severity"
-            ]
-            source = json.dumps(candidate)
-        else:
-            candidate = _document()
-            bad = _unique_rule_copy(candidate)
-            _file_unit_schema_violation(bad)
-            candidate["signatures"].append(bad)
-            source = json.dumps(candidate, sort_keys=True)
-
-        Path(paths.inbox).write_text(source)
-        _accept_inbox(paths)
-
-        result = RuleGenerationManager(
-            paths, _candidate_validation, "platform-v1"
-        ).activate()
-
-        if scenario == "fallback":
-            assert result.source == "active"
-            assert result.fallback_used is True
-            assert Path(paths.active).read_text() == active_source
-            manifest = json.loads(Path(paths.manifest).read_text())
-            rejected = next(
-                attempt
-                for attempt in manifest["activation_attempts"]
-                if attempt["source"] == "inbox"
-            )
-            assert rejected["validation_result"] == "FAILED"
-            assert rejected["usable_rule_count"] == 0
-            assert "zero usable rules" in rejected["reason"]
-        else:
-            assert result.source == "inbox"
-            assert result.validation_result == "DEGRADED"
-            assert result.fallback_used is False
-            assert len(result.broken_rules) == 1
-            assert Path(paths.active).read_text() == source

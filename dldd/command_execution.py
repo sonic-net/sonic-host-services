@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Type
 
 
 DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
@@ -66,6 +66,38 @@ def run_shell_free(
         _bounded_bytes(completed.stdout, max_output_bytes),
         _bounded_bytes(completed.stderr, max_output_bytes),
     )
+
+
+def run_checked_shell_free(
+    argv: Sequence[str],
+    *,
+    timeout: Optional[float] = None,
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+    runner: Optional[Callable[..., Any]] = None,
+    error_type: Type[Exception] = RuntimeError,
+    error_context: Optional[str] = None,
+    encoding: str = "utf-8",
+) -> str:
+    """Run bounded argv and return text, raising on a non-zero exit.
+
+    ``error_context`` adds a stable ``"<context> exited <code>:"`` prefix.
+    Omitting it preserves stderr as the complete error message.
+    """
+
+    result = run_shell_free(
+        argv,
+        timeout=timeout,
+        max_output_bytes=max_output_bytes,
+        runner=runner,
+    )
+    if result.returncode:
+        error = result.stderr_text(encoding, "replace")
+        if error_context:
+            error = "{} exited {}: {}".format(
+                error_context, result.returncode, error
+            )
+        raise error_type(error)
+    return result.stdout_text(encoding, "replace")
 
 
 def build_i2c_argv(

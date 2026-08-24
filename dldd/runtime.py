@@ -17,7 +17,7 @@ from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Set, Tuple
 from urllib.parse import quote
 
-from .models import ValueConfig
+from .models import ValueConfig, frozen_mapping
 
 
 class MonitorCommandType(str, Enum):
@@ -121,8 +121,8 @@ class MonitorWorkItem:
             bool(self.sampling_interval_is_explicit),
         )
         object.__setattr__(self, "async_collection", bool(self.async_collection))
-        object.__setattr__(self, "source", MappingProxyType(dict(self.source)))
-        object.__setattr__(self, "evaluation", MappingProxyType(dict(self.evaluation)))
+        object.__setattr__(self, "source", frozen_mapping(self.source))
+        object.__setattr__(self, "evaluation", frozen_mapping(self.evaluation))
 
 
 @dataclass(frozen=True)
