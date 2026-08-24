@@ -221,9 +221,8 @@ def test_logic_parser_enforces_limits_tokens_and_tree_contracts():
     with pytest.raises(TypeError, match="unsupported logic expression"):
         evaluate_logic(object(), {})
 
-    event_id = int("9" * 1000)
-
-    assert parse_logic(str(event_id)) == EventReference(event_id)
+    with pytest.raises(LogicSyntaxError, match="event ID is too large"):
+        parse_logic("9" * 1000)
 
 
 def test_planner_canonicalizes_bindings_evaluations_and_value_config():

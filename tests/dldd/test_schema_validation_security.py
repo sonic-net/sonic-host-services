@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import pkgutil
-import sys
 from typing import Literal
 
 import pytest
@@ -820,12 +819,7 @@ def test_expression_limits_and_stable_source_diagnostics():
         "9" * 5000
     )
 
-    previous_limit = sys.get_int_max_str_digits()
-    sys.set_int_max_str_digits(4300)
-    try:
-        result = validate_document(document)
-    finally:
-        sys.set_int_max_str_digits(previous_limit)
+    result = validate_document(document)
 
     issue = result.broken_rules[0].issues[0]
     assert issue.code == "invalid_logic"

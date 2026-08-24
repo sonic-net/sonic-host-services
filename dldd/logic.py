@@ -36,6 +36,7 @@ _TOKEN = re.compile(r"\s*(?:(AND|OR)|([0-9]+)|(\()|(\))|(\S+))")
 MAX_LOGIC_CHARACTERS = 16384
 MAX_LOGIC_TOKENS = 4096
 MAX_LOGIC_NESTING = 64
+MAX_LOGIC_EVENT_ID = 999
 
 
 def _tokenize(expression):
@@ -62,14 +63,12 @@ def _tokenize(expression):
         if operator is not None:
             tokens.append((operator, position))
         elif number is not None:
-            try:
-                event_id = int(number)
-            except ValueError:
-                # Python bounds decimal-to-integer conversion.  Keep that
-                # implementation detail behind the rules-language contract.
+            significant = number.lstrip("0") or "0"
+            if len(significant) > len(str(MAX_LOGIC_EVENT_ID)):
                 raise LogicSyntaxError(
                     "event ID is too large at character {}".format(position)
-                ) from None
+                )
+            event_id = int(significant)
             tokens.append((event_id, position))
         elif left is not None:
             nesting += 1

@@ -1,10 +1,9 @@
 from __future__ import absolute_import
 
-import sys
-
 import pytest
 
 from dldd.logic import (
+    MAX_LOGIC_EVENT_ID,
     MAX_LOGIC_NESTING,
     AndExpression,
     EventReference,
@@ -76,10 +75,11 @@ def test_logic_rejects_invalid_contracts():
     with pytest.raises(LogicSyntaxError, match="undefined event IDs: 3"):
         parse_logic("1 AND 3", {1, 2})
 
-    previous_limit = sys.get_int_max_str_digits()
-    sys.set_int_max_str_digits(4300)
-    try:
-        with pytest.raises(LogicSyntaxError, match="event ID is too large"):
-            parse_logic("9" * 5000)
-    finally:
-        sys.set_int_max_str_digits(previous_limit)
+    assert parse_logic(str(MAX_LOGIC_EVENT_ID)) == EventReference(
+        MAX_LOGIC_EVENT_ID
+    )
+    assert parse_logic("0001") == EventReference(1)
+    with pytest.raises(LogicSyntaxError, match="event ID is too large"):
+        parse_logic(str(MAX_LOGIC_EVENT_ID + 1))
+    with pytest.raises(LogicSyntaxError, match="event ID is too large"):
+        parse_logic("9" * 5000)
