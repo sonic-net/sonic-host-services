@@ -205,6 +205,40 @@ class Operation(object):
         object.__setattr__(self, "path", frozen_mapping(self.path))
         object.__setattr__(self, "options", frozen_mapping(self.options))
 
+    def as_runtime_payload(self) -> Mapping[str, Any]:
+        """Return the canonical action/query dispatch representation."""
+
+        reserved = {
+            "type",
+            "command",
+            "argv",
+            "path",
+            "timeout",
+            "max_output_bytes",
+            "executor",
+            "materialized_operation",
+        }
+        payload = {
+            key: value
+            for key, value in self.options.items()
+            if key not in reserved
+        }
+        payload["type"] = self.type
+        if self.command is not None:
+            payload["command"] = self.command
+        if self.argv:
+            payload["argv"] = list(self.argv)
+        if self.path:
+            payload["path"] = dict(self.path)
+        if self.timeout is not None:
+            payload["timeout"] = self.timeout
+        if self.max_output_bytes is not None:
+            payload["max_output_bytes"] = self.max_output_bytes
+        if self.executor is not None:
+            payload["executor"] = self.executor
+            payload["materialized_operation"] = self
+        return payload
+
 
 @dataclass(frozen=True)
 class LocalActions(object):

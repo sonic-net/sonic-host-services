@@ -332,7 +332,7 @@ def test_materialized_operation_dispatch_payload_contract():
         },
     )
 
-    payload = PrimaryOrchestrator._operation_payload(operation)
+    payload = operation.as_runtime_payload()
 
     assert payload["type"] == "dse"
     assert payload["command"] == "PSU:reset()"
@@ -355,7 +355,7 @@ def test_materialized_operation_dispatch_payload_contract():
         executor=executor,
         options={"token": "vendor-data"},
     )
-    payload = PrimaryOrchestrator._operation_payload(operation)
+    payload = operation.as_runtime_payload()
 
     assert FilesystemArtifactClient._run_query(payload) == "collected"
     assert received == [operation]
@@ -371,7 +371,7 @@ def test_materialized_operation_dispatch_payload_contract():
         },
     )
 
-    payload = PrimaryOrchestrator._operation_payload(operation)
+    payload = operation.as_runtime_payload()
 
     assert payload == {"type": "vendor_dump", "hook": "diagnostics"}
 

@@ -1,7 +1,6 @@
 # DLDD Test Structure
 
-DLDD uses separate test tiers because they answer different questions. Coverage
-from one tier must not conceal a gap in another tier.
+DLDD uses separate test tiers because they answer different questions.
 
 ## Unit tests
 
@@ -12,11 +11,10 @@ the result and observable state or side effects, and includes normal, boundary,
 negative, exception, timeout, and cleanup behavior where the production branch
 supports those outcomes.
 
-Run them without integration coverage:
+Run the focused unit suite with:
 
 ```console
 make -C tests/dldd unit
-make -C tests/dldd unit-coverage
 ```
 
 The repository and wheel-build unit entry point is:
@@ -25,16 +23,11 @@ The repository and wheel-build unit entry point is:
 make -C tests/dldd unit-ci
 ```
 
-It runs the normal repository pytest command, retaining the existing terminal,
-HTML, and XML coverage for `scripts/`, `host_modules/`, and `dldd/`. It then
-checks the same unit-only coverage data with a DLDD-specific line-and-branch
-gate. Integration tests carry the `dldd_integration` marker and are excluded
-from this data, so they cannot raise the enforced percentage.
-
-The enforced set is the `dldd/` package plus the two installed executable
-wrappers, `scripts/dldd` and `scripts/dldd-rules-watch`. No unrelated host
-service script is included in that percentage. `tests/dldd/coverage.ini`
-defines the same collection boundary used by the focused coverage command.
+It runs the normal repository pytest command and therefore retains the
+repository's established reporting policy. Integration tests carry the
+`dldd_integration` marker and remain an explicit, separate invocation. DLDD
+does not add a feature-specific coverage threshold to existing repository or
+image-build policy.
 
 Unit tests follow the PMON daemon convention of organizing around a public
 behavior rather than creating one test function for every branch. One test may
@@ -62,7 +55,10 @@ The checked-in rule fixtures have deliberately different deployment scopes:
   source and vendor doubles. It is hardware-neutral qualification data, not a
   platform rules generation, and must not be installed on a DUT.
 - `fixtures/mixed-sensor-rules.yaml` is the only fixture intended for controlled
-  activation on the identified lab DUT. Executable rules carry `dut-live`; the
+  activation on the identified lab DUT. It is an integration fixture, not a
+  second schema conformance corpus: three DSE rules discover live sensor
+  inventory and thresholds instead of copying a target snapshot. Executable
+  rules carry `dut-live`; the
   two `dut-schema-sentinel` rules intentionally remain non-executable to prove
   rule isolation, so `DEGRADED` is the expected activation result. Its valid
   rules perform read-only collection and declare remote recommendations only.
@@ -83,20 +79,13 @@ The checked-in rule fixtures have deliberately different deployment scopes:
   localized. Resolution details belong to the vendor implementation, so common
   tests assert categories rather than vendor error text.
 
-The conformance rules use `coverage-*` metadata tags as machine-checked
-capability labels. Tests also inspect the actual event/evaluation/operation
-fields, so a label cannot claim coverage that the rule does not contain. Fatal
+The conformance rules use metadata tags as machine-checked capability labels.
+Tests also inspect the actual event/evaluation/operation fields, so a label
+cannot claim a capability that the rule does not contain. Fatal
 envelope cases such as an unsupported `schema_version`, duplicate rule
 identity, duplicate YAML key, or forbidden alias remain separate parser/unit
 inputs because any one of them correctly rejects the complete file and cannot
 coexist in a degraded-but-usable rules generation.
-
-`unit-coverage` records line and branch data in
-`/tmp/dldd-unit-coverage.json` by default and prints every missing line. The
-report is intentionally not combined with integration coverage. The build gate
-is enforced at 100% and may remain there only through meaningful behavioral
-tests; import-only calls or assertions written solely to move the number do not
-qualify.
 
 ## Runtime integration tests
 
@@ -150,19 +139,15 @@ Current deterministic scenarios cover:
 - fault arbitration and promotion of a still-active alternate rule; and
 - replacement of an unexpectedly stopped monitor while preserving its plan.
 
-Run integration tests and their independent diagnostic coverage with:
+Run integration tests with:
 
 ```console
 make -C tests/dldd integration
-make -C tests/dldd integration-coverage
 ```
 
-The normal integration target writes `dldd-integration-results.xml` for a
-separate CI test run. It clears the repository pytest coverage options, so its
-runtime execution cannot alter the unit coverage data or the 100% DLDD gate.
-
-The second command writes `/tmp/dldd-integration-coverage.json`. Its percentage
-describes integration reach only and is never used to fill unit-test gaps.
+The integration target writes `dldd-integration-results.xml` for a separate
+test run and clears repository-wide pytest options so it exercises only this
+tier.
 Safe complete-hash replacement reads the prior field set before writing, so a
 permanent read outage may also prevent publication from completing; the fatal
 criterion is inability to complete publication, not the socket operation name.

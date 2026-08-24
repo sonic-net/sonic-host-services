@@ -12,6 +12,7 @@ import pytest
 from dldd.actions import ActionSequenceResult
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine
+from dldd.models import Operation
 from dldd.orchestrator import PrimaryOrchestrator, Reconciliation
 from dldd.planner import build_plans
 from dldd.runtime import (
@@ -534,7 +535,7 @@ def test_fault_serialization_operation_payload_and_dirty_retry():
     assert active_identity in orchestrator.dirty_faults
 
     # Canonical optional fields survive operation materialization.
-    operation = SimpleNamespace(
+    operation = Operation(
         options={"token": "vendor", "path": "ignored"},
         type="i2c",
         command="read",
@@ -544,7 +545,7 @@ def test_fault_serialization_operation_payload_and_dirty_retry():
         max_output_bytes=8,
         executor=None,
     )
-    assert PrimaryOrchestrator._operation_payload(operation) == {
+    assert operation.as_runtime_payload() == {
         "token": "vendor",
         "type": "i2c",
         "command": "read",

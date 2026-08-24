@@ -219,6 +219,10 @@ class RecordingConnector(object):
         self.reads.append((database, key))
         return self.values.get((database, key))
 
+    def keys(self, database, pattern):
+        self.reads.append((database, pattern))
+        return [b"TABLE|B", "TABLE|A"]
+
 
 def test_sonic_hash_reader_factory_dependency_and_lazy_connector_contract(
     monkeypatch,
@@ -231,6 +235,7 @@ def test_sonic_hash_reader_factory_dependency_and_lazy_connector_contract(
 
     assert reader.read("STATE_DB", "MISSING|0") == {}
     assert reader.read("STATE_DB", "MISSING|1") == {}
+    assert reader.keys("STATE_DB", "TABLE|*") == ("TABLE|A", "TABLE|B")
     assert creations == [True]
     assert connector.connections == [("STATE_DB", False)]
 
@@ -247,6 +252,13 @@ def test_sonic_hash_reader_factory_dependency_and_lazy_connector_contract(
     ):
         with pytest.raises(ValueError, match=expected):
             reader.read(database, key)
+
+    for database, pattern, expected in (
+        ("", "TABLE|*", "database"),
+        ("STATE_DB", "", "key pattern"),
+    ):
+        with pytest.raises(ValueError, match=expected):
+            reader.keys(database, pattern)
 
 
     # The production connector is loaded lazily and reports missing runtime deps.

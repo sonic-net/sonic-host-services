@@ -946,7 +946,7 @@ class PrimaryOrchestrator:
         execution = decision.execution
         identity = (execution.signature.metadata.id, execution.component_name)
         local = execution.signature.actions.repair_actions.local_actions
-        actions = tuple(self._operation_payload(item) for item in local.action_list)
+        actions = tuple(item.as_runtime_payload() for item in local.action_list)
         if future is None:
             future = self.action_runner.submit(
                 execution.signature.metadata.name,
@@ -1784,7 +1784,7 @@ class PrimaryOrchestrator:
                     }
                 ),
                 collection.logs,
-                tuple(self._operation_payload(item) for item in collection.queries),
+                tuple(item.as_runtime_payload() for item in collection.queries),
             )
             return request.as_payload()
         except Exception as error:
@@ -1796,41 +1796,6 @@ class PrimaryOrchestrator:
                     "last_error": str(error),
                 }
             )
-
-    @staticmethod
-    def _operation_payload(operation) -> Mapping[str, Any]:
-        # Vendor metadata is additive.  It must never replace the typed fields
-        # that validation/materialization selected for runtime dispatch.
-        reserved = {
-            "type",
-            "command",
-            "argv",
-            "path",
-            "timeout",
-            "max_output_bytes",
-            "executor",
-            "materialized_operation",
-        }
-        payload = {
-            key: value
-            for key, value in operation.options.items()
-            if key not in reserved
-        }
-        payload["type"] = operation.type
-        if operation.command is not None:
-            payload["command"] = operation.command
-        if operation.argv:
-            payload["argv"] = list(operation.argv)
-        if operation.path:
-            payload["path"] = dict(operation.path)
-        if operation.timeout is not None:
-            payload["timeout"] = operation.timeout
-        if operation.max_output_bytes is not None:
-            payload["max_output_bytes"] = operation.max_output_bytes
-        if operation.executor is not None:
-            payload["executor"] = operation.executor
-            payload["materialized_operation"] = operation
-        return payload
 
     @staticmethod
     def _execution_keys(execution: SignatureExecution):

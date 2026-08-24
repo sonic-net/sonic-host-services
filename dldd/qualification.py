@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Mapping, Tuple
 
+from .adapters import require_adapter
 from .correlation import CorrelationEngine
 from .planner import work_items_for_dse_expansion
 from .runtime import (
@@ -64,12 +65,7 @@ def qualify_e2e(
         if base.rule_id in invalid_rule_ids:
             continue
         try:
-            adapter = adapters.get("dse")
-            if adapter is None:
-                raise ValueError(
-                    "no adapter is registered for source type 'dse'"
-                )
-            expansion = adapter.expand(template)
+            expansion = require_adapter(adapters, "dse").expand(template)
             expanded = work_items_for_dse_expansion(template, expansion)
         except Exception as error:
             failed = True
@@ -132,14 +128,9 @@ def qualify_e2e(
         identity = (item.rule_id, item.component_name)
         rule_info[identity] = item.rule_name
         try:
-            adapter = adapters.get(item.source_type)
-            if adapter is None:
-                raise ValueError(
-                    "no adapter is registered for source type {!r}".format(
-                        item.source_type
-                    )
-                )
-            evaluated = adapter.collect(item)
+            evaluated = require_adapter(
+                adapters, item.source_type
+            ).collect(item)
             if not isinstance(evaluated, EvaluationResult):
                 raise TypeError(
                     "adapter collect() must return EvaluationResult"

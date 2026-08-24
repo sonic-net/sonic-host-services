@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Tuple
 
-from .adapters import VendorAdapter, adapter_map
-from .hooks import VendorHookError
+from .adapters import VendorAdapter, adapter_map, require_adapter
+from .hooks import VendorHookError, operation_hook_name
 from .planner import build_plans
 
 
@@ -44,14 +44,12 @@ def validate_runtime_operation_hooks(materialized_rule, vendor_hooks) -> None:
                 continue
             if callable(operation.executor) or operation.type == "cli":
                 continue
-            hook_name = str(operation.options.get("hook", operation.type))
-            vendor_hooks.get(hook_name)
+            vendor_hooks.get(operation_hook_name(operation))
     if actions.log_collection is not None:
         for query in actions.log_collection.queries:
             if callable(query.executor) or query.type == "cli":
                 continue
-            hook_name = str(query.options.get("hook", query.type))
-            vendor_hooks.get(hook_name)
+            vendor_hooks.get(operation_hook_name(query))
 
 
 def build_adapter_registry(extensions) -> Mapping:
@@ -111,14 +109,7 @@ def preflight_activation(
         if item.rule_id in failures:
             continue
         try:
-            adapter = adapters.get(item.source_type)
-            if adapter is None:
-                raise ValueError(
-                    "no adapter is registered for source type {!r}".format(
-                        item.source_type
-                    )
-                )
-            adapter.validate(item)
+            require_adapter(adapters, item.source_type).validate(item)
         except (ValueError, VendorHookError) as error:
             metadata = metadata_by_id[item.rule_id]
             failures.setdefault(

@@ -19,6 +19,7 @@ from .artifacts import (
 )
 from .config import ConfigDBProvider, DLDDConfig, load_vendor_defaults
 from .correlation import CorrelationEngine
+from .hooks import operation_hook_name
 from .lifecycle import (
     BrokenRuleStateStore,
     CandidateValidation,
@@ -548,8 +549,9 @@ class DLDDService:
         executor = query.get("executor")
         if callable(executor) or query.get("type") == "cli":
             return FilesystemArtifactClient._run_query(query)
-        hook_name = str(query.get("hook", query.get("type", "")))
-        return self.extensions.vendor_hooks.get(hook_name).collect_query(query)
+        return self.extensions.vendor_hooks.get(
+            operation_hook_name(query)
+        ).collect_query(query)
 
     def _component_serial(self, component_type: str, component_name: str) -> str:
         cache_key = (component_type, component_name)

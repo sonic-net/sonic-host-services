@@ -10,7 +10,7 @@ class SonicHashReaderError(RuntimeError):
 
 
 class SonicHashReader:
-    """Reuse one injected or lazily created SonicV2Connector for hash reads."""
+    """Reuse one injected or lazily created connector for read-only DB access."""
 
     def __init__(self, connector=None, connector_factory=None) -> None:
         if connector is not None and connector_factory is not None:
@@ -35,14 +35,42 @@ class SonicHashReader:
         self._connector = swsscommon.SonicV2Connector(host="127.0.0.1")
         return self._connector
 
-    def read(self, database: str, key: str):
+    @staticmethod
+    def _text(value):
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "replace")
+        return str(value)
+
+    def _connected_connector(self, database: str):
         if not isinstance(database, str) or not database:
             raise ValueError("database must be a non-empty string")
+        connector = self._get_connector()
+        if database not in self._connected_databases:
+            connector.connect(database, False)
+            self._connected_databases.add(database)
+        return connector
+
+    def read(self, database: str, key: str):
         if not isinstance(key, str) or not key:
             raise ValueError("hash key must be a non-empty string")
         with self._lock:
-            connector = self._get_connector()
-            if database not in self._connected_databases:
-                connector.connect(database, False)
-                self._connected_databases.add(database)
-            return connector.get_all(database, key) or {}
+            connector = self._connected_connector(database)
+            row = connector.get_all(database, key) or {}
+            return {
+                self._text(name): self._text(value)
+                for name, value in row.items()
+            }
+
+    def keys(self, database: str, pattern: str):
+        """Return stable text keys matching ``pattern`` from one database."""
+
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("key pattern must be a non-empty string")
+        with self._lock:
+            connector = self._connected_connector(database)
+            return tuple(
+                sorted(
+                    self._text(item)
+                    for item in (connector.keys(database, pattern) or ())
+                )
+            )

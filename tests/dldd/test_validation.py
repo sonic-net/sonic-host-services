@@ -420,49 +420,22 @@ def test_mixed_sensor_rules_materialize_live_roles_and_isolate_sentinels():
     all_rules = {
         rule.metadata.id: rule for rule in result.materialized_rules
     }
-    rules = {
+    sensor_rules = {
         rule_id: rule
         for rule_id, rule in all_rules.items()
-        if rule_id in (9999101, 9999102, 9999103)
+        if rule_id in (9999401, 9999402, 9999403)
     }
     assert set(all_rules) == live_ids
-    assert set(rules) == {9999101, 9999102, 9999103}
-    assert {rule_id: rule.metadata.name for rule_id, rule in rules.items()} == {
-        9999101: "DLDD_TEMPERATURE_HIGH",
-        9999102: "DLDD_VOLTAGE_HIGH",
-        9999103: "DLDD_CURRENT_HIGH",
+    assert live_ids == {9999301, 9999302, 9999401, 9999402, 9999403}
+    sensor_names = {
+        rule_id: rule.metadata.name
+        for rule_id, rule in sensor_rules.items()
     }
-    expected_counts = {9999101: 71, 9999102: 218, 9999103: 28}
-    expected_tables = {
-        9999101: ("TEMPERATURE_INFO", "temperature"),
-        9999102: ("VOLTAGE_INFO", "voltage"),
-        9999103: ("CURRENT_INFO", "current"),
+    assert sensor_names == {
+        9999401: "DLDD_TEMPERATURE_HIGH_DSE",
+        9999402: "DLDD_VOLTAGE_HIGH_DSE",
+        9999403: "DLDD_CURRENT_HIGH_DSE",
     }
-    thresholds = {}
-    for rule_id, rule in rules.items():
-        table, reading = expected_tables[rule_id]
-        assert rule.signature.conditions.logic == "1"
-        assert len(rule.events) == 1
-        materialized_event = rule.events[0]
-        assert len(materialized_event.sources) == expected_counts[rule_id]
-        assert all(
-            source.path["table"] == table
-            and source.path["key"].startswith(table + "|")
-            and source.path["path"] == reading
-            for source in materialized_event.sources
-        )
-        keys = [source.path["key"] for source in materialized_event.sources]
-        assert len(keys) == len(set(keys))
-        values = materialized_event.event.evaluation.value
-        assert len(values) == expected_counts[rule_id]
-        thresholds.update(dict(zip(keys, values)))
-        assert {source.instance for source in materialized_event.sources} == {
-            binding.split(":", 1)[0]
-            for binding in materialized_event.event.instances
-        }
-    assert thresholds["TEMPERATURE_INFO|X86_PKG_TEMP"] == 115.0
-    assert thresholds["VOLTAGE_INFO|P12V_CPU"] == 13200.0
-    assert thresholds["CURRENT_INFO|P12V_SLED1_IIN"] == 17141.0
 
     plans = build_plans(
         result.materialized_rules,
@@ -501,18 +474,10 @@ def test_mixed_sensor_rules_materialize_live_roles_and_isolate_sentinels():
     template_rule_ids = {
         template.item.rule_id for template in plans.templates.values()
     }
-    assert {9999401, 9999402, 9999403} <= template_rule_ids
-    assert {
-        rule_id: sum(
-            item.rule_id == rule_id for item in plans.work_items.values()
-        )
-        for rule_id in rules
-    } == expected_counts
-    assert {
-        item.event_id
-        for item in plans.work_items.values()
-        if item.rule_id in rules
-    } == {1}
+    assert template_rule_ids == {9999401, 9999402, 9999403}
+    assert not {
+        item.rule_id for item in plans.work_items.values()
+    }.intersection(template_rule_ids)
     broken = {rule.rule_id: rule for rule in result.broken_rules}
     assert set(broken) == sentinel_ids
     assert {issue.code for issue in broken[9999201].issues} == {

@@ -491,3 +491,14 @@ def adapter_map(
         "platform_api": PlatformAPIAdapter(hooks),
         "dse": DSEAdapter(),
     }
+
+
+def require_adapter(adapters: Mapping, source_type: str) -> DataSourceAdapter:
+    """Return the configured adapter or raise the shared contract error."""
+
+    adapter = adapters.get(source_type)
+    if adapter is None:
+        raise ValueError(
+            "no adapter is registered for source type {!r}".format(source_type)
+        )
+    return adapter

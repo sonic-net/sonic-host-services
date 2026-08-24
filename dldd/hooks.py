@@ -11,6 +11,18 @@ class VendorHookError(RuntimeError):
     """Base error raised by a vendor hook."""
 
 
+def operation_hook_name(operation) -> str:
+    """Return one canonical vendor-hook name for a model or wire payload."""
+
+    if isinstance(operation, Mapping):
+        operation_type = operation.get("type")
+        configured = operation.get("hook")
+    else:
+        operation_type = operation.type
+        configured = operation.options.get("hook")
+    return str(configured or operation_type)
+
+
 class VendorHook(ABC):
     """Vendor implementation selected by a declarative hook name.
 

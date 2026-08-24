@@ -13,7 +13,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
 from .bounded_calls import BoundedCallGate
 from .command_execution import build_i2c_argv, run_shell_free
-from .hooks import VendorHookRegistry
+from .hooks import VendorHookRegistry, operation_hook_name
 from .models import Operation
 from .timestamps import floor_timestamp_fields
 
@@ -98,12 +98,9 @@ class ActionExecutor:
                 else self._execute_i2c(action, timeout)
             )
 
-        hook_name = action.get("hook")
-        if not hook_name and action_type == "dse":
-            hook_name = "dse"
-        if not hook_name:
-            hook_name = str(action_type)
-        return self.hooks.get(str(hook_name)).execute_action(action)
+        return self.hooks.get(
+            operation_hook_name(action)
+        ).execute_action(action)
 
     def _execute_i2c(self, action: Mapping[str, Any], timeout: float) -> Any:
         path = action.get("path") or {}
