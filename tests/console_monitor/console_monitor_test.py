@@ -13,6 +13,7 @@ Test scenarios:
 """
 
 import os
+import posix
 import sys
 import time
 import copy
@@ -2767,17 +2768,20 @@ class TestConsoleLoggingCoverage(TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
-                service = console_monitor.DCEService()
-                service.config_db = MockConfigDb()
-                service._sync_logrotate_configs()
+                with mock.patch.object(console_monitor.os, 'remove', posix.remove):
+                    service = console_monitor.DCEService()
+                    service.config_db = MockConfigDb()
+                    service._sync_logrotate_configs()
 
-                conf_path = os.path.join(tmpdir, "console-0")
-                self.assertTrue(os.path.exists(conf_path))
+                    conf_path = os.path.join(tmpdir, "console-0")
+                    self.assertTrue(os.path.exists(conf_path))
+                    self.assertEqual(service._logrotate_links, {"0"})
 
-                MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["0"]["logging_enabled"] = "no"
-                service._sync_logrotate_configs()
+                    MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["0"]["logging_enabled"] = "no"
+                    service._sync_logrotate_configs()
 
-                self.assertFalse(os.path.exists(conf_path))
+                    self.assertFalse(os.path.exists(conf_path))
+                    self.assertEqual(service._logrotate_links, set())
 
     def test_sync_logrotate_write_failure(self):
         MockConfigDb.set_config_db({
@@ -2807,7 +2811,14 @@ class TestConsoleLoggingCoverage(TestCase):
 
                 mock_error.assert_called_once()
 
-    def test_proxy_initialize_log_open_failure(self):
+    @mock.patch.object(console_monitor, 'MirrorControlServer')
+    @mock.patch.object(console_monitor, 'MirrorManager')
+    @mock.patch.object(console_monitor, 'configure_serial')
+    @mock.patch.object(console_monitor, 'set_nonblocking')
+    @mock.patch('os.pipe', return_value=(10, 11))
+    @mock.patch.object(console_monitor, 'Table')
+    @mock.patch.object(console_monitor, 'DBConnector')
+    def test_proxy_initialize_log_open_failure(self, *_):
         proxy = console_monitor.ProxyService(link_id="1")
         proxy.running = True
         proxy.baud = 9600
@@ -2816,8 +2827,17 @@ class TestConsoleLoggingCoverage(TestCase):
         proxy.logging_enabled = True
         proxy.log_file_path = "/var/log/console1.log"
 
-        with mock.patch('os.open', side_effect=[10, 11, OSError("permission denied")]):
-            with mock.patch('console_monitor.configure_serial'):
+        def open_side_effect(path, flags, *args, **kwargs):
+            if path == proxy.log_file_path:
+                raise OSError("permission denied")
+            if path == proxy.device_path:
+                return 12
+            if path == proxy.ptm_path:
+                return 13
+            raise AssertionError(f"unexpected os.open path: {path}")
+
+        with mock.patch('os.open', side_effect=open_side_effect):
+            with mock.patch('os.close'):
                 with mock.patch.object(console_monitor.log, 'error') as mock_error:
                     result = proxy._initialize()
 
