@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from dldd import adapters as dldd_adapters
+from dldd import command_execution as dldd_command_execution
 from dldd.adapters import (
     AdapterError,
     CLIAdapter,
@@ -406,7 +407,7 @@ def test_cli_and_i2c_command_adapter_validation_and_failure_contract(monkeypatch
         "command": "0x7a",
     }
     monkeypatch.setattr(
-        dldd_adapters,
+        dldd_command_execution,
         "run_shell_free",
         lambda *args, **kwargs: ShellFreeResult(
             ("i2cget",), 0, b"0x80\n", b""
@@ -415,13 +416,24 @@ def test_cli_and_i2c_command_adapter_validation_and_failure_contract(monkeypatch
     assert I2CAdapter._i2cget(source) == "0x80"
 
     monkeypatch.setattr(
-        dldd_adapters,
+        dldd_command_execution,
         "run_shell_free",
         lambda *args, **kwargs: ShellFreeResult(
             ("i2cget",), 1, b"", b"bus unavailable\n"
         ),
     )
-    with pytest.raises(SourceUnavailable, match="bus unavailable"):
+    with pytest.raises(SourceUnavailable) as error:
+        I2CAdapter._i2cget(source)
+    assert str(error.value) == "bus unavailable"
+
+    monkeypatch.setattr(
+        dldd_command_execution,
+        "run_shell_free",
+        lambda *args, **kwargs: ShellFreeResult(
+            ("i2cget",), 0, b"\xff\n", b""
+        ),
+    )
+    with pytest.raises(UnicodeDecodeError):
         I2CAdapter._i2cget(source)
 
     # Without a vendor bus hook, validation and collection use the configured bus.

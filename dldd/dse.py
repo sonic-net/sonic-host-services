@@ -451,21 +451,27 @@ class DSERegistry(object):
         )
 
     def resolve_action(self, value, context):
-        command = _operation_command(value)
-        resolved = self._require_hook().resolve_action(command, context)
-        if not isinstance(resolved, ResolvedCommand):
-            raise DSEError("DSE action resolver must return ResolvedCommand")
-        if not callable(resolved.executor):
-            raise DSEError("DSE action executor must be callable")
-        return resolved
+        """Resolve one advertised action without executing it."""
+
+        return self._resolve_operation(value, context, "action")
 
     def resolve_query(self, value, context):
+        """Resolve one advertised artifact query without executing it."""
+
+        return self._resolve_operation(value, context, "query")
+
+    def _resolve_operation(self, value, context, kind):
+        """Apply the shared typed command contract to an action or query."""
+
         command = _operation_command(value)
-        resolved = self._require_hook().resolve_query(command, context)
+        resolver = getattr(self._require_hook(), "resolve_{}".format(kind))
+        resolved = resolver(command, context)
         if not isinstance(resolved, ResolvedCommand):
-            raise DSEError("DSE query resolver must return ResolvedCommand")
+            raise DSEError(
+                "DSE {} resolver must return ResolvedCommand".format(kind)
+            )
         if not callable(resolved.executor):
-            raise DSEError("DSE query executor must be callable")
+            raise DSEError("DSE {} executor must be callable".format(kind))
         return resolved
 
     def validate_vendor_operation(self, operation, context, query=False):

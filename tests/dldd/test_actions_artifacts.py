@@ -19,6 +19,7 @@ from dldd.artifacts import (
     FilesystemArtifactClient,
     HealthzArtifactClient,
 )
+from dldd.command_execution import ShellFreeResult
 from dldd.hooks import VendorHook, VendorHookRegistry
 from dldd.models import Operation
 
@@ -177,7 +178,9 @@ def test_action_runner_timeout_and_capacity_contract():
         result = future.result(timeout=1)
         assert result.state == "FAILED"
         assert "timed out" in result.last_error
-        assert all(worker.daemon for worker in runner._workers)
+        assert [(worker.name, worker.daemon) for worker in runner._workers] == [
+            ("dldd-actions-0", True)
+        ]
 
         exhausted = runner.submit(
             "EXHAUSTED",
@@ -324,7 +327,9 @@ def test_filesystem_artifact_request_completion_failure_and_shutdown_contract(
 
         assert state.state == "COMPLETED"
         assert os.path.isfile(completed_dir / request.artifact_id)
-        assert all(worker.daemon for worker in client._workers)
+        assert [(worker.name, worker.daemon) for worker in client._workers] == [
+            ("dldd-artifacts-0", True)
+        ]
         with tarfile.open(
             str(completed_dir / request.artifact_id), "r:gz"
         ) as archive:
@@ -1033,11 +1038,9 @@ def test_direct_i2c_action_expansion_validation_timeout_and_failure_contract(
         )
 
     monkeypatch.setattr(
-        "dldd.actions.run_shell_free",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=1,
-            stdout_text=lambda: "",
-            stderr_text=lambda: "I/O error",
+        "dldd.command_execution.run_shell_free",
+        lambda *args, **kwargs: ShellFreeResult(
+            ("i2cget",), 1, b"", b"I/O error"
         ),
     )
 

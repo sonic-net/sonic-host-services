@@ -12,9 +12,14 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, List, Mapping, Tuple
+from typing import Any, Callable, Iterable, List, Mapping, Optional, Tuple
 
-from .filesystem import atomic_copy, atomic_write_json, load_json_object
+from .filesystem import (
+    atomic_copy,
+    atomic_write_json,
+    load_json_object,
+    unlink_if_exists,
+)
 from .timestamps import floor_timestamp, floor_timestamp_fields
 
 
@@ -27,6 +32,8 @@ class NoRulesAvailable(RuntimeError):
 
 @dataclass(frozen=True)
 class RulePaths:
+    """Filesystem locations owned by the rule-generation lifecycle."""
+
     platform_dir: str
     inbox: str = "/var/lib/sonic/dldd/inbox/dld_rules.yaml"
     rules_dir: str = "/var/lib/sonic/dldd/rules"
@@ -233,10 +240,7 @@ class RuleGenerationManager:
                             )
                     continue
                 finally:
-                    try:
-                        os.unlink(staged)
-                    except FileNotFoundError:
-                        pass
+                    unlink_if_exists(staged)
                 previous = manifest.get("active_checksum")
                 previous_generation = manifest.get("active_generation_path")
                 validation_result = (
@@ -355,10 +359,7 @@ class RuleGenerationManager:
             os.chmod(staged, 0o440)
             return staged
         except Exception:
-            try:
-                os.unlink(staged)
-            except FileNotFoundError:
-                pass
+            unlink_if_exists(staged)
             raise
         finally:
             if descriptor >= 0:
@@ -541,50 +542,43 @@ class BrokenRuleStateStore:
     def __init__(self, path: str) -> None:
         self.path = path
 
+    @staticmethod
+    def _empty_state(recovery_error: Optional[str] = None) -> Mapping[str, Any]:
+        """Build the canonical result for state that cannot be recovered."""
+
+        state = {"broken_rules": [], "service_broken_count": 0}
+        if recovery_error is not None:
+            state["recovery_error"] = recovery_error
+        return state
+
     def load(self, active_checksum: str, allow_crash_recovery: bool) -> Mapping[str, Any]:
         if not allow_crash_recovery:
-            return {"broken_rules": [], "service_broken_count": 0}
+            return self._empty_state()
         try:
             with open(self.path, "r", encoding="utf-8") as stream:
                 state = json.load(stream)
         except FileNotFoundError:
-            return {"broken_rules": [], "service_broken_count": 0}
+            return self._empty_state()
         except (OSError, ValueError) as error:
             LOGGER.warning("ignoring invalid DLDD state file %s: %s", self.path, error)
-            return {
-                "broken_rules": [],
-                "service_broken_count": 0,
-                "recovery_error": "invalid state file: {}".format(error),
-            }
+            return self._empty_state("invalid state file: {}".format(error))
         if not isinstance(state, Mapping):
             reason = "state file root must be an object"
             LOGGER.warning("ignoring invalid DLDD state file %s: %s", self.path, reason)
-            return {
-                "broken_rules": [],
-                "service_broken_count": 0,
-                "recovery_error": reason,
-            }
+            return self._empty_state(reason)
         if state.get("clean_shutdown", False):
-            return {"broken_rules": [], "service_broken_count": 0}
+            return self._empty_state()
         if state.get("state_schema") != self.STATE_SCHEMA:
-            return {
-                "broken_rules": [],
-                "service_broken_count": 0,
-                "recovery_error": "state file schema is incompatible",
-            }
+            return self._empty_state("state file schema is incompatible")
         if state.get("active_rules_checksum") != active_checksum:
-            return {"broken_rules": [], "service_broken_count": 0}
+            return self._empty_state()
         broken_rules = state.get("broken_rules")
         if not isinstance(broken_rules, list) or not all(
             isinstance(record, Mapping) for record in broken_rules
         ):
             reason = "state file broken_rules must be an array of objects"
             LOGGER.warning("ignoring invalid DLDD state file %s: %s", self.path, reason)
-            return {
-                "broken_rules": [],
-                "service_broken_count": 0,
-                "recovery_error": reason,
-            }
+            return self._empty_state(reason)
         return state
 
     def save(
@@ -609,7 +603,4 @@ class BrokenRuleStateStore:
         )
 
     def clear(self) -> None:
-        try:
-            os.unlink(self.path)
-        except FileNotFoundError:
-            pass
+        unlink_if_exists(self.path)

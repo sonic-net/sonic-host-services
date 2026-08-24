@@ -13,6 +13,8 @@ from .validation import CompatibilityMatcher, ExactCompatibilityMatcher
 
 @dataclass(frozen=True)
 class PlatformIdentity:
+    """Stable platform facts used for rule compatibility and generations."""
+
     platform: str
     product_id: Optional[str]
     software_version: Optional[str]
@@ -26,6 +28,8 @@ class PlatformIdentity:
 
 @dataclass(frozen=True)
 class PlatformExtensions:
+    """Trusted platform-provided DLDD extension contracts."""
+
     identity: PlatformIdentity
     dse_registry: DSERegistry
     vendor_hooks: VendorHookRegistry
@@ -34,6 +38,8 @@ class PlatformExtensions:
 
 
 def detect_identity() -> PlatformIdentity:
+    """Read the current platform identity, falling back to unknown values."""
+
     try:
         from sonic_py_common import device_info
 
@@ -48,6 +54,24 @@ def detect_identity() -> PlatformIdentity:
         return PlatformIdentity(platform, product, software)
     except Exception:
         return PlatformIdentity("unknown", None, None)
+
+
+def _create_optional_extension(
+    module: Any,
+    name: str,
+    expected_type: Any,
+    default: Any,
+    **kwargs: Any,
+) -> Any:
+    """Invoke an optional trusted factory and enforce its return contract."""
+
+    factory = getattr(module, name, None)
+    if factory is None:
+        return default
+    created = factory(**kwargs)
+    if not isinstance(created, expected_type):
+        raise TypeError("{} must return {}".format(name, expected_type.__name__))
+    return created
 
 
 def load_extensions(identity: PlatformIdentity, dse_path: str) -> PlatformExtensions:
@@ -73,37 +97,29 @@ def load_extensions(identity: PlatformIdentity, dse_path: str) -> PlatformExtens
             )
         raise
 
-    dse_factory = getattr(module, "create_dse_registry", None)
-    if dse_factory is not None:
-        created = dse_factory(
-            dse_path=dse_path,
-            product_id=identity.product_id,
-            software_version=identity.software_version,
-        )
-        if not isinstance(created, DSERegistry):
-            raise TypeError("create_dse_registry must return DSERegistry")
-        dse_registry = created
-
-    hook_factory = getattr(module, "create_vendor_hooks", None)
-    if hook_factory is not None:
-        created = hook_factory()
-        if not isinstance(created, VendorHookRegistry):
-            raise TypeError("create_vendor_hooks must return VendorHookRegistry")
-        vendor_hooks = created
-
-    compatibility_factory = getattr(
-        module, "create_compatibility_matcher", None
+    dse_registry = _create_optional_extension(
+        module,
+        "create_dse_registry",
+        DSERegistry,
+        dse_registry,
+        dse_path=dse_path,
+        product_id=identity.product_id,
+        software_version=identity.software_version,
     )
-    if compatibility_factory is not None:
-        created = compatibility_factory(
-            product_id=identity.product_id,
-            software_version=identity.software_version,
-        )
-        if not isinstance(created, CompatibilityMatcher):
-            raise TypeError(
-                "create_compatibility_matcher must return CompatibilityMatcher"
-            )
-        compatibility_matcher = created
+    vendor_hooks = _create_optional_extension(
+        module,
+        "create_vendor_hooks",
+        VendorHookRegistry,
+        vendor_hooks,
+    )
+    compatibility_matcher = _create_optional_extension(
+        module,
+        "create_compatibility_matcher",
+        CompatibilityMatcher,
+        compatibility_matcher,
+        product_id=identity.product_id,
+        software_version=identity.software_version,
+    )
     artifact_client_factory = getattr(module, "create_artifact_client", None)
     if artifact_client_factory is not None and not callable(
         artifact_client_factory

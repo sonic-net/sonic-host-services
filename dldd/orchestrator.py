@@ -81,6 +81,8 @@ class Reconciliation:
 
 
 class PrimaryOrchestrator:
+    """Own correlation, recovery, actions, artifacts, and fault publication."""
+
     def __init__(
         self,
         evidence_queue: Queue,
@@ -333,14 +335,7 @@ class PrimaryOrchestrator:
 
         if failed_keys:
             current = dict(self.source_status.get(item.source_id, {}))
-            current["affected_rules"] = sorted(
-                {
-                    self.work_items[failed_key].rule_id
-                    for failed_key in failed_keys
-                    if failed_key in self.work_items
-                }
-            )
-            current["stale_faults"] = self._stale_fault_keys(failed_keys)
+            current.update(self._source_impact(failed_keys))
             self.source_status[item.source_id] = current
             if not suspended_keys:
                 self._suspended_sources.pop(item.source_id, None)
@@ -495,17 +490,14 @@ class PrimaryOrchestrator:
         count = self._primary_processing_failures.get(event.correlation_key, 0) + 1
         self._primary_processing_failures[event.correlation_key] = count
         fatal = count > self.config.individual_max_failure_threshold
-        item = self.work_items.get(event.correlation_key)
-        self.broken_rules[event.correlation_key] = {
-            "rule": item.rule_name if item is not None else str(event.signature_id),
-            "version": item.rule_version if item is not None else "",
-            "rule_id": event.signature_id,
-            "correlation_key": event.correlation_key,
-            "reason": "primary_processing_error: {}".format(error),
-            "failure_count": count,
-            "state": "BROKEN" if fatal else "DEGRADED",
-            "last_attempt": self.wall_clock(),
-        }
+        self.broken_rules[event.correlation_key] = self._broken_rule_payload(
+            event,
+            None,
+            "primary_processing_error: {}".format(error),
+            count,
+            "BROKEN" if fatal else "DEGRADED",
+            self.wall_clock(),
+        )
         self.service_diagnostics.append(
             {
                 "reason": "primary_processing_error",
@@ -696,6 +688,48 @@ class PrimaryOrchestrator:
         if not state.outstanding_rechecks:
             complete(identity, state)
 
+    def _source_impact(self, keys) -> Mapping[str, Any]:
+        """Project failed work keys into the shared source-status fields."""
+
+        return {
+            "affected_rules": sorted(
+                {
+                    self.work_items[key].rule_id
+                    for key in keys
+                    if key in self.work_items
+                }
+            ),
+            "stale_faults": self._stale_fault_keys(keys),
+        }
+
+    def _broken_rule_payload(
+        self,
+        event: FaultEvidenceEvent,
+        runtime_status: Any,
+        reason: str,
+        failure_count: int,
+        state: str,
+        attempted_at: float,
+    ) -> Mapping[str, Any]:
+        """Build the canonical per-work-key runtime failure record."""
+
+        item = self.work_items.get(event.correlation_key)
+        rule_name = (
+            runtime_status.rule_name
+            if runtime_status is not None
+            else item.rule_name if item is not None else str(event.signature_id)
+        )
+        return {
+            "rule": rule_name,
+            "version": item.rule_version if item is not None else "",
+            "rule_id": event.signature_id,
+            "correlation_key": event.correlation_key,
+            "reason": reason,
+            "failure_count": failure_count,
+            "state": state,
+            "last_attempt": attempted_at,
+        }
+
     def _process_runtime_status(
         self, event: FaultEvidenceEvent, release: bool = True
     ) -> None:
@@ -708,18 +742,14 @@ class PrimaryOrchestrator:
                 not result.retryable
                 or failure_count > self.config.individual_max_failure_threshold
             )
-            self.broken_rules[event.correlation_key] = {
-                "rule": status.rule_name if status else str(event.signature_id),
-                "version": self.work_items[event.correlation_key].rule_version,
-                "rule_id": event.signature_id,
-                "correlation_key": event.correlation_key,
-                "reason": "{}: {}".format(
-                    result.error_category.lower(), result.error
-                ),
-                "failure_count": failure_count,
-                "state": "BROKEN" if fatal else "DEGRADED",
-                "last_attempt": now,
-            }
+            self.broken_rules[event.correlation_key] = self._broken_rule_payload(
+                event,
+                status,
+                "{}: {}".format(result.error_category.lower(), result.error),
+                failure_count,
+                "BROKEN" if fatal else "DEGRADED",
+                now,
+            )
             if release:
                 self._command_event(
                     event,
@@ -734,39 +764,22 @@ class PrimaryOrchestrator:
             self.broken_rules.pop(event.correlation_key, None)
             if failed_keys:
                 current = dict(self.source_status.get(event.source_id, {}))
-                current["affected_rules"] = sorted(
-                    {
-                        self.work_items[key].rule_id
-                        for key in failed_keys
-                        if key in self.work_items
-                    }
-                )
-                current["stale_faults"] = self._stale_fault_keys(failed_keys)
+                current.update(self._source_impact(failed_keys))
                 self.source_status[event.source_id] = current
-                self._refresh_fault_source_staleness()
-                if release:
-                    self._command_event(
-                        event,
-                        MonitorCommandType.RECHECK_ONCE,
-                        MonitorWorkState.RECHECK_REQUESTED,
-                        "source recovered; evaluate recovered sample",
-                        hold_deadline=self.clock()
-                        + self.config.fault_evidence_ack_timeout,
-                    )
-                return
-            self._source_failure_keys.pop(event.source_id, None)
-            self._suspended_sources.pop(event.source_id, None)
-            self._source_unavailable_since.pop(event.source_id, None)
-            self.source_status[event.source_id] = {
-                "source": event.source_id,
-                "state": "RECOVERED",
-                "reason": "source produced a valid sample",
-                "graceful": False,
-                "since": now,
-                "failure_count": 0,
-                "affected_rules": [event.signature_id],
-                "stale_faults": [],
-            }
+            else:
+                self._source_failure_keys.pop(event.source_id, None)
+                self._suspended_sources.pop(event.source_id, None)
+                self._source_unavailable_since.pop(event.source_id, None)
+                self.source_status[event.source_id] = {
+                    "source": event.source_id,
+                    "state": "RECOVERED",
+                    "reason": "source produced a valid sample",
+                    "graceful": False,
+                    "since": now,
+                    "failure_count": 0,
+                    "affected_rules": [event.signature_id],
+                    "stale_faults": [],
+                }
             self._refresh_fault_source_staleness()
             if release:
                 self._command_event(
@@ -800,14 +813,7 @@ class PrimaryOrchestrator:
                     if event.runtime_status is not None
                     else 1
                 ),
-                "affected_rules": sorted(
-                    {
-                        self.work_items[key].rule_id
-                        for key in failed_keys
-                        if key in self.work_items
-                    }
-                ),
-                "stale_faults": self._stale_fault_keys(failed_keys),
+                **self._source_impact(failed_keys),
             }
             self._refresh_fault_source_staleness()
             if release:
@@ -840,26 +846,17 @@ class PrimaryOrchestrator:
             "grace_deadline": first_failure + self.config.source_unavailable_grace_period,
             "last_success": status.last_success_timestamp if status else None,
             "failure_count": failure_count,
-            "affected_rules": sorted(
-                {
-                    self.work_items[key].rule_id
-                    for key in failed_keys
-                    if key in self.work_items
-                }
-            ),
-            "stale_faults": self._stale_fault_keys(failed_keys),
+            **self._source_impact(failed_keys),
         }
         if not within_grace or not result.retryable:
-            self.broken_rules[event.correlation_key] = {
-                "rule": status.rule_name if status else str(event.signature_id),
-                "version": self.work_items[event.correlation_key].rule_version,
-                "rule_id": event.signature_id,
-                "correlation_key": event.correlation_key,
-                "reason": "{}: {}".format(result.error_category.lower(), result.error),
-                "failure_count": failure_count,
-                "state": state,
-                "last_attempt": now,
-            }
+            self.broken_rules[event.correlation_key] = self._broken_rule_payload(
+                event,
+                status,
+                "{}: {}".format(result.error_category.lower(), result.error),
+                failure_count,
+                state,
+                now,
+            )
         self._refresh_fault_source_staleness()
         if not release:
             return
@@ -885,7 +882,7 @@ class PrimaryOrchestrator:
                 continue
             execution = self.correlation.executions.get(identity)
             if execution is not None and failed_keys.intersection(
-                self._execution_keys(execution)
+                execution.work_keys
             ):
                 stale.append(fault.redis_key)
         return stale
@@ -977,7 +974,7 @@ class PrimaryOrchestrator:
         # component/symptom FAULT_INFO row while remediation is in progress.
         self.arbiter.update(decision)
         self._record_candidate(decision, pending)
-        for key in self._execution_keys(execution):
+        for key in execution.work_keys:
             self._command_key(
                 key,
                 MonitorCommandType.HOLD,
@@ -1177,7 +1174,7 @@ class PrimaryOrchestrator:
                 and now >= pending.wait_until
             ):
                 pending.outstanding_rechecks = set(
-                    self._execution_keys(pending.execution)
+                    pending.execution.work_keys
                 )
                 pending.phase = "RECHECKING"
                 pending.recheck_attempts = 1
@@ -1326,7 +1323,7 @@ class PrimaryOrchestrator:
             action_suppressed=True,
             stale_source=uncertain,
         )
-        for key in self._execution_keys(pending.execution):
+        for key in pending.execution.work_keys:
             self._release_key(key, "post_action_lifecycle_complete")
         self.pending.pop(identity, None)
 
@@ -1425,7 +1422,7 @@ class PrimaryOrchestrator:
         self, execution: SignatureExecution, record: FaultRecord, reason: str
     ) -> None:
         identity = (execution.signature.metadata.id, execution.component_name)
-        keys = set(self._execution_keys(execution))
+        keys = set(execution.work_keys)
         now = self.clock()
         deadline = now + self.config.fault_evidence_ack_timeout
         hold_deadline = (
@@ -1498,7 +1495,7 @@ class PrimaryOrchestrator:
                     identity, record, record.remote_action_time_window
                 )
         self._refresh_fault_source_staleness()
-        for key in self._execution_keys(reconciliation.execution):
+        for key in reconciliation.execution.work_keys:
             self._release_key(key, "{}_complete".format(reconciliation.reason))
         self.reconciliation.pop(identity, None)
 
@@ -1685,7 +1682,7 @@ class PrimaryOrchestrator:
                 identity in self.uncertain_faults
                 or (
                     execution is not None
-                    and failed_keys.intersection(self._execution_keys(execution))
+                    and failed_keys.intersection(execution.work_keys)
                 )
             )
             if record.stale_source == stale:
@@ -1707,7 +1704,7 @@ class PrimaryOrchestrator:
     def _execution_has_failed_source(self, execution: SignatureExecution) -> bool:
         return bool(
             self._failed_correlation_keys().intersection(
-                self._execution_keys(execution)
+                execution.work_keys
             )
         )
 
@@ -1796,14 +1793,6 @@ class PrimaryOrchestrator:
                     "last_error": str(error),
                 }
             )
-
-    @staticmethod
-    def _execution_keys(execution: SignatureExecution):
-        return tuple(
-            key
-            for event_keys in execution.event_keys.values()
-            for key in event_keys
-        )
 
     def _resume(self, event: FaultEvidenceEvent, reason: str) -> None:
         self._command_event(

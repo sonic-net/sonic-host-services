@@ -906,7 +906,7 @@ def test_inflight_status_includes_pending_local_action_progress(
         monitor_id="redis",
         runtime_snapshot=lambda: ({key: item}, {key: state}),
     )
-    execution = object()
+    execution = SimpleNamespace(work_keys=(key,))
     action_result = (
         SimpleNamespace(worker_id="worker-7", last_error="action failed")
         if completed_action
@@ -926,9 +926,6 @@ def test_inflight_status_includes_pending_local_action_progress(
     service.monitors = [SimpleNamespace(plan=plan)]
     service.orchestrator = SimpleNamespace(
         pending={"pending": pending},
-        _execution_keys=lambda received: (
-            (key,) if received is execution else ()
-        ),
     )
     monkeypatch.setattr(dldd_service.time, "monotonic", lambda: 100.0)
     monkeypatch.setattr(dldd_service.time, "time", lambda: 1000.0)

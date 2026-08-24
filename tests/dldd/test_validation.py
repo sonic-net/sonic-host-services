@@ -102,6 +102,64 @@ class RecordingDirectSensorDSEHook(DirectSensorDSEHook):
         return DSEEvaluationHandle(reference, get_comparator)
 
 
+class FixedMetadataDSEHook(SensorDSEHook):
+    def resolve_evaluation(self, reference, context):
+        return ResolvedEvaluation(
+            expected_value=10.0,
+            operator=">=",
+            value_configs=ValueConfig(type="float", unit="vendor-units"),
+        )
+
+
+def test_activation_materialization_prefers_nondefault_rule_value_config():
+    document = load_fixture()
+    configured = event(document)
+    configured["evaluation"] = {
+        "type": "dse",
+        "operator": ">=",
+        "value": "sensor:get_high_threshold()",
+        "value_configs": {"type": "N/A", "unit": "rule-units"},
+    }
+
+    result = validate_document(
+        document,
+        ValidationContext(dse_registry=DSERegistry(hook=FixedMetadataDSEHook())),
+    )
+
+    assert result.activation_valid
+    config = result.materialized_rules[0].events[0].event.evaluation.value_configs
+    assert config == ValueConfig(type="N/A", unit="rule-units")
+
+
+def test_static_source_planning_prefers_nondefault_rule_value_config():
+    document = load_fixture()
+    configured = event(document)
+    configured.update(
+        {
+            "type": "dse",
+            "path": "sensor:get_value()",
+        }
+    )
+    configured["evaluation"]["value_configs"] = {
+        "type": "N/A",
+        "unit": "rule-units",
+    }
+    result = validate_document(
+        document,
+        ValidationContext(dse_registry=DSERegistry(hook=DirectSensorDSEHook())),
+    )
+    assert result.activation_valid
+
+    bundle = build_plans(
+        result.materialized_rules,
+        "sha256:value-config-precedence",
+        {"redis": 1, "file": 1, "common": 1},
+    )
+
+    item = next(iter(bundle.work_items.values()))
+    assert item.value_config == ValueConfig(type="N/A", unit="rule-units")
+
+
 @pytest.mark.parametrize(
     "source_reference, evaluation_reference, hook_factory, plan_collection, warning",
     (

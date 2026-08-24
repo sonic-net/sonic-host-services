@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .artifacts import DEFAULT_ARTIFACT_DIRECTORY
+from .filesystem import unlink_if_exists
 from .ownership import is_dldd_fault_payload
 from .sonic_hash import decode_db_text
 from .telemetry import StateDB, TelemetryPublisher
@@ -78,12 +79,7 @@ def clear_runtime_state(
 
     state_db.delete_many(sorted(keys))
 
-    state_removed = False
-    try:
-        os.unlink(state_file)
-        state_removed = True
-    except FileNotFoundError:
-        pass
+    state_removed = unlink_if_exists(state_file)
 
     artifacts = _clear_artifacts(artifact_directory) if include_artifacts else 0
     return ResetResult(len(keys), len(fault_keys), artifacts, state_removed)

@@ -24,10 +24,22 @@ _SEVERITY = {
 
 @dataclass(frozen=True)
 class SignatureExecution:
+    """One materialized rule instance and its ordered monitor work keys."""
+
     signature: Any
     component_name: str
     event_keys: Mapping[int, Tuple[str, ...]]
     plan_generation: str
+
+    @property
+    def work_keys(self) -> Tuple[str, ...]:
+        """Flatten keys in event insertion order and per-event tuple order."""
+
+        return tuple(
+            key
+            for event_keys in self.event_keys.values()
+            for key in event_keys
+        )
 
 
 @dataclass(frozen=True)

@@ -50,6 +50,8 @@ def to_mutable(value):
 
 @dataclass(frozen=True)
 class ValueConfig(object):
+    """Atomic value metadata with an explicit rule-over-default fallback."""
+
     type: str = "N/A"
     unit: str = "N/A"
     scaling: Union[int, float, str] = "N/A"
@@ -93,6 +95,18 @@ class ValueConfig(object):
             "scaling": self.scaling,
             "encoding": self.encoding,
         }
+
+    @property
+    def is_default(self):
+        """Return whether every field retains the schema default."""
+
+        return self == ValueConfig()
+
+    def with_fallback(self, fallback):
+        """Use fallback metadata only when this complete config is default."""
+
+        fallback = ValueConfig.from_mapping(fallback)
+        return fallback if self.is_default else self
 
 
 def value_config_contract_errors(config):

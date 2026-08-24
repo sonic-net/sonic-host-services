@@ -9,6 +9,8 @@ from typing import Any, Mapping, Optional
 
 @dataclass(frozen=True)
 class DLDDConfig:
+    """Validated runtime configuration assembled from vendor and CONFIG_DB data."""
+
     individual_max_failure_threshold: int = 10
     broken_rules_max_threshold: int = 5
     redis_monitor_polling_interval: int = 60
@@ -62,6 +64,8 @@ class DLDDConfig:
 
 
 def load_vendor_defaults(path: str) -> Mapping[str, Any]:
+    """Load optional vendor defaults as a validated mapping."""
+
     if not os.path.exists(path):
         return {}
     try:

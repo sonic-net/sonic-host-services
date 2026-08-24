@@ -2,7 +2,7 @@ from __future__ import absolute_import
 
 from types import SimpleNamespace
 
-from dldd.correlation import CorrelationEngine
+from dldd.correlation import CorrelationEngine, SignatureExecution
 from dldd.logic import parse_logic
 from dldd.models import ValueConfig
 from dldd.runtime import (
@@ -35,6 +35,17 @@ def item(event_id=1, key="event-1", component="SENSOR0"):
         source_id="source:" + key,
         value_config=ValueConfig(type="float"),
     )
+
+
+def test_signature_execution_owns_ordered_multi_owner_work_keys():
+    execution = SignatureExecution(
+        signature=signature(),
+        component_name="SENSOR0",
+        event_keys={1: ("owner-a", "owner-b"), 2: ("owner-c",)},
+        plan_generation="generation",
+    )
+
+    assert execution.work_keys == ("owner-a", "owner-b", "owner-c")
 
 
 def evidence(work, kind, timestamp, raw=1.0):

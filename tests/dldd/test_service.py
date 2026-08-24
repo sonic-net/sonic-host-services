@@ -840,12 +840,23 @@ def test_dynamic_monitor_config_contract(tmp_path):
     service.config = DLDDConfig()
     service.telemetry = SimpleNamespace(config=None)
     service.orchestrator = SimpleNamespace(config=None)
+    service.orchestrator.queue_config_update = (
+        lambda updated: setattr(service.orchestrator, "config", updated)
+    )
+
+    class ConfigurableMonitor(object):
+        def __init__(self, monitor_type):
+            self.plan = SimpleNamespace(
+                monitor_type=monitor_type, polling_interval=60
+            )
+            self.fault_evidence_ack_timeout = 120
+            self.source_recovery_samples = 1
+
+        def update_polling_intervals(self, intervals):
+            self.plan.polling_interval = intervals[self.plan.monitor_type]
+
     service.monitors = [
-        SimpleNamespace(
-            plan=SimpleNamespace(monitor_type=monitor_type, polling_interval=60),
-            fault_evidence_ack_timeout=120,
-            source_recovery_samples=1,
-        )
+        ConfigurableMonitor(monitor_type)
         for monitor_type in ("redis", "file", "common")
     ]
 

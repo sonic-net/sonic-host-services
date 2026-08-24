@@ -27,16 +27,11 @@ from .dse import (
     parse_reference,
 )
 from .models import (
-    Actions,
     BrokenRule,
     Evaluation,
-    Event,
-    LocalActions,
-    LogCollection,
     MaterializedEvent,
     MaterializedRule,
     Operation,
-    RepairActions,
     ResolvedSource,
     RuleSet,
     ValidationIssue,
@@ -645,6 +640,22 @@ def _direct_sources(event):
     return tuple(result)
 
 
+def _materialize_operation(operation, registry, dse_context, *, query=False):
+    """Resolve or validate one action/query through the shared DSE boundary."""
+
+    if operation.type == "dse":
+        resolver = registry.resolve_query if query else registry.resolve_action
+        return operation.with_resolution(
+            resolver(operation.command, dse_context)
+        )
+    builtin_types = ("cli",) if query else ("cli", "i2c")
+    if operation.type not in builtin_types:
+        registry.validate_vendor_operation(
+            operation, dse_context, query=query
+        )
+    return operation
+
+
 def materialize_signature(signature, context=None):
     """Resolve a validated signature into monitor inputs and DSE handles.
 
@@ -738,9 +749,9 @@ def materialize_signature(signature, context=None):
                         resolved_evaluation.reference.selector,
                     )
             else:
-                value_configs = event.evaluation.value_configs
-                if value_configs == ValueConfig():
-                    value_configs = resolved_evaluation.value_configs
+                value_configs = event.evaluation.value_configs.with_fallback(
+                    resolved_evaluation.value_configs
+                )
                 evaluation = Evaluation(
                     type="dse",
                     value=resolved_evaluation.expected_value,
@@ -748,17 +759,7 @@ def materialize_signature(signature, context=None):
                     value_configs=value_configs,
                     comparator=resolved_evaluation.comparator,
                 )
-                materialized_event = Event(
-                    id=event.id,
-                    type=event.type,
-                    path=event.path,
-                    evaluation=evaluation,
-                    match_count=event.match_count,
-                    match_period=event.match_period,
-                    instances=event.instances,
-                    sampling_interval=event.sampling_interval,
-                    async_collection=event.async_collection,
-                )
+                materialized_event = replace(event, evaluation=evaluation)
         materialized.append(
             MaterializedEvent(
                 event=materialized_event,
@@ -771,41 +772,35 @@ def materialize_signature(signature, context=None):
 
     local = signature.actions.repair_actions.local_actions
     materialized_local = local
+    operation_context = _context_for(signature, context)
     if local is not None:
-        local_operations = []
-        for operation in local.action_list:
-            dse_context = _context_for(signature, context)
-            if operation.type == "dse":
-                resolved = registry.resolve_action(operation.command, dse_context)
-                operation = operation.with_resolution(resolved)
-            elif operation.type not in ("cli", "i2c"):
-                registry.validate_vendor_operation(operation, dse_context, query=False)
-            local_operations.append(operation)
-        materialized_local = LocalActions(
-            wait_period=local.wait_period,
-            action_list=tuple(local_operations),
+        materialized_local = replace(
+            local,
+            action_list=tuple(
+                _materialize_operation(
+                    operation, registry, operation_context
+                )
+                for operation in local.action_list
+            ),
         )
     log_collection = signature.actions.log_collection
     materialized_log_collection = log_collection
     if log_collection is not None:
-        queries = []
-        for query in log_collection.queries:
-            dse_context = _context_for(signature, context)
-            if query.type == "dse":
-                resolved = registry.resolve_query(query.command, dse_context)
-                query = query.with_resolution(resolved)
-            elif query.type != "cli":
-                registry.validate_vendor_operation(query, dse_context, query=True)
-            queries.append(query)
-        materialized_log_collection = LogCollection(
-            logs=log_collection.logs,
-            queries=tuple(queries),
+        materialized_log_collection = replace(
+            log_collection,
+            queries=tuple(
+                _materialize_operation(
+                    query, registry, operation_context, query=True
+                )
+                for query in log_collection.queries
+            ),
         )
     materialized_signature = replace(
         signature,
-        actions=Actions(
-            repair_actions=RepairActions(
-                remote_actions=signature.actions.repair_actions.remote_actions,
+        actions=replace(
+            signature.actions,
+            repair_actions=replace(
+                signature.actions.repair_actions,
                 local_actions=materialized_local,
             ),
             log_collection=materialized_log_collection,

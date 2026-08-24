@@ -195,12 +195,7 @@ def work_items_for_dse_expansion(template, expansion_result):
             base.symptom,
             source_id,
         )
-        binding_config = binding.value_configs
-        value_config = (
-            base.value_config
-            if binding_config.type == "N/A" and base.value_config.type != "N/A"
-            else binding_config
-        )
+        value_config = base.value_config.with_fallback(binding.value_configs)
         source = dict(binding.data)
         source["dse_reference"] = (
             template.source_handle.reference.canonical
@@ -352,9 +347,9 @@ def build_plans(
                     key = make_correlation_key(
                         metadata.id, event.id, instance, metadata.symptom, source_id
                     )
-                    config = source.value_configs or event.evaluation.value_configs
-                    if config.type == "N/A" and event.evaluation.value_configs.type != "N/A":
-                        config = event.evaluation.value_configs
+                    config = event.evaluation.value_configs.with_fallback(
+                        source.value_configs
+                    )
                     if config.type == "N/A" and source_mapping.get("scaling") not in (
                         None,
                         "",

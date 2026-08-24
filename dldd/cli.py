@@ -154,41 +154,32 @@ def validate_rules(args) -> int:
                 try:
                     adapter = adapters[item.source_type]
                     adapter.get_value(item)
-                    state = "AVAILABLE"
+                except (ValueError, VendorHookError) as caught:
+                    error = caught
+                    failure_code = "adapter_validation_failed"
+                except Exception as caught:
+                    error = caught
+                    failure_code = "adapter_probe_failed"
+                else:
                     probe_results.append(
                         {
                             "correlation_key": item.correlation_key,
-                            "state": state,
+                            "state": "AVAILABLE",
                         }
                     )
-                except (ValueError, VendorHookError) as error:
-                    probe_failed = True
-                    invalid_rule_ids.add(item.rule_id)
-                    invalid_reasons.setdefault(
-                        item.rule_id,
-                        ("adapter_validation_failed", str(error)),
-                    )
-                    probe_results.append(
-                        {
-                            "correlation_key": item.correlation_key,
-                            "state": "FAILED",
-                            "error": str(error),
-                        }
-                    )
-                except Exception as error:
-                    probe_failed = True
-                    invalid_rule_ids.add(item.rule_id)
-                    invalid_reasons.setdefault(
-                        item.rule_id,
-                        ("adapter_probe_failed", str(error)),
-                    )
-                    probe_results.append(
-                        {
-                            "correlation_key": item.correlation_key,
-                            "state": "FAILED",
-                            "error": str(error),
-                        }
-                    )
+                    continue
+                probe_failed = True
+                invalid_rule_ids.add(item.rule_id)
+                invalid_reasons.setdefault(
+                    item.rule_id, (failure_code, str(error))
+                )
+                probe_results.append(
+                    {
+                        "correlation_key": item.correlation_key,
+                        "state": "FAILED",
+                        "error": str(error),
+                    }
+                )
         payload["probe_results"] = probe_results
         if invalid_rule_ids:
             invalid_rules = {

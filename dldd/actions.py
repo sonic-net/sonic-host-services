@@ -11,12 +11,11 @@ from dataclasses import dataclass
 from queue import Queue
 from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
-from .bounded_calls import BoundedCallGate
+from .bounded_calls import BoundedCallGate, start_daemon_workers
 from .command_execution import (
     DEFAULT_MAX_OUTPUT_BYTES,
     build_i2c_argv,
     run_checked_shell_free,
-    run_shell_free,
 )
 from .hooks import VendorHookRegistry, operation_hook_name
 from .models import Operation
@@ -60,6 +59,8 @@ class ActionSequenceResult:
 
 
 class ActionExecutor:
+    """Execute trusted materialized actions through their typed backend."""
+
     def __init__(
         self,
         hooks: Optional[VendorHookRegistry] = None,
@@ -135,13 +136,10 @@ class ActionExecutor:
     def _execute_i2c_bus(
         path: Mapping[str, Any], operation: str, bus: Any, timeout: float
     ) -> str:
-        result = run_shell_free(
+        return run_checked_shell_free(
             build_i2c_argv(path, operation=operation, bus=bus),
             timeout=timeout,
-        )
-        if result.returncode:
-            raise RuntimeError(result.stderr_text())
-        return result.stdout_text().strip()
+        ).strip()
 
 
 class ActionRunner:
@@ -154,16 +152,9 @@ class ActionRunner:
         self._sequence_slots = threading.BoundedSemaphore(max_workers)
         self._call_gate = BoundedCallGate(max_workers, "dldd-action-call")
         self._closed = False
-        self._workers = tuple(
-            threading.Thread(
-                target=self._worker,
-                name="dldd-actions-{}".format(index),
-                daemon=True,
-            )
-            for index in range(max_workers)
+        self._workers = start_daemon_workers(
+            max_workers, "dldd-actions-", self._worker
         )
-        for worker in self._workers:
-            worker.start()
 
     def submit(
         self,
@@ -237,58 +228,32 @@ class ActionRunner:
         for action in actions:
             action_started = time.time()
             timeout = action.get("timeout", default_timeout)
+            output = None
             if timeout is None:
                 last_error = "local action has no timeout"
-                results.append(
-                    ActionResult(
-                        str(action.get("type", "")),
-                        "FAILED",
-                        action_started,
-                        time.time(),
-                        action.get("command", action.get("argv")),
-                        error=last_error,
+            else:
+                try:
+                    call = self._start_call(action, float(timeout))
+                    output = call.result(timeout=float(timeout))
+                except TimeoutError:
+                    call.cancel()
+                    last_error = "action timed out after {} seconds".format(
+                        timeout
                     )
+                except Exception as error:
+                    last_error = str(error)
+            results.append(
+                ActionResult(
+                    str(action.get("type", "")),
+                    "FAILED" if last_error else "SUCCESS",
+                    action_started,
+                    time.time(),
+                    action.get("command", action.get("argv")),
+                    output=output,
+                    error=last_error,
                 )
-                break
-            try:
-                call = self._start_call(action, float(timeout))
-                output = call.result(timeout=float(timeout))
-                results.append(
-                    ActionResult(
-                        str(action.get("type", "")),
-                        "SUCCESS",
-                        action_started,
-                        time.time(),
-                        action.get("command", action.get("argv")),
-                        output=output,
-                    )
-                )
-            except TimeoutError:
-                call.cancel()
-                last_error = "action timed out after {} seconds".format(timeout)
-                results.append(
-                    ActionResult(
-                        str(action.get("type", "")),
-                        "FAILED",
-                        action_started,
-                        time.time(),
-                        action.get("command", action.get("argv")),
-                        error=last_error,
-                    )
-                )
-                break
-            except Exception as error:
-                last_error = str(error)
-                results.append(
-                    ActionResult(
-                        str(action.get("type", "")),
-                        "FAILED",
-                        action_started,
-                        time.time(),
-                        action.get("command", action.get("argv")),
-                        error=last_error,
-                    )
-                )
+            )
+            if last_error:
                 break
         return ActionSequenceResult(
             worker_id,

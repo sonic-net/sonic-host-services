@@ -14,6 +14,8 @@ from .timestamps import floor_timestamp
 
 
 class RulesWatcher:
+    """Restart DLDD after a stable, newly accepted rule generation appears."""
+
     def __init__(
         self,
         inbox_path: str,

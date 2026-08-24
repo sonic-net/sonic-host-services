@@ -77,11 +77,15 @@ def run_checked_shell_free(
     error_type: Type[Exception] = RuntimeError,
     error_context: Optional[str] = None,
     encoding: str = "utf-8",
+    encoding_errors: str = "replace",
+    error_encoding: Optional[str] = None,
+    strip_error: bool = False,
 ) -> str:
     """Run bounded argv and return text, raising on a non-zero exit.
 
     ``error_context`` adds a stable ``"<context> exited <code>:"`` prefix.
-    Omitting it preserves stderr as the complete error message.
+    Omitting it preserves stderr as the complete error message. Callers whose
+    wire contract excludes command line endings may request ``strip_error``.
     """
 
     result = run_shell_free(
@@ -91,13 +95,15 @@ def run_checked_shell_free(
         runner=runner,
     )
     if result.returncode:
-        error = result.stderr_text(encoding, "replace")
+        error = result.stderr_text(error_encoding or encoding, "replace")
+        if strip_error:
+            error = error.strip()
         if error_context:
             error = "{} exited {}: {}".format(
                 error_context, result.returncode, error
             )
         raise error_type(error)
-    return result.stdout_text(encoding, "replace")
+    return result.stdout_text(encoding, encoding_errors)
 
 
 def build_i2c_argv(

@@ -238,6 +238,8 @@ class SonicStateDB(StateDB):
 
 
 class TelemetryPublisher:
+    """Publish bounded DLDD process, rule, and fault records to STATE_DB."""
+
     STATUS_KEY = "DLDD_STATUS|process_state"
     RULE_STATUS_KEY = "DLDD_RULE_STATUS|active"
     RULE_STATUS_PREFIX = "DLDD_RULE_STATUS|rule|"

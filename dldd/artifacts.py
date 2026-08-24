@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from queue import Full, Queue
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from .bounded_calls import BoundedCallGate
+from .bounded_calls import BoundedCallGate, start_daemon_workers
 from .command_execution import DEFAULT_MAX_OUTPUT_BYTES, run_checked_shell_free
 from .filesystem import atomic_write_json
 from .models import Operation
@@ -102,16 +102,9 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         with self._store_lock:
             self._reconcile_store_locked()
             self._prune_locked()
-        self._workers = tuple(
-            threading.Thread(
-                target=self._worker,
-                name="dldd-artifacts-{}".format(index),
-                daemon=True,
-            )
-            for index in range(max_workers)
+        self._workers = start_daemon_workers(
+            max_workers, "dldd-artifacts-", self._worker
         )
-        for worker in self._workers:
-            worker.start()
 
     def request(
         self,

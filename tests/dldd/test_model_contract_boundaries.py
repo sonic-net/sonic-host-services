@@ -54,8 +54,15 @@ def test_value_config_and_validation_model_contracts():
     """Enforce value metadata, provenance, freezing, and activation state."""
 
     config = ValueConfig(type="float", unit="C", scaling=0.5)
+    default = ValueConfig()
+    unit_only = ValueConfig(unit="rule-units")
 
     assert ValueConfig.from_mapping(config) is config
+    assert default.is_default
+    assert not unit_only.is_default
+    assert default.with_fallback(config) is config
+    assert unit_only.with_fallback(config) is unit_only
+    assert default.with_fallback(config.as_payload()) == config
     with pytest.raises(TypeError, match="must be a mapping"):
         ValueConfig.from_mapping("float")
     assert value_config_contract_errors(object()) == ("must be ValueConfig",)

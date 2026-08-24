@@ -207,6 +207,8 @@ def _bounded_file_error_strings(issues):
 
 
 class DLDDService:
+    """Compose and supervise the complete device-local diagnosis runtime."""
+
     def __init__(
         self,
         paths: Optional[RulePaths] = None,
@@ -612,22 +614,13 @@ class DLDDService:
         if self.telemetry is not None:
             self.telemetry.config = updated
         if self.orchestrator is not None:
-            if hasattr(self.orchestrator, "queue_config_update"):
-                self.orchestrator.queue_config_update(updated)
-            else:  # lightweight test doubles
-                self.orchestrator.config = updated
+            self.orchestrator.queue_config_update(updated)
         # Monitor supervision may replace a stopped thread concurrently.  A
         # stable snapshot prevents list compaction from skipping another plan;
         # replacements reuse the same plan-owned update queue.
+        intervals = updated.polling_intervals
         for monitor in tuple(self.monitors):
-            intervals = updated.polling_intervals
-            if hasattr(monitor, "update_polling_intervals"):
-                monitor.update_polling_intervals(intervals)
-            else:  # lightweight test doubles
-                monitor.plan.polling_intervals = intervals
-                monitor.plan.polling_interval = intervals[
-                    monitor.plan.monitor_type
-                ]
+            monitor.update_polling_intervals(intervals)
             monitor.fault_evidence_ack_timeout = updated.fault_evidence_ack_timeout
             monitor.source_recovery_samples = updated.source_recovery_samples
 
@@ -853,7 +846,7 @@ class DLDDService:
                     (
                         item
                         for item in self.orchestrator.pending.values()
-                        if key in self.orchestrator._execution_keys(item.execution)
+                        if key in item.execution.work_keys
                     ),
                     None,
                 )
@@ -907,6 +900,8 @@ class DLDDService:
 
 
 def run_service() -> None:
+    """Run the DLDD service with signal-driven graceful shutdown."""
+
     stop_event = threading.Event()
 
     def stop(_signum, _frame):

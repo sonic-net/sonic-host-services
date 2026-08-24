@@ -838,6 +838,9 @@ def test_async_collection_pool_capacity_failure_and_shutdown_lifecycle():
     started = ThreadEvent()
     completions = Queue()
     pool = AsyncCollectionPool(max_workers=1, max_pending=0)
+    assert [(worker.name, worker.daemon) for worker in pool._workers] == [
+        ("dldd-async-collection-0", True)
+    ]
 
     def collect():
         started.set()
@@ -1713,10 +1716,12 @@ def test_expired_monitor_evidence_ownership_recovers_to_ready():
     state = monitor.plan.state_by_key[item.correlation_key]
     state.state = MonitorWorkState.RECHECK_REQUESTED
     state.hold_deadline = 99.0
+    state.recheck_not_before = 98.0
 
     monitor._recover_expired_ownership(100.0)
 
     assert state.state == MonitorWorkState.READY
+    assert state.recheck_not_before is None
     assert monitor.diagnostics[-1]["state"] == "RECHECK_REQUESTED"
 
     for work_state, deadline_field in (
@@ -1733,11 +1738,13 @@ def test_expired_monitor_evidence_ownership_recovers_to_ready():
         state = monitor.plan.state_by_key[item.correlation_key]
         state.state = work_state
         setattr(state, deadline_field, 99.0)
+        state.recheck_not_before = 98.0
 
         monitor._recover_expired_ownership(100.0)
 
         assert state.state == MonitorWorkState.READY
         assert getattr(state, deadline_field) is None
+        assert state.recheck_not_before == 98.0
         assert monitor.diagnostics[-1]["state"] == work_state.value
 
 
@@ -1805,6 +1812,45 @@ class RuntimeDSEHook(DSEHook):
             )
 
         return DSEEvaluationHandle(reference, get_comparator)
+
+
+def test_runtime_dse_binding_planning_prefers_nondefault_rule_value_config():
+    with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
+        document = json.load(stream)
+    configured = document["signatures"][0]["signature"]["conditions"][
+        "events"
+    ][0]["event"]
+    configured.update(
+        {
+            "type": "dse",
+            "path": "{sensor*}:{get_value()}",
+        }
+    )
+    configured["evaluation"]["value_configs"] = {
+        "type": "N/A",
+        "unit": "rule-units",
+    }
+    hook = RuntimeDSEHook()
+    validated = validate_document(
+        document,
+        ValidationContext(dse_registry=DSERegistry(hook=hook)),
+    )
+    assert validated.activation_valid
+    bundle = build_plans(
+        validated.materialized_rules,
+        "generation",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    template = next(iter(bundle.templates.values()))
+
+    expanded = work_items_for_dse_expansion(
+        template, DSEAdapter().expand(template)
+    )
+
+    assert len(expanded) == 1
+    assert expanded[0].value_config == ValueConfig(
+        type="N/A", unit="rule-units"
+    )
 
 
 def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
@@ -2248,6 +2294,18 @@ def test_runtime_dse_evaluation_contract_and_value_config_precedence():
     )
 
     explicit = adapter.get_evaluator(item)
+    unit_only = adapter.get_evaluator(
+        replace(
+            item,
+            evaluation={
+                "type": "dse",
+                "operator": ">=",
+                "value_configs": ValueConfig(
+                    type="N/A", unit="rule-units"
+                ).as_payload(),
+            },
+        )
+    )
     implicit = adapter.get_evaluator(
         replace(
             item,
@@ -2260,6 +2318,9 @@ def test_runtime_dse_evaluation_contract_and_value_config_precedence():
     )
 
     assert explicit["value_configs"]["unit"] == "rule-units"
+    assert unit_only["value_configs"] == ValueConfig(
+        type="N/A", unit="rule-units"
+    ).as_payload()
     assert implicit["value_configs"] == vendor_config.as_payload()
 
 

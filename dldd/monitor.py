@@ -13,6 +13,7 @@ from queue import Empty, Full, PriorityQueue, Queue
 from typing import Callable, Dict, Optional
 
 from .adapters import DataSourceAdapter
+from .bounded_calls import start_daemon_workers
 from .planner import monitor_type_for_source, work_items_for_dse_expansion
 from .runtime import (
     EvaluationResult,
@@ -34,6 +35,17 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_ASYNC_COLLECTION_WORKERS = 8
 DEFAULT_ASYNC_COLLECTION_PENDING = 256
 DEFAULT_ASYNC_RECHECK_RESERVE = 8
+_LEASE_RECOVERY = {
+    MonitorWorkState.IN_FLIGHT: (
+        "ack_deadline", "acknowledgement lease", "IN_FLIGHT", False
+    ),
+    MonitorWorkState.HELD_BY_PRIMARY: (
+        "hold_deadline", "hold deadline", "HELD_BY_PRIMARY", False
+    ),
+    MonitorWorkState.RECHECK_REQUESTED: (
+        "hold_deadline", "recheck deadline", "RECHECK_REQUESTED", True
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -76,16 +88,9 @@ class AsyncCollectionPool:
         self._metrics_started_at = self._clock()
         self._utilization_updated_at = self._metrics_started_at
         self._busy_worker_seconds = 0.0
-        self._workers = tuple(
-            threading.Thread(
-                target=self._worker,
-                name="dldd-async-collection-{}".format(index),
-                daemon=True,
-            )
-            for index in range(max_workers)
+        self._workers = start_daemon_workers(
+            max_workers, "dldd-async-collection-", self._worker
         )
-        for worker in self._workers:
-            worker.start()
 
     def submit(
         self,
@@ -94,6 +99,8 @@ class AsyncCollectionPool:
         completion_queue: Queue,
         high_priority: bool = False,
     ) -> bool:
+        """Admit work while preserving reserved capacity for rechecks."""
+
         normal_slot = not high_priority
         with self._state_lock:
             if self._closed:
@@ -294,15 +301,23 @@ class MonitorThread(threading.Thread):
     def drain_interval_update_queue(self) -> None:
         """Apply queued defaults while retaining sole ownership of cadence state."""
 
+        self._drain_queue(
+            self.plan.interval_update_queue, self._apply_polling_intervals
+        )
+
+    @staticmethod
+    def _drain_queue(queue, consume) -> None:
+        """Drain one owned queue while balancing every completed item."""
+
         while True:
             try:
-                intervals = self.plan.interval_update_queue.get_nowait()
+                item = queue.get_nowait()
             except Empty:
                 return
             try:
-                self._apply_polling_intervals(intervals)
+                consume(item)
             finally:
-                self.plan.interval_update_queue.task_done()
+                queue.task_done()
 
     def _apply_polling_intervals(self, intervals) -> None:
         intervals = self.plan.validated_polling_intervals(intervals)
@@ -383,15 +398,7 @@ class MonitorThread(threading.Thread):
         self._next_poll = min(self._next_poll, due)
 
     def drain_control_queue(self) -> None:
-        while True:
-            try:
-                command = self.plan.control_queue.get_nowait()
-            except Empty:
-                return
-            try:
-                self.apply_command(command)
-            finally:
-                self.plan.control_queue.task_done()
+        self._drain_queue(self.plan.control_queue, self.apply_command)
 
     def apply_command(self, command: MonitorControlCommand) -> bool:
         if command.monitor_id != self.plan.monitor_id:
@@ -449,36 +456,18 @@ class MonitorThread(threading.Thread):
 
     def _recover_expired_ownership(self, now: float) -> None:
         for key, state in self.plan.state_by_key.items():
-            if (
-                state.state == MonitorWorkState.IN_FLIGHT
-                and state.ack_deadline is not None
-                and now >= state.ack_deadline
-            ):
-                LOGGER.error("primary acknowledgement lease expired for %s", key)
-                self._record_lease_expiry(key, "IN_FLIGHT", now)
+            recovery = _LEASE_RECOVERY.get(state.state)
+            if recovery is None:
+                continue
+            deadline_name, label, ownership, clear_recheck = recovery
+            deadline = getattr(state, deadline_name)
+            if deadline is not None and now >= deadline:
+                LOGGER.error("primary %s expired for %s", label, key)
+                self._record_lease_expiry(key, ownership, now)
                 self._transition(state, MonitorWorkState.READY)
-                state.ack_deadline = None
-                self._make_normal_work_due(state)
-            elif (
-                state.state == MonitorWorkState.HELD_BY_PRIMARY
-                and state.hold_deadline is not None
-                and now >= state.hold_deadline
-            ):
-                LOGGER.error("primary hold deadline expired for %s", key)
-                self._record_lease_expiry(key, "HELD_BY_PRIMARY", now)
-                self._transition(state, MonitorWorkState.READY)
-                state.hold_deadline = None
-                self._make_normal_work_due(state)
-            elif (
-                state.state == MonitorWorkState.RECHECK_REQUESTED
-                and state.hold_deadline is not None
-                and now >= state.hold_deadline
-            ):
-                LOGGER.error("primary recheck deadline expired for %s", key)
-                self._record_lease_expiry(key, "RECHECK_REQUESTED", now)
-                self._transition(state, MonitorWorkState.READY)
-                state.hold_deadline = None
-                state.recheck_not_before = None
+                setattr(state, deadline_name, None)
+                if clear_recheck:
+                    state.recheck_not_before = None
                 self._make_normal_work_due(state)
 
     def _expand_due_templates(self, now: float) -> None:

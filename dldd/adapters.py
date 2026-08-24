@@ -18,7 +18,6 @@ from .command_execution import (
     DEFAULT_MAX_OUTPUT_BYTES,
     build_i2c_argv,
     run_checked_shell_free,
-    run_shell_free,
 )
 from .evaluators import EvaluationContractError, evaluate, parse_integer
 from .hooks import VendorHookRegistry
@@ -144,11 +143,7 @@ class DataSourceAdapter(ABC):
             rule_config = ValueConfig.from_mapping(
                 item.evaluation.get("value_configs") or {}
             )
-            config = (
-                rule_config
-                if rule_config != ValueConfig()
-                else resolved.value_configs
-            )
+            config = rule_config.with_fallback(resolved.value_configs)
             config_values = config.as_payload()
             evaluator = {
                 "type": "dse",
@@ -393,13 +388,15 @@ class I2CAdapter(DataSourceAdapter):
 
     @staticmethod
     def _i2cget(source: Mapping[str, Any]) -> Any:
-        result = run_shell_free(
+        return run_checked_shell_free(
             build_i2c_argv(source, operation="get"),
             timeout=float(source.get("timeout", 10)),
-        )
-        if result.returncode != 0:
-            raise SourceUnavailable(result.stderr_text().strip())
-        return result.stdout_text("ascii", "strict").strip()
+            error_type=SourceUnavailable,
+            encoding="ascii",
+            encoding_errors="strict",
+            error_encoding="utf-8",
+            strip_error=True,
+        ).strip()
 
     def validate(self, item: MonitorWorkItem) -> None:
         super().validate(item)
