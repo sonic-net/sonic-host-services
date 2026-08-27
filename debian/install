@@ -1,1 +1,2 @@
 target/release/procdockerstatsd-rs usr/bin
+target/release/userd usr/bin

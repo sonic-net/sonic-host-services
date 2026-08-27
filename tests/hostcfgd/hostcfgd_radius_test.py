@@ -10,6 +10,7 @@ from parameterized import parameterized
 from unittest import TestCase, mock
 from tests.hostcfgd.test_radius_vectors import HOSTCFGD_TEST_RADIUS_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_restart_waiter import MockRestartWaiter
 from sonic_py_common.general import getstatusoutput_noshell
 
 
@@ -33,6 +34,7 @@ sys.modules['hostcfgd'] = hostcfgd
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+swsscommon.RestartWaiter = MockRestartWaiter
 
 class TestHostcfgdRADIUS(TestCase):
     """

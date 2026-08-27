@@ -1,0 +1,28 @@
+# PAM faillock authfail configuration managed by userd
+# Do not edit manually - changes will be overwritten
+#
+# This file is included via substack from common-auth-sonic AFTER authentication
+# to record failed login attempts.
+#
+# Role-based faillock policy:
+# - Only applies to managed users (members of local_mgd group)
+# - Administrator role (sudo group): deny={{ administrator_deny }}
+# - Operator role (not in sudo group): deny={{ operator_deny }}
+
+{% if faillock_enabled %}
+# Skip authfail for non-managed users (not in local_mgd group)
+# If user is NOT in local_mgd, skip the next 4 lines (all faillock authfail logic)
+auth	[success=4 default=ignore]	pam_succeed_if.so user notingroup local_mgd quiet
+
+# For managed users, check if administrator (in sudo group)
+# If user IS in sudo, skip 2 lines to administrator authfail
+auth	[success=2 default=ignore]	pam_succeed_if.so user ingroup sudo quiet
+
+# OPERATOR path: record failed attempt with operator policy, then skip admin authfail
+auth	[default=die]	pam_faillock.so authfail deny={{ operator_deny }}
+auth	[default=1]	pam_permit.so
+
+# ADMINISTRATOR path: record failed attempt with administrator policy
+auth	[default=die]	pam_faillock.so authfail deny={{ administrator_deny }}
+{% endif %}
+
