@@ -141,6 +141,7 @@ class ControlPlaneAclManager(logger.Logger):
     DualToR = False
     bfdAllowed = False
     VxlanAllowed = False
+    FairwaterBt0 = False
     VxlanSrcIP = ""
     RedfishAllowed = False
     DhcpServerSyslogAllowed = False
@@ -187,6 +188,12 @@ class ControlPlaneAclManager(logger.Logger):
         metadata = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.DEVICE_METADATA_TABLE)
         if 'subtype' in metadata['localhost'] and metadata['localhost']['subtype'] == 'DualToR':
             self.DualToR = True
+
+        # Identify Fairwater (FW) BT0 devices via DEVICE_METADATA.
+        # Confirmed against a real device: mgmt_type=FairWater, type=BackEndToRRouter.
+        if (metadata.get('localhost', {}).get('mgmt_type') == 'FairWater'
+                and metadata.get('localhost', {}).get('type') == 'BackEndToRRouter'):
+            self.FairwaterBt0 = True
 
         namespaces = multi_asic.get_all_namespaces()
 
@@ -338,6 +345,44 @@ class ControlPlaneAclManager(logger.Logger):
                         self.log_warning("Unrecognized IP address type on interface '{}': {}".format(iface_name, ip_ntwrk))
 
         return block_ip2me_cmds
+
+    def generate_block_bgp_to_fw_vlan_svi_commands(self, namespace, config_db_connector):
+        """
+        For Fairwater (FW) BT0 devices only, generate iptables/ip6tables
+        commands to DROP inbound BGP (tcp/179) destined to the VLAN SVI
+        (the VLAN's default-gateway IP), read live from VLAN_INTERFACE.
+        Non-FW devices return an empty list (no behavior change).
+        """
+        block_bgp_svi_cmds = []
+
+        if not self.FairwaterBt0:
+            return block_bgp_svi_cmds
+
+        vlan_table = config_db_connector.get_table(self.VLAN_INTF_TABLE)
+        if not vlan_table:
+            return block_bgp_svi_cmds
+
+        for key, _ in vlan_table.items():
+            if not _ip_prefix_in_key(key):
+                continue
+
+            iface_name, iface_cidr = key
+            ip_ntwrk = ipaddress.ip_network(iface_cidr, strict=False)
+
+            # The VLAN SVI address is the default gateway (first host IP of the subnet),
+            # same convention used in generate_block_ip2me_traffic_iptables_commands.
+            svi_ip = next(ip_ntwrk.hosts())
+
+            if isinstance(ip_ntwrk, ipaddress.IPv4Network):
+                block_bgp_svi_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    ['iptables', '-A', 'INPUT', '-d', str(svi_ip), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+            elif isinstance(ip_ntwrk, ipaddress.IPv6Network):
+                block_bgp_svi_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
+                    ['ip6tables', '-A', 'INPUT', '-d', str(svi_ip), '-p', 'tcp', '--dport', '179', '-j', 'DROP'])
+            else:
+                self.log_warning("Unrecognized IP address type on interface '{}': {}".format(iface_name, ip_ntwrk))
+
+        return block_bgp_svi_cmds
 
     def get_chassis_midplane_interface_ip(self):
         ip_address_cmd0 = ['ip', '-4', '-o', 'addr', 'show', "eth1-midplane"]
@@ -765,6 +810,10 @@ class ControlPlaneAclManager(logger.Logger):
 
         # Add iptables/ip6tables commands to allow all incoming BGP traffic
         # TODO: Determine BGP ACLs based on configured device sessions, and remove this blanket acceptance
+        # On Fairwater (FW) BT0 devices, deny BGP destined to the VLAN SVI first;
+        # all other BGP traffic (e.g. uplink peering) falls through to the ACCEPT
+        # below unchanged. Non-FW devices are unaffected (no DROP rules generated).
+        iptables_cmds += self.generate_block_bgp_to_fw_vlan_svi_commands(namespace, config_db_connector)
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.exclude_mgmt_port(['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT']))
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.exclude_mgmt_port(['ip6tables', '-A', 'INPUT', '-p', 'tcp', '--dport', '179', '-j', 'ACCEPT']))
 
