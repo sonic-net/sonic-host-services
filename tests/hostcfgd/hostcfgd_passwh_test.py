@@ -5,6 +5,7 @@ import shutil
 import os
 import sys
 import subprocess
+import syslog
 import re
 
 from parameterized import parameterized
@@ -180,3 +181,41 @@ class TestHostcfgdPASSWH(TestCase):
         """
 
         self.check_config(test_name, test_data, "enable_digits_class")
+
+    def test_passwd_aging_expire_modify_success(self):
+        """
+            Test passwd_aging_expire_modify() does not log an error when chage succeeds
+        """
+        passwh = hostcfgd.PasswHardening()
+        passwh.get_normal_accounts = mock.Mock(return_value=["testuser"])
+
+        with mock.patch('hostcfgd.subprocess.Popen') as mock_popen, \
+                mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            mock_popen.return_value.wait.return_value = 0
+
+            passwh.passwd_aging_expire_modify(100, 'MAX_DAYS')
+
+            mock_popen.assert_called_once_with(('chage', '-M 100', 'testuser'), stdout=subprocess.PIPE)
+            mock_popen.return_value.wait.assert_called_once_with()
+
+            mock_syslog.assert_not_called()
+
+    def test_passwd_aging_expire_modify_failure(self):
+        """
+            Test passwd_aging_expire_modify() logs an error when chage exits with a nonzero status
+        """
+        passwh = hostcfgd.PasswHardening()
+        passwh.get_normal_accounts = mock.Mock(return_value=["testuser"])
+
+        with mock.patch('hostcfgd.subprocess.Popen') as mock_popen, \
+                mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+            mock_popen.return_value.wait.return_value = 1
+
+            passwh.passwd_aging_expire_modify(100, 'MAX_DAYS')
+
+            mock_popen.assert_called_once_with(('chage', '-M 100', 'testuser'), stdout=subprocess.PIPE)
+            mock_popen.return_value.wait.assert_called_once_with()
+            mock_syslog.assert_called_once_with(
+                syslog.LOG_ERR,
+                "failed: return code - 1"
+            )
