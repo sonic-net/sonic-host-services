@@ -703,9 +703,11 @@ class ControlPlaneAclManager(logger.Logger):
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-s', '127.0.0.1', '-i', 'lo', '-j', 'ACCEPT'])
         iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'INPUT', '-s', '::1', '-i', 'lo', '-j', 'ACCEPT'])
 
-        # dhcp_server docker0 syslog (RELP tcp/2514) exception; host namespace / IPv4 only
-        if namespace == DEFAULT_NAMESPACE and self.DhcpServerSyslogAllowed:
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-i', 'docker0', '-p', 'tcp', '--dport', '2514', '-j', 'ACCEPT', '-m', 'comment', '--comment', 'dhcp_server_syslog'])
+        # bridged-container docker0 syslog (RELP tcp/2514) exceptions; host namespace / IPv4 only
+        if namespace == DEFAULT_NAMESPACE:
+            for feature, allowed in (("redfish", self.RedfishAllowed), ("dhcp_server", self.DhcpServerSyslogAllowed)):
+                if allowed:
+                    iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-i', 'docker0', '-p', 'tcp', '--dport', '2514', '-j', 'ACCEPT', '-m', 'comment', '--comment', feature + '_syslog'])
 
 
         if self.bfdAllowed:
