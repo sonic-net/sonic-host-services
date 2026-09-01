@@ -97,6 +97,25 @@ RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
 
+
+def radius_server_entry_valid(server):
+    try:
+        ipaddress.ip_address(server['ip'])
+        auth_port = int(server['auth_port'])
+        if not 1 <= auth_port <= 65535:
+            raise ValueError('auth_port out of range')
+        return True
+    except (KeyError, ValueError) as error:
+        syslog.syslog(
+            syslog.LOG_ERR,
+            'RADIUS_SERVER: skipping invalid server entry '
+            '(ip={!r}, auth_port={!r}): {}'.format(
+                server.get('ip'), server.get('auth_port'), error
+            )
+        )
+        return False
+
+
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
 OPENSSL_FIPS_CONFIG_FILE = '/etc/fips/fips_enable'
@@ -699,6 +718,8 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
                         del server['src_ip']
 
+                if not radius_server_entry_valid(server):
+                    continue
                 radsrvs_conf.append(server)
             radsrvs_conf = sorted(radsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
