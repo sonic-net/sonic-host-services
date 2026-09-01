@@ -141,6 +141,7 @@ class ControlPlaneAclManager(logger.Logger):
     DualToR = False
     bfdAllowed = False
     VxlanAllowed = False
+    FairwaterBt0 = False
     VxlanSrcIP = ""
     RedfishAllowed = False
     DhcpServerSyslogAllowed = False
@@ -187,6 +188,12 @@ class ControlPlaneAclManager(logger.Logger):
         metadata = self.config_db_map[DEFAULT_NAMESPACE].get_table(self.DEVICE_METADATA_TABLE)
         if 'subtype' in metadata['localhost'] and metadata['localhost']['subtype'] == 'DualToR':
             self.DualToR = True
+
+        # Identify Fairwater (FW) BT0 devices via DEVICE_METADATA.
+        # Confirmed against a real device: mgmt_type=FairWater, type=BackEndToRRouter.
+        if (metadata.get('localhost', {}).get('mgmt_type') == 'FairWater'
+                and metadata.get('localhost', {}).get('type') == 'BackEndToRRouter'):
+            self.FairwaterBt0 = True
 
         namespaces = multi_asic.get_all_namespaces()
 
@@ -338,6 +345,48 @@ class ControlPlaneAclManager(logger.Logger):
                         self.log_warning("Unrecognized IP address type on interface '{}': {}".format(iface_name, ip_ntwrk))
 
         return block_ip2me_cmds
+
+    def generate_block_bgp_to_fw_vlan_svi_commands(self, namespace):
+        """
+        For Fairwater (FW) BT0 devices only, generate iptables/ip6tables
+        commands to DROP inbound BGP (tcp/179) arriving on any VLAN
+        interface (ingress interface name matching 'Vlan*').
+
+        Matching is done on ingress INTERFACE (-i Vlan+), not on source IP
+        (-s <subnet>) or destination IP (-d <SVI_IP>):
+          - Destination-IP matching (an earlier iteration of this rule)
+            only blocked BGP attempts aimed at the VLAN gateway address
+            itself; a host inside the VLAN could still reach any *other*
+            local BT0 address (e.g. loopback/fabric-facing IP) and bypass
+            the rule.
+          - Source-subnet matching (also considered) closes that bypass,
+            but only covers the configured VLAN CIDR; it does not cover
+            IPv6 link-local sources (fe80::/64), which are always in-scope
+            on a directly-connected VLAN segment but are not part of any
+            configured global subnet. It also relies on source-IP spoofing
+            being prevented upstream (uRPF or equivalent), since the source
+            IP field itself is attacker-controlled.
+          - Ingress-interface matching avoids both gaps: it looks at which
+            physical/logical interface the packet actually arrived on, a
+            property the kernel derives from the receiving interface (not
+            from data in the packet header), so it cannot be spoofed via
+            the IP header. It also covers IPv6 link-local sources for
+            free, since those packets still arrive on the VLAN interface.
+            Using the 'Vlan+' wildcard means newly-configured VLANs are
+            covered automatically without reading VLAN_INTERFACE or
+            restarting caclmgrd.
+
+        Non-FW devices return an empty list (no behavior change).
+        """
+        if not self.FairwaterBt0:
+            return []
+
+        return [
+            self.iptables_cmd_ns_prefix[namespace] +
+                ['iptables', '-A', 'INPUT', '-i', 'Vlan+', '-p', 'tcp', '--dport', '179', '-j', 'DROP'],
+            self.iptables_cmd_ns_prefix[namespace] +
+                ['ip6tables', '-A', 'INPUT', '-i', 'Vlan+', '-p', 'tcp', '--dport', '179', '-j', 'DROP'],
+        ]
 
     def get_chassis_midplane_interface_ip(self):
         ip_address_cmd0 = ['ip', '-4', '-o', 'addr', 'show', "eth1-midplane"]
@@ -724,6 +773,15 @@ class ControlPlaneAclManager(logger.Logger):
 
         # Add iptables commands to allow internal chasiss midplane traffic
         iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace, config_db_connector)
+
+        # On Fairwater (FW) BT0 devices, deny BGP arriving on any VLAN
+        # interface (ingress-interface match) before allowing established/
+        # related traffic through — this must come first so that
+        # follow-up packets of an already-established VLAN-sourced BGP
+        # session (which would otherwise match ESTABLISHED,RELATED and
+        # bypass this DROP) are also blocked, not just the initial SYN.
+        # Non-FW devices are unaffected (no DROP rules generated).
+        iptables_cmds += self.generate_block_bgp_to_fw_vlan_svi_commands(namespace)
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections
