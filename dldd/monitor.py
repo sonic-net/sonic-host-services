@@ -37,13 +37,13 @@ DEFAULT_ASYNC_COLLECTION_PENDING = 256
 DEFAULT_ASYNC_RECHECK_RESERVE = 8
 _LEASE_RECOVERY = {
     MonitorWorkState.IN_FLIGHT: (
-        "ack_deadline", "acknowledgement lease", "IN_FLIGHT", False
+        "ack_deadline", "acknowledgement lease", False
     ),
     MonitorWorkState.HELD_BY_PRIMARY: (
-        "hold_deadline", "hold deadline", "HELD_BY_PRIMARY", False
+        "hold_deadline", "hold deadline", False
     ),
     MonitorWorkState.RECHECK_REQUESTED: (
-        "hold_deadline", "recheck deadline", "RECHECK_REQUESTED", True
+        "hold_deadline", "recheck deadline", True
     ),
 }
 
@@ -52,6 +52,18 @@ _LEASE_RECOVERY = {
 class AsyncCollectionCompletion:
     token: str
     result: EvaluationResult
+
+
+def _monitor_error_result(error: Exception, completed_at: float) -> EvaluationResult:
+    """Return the canonical result for an unexpected monitor exception."""
+
+    return EvaluationResult(
+        EvaluationResultType.COLLECTION_ERROR,
+        completed_at=completed_at,
+        error_category="MONITOR_ERROR",
+        error=str(error),
+        retryable=True,
+    )
 
 
 class AsyncCollectionPool:
@@ -203,13 +215,7 @@ class AsyncCollectionPool:
                 try:
                     result = collector()
                 except Exception as error:
-                    result = EvaluationResult(
-                        EvaluationResultType.COLLECTION_ERROR,
-                        completed_at=time.time(),
-                        error_category="MONITOR_ERROR",
-                        error=str(error),
-                        retryable=True,
-                    )
+                    result = _monitor_error_result(error, time.time())
                 completion_queue.put_nowait(
                     AsyncCollectionCompletion(token, result)
                 )
@@ -296,7 +302,9 @@ class MonitorThread(threading.Thread):
     def update_polling_intervals(self, intervals) -> None:
         """Queue all source defaults for atomic application by this thread."""
 
-        self.plan.queue_polling_interval_update(intervals)
+        self.plan.interval_update_queue.put_nowait(
+            self.plan.validated_polling_intervals(intervals)
+        )
 
     def drain_interval_update_queue(self) -> None:
         """Apply queued defaults while retaining sole ownership of cadence state."""
@@ -459,11 +467,16 @@ class MonitorThread(threading.Thread):
             recovery = _LEASE_RECOVERY.get(state.state)
             if recovery is None:
                 continue
-            deadline_name, label, ownership, clear_recheck = recovery
+            deadline_name, label, clear_recheck = recovery
             deadline = getattr(state, deadline_name)
             if deadline is not None and now >= deadline:
                 LOGGER.error("primary %s expired for %s", label, key)
-                self._record_lease_expiry(key, ownership, now)
+                self._record_diagnostic(
+                    "primary ownership lease expired",
+                    state.state.value,
+                    correlation_key=key,
+                    now=now,
+                )
                 self._transition(state, MonitorWorkState.READY)
                 setattr(state, deadline_name, None)
                 if clear_recheck:
@@ -513,14 +526,10 @@ class MonitorThread(threading.Thread):
             if state.phase == "STABLE":
                 state.phase = "WARMUP"
                 state.warmup_cycles_completed = 0
-            self.diagnostics.append(
-                {
-                    "monitor": self.plan.monitor_id,
-                    "template_id": template_id,
-                    "state": state.phase,
-                    "reason": "DSE expansion failed: {}".format(error),
-                    "observed_at": self.wall_clock(),
-                }
+            self._record_diagnostic(
+                "DSE expansion failed: {}".format(error),
+                state.phase,
+                template_id=template_id,
             )
             return
 
@@ -586,14 +595,10 @@ class MonitorThread(threading.Thread):
             except Full:
                 state.last_error = "primary evidence queue is full"
                 state.next_expansion_due = now + policy.bootstrap_interval
-                self.diagnostics.append(
-                    {
-                        "monitor": self.plan.monitor_id,
-                        "template_id": template_id,
-                        "state": state.phase,
-                        "reason": "DSE expansion registration queue is full",
-                        "observed_at": self.wall_clock(),
-                    }
+                self._record_diagnostic(
+                    "DSE expansion registration queue is full",
+                    state.phase,
+                    template_id=template_id,
                 )
                 return
 
@@ -660,17 +665,19 @@ class MonitorThread(threading.Thread):
                 state.phase,
             )
 
-    def _record_lease_expiry(self, key: str, state: str, now: float) -> None:
-        self.diagnostics.append(
-            {
-                "monitor": self.plan.monitor_id,
-                "correlation_key": key,
-                "state": state,
-                "reason": "primary ownership lease expired",
-                "observed_at": self.wall_clock(),
-                "monotonic_at": now,
-            }
-        )
+    def _record_diagnostic(
+        self, reason: str, state: str, now=None, **context
+    ) -> None:
+        diagnostic = {
+            "monitor": self.plan.monitor_id,
+            **context,
+            "state": state,
+            "reason": reason,
+            "observed_at": self.wall_clock(),
+        }
+        if now is not None:
+            diagnostic["monotonic_at"] = now
+        self.diagnostics.append(diagnostic)
 
     def poll_once(
         self,
@@ -723,7 +730,11 @@ class MonitorThread(threading.Thread):
                 continue
             if not recheck:
                 state.next_sample_due = attempt_time + interval
-            self._collect_key(key, state, item=item)
+            state.last_attempt_timestamp = self.wall_clock()
+            adapter = self.adapters[item.source_type]
+            result = self._collect_result(adapter, item)
+            self._handle_result(key, state, item, result, recheck)
+            self._mark_dse_cycle_attempt(key)
         self.drain_async_completions()
 
     def _submit_async_collection(self, key, state, item) -> bool:
@@ -738,22 +749,18 @@ class MonitorThread(threading.Thread):
             high_priority=from_recheck,
         )
         if not submitted:
-            self.diagnostics.append(
-                {
-                    "monitor": self.plan.monitor_id,
-                    "correlation_key": key,
-                    "state": previous_state.value,
-                    "reason": "async collection capacity is exhausted",
-                    "observed_at": self.wall_clock(),
-                }
+            self._record_diagnostic(
+                "async collection capacity is exhausted",
+                previous_state.value,
+                correlation_key=key,
             )
             return False
         state.last_attempt_timestamp = self.wall_clock()
         self._transition(state, MonitorWorkState.COLLECTING)
         self._async_jobs[token] = (
             key,
+            item,
             previous_state,
-            from_recheck,
             state.work_state_generation,
         )
         return True
@@ -768,30 +775,26 @@ class MonitorThread(threading.Thread):
                 pending = self._async_jobs.pop(completion.token, None)
                 if pending is None:
                     continue
-                key, previous_state, from_recheck, generation = pending
+                key, item, previous_state, generation = pending
                 state = self.plan.state_by_key.get(key)
                 if (
                     state is None
                     or state.state != MonitorWorkState.COLLECTING
                     or state.work_state_generation != generation
                 ):
-                    self.diagnostics.append(
-                        {
-                            "monitor": self.plan.monitor_id,
-                            "correlation_key": key,
-                            "state": "COLLECTING",
-                            "reason": "discarded stale async collection result",
-                            "observed_at": self.wall_clock(),
-                        }
+                    self._record_diagnostic(
+                        "discarded stale async collection result",
+                        "COLLECTING",
+                        correlation_key=key,
                     )
                     continue
                 self._transition(state, previous_state)
                 self._handle_result(
                     key,
                     state,
-                    self.plan.item(key),
+                    item,
                     completion.result,
-                    from_recheck,
+                    previous_state == MonitorWorkState.RECHECK_REQUESTED,
                 )
                 self._mark_dse_cycle_attempt(key)
             finally:
@@ -801,27 +804,10 @@ class MonitorThread(threading.Thread):
         try:
             return adapter.collect(item)
         except Exception as error:
-            return EvaluationResult(
-                EvaluationResultType.COLLECTION_ERROR,
-                completed_at=self.wall_clock(),
-                error_category="MONITOR_ERROR",
-                error=str(error),
-                retryable=True,
-            )
-
-    def _collect_key(self, key: str, state: MonitorWorkStateRecord, item=None) -> None:
-        item = item or self.plan.item(key)
-        from_recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
-        state.last_attempt_timestamp = self.wall_clock()
-        adapter = self.adapters[item.source_type]
-        result = self._collect_result(adapter, item)
-        self._handle_result(key, state, item, result, from_recheck)
-        self._mark_dse_cycle_attempt(key)
+            return _monitor_error_result(error, self.wall_clock())
 
     def _mark_dse_cycle_attempt(self, key: str) -> None:
         template_ids = self._dse_templates_by_child.get(key, ())
-        if not template_ids:
-            return
         for template_id in tuple(template_ids):
             state = self.plan.expansion_state_by_key[template_id]
             if state.phase != "WARMUP":
@@ -869,15 +855,14 @@ class MonitorThread(threading.Thread):
                 return
             state.source_status = SourceAvailability.AVAILABLE
             state.recovery_success_count = 0
-            if result.result == EvaluationResultType.MATCH:
-                if self._enqueue(item, state, result, from_recheck):
-                    state.last_sample_state = EvaluationResultType.MATCH.value
+            should_enqueue = (
+                result.result == EvaluationResultType.MATCH
+                or previous_sample == EvaluationResultType.MATCH.value
+                or from_recheck
+            )
+            if should_enqueue and not self._enqueue(item, state, result, from_recheck):
                 return
-            if previous_sample == EvaluationResultType.MATCH.value or from_recheck:
-                if self._enqueue(item, state, result, from_recheck):
-                    state.last_sample_state = EvaluationResultType.NO_MATCH.value
-            else:
-                state.last_sample_state = EvaluationResultType.NO_MATCH.value
+            state.last_sample_state = result.result.value
             return
 
         state.consecutive_failure_count += 1
@@ -958,54 +943,3 @@ class MonitorThread(threading.Thread):
         state.last_enqueue_timestamp = enqueued_at
         state.ack_deadline = self.clock() + self.fault_evidence_ack_timeout
         return True
-
-
-def command_for_plan(
-    plan: MonitorExecutionPlan,
-    correlation_key: str,
-    command: MonitorCommandType,
-    target: MonitorWorkState,
-    reason: str,
-    evidence: Optional[FaultEvidenceEvent] = None,
-    **kwargs
-) -> MonitorControlCommand:
-    return _new_monitor_command(
-        monitor_id=plan.monitor_id,
-        plan_generation=plan.plan_generation,
-        correlation_key=correlation_key,
-        command=command,
-        target=target,
-        reason=reason,
-        expected_work_state_generation=(
-            evidence.work_state_generation if evidence is not None else None
-        ),
-        evidence_sequence=evidence.sequence if evidence is not None else None,
-        **kwargs
-    )
-
-
-def _new_monitor_command(
-    *,
-    monitor_id,
-    plan_generation,
-    correlation_key,
-    command,
-    target,
-    reason,
-    expected_work_state_generation,
-    evidence_sequence,
-    **kwargs
-) -> MonitorControlCommand:
-    return MonitorControlCommand(
-        command_id=str(uuid.uuid4()),
-        monitor_id=monitor_id,
-        plan_generation=plan_generation,
-        correlation_key=correlation_key,
-        command=command,
-        target_state=target,
-        reason=reason,
-        expected_work_state_generation=expected_work_state_generation,
-        evidence_sequence=evidence_sequence,
-        recheck_not_before=kwargs.get("recheck_not_before"),
-        hold_deadline=kwargs.get("hold_deadline"),
-    )

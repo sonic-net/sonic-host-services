@@ -55,7 +55,6 @@ class ControlledHashSource(object):
     def __init__(self, key, values):
         self._rows = {key: dict(values)}
         self._error = None
-        self._one_shot_error = None
         self._lock = RLock()
         self.read_calls = []
 
@@ -64,10 +63,6 @@ class ControlledHashSource(object):
         assert table == "DLDD_TEST_SENSOR"
         with self._lock:
             self.read_calls.append((database, table, key))
-            if self._one_shot_error is not None:
-                error = self._one_shot_error
-                self._one_shot_error = None
-                raise error
             if self._error is not None:
                 raise self._error
             return dict(self._rows.get(key, {}))
@@ -76,22 +71,13 @@ class ControlledHashSource(object):
         with self._lock:
             self._rows.setdefault(key, {})["value"] = str(value)
 
-    def set_row(self, key, values):
-        with self._lock:
-            self._rows[key] = dict(values)
-
     def fail_with(self, error):
         with self._lock:
             self._error = error
 
-    def fail_once_with(self, error):
-        with self._lock:
-            self._one_shot_error = error
-
     def recover(self):
         with self._lock:
             self._error = None
-            self._one_shot_error = None
 
 
 class ControlledDSEHook(DSEHook):
@@ -101,22 +87,15 @@ class ControlledDSEHook(DSEHook):
         self._values = {"DSE_SENSOR0": "5", "DSE_SENSOR1": "6"}
         self._thresholds = {"DSE_SENSOR0": 10.0, "DSE_SENSOR1": 10.0}
         self._visible_instances = set(self._values)
-        self.authoritative = True
         self.expansion_calls = 0
         self.source_calls = []
         self.comparator_calls = []
-        self.direct_rows = {}
-        self.direct_read_calls = []
         self._lock = RLock()
 
     def read(self, database, table, key):
-        with self._lock:
-            self.direct_read_calls.append((database, table, key))
-            if key not in self.direct_rows:
-                raise AssertionError(
-                    "DSE-only integration rule used the direct Redis adapter"
-                )
-            return dict(self.direct_rows[key])
+        raise AssertionError(
+            "DSE-only integration rule used the direct Redis adapter"
+        )
 
     def resolve_source(self, reference, context):
         def expand(unused_context):
@@ -131,7 +110,7 @@ class ControlledDSEHook(DSEHook):
                         )
                         for instance in sorted(self._visible_instances)
                     ),
-                    authoritative=self.authoritative,
+                    authoritative=True,
                 )
 
         def get_value(invocation):
@@ -169,25 +148,11 @@ class ControlledDSEHook(DSEHook):
         with self._lock:
             self._values[instance] = str(value)
 
-    def set_direct_row(self, key, values):
-        with self._lock:
-            self.direct_rows[key] = dict(values)
-
     def remove(self, instance):
         with self._lock:
             self._visible_instances.discard(instance)
             self._values.pop(instance, None)
             self._thresholds.pop(instance, None)
-
-    def omit(self, instance):
-        """Omit an instance from discovery while keeping it readable."""
-
-        with self._lock:
-            self._visible_instances.discard(instance)
-
-    def set_authoritative(self, authoritative):
-        with self._lock:
-            self.authoritative = bool(authoritative)
 
 
 class BlockingConfigDB(object):
@@ -291,12 +256,11 @@ class RunningService(object):
 class IntegrationEnvironment(object):
     """Compose one deterministic service environment and its common probes."""
 
-    def __init__(self, paths, source, state_db, service_factory, config_dbs):
+    def __init__(self, paths, source, state_db, service_factory):
         self.paths = paths
         self.source = source
         self.state_db = state_db
         self._service_factory = service_factory
-        self.config_dbs = config_dbs
 
     def new_service(self):
         """Construct a fresh service sharing this environment's durable state."""
@@ -411,9 +375,6 @@ def _make_environment(
     document,
     source,
     dse_registry,
-    *,
-    config_values=None,
-    vendor_hooks=None,
 ):
     platform_dir = tmp_path / "platform"
     rules_dir = tmp_path / "runtime" / "rules"
@@ -436,18 +397,13 @@ def _make_environment(
             "test-platform", "TEST-PRODUCT", "TEST-SOFTWARE"
         ),
         dse_registry,
-        vendor_hooks or VendorHookRegistry(),
+        VendorHookRegistry(),
         ExactCompatibilityMatcher(),
     )
 
-    config_dbs = []
-
     def service():
         stop_event = Event()
-        config_db = BlockingConfigDB(
-            stop_event, config_values or CONFIG_VALUES
-        )
-        config_dbs.append(config_db)
+        config_db = BlockingConfigDB(stop_event, CONFIG_VALUES)
         return IntegrationService(
             source,
             paths=paths,
@@ -462,7 +418,6 @@ def _make_environment(
         source,
         state_db,
         service,
-        config_dbs,
     )
 
 
@@ -493,9 +448,6 @@ def integration_environment_factory(tmp_path):
         document=None,
         source=None,
         dse_registry=None,
-        *,
-        config_values=None,
-        vendor_hooks=None,
     ):
         return _make_environment(
             tmp_path,
@@ -503,8 +455,6 @@ def integration_environment_factory(tmp_path):
             source
             or ControlledHashSource(SOURCE_KEY, {"value": "5"}),
             dse_registry or DSERegistry(),
-            config_values=config_values,
-            vendor_hooks=vendor_hooks,
         )
 
     return create

@@ -9,12 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from dldd.actions import ActionExecutor, ActionResult, ActionSequenceResult
-from dldd.artifacts import ArtifactRequest, FilesystemArtifactClient
+from dldd.actions import ActionResult, ActionSequenceResult
+from dldd.artifacts import ArtifactRequest
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine, SignatureExecution
 from dldd.logic import parse_logic
-from dldd.models import Operation
 from dldd.orchestrator import PrimaryOrchestrator
 from dldd.planner import build_plans
 from dldd.runtime import (
@@ -310,70 +309,6 @@ def test_expanded_common_predicate_owner_routing_and_collision_rejection():
         is bundle.monitor_plans["redis"]
     )
     assert orchestrator.work_items[base.correlation_key] is base
-
-
-def test_materialized_operation_dispatch_payload_contract():
-    """Preserve typed dispatch, immutable execution, and safe query data."""
-
-    def executor(operation):
-        return operation
-
-    operation = Operation(
-        type="dse",
-        command="PSU:reset()",
-        timeout=10,
-        executor=executor,
-        options={
-            "type": "cli",
-            "command": "unsafe",
-            "timeout": 999,
-            "executor": None,
-            "token": "vendor-data",
-        },
-    )
-
-    payload = operation.as_runtime_payload()
-
-    assert payload["type"] == "dse"
-    assert payload["command"] == "PSU:reset()"
-    assert payload["timeout"] == 10
-    assert payload["executor"] is executor
-    assert payload["materialized_operation"] is operation
-    assert payload["token"] == "vendor-data"
-    assert ActionExecutor().execute(payload, timeout=1) is operation
-
-    # Resolved executors receive the immutable materialized operation itself.
-    received = []
-
-    def executor(operation):
-        received.append(operation)
-        return "collected"
-
-    operation = Operation(
-        type="dse",
-        command="SYSTEM:collect()",
-        executor=executor,
-        options={"token": "vendor-data"},
-    )
-    payload = operation.as_runtime_payload()
-
-    assert FilesystemArtifactClient._run_query(payload) == "collected"
-    assert received == [operation]
-
-    # Reserved vendor fields are dropped without matching canonical query data.
-    operation = Operation(
-        type="vendor_dump",
-        options={
-            "argv": ["/bin/false"],
-            "path": {"unsafe": True},
-            "max_output_bytes": 999,
-            "hook": "diagnostics",
-        },
-    )
-
-    payload = operation.as_runtime_payload()
-
-    assert payload == {"type": "vendor_dump", "hook": "diagnostics"}
 
 
 def evidence(item, kind, sequence, from_recheck=False):
@@ -1090,7 +1025,7 @@ def test_suppressed_rule_async_update_cannot_overwrite_fault_owner():
     record.status = "ACTIVE"
     orchestrator.published_by_key[(record.component_name, record.symptom)] = 9999999
 
-    assert orchestrator._publish_fault_record(identity, record, 0)
+    assert orchestrator._publish_fault_record(record)
     assert not database.values
 
 

@@ -41,14 +41,14 @@ class BoundedCallGate:
 
         def invoke():
             try:
-                value = callback()
                 try:
-                    result.set_result(value)
-                except InvalidStateError:
-                    pass
-            except BaseException as error:
+                    value = callback()
+                    setter = result.set_result
+                except BaseException as error:
+                    value = error
+                    setter = result.set_exception
                 try:
-                    result.set_exception(error)
+                    setter(value)
                 except InvalidStateError:
                     pass
             finally:

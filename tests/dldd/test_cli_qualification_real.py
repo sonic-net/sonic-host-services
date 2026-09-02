@@ -148,14 +148,14 @@ def _installed_qualification_environment(monkeypatch, tmp_path):
         VendorHookRegistry(),
         ExactCompatibilityMatcher(),
     )
-    extension_loads = []
-    monkeypatch.setattr(dldd_cli, "detect_identity", lambda: identity)
-
-    def load_extensions(unused_identity, unused_path):
-        extension_loads.append(True)
-        return extensions
-
-    monkeypatch.setattr(dldd_cli, "load_extensions", load_extensions)
+    monkeypatch.setattr(
+        dldd_cli,
+        "detect_identity",
+        lambda: identity,
+    )
+    monkeypatch.setattr(
+        dldd_cli, "load_extensions", lambda *unused_args: extensions
+    )
     monkeypatch.setattr(
         dldd_preflight,
         "adapter_map",
@@ -171,7 +171,7 @@ def _installed_qualification_environment(monkeypatch, tmp_path):
         yaml.safe_dump(_direct_and_dse_document(), sort_keys=False),
         encoding="utf-8",
     )
-    return sources, extension_loads, platform_dir, rules_path
+    return sources, platform_dir, rules_path
 
 
 def _run_cli(capsys, rules_path, platform_dir, mode):
@@ -190,24 +190,11 @@ def _run_cli(capsys, rules_path, platform_dir, mode):
     return status, json.loads(capsys.readouterr().out)
 
 
-@pytest.mark.parametrize(
-    "mode,extension_load_count,direct_read_count",
-    (
-        ("static-schema", 0, 0),
-        ("dse-resolve", 1, 0),
-        ("activation-dry-run", 1, 0),
-        ("hardware-probe", 1, 1),
-    ),
-)
-def test_real_yaml_progressive_cli_modes_preserve_read_boundaries(
-    monkeypatch,
-    tmp_path,
-    capsys,
-    mode,
-    extension_load_count,
-    direct_read_count,
+@pytest.mark.parametrize("mode", ("dse-resolve", "activation-dry-run"))
+def test_real_yaml_non_io_modes_do_not_collect_sources(
+    monkeypatch, tmp_path, capsys, mode
 ):
-    sources, extension_loads, platform_dir, rules_path = (
+    sources, platform_dir, rules_path = (
         _installed_qualification_environment(monkeypatch, tmp_path)
     )
 
@@ -217,8 +204,7 @@ def test_real_yaml_progressive_cli_modes_preserve_read_boundaries(
     assert payload["file_level_result"] == "PASSED"
     assert payload["rule_level_result"] == "PASSED"
     assert payload["rules_parsed_successfully"] == 2
-    assert len(extension_loads) == extension_load_count
-    assert len(sources.direct_reads) == direct_read_count
+    assert sources.direct_reads == []
     assert sources.dse_expansions == 0
     assert sources.dse_reads == []
     assert sources.comparator_reads == []
@@ -227,7 +213,7 @@ def test_real_yaml_progressive_cli_modes_preserve_read_boundaries(
 def test_real_yaml_e2e_executes_direct_and_every_dse_instance_without_mutation(
     monkeypatch, tmp_path, capsys
 ):
-    sources, unused_loads, platform_dir, rules_path = (
+    sources, platform_dir, rules_path = (
         _installed_qualification_environment(monkeypatch, tmp_path)
     )
     original_rules = rules_path.read_bytes()

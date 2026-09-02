@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -14,7 +15,6 @@ from .actions import ActionRunner, ActionSequenceResult
 from .artifacts import HealthzArtifactClient
 from .config import DLDDConfig
 from .correlation import CorrelationDecision, CorrelationEngine, FaultArbiter, SignatureExecution
-from .monitor import command_for_plan
 from .ownership import is_dldd_fault_payload
 from .planner import monitor_type_for_source
 from .rule_schema.errors import bound_diagnostic
@@ -24,6 +24,7 @@ from .runtime import (
     FaultEvidenceEvent,
     FaultRecord,
     MonitorCommandType,
+    MonitorControlCommand,
     MonitorExecutionPlan,
     MonitorWorkState,
     make_rule_instance_id,
@@ -35,14 +36,16 @@ from .timestamps import floor_timestamp_fields
 LOGGER = logging.getLogger(__name__)
 
 
+_COMMAND_BY_TARGET = {
+    MonitorWorkState.READY: MonitorCommandType.RESUME,
+    MonitorWorkState.DEGRADED: MonitorCommandType.RESUME,
+    MonitorWorkState.HELD_BY_PRIMARY: MonitorCommandType.HOLD,
+    MonitorWorkState.RECHECK_REQUESTED: MonitorCommandType.RECHECK_ONCE,
+    MonitorWorkState.BROKEN: MonitorCommandType.SUSPEND,
+    MonitorWorkState.SUSPENDED: MonitorCommandType.SUSPEND,
+}
 _DECISIVE_RECHECK_RESULTS = frozenset(
     (EvaluationResultType.MATCH, EvaluationResultType.NO_MATCH)
-)
-_SOURCE_FAILURE_RESULTS = frozenset(
-    (
-        EvaluationResultType.SOURCE_UNAVAILABLE,
-        EvaluationResultType.COLLECTION_ERROR,
-    )
 )
 _MAX_RECHECK_ATTEMPTS = 2
 
@@ -60,7 +63,6 @@ class PendingFault:
     outstanding_rechecks: Set[str] = field(default_factory=set)
     last_decision: Optional[CorrelationDecision] = None
     artifact: Optional[Mapping[str, Any]] = None
-    source_failed: bool = False
     recheck_failed: bool = False
     recheck_deadline: Optional[float] = None
     recheck_attempts: int = 0
@@ -69,10 +71,8 @@ class PendingFault:
 @dataclass
 class Reconciliation:
     execution: SignatureExecution
-    record: FaultRecord
     outstanding_rechecks: Set[str]
     last_decision: Optional[CorrelationDecision] = None
-    source_failed: bool = False
     recheck_failed: bool = False
     reason: str = "bootstrap_fault_reconciliation"
     hold_deadline: float = 0.0
@@ -166,6 +166,16 @@ class PrimaryOrchestrator:
 
         self._config_updates.put(config)
 
+    def restore_broken_work(self, key: str, record: Mapping[str, Any]) -> None:
+        """Restore one persisted broken work item before monitors start."""
+
+        self.broken_rules[key] = record
+        self._command_key(
+            key,
+            MonitorWorkState.BROKEN,
+            "restored broken rule after unclean restart",
+        )
+
     def _apply_queued_config_updates(self) -> None:
         latest = None
         while True:
@@ -194,9 +204,7 @@ class PrimaryOrchestrator:
                     self.wall_clock()
                     + latest.inactive_fault_retention_period
                 )
-                self._publish_fault_record(
-                    identity, record, record.remote_action_time_window
-                )
+                self._publish_fault_record(record)
 
     def process_batch(self, limit: int = 128) -> int:
         processed = 0
@@ -270,7 +278,6 @@ class PrimaryOrchestrator:
             identity = (item.rule_id, item.component_name)
             added_identities.add(identity)
             self._dse_retirement_candidates.discard(identity)
-        removed_identities = set()
         for key in event.removed_keys:
             item = self.work_items.pop(key, None)
             if item is None:
@@ -278,7 +285,6 @@ class PrimaryOrchestrator:
             if self._plan_by_work_key.get(key) is plan:
                 self._plan_by_work_key.pop(key, None)
             identity = (item.rule_id, item.component_name)
-            removed_identities.add(identity)
             self._dse_retirement_candidates.add(identity)
             self.correlation.unregister_work_item(item)
             self.broken_rules.pop(key, None)
@@ -297,13 +303,13 @@ class PrimaryOrchestrator:
             if (
                 record is None
                 or execution is None
-                or not self._execution_has_all_events(execution)
+                or not execution.has_all_events
             ):
                 continue
             self.pending_dynamic_faults.pop(identity, None)
             self.uncertain_faults.discard(identity)
             self._start_reconciliation(
-                execution, record, "runtime_expansion_fault_reconciliation"
+                execution, "runtime_expansion_fault_reconciliation"
             )
         if event.authoritative:
             candidates = {
@@ -316,7 +322,6 @@ class PrimaryOrchestrator:
                 for identity in self.pending_dynamic_faults
                 if identity[0] == event.signature.metadata.id
             )
-            candidates.update(removed_identities)
             for identity in sorted(candidates):
                 self._retire_absent_dse_fault(identity, event)
         if event.removed_keys:
@@ -405,7 +410,6 @@ class PrimaryOrchestrator:
                 self.uncertain_faults.add(identity)
                 self._start_reconciliation(
                     self.correlation.executions[identity],
-                    record,
                     "dse_removal_remaining_work_reconciliation",
                 )
             return False
@@ -455,29 +459,15 @@ class PrimaryOrchestrator:
                 alternate.occurrences = record.occurrences
                 self.published_by_key[fault_key] = alternate.rule_id
                 self._publish_fault_record(
-                    alternate_identity,
                     alternate,
-                    self._remote_action_window(
-                        alternate_identity, alternate
-                    ),
+                    refresh_remote_window=True,
                 )
             else:
-                self._publish_fault_record(
-                    identity, record, record.remote_action_time_window
-                )
+                self._publish_fault_record(record)
         elif owner == rule_id:
-            self._publish_fault_record(
-                identity, record, record.remote_action_time_window
-            )
+            self._publish_fault_record(record)
 
         return True
-
-    @staticmethod
-    def _execution_has_all_events(execution: SignatureExecution) -> bool:
-        required = {
-            event.id for event in execution.signature.conditions.events
-        }
-        return required.issubset(execution.event_keys)
 
     def _handle_processing_failure(
         self, event: FaultEvidenceEvent, error: Exception
@@ -512,7 +502,6 @@ class PrimaryOrchestrator:
         try:
             self._command_event(
                 event,
-                MonitorCommandType.SUSPEND if fatal else MonitorCommandType.RESUME,
                 MonitorWorkState.BROKEN if fatal else MonitorWorkState.DEGRADED,
                 "primary evidence processing failed",
             )
@@ -525,41 +514,39 @@ class PrimaryOrchestrator:
     def process_event(self, event: FaultEvidenceEvent) -> None:
         result_type = event.result.result
         identity = (event.signature_id, event.component_name)
-        reconciliation = self.reconciliation.get(identity)
-        if reconciliation is not None and not event.from_recheck:
-            self._hold_owned_evidence(
-                event,
-                "reconciliation_evidence_quarantined",
-                hold_deadline=self.clock() + self.config.fault_evidence_ack_timeout,
-            )
-            return
-        if reconciliation is not None and event.from_recheck:
-            self._process_owned_recheck_evidence(
-                event,
-                identity,
-                reconciliation,
-                pending_reason="bootstrap_reconciliation_pending",
-                hold_deadline=None,
-                complete=self._complete_reconciliation,
-            )
-            return
-        pending = self.pending.get(identity)
-        if pending is not None and not event.from_recheck:
-            self._hold_owned_evidence(
-                event,
-                "local_action_evidence_quarantined",
-                hold_deadline=pending.hold_deadline,
-            )
-            return
-        if pending is not None and event.from_recheck:
-            self._process_owned_recheck_evidence(
-                event,
-                identity,
-                pending,
-                pending_reason="post_action_recheck_pending",
-                hold_deadline=pending.hold_deadline,
-                complete=self._complete_pending,
-            )
+        owned = self.reconciliation.get(identity)
+        if owned is not None:
+            quarantine_reason = "reconciliation_evidence_quarantined"
+            pending_reason = "bootstrap_reconciliation_pending"
+            hold_deadline = None
+            complete = self._complete_reconciliation
+        else:
+            owned = self.pending.get(identity)
+            if owned is not None:
+                quarantine_reason = "local_action_evidence_quarantined"
+                pending_reason = "post_action_recheck_pending"
+                hold_deadline = owned.hold_deadline
+                complete = self._complete_pending
+        if owned is not None:
+            if event.from_recheck:
+                self._process_owned_recheck_evidence(
+                    event,
+                    identity,
+                    owned,
+                    pending_reason=pending_reason,
+                    hold_deadline=hold_deadline,
+                    complete=complete,
+                )
+            else:
+                self._hold_owned_evidence(
+                    event,
+                    quarantine_reason,
+                    hold_deadline=(
+                        hold_deadline
+                        if hold_deadline is not None
+                        else self.clock() + self.config.fault_evidence_ack_timeout
+                    ),
+                )
             return
 
         if result_type in (
@@ -625,7 +612,6 @@ class PrimaryOrchestrator:
     ) -> None:
         self._command_event(
             event,
-            MonitorCommandType.HOLD,
             MonitorWorkState.HELD_BY_PRIMARY,
             reason,
             hold_deadline=hold_deadline,
@@ -656,7 +642,6 @@ class PrimaryOrchestrator:
                 )
             self._command_event(
                 event,
-                MonitorCommandType.RECHECK_ONCE,
                 MonitorWorkState.RECHECK_REQUESTED,
                 "source_recovered_recheck_required",
                 hold_deadline=event_hold_deadline,
@@ -672,9 +657,6 @@ class PrimaryOrchestrator:
             state.last_decision = decision
         if not decisive:
             state.recheck_failed = True
-            state.source_failed = (
-                state.source_failed or result_type in _SOURCE_FAILURE_RESULTS
-            )
         event_hold_deadline = hold_deadline
         if event_hold_deadline is None:
             event_hold_deadline = (
@@ -734,10 +716,11 @@ class PrimaryOrchestrator:
         self, event: FaultEvidenceEvent, release: bool = True
     ) -> None:
         result = event.result
+        status = event.runtime_status
+        failure_count = status.failure_count if status is not None else 1
+        last_success = status.last_success_timestamp if status is not None else None
         now = self.wall_clock()
         if result.result == EvaluationResultType.EVALUATION_ERROR:
-            status = event.runtime_status
-            failure_count = status.failure_count if status is not None else 1
             fatal = (
                 not result.retryable
                 or failure_count > self.config.individual_max_failure_threshold
@@ -753,7 +736,6 @@ class PrimaryOrchestrator:
             if release:
                 self._command_event(
                     event,
-                    MonitorCommandType.SUSPEND if fatal else MonitorCommandType.RESUME,
                     MonitorWorkState.BROKEN if fatal else MonitorWorkState.DEGRADED,
                     "fatal evaluator failure" if fatal else "retryable evaluator failure",
                 )
@@ -784,7 +766,6 @@ class PrimaryOrchestrator:
             if release:
                 self._command_event(
                     event,
-                    MonitorCommandType.RECHECK_ONCE,
                     MonitorWorkState.RECHECK_REQUESTED,
                     "source recovered; evaluate recovered sample",
                     hold_deadline=self.clock()
@@ -803,23 +784,14 @@ class PrimaryOrchestrator:
                 "reason": "source is in expected platform maintenance",
                 "graceful": True,
                 "since": first_failure,
-                "last_success": (
-                    event.runtime_status.last_success_timestamp
-                    if event.runtime_status is not None
-                    else None
-                ),
-                "failure_count": (
-                    event.runtime_status.failure_count
-                    if event.runtime_status is not None
-                    else 1
-                ),
+                "last_success": last_success,
+                "failure_count": failure_count,
                 **self._source_impact(failed_keys),
             }
             self._refresh_fault_source_staleness()
             if release:
                 self._command_event(
                     event,
-                    MonitorCommandType.SUSPEND,
                     MonitorWorkState.SUSPENDED,
                     "expected source maintenance",
                 )
@@ -827,8 +799,6 @@ class PrimaryOrchestrator:
         within_grace = (
             now - first_failure < self.config.source_unavailable_grace_period
         )
-        status = event.runtime_status
-        failure_count = status.failure_count if status is not None else 1
         fatal = not result.retryable or (
             not within_grace
             and failure_count > self.config.individual_max_failure_threshold
@@ -844,7 +814,7 @@ class PrimaryOrchestrator:
             "graceful": False,
             "since": first_failure,
             "grace_deadline": first_failure + self.config.source_unavailable_grace_period,
-            "last_success": status.last_success_timestamp if status else None,
+            "last_success": last_success,
             "failure_count": failure_count,
             **self._source_impact(failed_keys),
         }
@@ -863,14 +833,12 @@ class PrimaryOrchestrator:
         if fatal:
             self._command_event(
                 event,
-                MonitorCommandType.SUSPEND,
                 MonitorWorkState.BROKEN,
                 "fatal or threshold-exceeded rule failure",
             )
         else:
             self._command_event(
                 event,
-                MonitorCommandType.RESUME,
                 MonitorWorkState.DEGRADED,
                 "retryable rule or source failure",
             )
@@ -932,7 +900,6 @@ class PrimaryOrchestrator:
             for key in keys:
                 self._command_key(
                     key,
-                    MonitorCommandType.RESUME,
                     MonitorWorkState.DEGRADED,
                     "expected source maintenance ended",
                 )
@@ -977,7 +944,6 @@ class PrimaryOrchestrator:
         for key in execution.work_keys:
             self._command_key(
                 key,
-                MonitorCommandType.HOLD,
                 MonitorWorkState.HELD_BY_PRIMARY,
                 "local_action_running",
                 hold_deadline=pending.hold_deadline,
@@ -1066,7 +1032,6 @@ class PrimaryOrchestrator:
         for key in keys:
             self._command_key(
                 key,
-                MonitorCommandType.RECHECK_ONCE,
                 MonitorWorkState.RECHECK_REQUESTED,
                 reason,
                 hold_deadline=hold_deadline,
@@ -1106,7 +1071,6 @@ class PrimaryOrchestrator:
             return
 
         state.recheck_failed = True
-        state.source_failed = True
         self.service_diagnostics.append(
             {
                 "reason": timeout_reason,
@@ -1125,26 +1089,23 @@ class PrimaryOrchestrator:
         self._refresh_artifact_states()
         self._recover_expected_source_suspensions()
         for identity, pending in list(self.pending.items()):
+            action_finished = False
+            action_error = None
+            action_deadline_expired = False
             if pending.phase == "ACTIONS" and pending.future.done():
+                action_finished = True
                 try:
                     pending.action_result = pending.future.result()
                 except Exception as error:
-                    now_wall = self.wall_clock()
-                    pending.action_result = ActionSequenceResult(
-                        getattr(pending.future, "dldd_worker_id", ""),
-                        "FAILED",
-                        pending.first_decision.event.event_timestamp,
-                        now_wall,
-                        (),
-                        str(error),
-                    )
-                pending.artifact = self._request_artifact(pending.execution)
-                wait_period = (
-                    pending.execution.signature.actions.repair_actions.local_actions.wait_period
-                )
-                pending.wait_until = now + wait_period
-                pending.phase = "WAITING_FOR_RECHECK"
+                    action_error = str(error)
             elif pending.phase == "ACTIONS" and now >= pending.action_deadline:
+                action_finished = True
+                action_deadline_expired = True
+                action_error = (
+                    "action worker did not complete before the action deadline"
+                )
+
+            if action_error is not None:
                 now_wall = self.wall_clock()
                 pending.action_result = ActionSequenceResult(
                     getattr(pending.future, "dldd_worker_id", ""),
@@ -1152,14 +1113,9 @@ class PrimaryOrchestrator:
                     pending.first_decision.event.event_timestamp,
                     now_wall,
                     (),
-                    "action worker did not complete before the action deadline",
+                    action_error,
                 )
-                pending.artifact = self._request_artifact(pending.execution)
-                wait_period = (
-                    pending.execution.signature.actions.repair_actions.local_actions.wait_period
-                )
-                pending.wait_until = now + wait_period
-                pending.phase = "WAITING_FOR_RECHECK"
+            if action_deadline_expired:
                 self.service_diagnostics.append(
                     {
                         "reason": "local_action_deadline_expired",
@@ -1168,6 +1124,13 @@ class PrimaryOrchestrator:
                         "observed_at": now_wall,
                     }
                 )
+            if action_finished:
+                pending.artifact = self._request_artifact(pending.execution)
+                wait_period = (
+                    pending.execution.signature.actions.repair_actions.local_actions.wait_period
+                )
+                pending.wait_until = now + wait_period
+                pending.phase = "WAITING_FOR_RECHECK"
             if (
                 pending.phase == "WAITING_FOR_RECHECK"
                 and pending.wait_until is not None
@@ -1214,9 +1177,19 @@ class PrimaryOrchestrator:
             if record is None or execution is None or record.status != "ACTIVE":
                 self.next_active_recheck.pop(identity, None)
                 continue
-            self._start_reconciliation(
-                execution, record, "active_fault_periodic_recheck"
-            )
+            self._start_reconciliation(execution, "active_fault_periodic_recheck")
+
+    def source_status_snapshot(self) -> Tuple[Mapping[str, Any], ...]:
+        """Return source state after expiring primary-owned recovery rows."""
+
+        recovered_cutoff = self.wall_clock() - 30
+        for source_id, source_record in tuple(self.source_status.items()):
+            if (
+                source_record.get("state") == "RECOVERED"
+                and source_record.get("since", 0) < recovered_cutoff
+            ):
+                self.source_status.pop(source_id, None)
+        return tuple(self.source_status.values())
 
     def _refresh_artifact_states(self) -> None:
         if self.artifact_client is None:
@@ -1235,11 +1208,7 @@ class PrimaryOrchestrator:
             if current == artifact:
                 continue
             record.healthz_artifact = current
-            self._publish_fault_record(
-                identity,
-                record,
-                self._remote_action_window(identity, record),
-            )
+            self._publish_fault_record(record, refresh_remote_window=True)
 
     def _complete_pending(self, identity, pending: PendingFault) -> None:
         decision = pending.last_decision or pending.first_decision
@@ -1309,7 +1278,7 @@ class PrimaryOrchestrator:
                     "observed_at": self.wall_clock(),
                 }
             )
-        uncertain = pending.source_failed or pending.recheck_failed
+        uncertain = pending.recheck_failed
         if uncertain:
             self.uncertain_faults.add(identity)
         else:
@@ -1350,13 +1319,13 @@ class PrimaryOrchestrator:
             dynamic_signature = self.dynamic_signatures.get(record.rule_id)
             current = (
                 execution is not None
-                and self._execution_has_all_events(execution)
+                and execution.has_all_events
                 and record.schema_version == execution.signature.schema_version
                 and record.active_rules_checksum == self.active_rules_checksum
                 and execution.signature.metadata.symptom == record.symptom
             )
             pending_dynamic = (
-                (execution is None or not self._execution_has_all_events(execution))
+                (execution is None or not execution.has_all_events)
                 and dynamic_signature is not None
                 and record.schema_version == dynamic_signature.schema_version
                 and record.active_rules_checksum == self.active_rules_checksum
@@ -1408,18 +1377,14 @@ class PrimaryOrchestrator:
                 self.published_by_key[
                     (record.component_name, record.symptom)
                 ] = record.rule_id
-                self._publish_fault_record(
-                    identity, record, record.remote_action_time_window
-                )
+                self._publish_fault_record(record)
                 continue
             self.faults[identity] = record
             self.published_by_key[(record.component_name, record.symptom)] = record.rule_id
-            self._start_reconciliation(
-                execution, record, "bootstrap_fault_reconciliation"
-            )
+            self._start_reconciliation(execution, "bootstrap_fault_reconciliation")
 
     def _start_reconciliation(
-        self, execution: SignatureExecution, record: FaultRecord, reason: str
+        self, execution: SignatureExecution, reason: str
     ) -> None:
         identity = (execution.signature.metadata.id, execution.component_name)
         keys = set(execution.work_keys)
@@ -1430,7 +1395,6 @@ class PrimaryOrchestrator:
         )
         self.reconciliation[identity] = Reconciliation(
             execution,
-            record,
             keys,
             reason=reason,
             hold_deadline=hold_deadline,
@@ -1440,9 +1404,9 @@ class PrimaryOrchestrator:
 
     def _complete_reconciliation(self, identity, reconciliation) -> None:
         decision = reconciliation.last_decision
-        record = reconciliation.record
+        record = self.faults[identity]
         state_changed = False
-        uncertain = reconciliation.source_failed or reconciliation.recheck_failed
+        uncertain = reconciliation.recheck_failed
         if uncertain:
             self.uncertain_faults.add(identity)
         else:
@@ -1452,7 +1416,7 @@ class PrimaryOrchestrator:
             self.correlation.set_active(identity[0], identity[1], True)
             self.arbiter.restore_active(
                 reconciliation.execution,
-                reconciliation.record.origin_time,
+                record.origin_time,
             )
             self.next_active_recheck[identity] = (
                 self.clock() + self.config.active_fault_recheck_interval
@@ -1491,9 +1455,7 @@ class PrimaryOrchestrator:
                 reconciliation.execution
             )
             if record.stale_source != stale_before:
-                self._publish_fault_record(
-                    identity, record, record.remote_action_time_window
-                )
+                self._publish_fault_record(record)
         self._refresh_fault_source_staleness()
         for key in reconciliation.execution.work_keys:
             self._release_key(key, "{}_complete".format(reconciliation.reason))
@@ -1660,17 +1622,14 @@ class PrimaryOrchestrator:
                         "state": alternate.local_action_state,
                         "action_suppressed": alternate.action_suppressed,
                     }
-                    self._publish_fault_record(
-                        (winner_id, execution.component_name),
-                        alternate,
-                        alternate_remote.time_window,
-                    )
+                    alternate.remote_action_time_window = alternate_remote.time_window
+                    self._publish_fault_record(alternate)
                     return
             # The retained inactive row remains the owner of the Redis key so
             # a later competing signature can inherit occurrence history.
             self.published_by_key[fault_key] = metadata.id
 
-        self._publish_fault_record(identity, existing, remote.time_window)
+        self._publish_fault_record(existing)
 
     def _refresh_fault_source_staleness(self) -> None:
         failed_keys = self._failed_correlation_keys()
@@ -1688,11 +1647,7 @@ class PrimaryOrchestrator:
             if record.stale_source == stale:
                 continue
             record.stale_source = stale
-            self._publish_fault_record(
-                identity,
-                record,
-                self._remote_action_window(identity, record),
-            )
+            self._publish_fault_record(record, refresh_remote_window=True)
 
     def _failed_correlation_keys(self) -> Set[str]:
         return {
@@ -1708,22 +1663,13 @@ class PrimaryOrchestrator:
             )
         )
 
-    def _remote_action_window(
-        self,
-        identity: Tuple[int, str],
-        record: FaultRecord,
-    ) -> int:
-        execution = self.correlation.executions.get(identity)
-        if execution is None:
-            return record.remote_action_time_window
-        return execution.signature.actions.repair_actions.remote_actions.time_window
-
     def _publish_fault_record(
         self,
-        identity: Tuple[int, str],
         record: FaultRecord,
-        remote_window: int,
+        *,
+        refresh_remote_window: bool = False,
     ) -> bool:
+        identity = (record.rule_id, record.component_name)
         owner = self.published_by_key.get(
             (record.component_name, record.symptom)
         )
@@ -1733,11 +1679,15 @@ class PrimaryOrchestrator:
             # by the arbiter winner.
             self.dirty_faults.discard(identity)
             return True
-        record.remote_action_time_window = remote_window
+        if refresh_remote_window:
+            execution = self.correlation.executions.get(identity)
+            if execution is not None:
+                record.remote_action_time_window = (
+                    execution.signature.actions.repair_actions.remote_actions.time_window
+                )
         published = self.telemetry.publish_fault(
             record,
-            remote_action_time_window=remote_window,
-            local_action_details=record.local_action_details,
+            remote_action_time_window=record.remote_action_time_window,
         )
         if published:
             self.dirty_faults.discard(identity)
@@ -1755,11 +1705,7 @@ class PrimaryOrchestrator:
             if record is None or record.status == "CANDIDATE":
                 self.dirty_faults.discard(identity)
                 continue
-            self._publish_fault_record(
-                identity,
-                record,
-                self._remote_action_window(identity, record),
-            )
+            self._publish_fault_record(record, refresh_remote_window=True)
 
     def _request_artifact(self, execution: SignatureExecution):
         collection = execution.signature.actions.log_collection
@@ -1797,7 +1743,6 @@ class PrimaryOrchestrator:
     def _resume(self, event: FaultEvidenceEvent, reason: str) -> None:
         self._command_event(
             event,
-            MonitorCommandType.RESUME,
             MonitorWorkState.READY,
             reason,
         )
@@ -1807,7 +1752,6 @@ class PrimaryOrchestrator:
         if broken is not None and broken.get("state") == "BROKEN":
             self._command_key(
                 key,
-                MonitorCommandType.SUSPEND,
                 MonitorWorkState.BROKEN,
                 reason,
             )
@@ -1817,7 +1761,6 @@ class PrimaryOrchestrator:
         if source_state == "SUSPENDED":
             self._command_key(
                 key,
-                MonitorCommandType.SUSPEND,
                 MonitorWorkState.SUSPENDED,
                 reason,
             )
@@ -1825,29 +1768,35 @@ class PrimaryOrchestrator:
         unavailable = source_state == "UNAVAILABLE"
         self._command_key(
             key,
-            MonitorCommandType.RESUME,
             MonitorWorkState.DEGRADED if unavailable else MonitorWorkState.READY,
             reason,
         )
 
-    def _command_event(self, event, command, target, reason, **kwargs) -> None:
+    def _command_event(
+        self,
+        event: FaultEvidenceEvent,
+        target: MonitorWorkState,
+        reason: str,
+        recheck_not_before: Optional[float] = None,
+        hold_deadline: Optional[float] = None,
+    ) -> None:
         self._command_key(
             event.correlation_key,
-            command,
             target,
             reason,
             evidence=event,
-            **kwargs
+            recheck_not_before=recheck_not_before,
+            hold_deadline=hold_deadline,
         )
 
     def _command_key(
         self,
         key: str,
-        command: MonitorCommandType,
         target: MonitorWorkState,
         reason: str,
         evidence: Optional[FaultEvidenceEvent] = None,
-        **kwargs
+        recheck_not_before: Optional[float] = None,
+        hold_deadline: Optional[float] = None,
     ) -> None:
         item = self.work_items[key]
         plan = self._plan_by_work_key.get(key)
@@ -1858,14 +1807,22 @@ class PrimaryOrchestrator:
             monitor_type = monitor_type_for_source(item.source_type)
             plan = self.plans[monitor_type]
         plan.control_queue.put(
-            command_for_plan(
-                plan,
-                key,
-                command,
-                target,
-                reason,
-                evidence=evidence,
-                **kwargs
+            MonitorControlCommand(
+                command_id=str(uuid.uuid4()),
+                monitor_id=plan.monitor_id,
+                plan_generation=plan.plan_generation,
+                correlation_key=key,
+                command=_COMMAND_BY_TARGET[target],
+                target_state=target,
+                reason=reason,
+                expected_work_state_generation=(
+                    evidence.work_state_generation if evidence is not None else None
+                ),
+                evidence_sequence=(
+                    evidence.sequence if evidence is not None else None
+                ),
+                recheck_not_before=recheck_not_before,
+                hold_deadline=hold_deadline,
             )
         )
 

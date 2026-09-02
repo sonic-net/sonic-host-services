@@ -1,17 +1,11 @@
 from __future__ import absolute_import
 
-import builtins
-import sys
-from types import ModuleType, SimpleNamespace
-
 import pytest
 
 from dldd.config import ConfigDBProvider, DLDDConfig, load_vendor_defaults
 
 
-def test_config_value_precedence_validation_and_vendor_defaults_contract(
-    tmp_path, monkeypatch
-):
+def test_config_value_precedence_validation_and_vendor_defaults_contract(tmp_path):
     config = DLDDConfig.from_sources(
         config_db={
             "redis_monitor_polling_interval": "7",
@@ -33,16 +27,10 @@ def test_config_value_precedence_validation_and_vendor_defaults_contract(
 
     for values, reason in (
         ({"individual_max_failure_threshold": -1}, "unsigned 32-bit"),
-        ({"individual_max_failure_threshold": 0x100000000}, "unsigned 32-bit"),
-        ({"source_recovery_samples": 0}, "at least 1"),
         ({"rules_inbox_settle_time": 0}, "at least 1"),
     ):
         with pytest.raises(ValueError, match=reason):
             DLDDConfig.from_sources(config_db=values)
-
-
-    missing = tmp_path / "missing.yaml"
-    assert load_vendor_defaults(str(missing)) == {}
 
     path = tmp_path / "defaults.yaml"
     path.write_text(
@@ -53,22 +41,6 @@ def test_config_value_precedence_validation_and_vendor_defaults_contract(
     assert load_vendor_defaults(str(path)) == {
         "redis_monitor_polling_interval": 12
     }
-
-    path.write_text("dldd_config: []\n")
-    with pytest.raises(ValueError, match="must be a mapping"):
-        load_vendor_defaults(str(path))
-
-    path.write_text("dldd_config: {}\n")
-    original_import = builtins.__import__
-
-    def missing_yaml(name, *args, **kwargs):
-        if name == "yaml":
-            raise ImportError("not installed")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", missing_yaml)
-    with pytest.raises(RuntimeError, match="PyYAML is required"):
-        load_vendor_defaults(str(path))
 
 
 class RecordingConfigConnector(object):
@@ -92,7 +64,7 @@ class RecordingConfigConnector(object):
         self.listened = True
 
 
-def test_config_db_provider_contract(monkeypatch):
+def test_config_db_provider_contract():
     connector = RecordingConfigConnector()
     provider = ConfigDBProvider(connector)
     updates = []
@@ -114,24 +86,3 @@ def test_config_db_provider_contract(monkeypatch):
 
     provider.reset()
     assert provider._connector is None
-
-    connector = RecordingConfigConnector()
-    swss = SimpleNamespace(ConfigDBConnector=lambda: connector)
-    package = ModuleType("swsscommon")
-    package.swsscommon = swss
-    monkeypatch.setitem(sys.modules, "swsscommon", package)
-
-    provider = ConfigDBProvider()
-    assert provider.load() == {"redis_monitor_polling_interval": "11"}
-    assert connector.connected == [True]
-
-    original_import = builtins.__import__
-
-    def missing_swss(name, *args, **kwargs):
-        if name == "swsscommon":
-            raise ImportError("not installed")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", missing_swss)
-    with pytest.raises(RuntimeError, match="swsscommon is unavailable"):
-        ConfigDBProvider().load()

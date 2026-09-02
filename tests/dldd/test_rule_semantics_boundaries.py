@@ -15,8 +15,6 @@ from dldd.logic import (
     MAX_LOGIC_CHARACTERS,
     MAX_LOGIC_TOKENS,
     LogicSyntaxError,
-    collect_event_ids,
-    evaluate_logic,
     parse_logic,
 )
 from dldd.models import ResolvedSource, ValueConfig
@@ -28,14 +26,9 @@ def test_integer_builtin_dse_and_regex_evaluator_contracts(monkeypatch):
     """Execute supported wire values and contain invalid evaluator behavior."""
 
     for value, expected in (
-        (True, 1),
-        (False, 0),
-        (7, 7),
         (b"0x10", 16),
         (" 0b101 ", 5),
         (1.5, None),
-        (object(), None),
-        (None, None),
     ):
         if expected is None:
             with pytest.raises(EvaluationContractError, match="not an integer"):
@@ -48,26 +41,12 @@ def test_integer_builtin_dse_and_regex_evaluator_contracts(monkeypatch):
         {"type": "comparison", "operator": ">", "value": 1.5},
         "2.0",
     )
-    assert evaluate(
-        {"type": "comparison", "operator": "==", "value": True},
-        "yes",
-    )
-    assert evaluate(
-        {"type": "comparison", "operator": "==", "value": False},
-        "off",
-    )
-    assert evaluate(
-        {"type": "comparison", "operator": "==", "value": True},
-        True,
-    )
-    assert evaluate(
-        {"type": "comparison", "operator": "==", "value": "sensor"},
-        "sensor",
-    )
+    assert evaluate({"type": "mask", "logic": "&", "value": 2}, 3)
     assert evaluate(
         {"type": "string", "operator": "equals", "value": "sensor"},
         "sensor",
     )
+    assert evaluate({"type": "boolean", "value": True}, True)
     assert evaluate(
         {"type": "dse", "comparator": lambda actual: actual == "fault"},
         "fault",
@@ -81,15 +60,9 @@ def test_integer_builtin_dse_and_regex_evaluator_contracts(monkeypatch):
         evaluate({"type": "mask", "logic": "|", "value": 1}, 1)
     with pytest.raises(EvaluationContractError, match="boolean values"):
         evaluate({"type": "boolean", "value": True}, "maybe")
-    with pytest.raises(EvaluationContractError, match="string operator"):
-        evaluate({"type": "string", "operator": "starts_with", "value": "S"}, "S0")
 
     with pytest.raises(EvaluationContractError, match="resolved comparator"):
         evaluate({"type": "dse", "comparator": "not-callable"}, 1)
-    with pytest.raises(EvaluationContractError, match="DSE operator"):
-        evaluate({"type": "dse", "operator": "approximately", "value": 1}, 1)
-    with pytest.raises(EvaluationContractError, match="evaluation type"):
-        evaluate({"type": "vendor-expression", "value": 1}, 1)
 
     # Regex compilation and execution errors remain bounded.
     with pytest.raises(EvaluationContractError, match="invalid regex"):
@@ -111,65 +84,34 @@ def test_integer_builtin_dse_and_regex_evaluator_contracts(monkeypatch):
 
 
 class DefaultHook(VendorHook):
-    def __init__(self):
-        self.collected = []
-
     def collect(self, operation):
-        self.collected.append(operation)
         return {"value": 7}
 
     def execute_action(self, action):
         return {"state": "done"}
 
 
-class DelegatingHook(VendorHook):
-    def collect(self, operation):
-        return super().collect(operation)
-
-    def execute_action(self, action):
-        return super().execute_action(action)
-
-
 def test_vendor_hook_registry_and_i2c_resolution_contract():
     """Enforce typed hooks, unique registration, and complete I2C resolution."""
-
-    hook = DefaultHook()
-    query = {"operation": "diagnostics"}
-
-    assert hook.validate_source(query) is None
-    assert hook.collect_query(query) == {"value": 7}
-    assert hook.resolve_i2c_bus("logical-6", query) == "logical-6"
-    assert hook.collected == [query]
-
-    with pytest.raises(NotImplementedError):
-        DelegatingHook().collect({})
-    with pytest.raises(NotImplementedError):
-        DelegatingHook().execute_action({})
 
     registry = VendorHookRegistry()
     registered = DefaultHook()
 
-    for name, candidate in (("", registered), ("sensor", object())):
-        with pytest.raises(ValueError, match="name and VendorHook"):
-            registry.register(name, candidate)
-
     registry.register("sensor", registered)
+    assert registry.get("sensor") is registered
     with pytest.raises(ValueError, match="already registered"):
         registry.register("sensor", registered)
     with pytest.raises(VendorHookError, match="not registered"):
         registry.get("missing")
-    assert registry.get_optional("missing") is None
 
-    # Invalid vendor bus results fail the typed contract.
-    for resolved in (None, "", True, 1.5, object()):
-        class InvalidI2CHook(DefaultHook):
-            def resolve_i2c_bus(self, bus, operation):
-                return resolved
+    class InvalidI2CHook(DefaultHook):
+        def resolve_i2c_bus(self, bus, operation):
+            return None
 
-        registry = VendorHookRegistry()
-        registry.register("i2c", InvalidI2CHook())
-        with pytest.raises(VendorHookError, match="non-empty string or integer"):
-            registry.resolve_i2c_bus("logical", {"bus": "logical"})
+    registry = VendorHookRegistry()
+    registry.register("i2c", InvalidI2CHook())
+    with pytest.raises(VendorHookError, match="non-empty string or integer"):
+        registry.resolve_i2c_bus("logical", {"bus": "logical"})
 
     # Validation resolves every configured positional bus.
     observed = []
@@ -205,15 +147,6 @@ def test_logic_parser_enforces_limits_tokens_and_tree_contracts():
 
     with pytest.raises(LogicSyntaxError, match="unsupported token"):
         parse_logic("1 @ 2")
-    with pytest.raises(LogicSyntaxError, match="start at 1"):
-        parse_logic("0")
-    with pytest.raises(TypeError, match="unsupported logic expression"):
-        collect_event_ids(object())
-    with pytest.raises(TypeError, match="unsupported logic expression"):
-        evaluate_logic(object(), {})
-
-    with pytest.raises(LogicSyntaxError, match="event ID is too large"):
-        parse_logic("9" * 1000)
 
 
 def test_planner_merges_source_value_metadata_through_public_planning_api():

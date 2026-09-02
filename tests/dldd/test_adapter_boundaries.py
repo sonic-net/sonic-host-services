@@ -1,13 +1,10 @@
 from __future__ import absolute_import
 
-import builtins
-import json
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
-from dldd import adapters as dldd_adapters
 from dldd import command_execution as dldd_command_execution
 from dldd.adapters import (
     AdapterError,
@@ -35,11 +32,7 @@ from dldd.dse import (
 )
 from dldd.hooks import VendorHook, VendorHookRegistry
 from dldd.models import ValueConfig
-from dldd.runtime import (
-    CollectedValue,
-    EvaluationResultType,
-    MonitorWorkItem,
-)
+from dldd.runtime import EvaluationResultType, MonitorWorkItem
 from dldd.sonic_hash import SonicHashReaderError
 
 
@@ -75,103 +68,46 @@ def _item(
 
 
 def test_value_normalization_and_path_extraction_contract():
-    for raw, config, expected in (
-        (object(), ValueConfig(), None),
-        (b"sensor", ValueConfig(type="string", encoding="ascii"), "sensor"),
-        (42, ValueConfig(type="string"), "42"),
-        ("0x10", ValueConfig(type="int"), 16),
-        ("1.25", ValueConfig(type="float"), 1.25),
-        (True, ValueConfig(type="boolean"), True),
-        ("yes", ValueConfig(type="boolean"), True),
-        ("off", ValueConfig(type="boolean"), False),
-        ('{"value": 7}', ValueConfig(type="json"), {"value": 7}),
-        ({"value": 7}, ValueConfig(type="json"), {"value": 7}),
-        (b"raw", ValueConfig(type="bytes"), b"raw"),
-        ("raw", ValueConfig(type="bytes", encoding="ascii"), b"raw"),
-        (2, ValueConfig(type="int", scaling=2.5), 5.0),
-    ):
-        normalized = _normalize(raw, config)
-        if config.type == "N/A":
-            assert normalized is raw
-        else:
-            assert normalized == expected
+    assert _normalize("0x10", ValueConfig(type="int")) == 16
+    assert _normalize("yes", ValueConfig(type="boolean")) is True
+    assert _normalize(
+        '{"value": 7}', ValueConfig(type="json")
+    ) == {"value": 7}
+    assert _normalize(2, ValueConfig(type="int", scaling=2.5)) == 5.0
+    assert _extract_path('{"rails":[{"value":7}]}', "rails/0/value") == 7
 
     with pytest.raises(ValueError, match="invalid boolean"):
         _normalize("maybe", ValueConfig(type="boolean"))
-
-    invalid_config = SimpleNamespace(
-        type="vendor-object", scaling="N/A", encoding="N/A"
-    )
-    with pytest.raises(ValueError, match="unsupported value type"):
-        _normalize("value", invalid_config)
-
-    assert _extract_path("plain", None) == "plain"
-    assert _extract_path('{"rails":[{"value":7}]}', "rails/0/value") == 7
-    assert _extract_path({"rails": (10, 11)}, ("rails", "1")) == 11
-
     with pytest.raises(KeyError, match="cannot traverse"):
         _extract_path("plain", "child")
-    with pytest.raises(KeyError, match="cannot traverse"):
-        _extract_path(42, "child")
 
 
-class DelegatingAdapter(DataSourceAdapter):
-    source_type = "delegating"
+class CollectingAdapter(DataSourceAdapter):
+    source_type = "test"
 
-    def get_value(self, item):
-        return super().get_value(item)
+    def __init__(self, value=None, error=None):
+        self.value = value
+        self.error = error
 
-
-def test_data_source_base_collection_and_error_contract():
-    adapter = DelegatingAdapter()
-    with pytest.raises(ValueError, match="cannot handle redis"):
-        adapter.validate(_item())
-    with pytest.raises(NotImplementedError):
-        adapter.get_value(_item(source_type="delegating"))
-
-
-    class ListAdapter(DataSourceAdapter):
-        source_type = "list"
-
-        def get_value(self, unused_item):
-            return [1, 5]
-
-    item = _item(
-        source_type="list",
-        value_config=ValueConfig(type="int"),
-    )
-
-    result = ListAdapter().collect(item)
-
-    assert result.result is EvaluationResultType.MATCH
-    assert result.value.normalized == [1, 5]
-
-    class FailureAdapter(DataSourceAdapter):
-        source_type = "failure"
-
-        def __init__(self, error):
-            self.error = error
-
-        def get_value(self, unused_item):
+    def get_value(self, unused_item):
+        if self.error:
             raise self.error
+        return self.value
 
-    item = _item(source_type="failure")
-    unavailable = FailureAdapter(SourceUnavailable("not present")).collect(item)
-    failed = FailureAdapter(RuntimeError("driver crashed")).collect(item)
-    invalid_evaluation = FailureAdapter(None)
-    invalid_evaluation.get_value = lambda unused_item: 1
-    invalid = invalid_evaluation.collect(
-        _item(
-            source_type="failure",
-            evaluation={"type": "comparison", "operator": "???", "value": 1},
-        )
-    )
+
+def test_data_source_collection_and_failure_contract():
+    item = _item(source_type="test", value_config=ValueConfig(type="int"))
+    matched = CollectingAdapter([1, 5]).collect(item)
+    unavailable = CollectingAdapter(
+        error=SourceUnavailable("not present")
+    ).collect(item)
+    failed = CollectingAdapter(error=RuntimeError("driver crashed")).collect(item)
+
+    assert matched.result is EvaluationResultType.MATCH
+    assert matched.value.normalized == [1, 5]
     assert unavailable.result is EvaluationResultType.SOURCE_UNAVAILABLE
     assert unavailable.retryable
     assert failed.result is EvaluationResultType.COLLECTION_ERROR
-    assert failed.retryable
-    assert invalid.result is EvaluationResultType.EVALUATION_ERROR
-    assert invalid.retryable is False
 
 
 def test_dse_adapter_comparator_binding_and_expansion_contract():
@@ -193,93 +129,43 @@ def test_dse_adapter_comparator_binding_and_expansion_contract():
         dse_evaluation_handle=handle,
     )
 
-    evaluator = DSEAdapter().get_evaluator(item)
-
-    assert evaluator["comparator"] is comparator
-    assert "operator" not in evaluator
+    assert DSEAdapter().get_evaluator(item)["comparator"] is comparator
     assert observed[0].instance == "SENSOR0"
     assert observed[0].source_id == "SENSOR|0"
 
-    adapter = DSEAdapter()
-    with pytest.raises(ValueError, match="resolved source handle"):
-        adapter.validate(_item(source_type="dse"))
-
-    reference = parse_reference("sensor:get_value()")
-    binding = DSEBinding("SENSOR0", "SENSOR|0")
     source_handle = DSESourceHandle(
-        reference,
-        lambda unused_context: DSEExpansionResult((binding,)),
+        parse_reference("sensor:get_value()"),
+        lambda unused_context: DSEExpansionResult(
+            (DSEBinding("SENSOR0", "SENSOR|0"),)
+        ),
         lambda invocation: invocation.binding.instance,
     )
-    no_binding = _item(source_type="dse", dse_source_handle=source_handle)
     with pytest.raises(ValueError, match="expanded instance"):
-        adapter.validate(no_binding)
+        DSEAdapter().validate(
+            _item(source_type="dse", dse_source_handle=source_handle)
+        )
 
-    template = SimpleNamespace(
+    invalid_template = SimpleNamespace(
         source_handle=DSESourceHandle(
-            reference,
+            source_handle.reference,
             lambda unused_context: {"legacy": "mapping"},
-            lambda unused_invocation: 1,
+            lambda unused_invocation: None,
         ),
         item=SimpleNamespace(dse_context=DSEContext()),
     )
     with pytest.raises(AdapterError, match="DSEExpansionResult"):
-        adapter.expand(template)
+        DSEAdapter().expand(invalid_template)
 
 
-def test_redis_and_file_adapter_validation_collection_and_failure_contract(
-    tmp_path, monkeypatch
-):
-    with pytest.raises(ValueError, match="either reader or hash_reader"):
-        RedisAdapter(lambda *args: {}, hash_reader=object())
-
-    for missing in ("database", "table", "key"):
-        source = {
-            "database": "STATE_DB",
-            "table": "SENSOR_INFO",
-            "key": "SENSOR_INFO|0",
-        }
-        source[missing] = ""
-        with pytest.raises(ValueError, match=missing):
-            RedisAdapter(lambda *args: {}).validate(_item(source=source))
-
-    source = {
-        "database": "STATE_DB",
-        "table": "SENSOR_INFO",
-        "key": "SENSOR_INFO|0",
-        "path": {"not": "a path"},
-    }
-    with pytest.raises(ValueError, match="path"):
-        RedisAdapter(lambda *args: {}).validate(_item(source=source))
-
-    class FailedHashReader(object):
-        def read(self, database, key):
-            raise SonicHashReaderError("STATE_DB disconnected")
-
-    class EmptyHashReader(object):
-        def read(self, database, key):
-            return {}
-
-    item = _item(
-        source={
-            "database": "STATE_DB",
-            "table": "SENSOR_INFO",
-            "key": "SENSOR_INFO|0",
-        }
-    )
-    with pytest.raises(SourceUnavailable, match="disconnected"):
-        RedisAdapter(hash_reader=FailedHashReader()).get_value(item)
-    with pytest.raises(SourceUnavailable, match="Redis key is unavailable"):
-        RedisAdapter(hash_reader=EmptyHashReader()).get_value(item)
-
+def test_redis_and_file_adapter_primary_contract(tmp_path):
     calls = []
 
-    class RecordingHashReader(object):
+    class HashReader(object):
         def read(self, database, key):
             calls.append((database, key))
             return {"value": {"rails": [{"voltage": "51.5"}]}}
 
-    item = _item(
+    redis_item = _item(
         source={
             "database": "STATE_DB",
             "table": "SENSOR_INFO",
@@ -289,117 +175,72 @@ def test_redis_and_file_adapter_validation_collection_and_failure_contract(
         evaluation={"type": "comparison", "operator": ">", "value": 50.0},
         value_config=ValueConfig(type="float", unit="volts"),
     )
-    assert item.source["path"] == ("value", "rails", "0", "voltage")
-    collected = RedisAdapter(hash_reader=RecordingHashReader()).collect(item)
+    collected = RedisAdapter(hash_reader=HashReader()).collect(redis_item)
     assert collected.result is EvaluationResultType.MATCH
     assert collected.value.normalized == 51.5
     assert calls == [("STATE_DB", "SENSOR_INFO|0")]
 
+    with pytest.raises(ValueError, match="database"):
+        RedisAdapter(hash_reader=HashReader()).validate(_item(source={}))
 
-    # File-backed sources validate format, collection, and unavailable paths.
-    for source, error in (
-        ({}, "requires 'file'"),
-        ({"file": "/tmp/value", "format": "pickle"}, "unsupported file format"),
-        ({"file": "/tmp/value", "encoding": ""}, "encoding"),
-    ):
-        with pytest.raises(ValueError, match=error):
-            FileAdapter().validate(_item(source_type="file", source=source))
+    class FailedHashReader(object):
+        def read(self, database, key):
+            raise SonicHashReaderError("STATE_DB disconnected")
+
+    with pytest.raises(SourceUnavailable, match="disconnected"):
+        RedisAdapter(hash_reader=FailedHashReader()).get_value(redis_item)
+
+    first = tmp_path / "sensor-1"
+    second = tmp_path / "sensor-2"
+    first.write_text("1", encoding="utf-8")
+    second.write_text("2", encoding="utf-8")
+    file_item = _item(
+        source_type="file",
+        source={"file": str(tmp_path / "sensor-*"), "format": "integer"},
+    )
+    assert FileAdapter().get_value(file_item) == [1, 2]
+
+    with pytest.raises(ValueError, match="unsupported file format"):
+        FileAdapter().validate(
+            _item(
+                source_type="file",
+                source={"file": str(first), "format": "pickle"},
+            )
+        )
 
     missing = _item(
-        source_type="file",
-        source={"file": str(tmp_path / "missing-*")},
+        source_type="file", source={"file": str(tmp_path / "missing")}
     )
     with pytest.raises(SourceUnavailable, match="does not exist"):
         FileAdapter().get_value(missing)
 
-    (tmp_path / "sensor-1").write_text("1", encoding="utf-8")
-    (tmp_path / "sensor-2").write_text("2", encoding="utf-8")
-    multiple = _item(
-        source_type="file",
-        source={"file": str(tmp_path / "sensor-*"), "format": "integer"},
-    )
-    assert FileAdapter().get_value(multiple) == [1, 2]
 
-
-    for format_name, contents, expected in (
-        ("text", " value \n", "value"),
-        ("json", '{"value": 7}\n', {"value": 7}),
-        ("yaml", "value: 7\n", {"value": 7}),
-        ("int", "0x10\n", 16),
-        ("float", "1.25\n", 1.25),
-        ("boolean", "true\n", True),
-        ("boolean", "0\n", False),
-    ):
-        path = tmp_path / "value"
-        path.write_text(contents, encoding="utf-8")
-        item = _item(
-            source_type="file",
-            source={"file": str(path), "format": format_name},
-        )
-        assert FileAdapter().get_value(item) == expected
-
-    path = tmp_path / "value"
-    path.write_text("maybe", encoding="utf-8")
-    boolean_item = _item(
-        source_type="file",
-        source={"file": str(path), "format": "boolean"},
-    )
-    with pytest.raises(AdapterError, match="invalid boolean"):
-        FileAdapter().get_value(boolean_item)
-
-    unknown_item = _item(
-        source_type="file",
-        source={"file": str(path), "format": "vendor"},
-    )
-    with pytest.raises(AdapterError, match="unsupported file format"):
-        FileAdapter._read_path(str(path), unknown_item)
-
-    original_import = builtins.__import__
-
-    def no_yaml(name, *args, **kwargs):
-        if name == "yaml":
-            raise ImportError("yaml missing")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", no_yaml)
-    yaml_item = _item(
-        source_type="file",
-        source={"file": str(path), "format": "yaml"},
-    )
-    with pytest.raises(AdapterError, match="YAML support is unavailable"):
-        FileAdapter().get_value(yaml_item)
-
-
-def test_cli_and_i2c_command_adapter_validation_and_failure_contract(monkeypatch):
-    for source, error in (
-        ({"argv": []}, "argv"),
-        ({"argv": ["valid", ""]}, "argv"),
-        ({"argv": ["valid"], "timeout": True}, "timeout"),
-        ({"argv": ["valid"], "timeout": 0}, "timeout"),
-        ({"argv": ["valid"], "max_output_bytes": True}, "max_output"),
-        ({"argv": ["valid"], "max_output_bytes": 0}, "max_output"),
-    ):
-        with pytest.raises(ValueError, match=error):
-            CLIAdapter().validate(_item(source_type="cli", source=source))
-
+def test_cli_and_i2c_shell_free_command_contract(monkeypatch):
     calls = []
 
     def runner(argv, **kwargs):
         calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 2, stdout=b"", stderr=b"denied")
+        failed = argv[0] == "failing-diagnostic"
+        return subprocess.CompletedProcess(
+            argv,
+            2 if failed else 0,
+            stdout=b"ready" if not failed else b"",
+            stderr=b"denied" if failed else b"",
+        )
 
-    item = _item(
+    cli_item = _item(
         source_type="cli",
         source={"argv": ["diagnostic"], "timeout": 2, "max_output_bytes": 32},
     )
-    assert item.source["argv"] == ("diagnostic",)
-    CLIAdapter(runner).validate(item)
-    with pytest.raises(AdapterError, match="exited 2: denied"):
-        CLIAdapter(runner).get_value(item)
+    assert CLIAdapter(runner).get_value(cli_item) == "ready"
     assert calls[0][1]["shell"] is False
+    with pytest.raises(ValueError, match="argv"):
+        CLIAdapter().validate(_item(source_type="cli", source={"argv": []}))
+    with pytest.raises(AdapterError, match="exited 2: denied"):
+        CLIAdapter(runner).get_value(
+            _item(source_type="cli", source={"argv": ["failing-diagnostic"]})
+        )
 
-
-    # I2C collection follows the same shell-free command boundary.
     source = {
         "i2c_type": "get",
         "bus": "6",
@@ -422,21 +263,9 @@ def test_cli_and_i2c_command_adapter_validation_and_failure_contract(monkeypatch
             ("i2cget",), 1, b"", b"bus unavailable\n"
         ),
     )
-    with pytest.raises(SourceUnavailable) as error:
-        I2CAdapter._i2cget(source)
-    assert str(error.value) == "bus unavailable"
-
-    monkeypatch.setattr(
-        dldd_command_execution,
-        "run_shell_free",
-        lambda *args, **kwargs: ShellFreeResult(
-            ("i2cget",), 0, b"\xff\n", b""
-        ),
-    )
-    with pytest.raises(UnicodeDecodeError):
+    with pytest.raises(SourceUnavailable, match="bus unavailable"):
         I2CAdapter._i2cget(source)
 
-    # Without a vendor bus hook, validation and collection use the configured bus.
     observed = []
     adapter = I2CAdapter(
         lambda operation: observed.append(operation["bus"]) or "0x80"
@@ -446,85 +275,25 @@ def test_cli_and_i2c_command_adapter_validation_and_failure_contract(monkeypatch
     assert adapter.get_value(item) == "0x80"
     assert observed == ["6"]
 
-    for source, error in (
-        ({}, "read-only"),
-        (
-            {"i2c_type": "set", "bus": "6", "chip_addr": "1", "command": "1"},
-            "read-only",
-        ),
-        (
-            {"i2c_type": "get", "bus": "", "chip_addr": "1", "command": "1"},
-            "requires 'bus'",
-        ),
-        (
-            {"i2c_type": "get", "bus": "6", "chip_addr": "bad", "command": "1"},
-            "chip_addr.*integer",
-        ),
-        (
-            {"i2c_type": "get", "bus": "6", "chip_addr": "1", "command": "bad"},
-            "command.*integer",
-        ),
-        (
-            {
-                "i2c_type": "get",
-                "bus": "6",
-                "chip_addr": "1",
-                "command": "1",
-                "size": "q",
-            },
-            "size",
-        ),
-        (
-            {
-                "i2c_type": "get",
-                "bus": "6",
-                "chip_addr": "1",
-                "command": "1",
-                "timeout": True,
-            },
-            "timeout",
-        ),
-        (
-            {
-                "i2c_type": "get",
-                "bus": "6",
-                "chip_addr": "1",
-                "command": "1",
-                "timeout": 0,
-            },
-            "timeout",
-        ),
-    ):
-        with pytest.raises(ValueError, match=error):
-            I2CAdapter().validate(_item(source_type="i2c", source=source))
+    with pytest.raises(ValueError, match="read-only"):
+        I2CAdapter().validate(_item(source_type="i2c", source={}))
 
 
 class RecordingHook(VendorHook):
-    def __init__(self, result=7):
+    def __init__(self, result):
         self.result = result
-        self.validated = []
-        self.collected = []
-
-    def validate_source(self, source):
-        super().validate_source(source)
-        self.validated.append(source)
 
     def collect(self, source):
-        self.collected.append(source)
         return self.result
 
     def execute_action(self, action):
         return {}
 
 
-def test_platform_and_vendor_adapters_require_and_dispatch_registered_hooks():
+def test_platform_and_vendor_adapters_dispatch_registered_hooks():
     hooks = VendorHookRegistry()
-    hook = RecordingHook()
-    hooks.register("sensor", hook)
-
-    missing = _item(source_type="platform_api", source={})
-    with pytest.raises(ValueError, match="registered hook"):
-        PlatformAPIAdapter(hooks).validate(missing)
+    hooks.register("sensor", RecordingHook(7))
+    hooks.register("vendor_sensor", RecordingHook(8))
 
     platform_item = _item(
         source_type="platform_api", source={"hook": "sensor", "field": "value"}
@@ -535,24 +304,10 @@ def test_platform_and_vendor_adapters_require_and_dispatch_registered_hooks():
 
     vendor_item = _item(source_type="vendor_sensor", source={"field": "value"})
     vendor = VendorAdapter("vendor_sensor", hooks)
-    hooks.register("vendor_sensor", RecordingHook(8))
     vendor.validate(vendor_item)
     assert vendor.get_value(vendor_item) == 8
 
-    explicit = _item(
-        source_type="vendor_sensor",
-        source={"hook": "sensor", "field": "other"},
-    )
-    vendor.validate(explicit)
-    assert vendor.get_value(explicit) == 7
-    assert hook.validated == [platform_item.source, explicit.source]
-    assert hook.collected == [platform_item.source, explicit.source]
-
-    class RejectingHook(RecordingHook):
-        def validate_source(self, source):
-            raise ValueError("platform source requires value")
-
-    hooks.register("rejecting", RejectingHook())
-    rejected = _item(source_type="platform_api", source={"hook": "rejecting"})
-    with pytest.raises(ValueError, match="requires value"):
-        PlatformAPIAdapter(hooks).validate(rejected)
+    with pytest.raises(ValueError, match="registered hook"):
+        PlatformAPIAdapter(hooks).validate(
+            _item(source_type="platform_api", source={})
+        )

@@ -20,17 +20,17 @@ def _runtime_values():
             "active_rules_checksum": "sha256:test",
         },
         "FAULT_INFO|PSU0|FOREIGN": {"producer": "another-service"},
+        "FAULT_INFO|PSU0|LOOKALIKE": {
+            "rule_id": "1000001",
+            "active_rules_checksum": "sha256:test",
+        },
         "UNRELATED|key": {"value": "preserve"},
     }
 
 
 def test_fault_ownership_and_cleanup_contract(tmp_path):
     assert is_dldd_fault_payload({"producer": "dldd"})
-    assert is_dldd_fault_payload({b"producer": b"dldd"})
     assert not is_dldd_fault_payload({"producer": "another-service"})
-    assert not is_dldd_fault_payload(
-        {"rule_id": "1000001", "active_rules_checksum": "sha256:test"}
-    )
 
     values = _runtime_values()
     state_db = FakeStateDB(values)
@@ -51,6 +51,7 @@ def test_fault_ownership_and_cleanup_contract(tmp_path):
     assert artifact.exists()
     assert "FAULT_INFO|PSU0|DLDD" in values
     assert "FAULT_INFO|PSU0|FOREIGN" in values
+    assert "FAULT_INFO|PSU0|LOOKALIKE" in values
     assert "UNRELATED|key" in values
     assert not any(key.startswith("DLDD_") for key in values)
     assert result.redis_keys == 4
@@ -82,6 +83,7 @@ def test_fault_ownership_and_cleanup_contract(tmp_path):
 
     assert "FAULT_INFO|PSU0|DLDD" not in values
     assert "FAULT_INFO|PSU0|FOREIGN" in values
+    assert "FAULT_INFO|PSU0|LOOKALIKE" in values
     assert "UNRELATED|key" in values
     assert (artifacts / "foreign.tar.gz").exists()
     assert not (artifacts / "dldd-test.tar.gz").exists()

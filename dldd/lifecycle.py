@@ -102,12 +102,16 @@ class ActivationResult:
 def sha256_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
-        while True:
-            block = stream.read(1024 * 1024)
-            if not block:
-                break
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return "sha256:{}".format(digest.hexdigest())
+
+
+def _file_identity(file_stat) -> Tuple[int, int, int, int]:
+    return tuple(
+        getattr(file_stat, field)
+        for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+    )
 
 
 class RuleGenerationManager:
@@ -141,7 +145,7 @@ class RuleGenerationManager:
 
     def activate(self) -> ActivationResult:
         with self.locked():
-            manifest = self._load_manifest()
+            manifest = load_json_object(self.paths.manifest)
             candidates = self._candidates(manifest)
             failures = []
             candidate_present = False
@@ -155,7 +159,7 @@ class RuleGenerationManager:
                     )
                     LOGGER.warning(message)
                     failures.append(message)
-                    self._record_failed_attempt(manifest, source, "", message)
+                    self._record_attempt(manifest, source, "", failure_reason=message)
                     continue
                 try:
                     staged = self._stage_candidate(path)
@@ -165,7 +169,7 @@ class RuleGenerationManager:
                     )
                     LOGGER.warning(message)
                     failures.append(message)
-                    self._record_failed_attempt(manifest, source, "", message)
+                    self._record_attempt(manifest, source, "", failure_reason=message)
                     continue
                 checksum = ""
                 attempt = None
@@ -220,8 +224,8 @@ class RuleGenerationManager:
                     LOGGER.warning(message)
                     failures.append(message)
                     if attempt is None:
-                        attempt = self._record_failed_attempt(
-                            manifest, source, checksum, message
+                        attempt = self._record_attempt(
+                            manifest, source, checksum, failure_reason=message
                         )
                     else:
                         attempt["activation_result"] = "FAILED"
@@ -248,6 +252,7 @@ class RuleGenerationManager:
                 )
                 fallback_used = bool(failures)
                 rollback_used = source == "previous_active"
+                activated_at = floor_timestamp(self.clock())
                 attempt.update(
                     {
                         "activation_result": "ACTIVATED",
@@ -269,11 +274,11 @@ class RuleGenerationManager:
                         "active_source": source,
                         "previous_active_checksum": previous,
                         "platform_identity": self.platform_identity,
-                        "activated_at": floor_timestamp(self.clock()),
+                        "activated_at": activated_at,
                         "schema_version": validation.schema_version,
                         "active_generation_path": generation_path,
                         "last_activation": {
-                            "at": floor_timestamp(self.clock()),
+                            "at": activated_at,
                             "source": source,
                             "previous_checksum": previous or "",
                             "active_checksum": checksum,
@@ -340,19 +345,7 @@ class RuleGenerationManager:
                 destination.flush()
                 os.fsync(destination.fileno())
                 after = os.fstat(source.fileno())
-            identity_before = (
-                before.st_dev,
-                before.st_ino,
-                before.st_size,
-                before.st_mtime_ns,
-            )
-            identity_after = (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-            )
-            if identity_before != identity_after:
+            if _file_identity(before) != _file_identity(after):
                 raise RuntimeError("candidate changed while it was being staged")
             if os.path.getsize(staged) != before.st_size:
                 raise RuntimeError("candidate size changed while it was being staged")
@@ -401,27 +394,29 @@ class RuleGenerationManager:
                 unique.append(item)
         return unique
 
-    def _load_manifest(self) -> Mapping[str, Any]:
-        return load_json_object(self.paths.manifest)
-
     def _record_attempt(
         self,
         manifest: Mapping[str, Any],
         source: str,
         checksum: str,
-        validation: CandidateValidation,
+        validation: Optional[CandidateValidation] = None,
+        failure_reason: str = "",
     ) -> Mapping[str, Any]:
+        """Append one validation or pre-validation activation attempt."""
+
         if not isinstance(manifest, dict):
             return {}
-        validation_result = (
-            "FAILED"
-            if not validation.activatable
-            else "DEGRADED"
-            if validation.broken_rules
-            else "PASSED"
-        )
-        errors = list(validation.errors)
-        if not validation.activatable:
+        file_valid = validation.file_valid if validation else False
+        usable_rule_count = validation.usable_rule_count if validation else 0
+        broken_rule_count = len(validation.broken_rules) if validation else 0
+        errors = list(validation.errors) if validation else [failure_reason]
+        if validation is None:
+            validation_result, activation_result = "FAILED", "FAILED"
+        elif validation.activatable:
+            validation_result = "DEGRADED" if validation.broken_rules else "PASSED"
+            activation_result = "PENDING"
+        else:
+            validation_result, activation_result = "FAILED", "REJECTED"
             guard_reason = (
                 "zero usable rules"
                 if validation.file_valid and validation.usable_rule_count == 0
@@ -433,41 +428,17 @@ class RuleGenerationManager:
             "source": source,
             "checksum": checksum,
             "at": floor_timestamp(self.clock()),
-            "file_valid": validation.file_valid,
-            "usable_rule_count": validation.usable_rule_count,
-            "broken_rule_count": len(validation.broken_rules),
+            "file_valid": file_valid,
+            "usable_rule_count": usable_rule_count,
+            "broken_rule_count": broken_rule_count,
             "validation_result": validation_result,
-            "activation_result": (
-                "PENDING" if validation.activatable else "REJECTED"
-            ),
+            "activation_result": activation_result,
             "reason": "; ".join(errors),
             "errors": errors,
         }
         self._append_attempt(manifest, attempt)
-        if source == "inbox":
+        if validation is not None and source == "inbox":
             manifest["last_attempted_inbox_checksum"] = checksum
-        return attempt
-
-    def _record_failed_attempt(
-        self,
-        manifest: Mapping[str, Any],
-        source: str,
-        checksum: str,
-        reason: str,
-    ) -> Mapping[str, Any]:
-        attempt = {
-            "source": source,
-            "checksum": checksum,
-            "at": floor_timestamp(self.clock()),
-            "file_valid": False,
-            "usable_rule_count": 0,
-            "broken_rule_count": 0,
-            "validation_result": "FAILED",
-            "activation_result": "FAILED",
-            "reason": reason,
-            "errors": [reason],
-        }
-        self._append_attempt(manifest, attempt)
         return attempt
 
     def _append_attempt(
@@ -495,16 +466,15 @@ class RuleGenerationManager:
         return versioned
 
     def _archive_failed(self, source_path: str, checksum: str, source: str) -> None:
-        suffix = "-{}-{}.yaml".format(
-            source, checksum.split(":", 1)[-1][:12]
-        )
+        checksum_id = checksum.split(":", 1)[-1][:12]
+        suffix = "-{}-{}.yaml".format(source, checksum_id)
         if any(
             name.startswith("dld_rules.failed.") and name.endswith(suffix)
             for name in os.listdir(self.paths.rules_dir)
         ):
             return
         name = "dld_rules.failed.{}-{}-{}.yaml".format(
-            int(self.clock()), source, checksum.split(":", 1)[-1][:12]
+            int(self.clock()), source, checksum_id
         )
         destination = os.path.join(self.paths.rules_dir, name)
         atomic_copy(source_path, destination)

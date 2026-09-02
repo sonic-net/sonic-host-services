@@ -20,6 +20,17 @@ from urllib.parse import quote
 from .models import ValueConfig, frozen_mapping
 
 
+def _validated_interval(value: float, label: str) -> float:
+    """Return one finite, schema-bounded polling interval."""
+
+    interval = float(value)
+    if not math.isfinite(interval) or not 1 <= interval <= 0xFFFFFFFF:
+        raise ValueError(
+            "{} must be between 1 and 4294967295 seconds".format(label)
+        )
+    return interval
+
+
 class MonitorCommandType(str, Enum):
     RESUME = "RESUME"
     HOLD = "HOLD"
@@ -109,11 +120,7 @@ class MonitorWorkItem:
     dse_evaluation_handle: Any = None
 
     def __post_init__(self) -> None:
-        interval = float(self.sampling_interval)
-        if not math.isfinite(interval) or not 1 <= interval <= 0xFFFFFFFF:
-            raise ValueError(
-                "sampling_interval must be between 1 and 4294967295 seconds"
-            )
+        interval = _validated_interval(self.sampling_interval, "sampling_interval")
         object.__setattr__(self, "sampling_interval", interval)
         object.__setattr__(
             self,
@@ -248,10 +255,6 @@ class MonitorExecutionPlan:
         for key in missing:
             self.state_by_key[key] = MonitorWorkStateRecord()
 
-    def item(self, key: str) -> Optional[MonitorWorkItem]:
-        with self._structure_lock:
-            return self.items_by_key.get(key) or self.expanded_items_by_key.get(key)
-
     def item_snapshot(self) -> Dict[str, MonitorWorkItem]:
         with self._structure_lock:
             items = dict(self.items_by_key)
@@ -292,17 +295,8 @@ class MonitorExecutionPlan:
             self.state_by_key.pop(key, None)
 
     @staticmethod
-    def validated_polling_interval(interval: float) -> float:
-        interval = float(interval)
-        if not math.isfinite(interval) or not 1 <= interval <= 0xFFFFFFFF:
-            raise ValueError(
-                "polling interval must be between 1 and 4294967295 seconds"
-            )
-        return interval
-
-    @classmethod
     def validated_polling_intervals(
-        cls, intervals: Mapping[str, float]
+        intervals: Mapping[str, float]
     ) -> Dict[str, float]:
         """Validate one complete atomic source-default cadence snapshot."""
 
@@ -315,18 +309,9 @@ class MonitorExecutionPlan:
                 "polling intervals are missing {}".format(", ".join(missing))
             )
         return {
-            key: cls.validated_polling_interval(intervals[key])
+            key: _validated_interval(intervals[key], "polling interval")
             for key in required
         }
-
-    def queue_polling_interval_update(
-        self, intervals: Mapping[str, float]
-    ) -> None:
-        """Queue a complete default-cadence update for the owning monitor."""
-
-        self.interval_update_queue.put_nowait(
-            self.validated_polling_intervals(intervals)
-        )
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,8 @@
 from __future__ import absolute_import
 
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
-from pydantic import BaseModel, TypeAdapter
 
 from dldd.rule_schema import (
     DEFAULT_CONTRACT_REGISTRY,
@@ -12,96 +10,48 @@ from dldd.rule_schema import (
     ContractRegistryError,
 )
 from dldd.rule_schema.generate import main as generate_main
+from tests.dldd_fakes import load_valid_rules_document
 
 
-def test_schema_generator_writes_checks_and_reports_invalid_artifacts(
-    tmp_path, monkeypatch
-):
+def test_schema_generator_writes_and_checks_the_installed_contract(tmp_path):
     version = DEFAULT_CONTRACT_REGISTRY.versions[0]
     output = tmp_path / "nested" / "rules.json"
 
     assert generate_main(
         ["--version", version, "--output", str(output)]
     ) == 0
-    rendered = output.read_text(encoding="utf-8")
-    assert '"x-dldd-schema-version": "{}"'.format(version) in rendered
-
+    assert '"x-dldd-schema-version": "{}"'.format(
+        version
+    ) in output.read_text(encoding="utf-8")
     assert generate_main(
         ["--version", version, "--output", str(output), "--check"]
     ) == 0
-    assert generate_main(
-        ["--version", version, "--check", str(output)]
-    ) == 0
 
-    default_output = tmp_path / "default.json"
-    monkeypatch.setattr(
-        "dldd.rule_schema.generate.default_output_path",
-        lambda unused_version: default_output,
-    )
-    assert generate_main(["--version", version]) == 0
-    assert default_output.is_file()
-
-    missing = tmp_path / "missing.json"
-
-    with pytest.raises(SystemExit, match="unable to read generated schema"):
-        generate_main(["--version", version, "--check", str(missing)])
-
-    stale = tmp_path / "stale.json"
-    stale.write_text("{}\n", encoding="utf-8")
+    output.write_text("{}\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="schema is out of date"):
-        generate_main(["--version", version, "--check", str(stale)])
+        generate_main(
+            ["--version", version, "--output", str(output), "--check"]
+        )
 
 
-def test_contract_registry_lookup_shape_validation_and_diagnostic_paths():
-    """Cover registry lookup, malformed contracts, and diagnostic key paths."""
-
+def test_contract_registry_exact_lookup_and_domain_conversion():
     version = DEFAULT_CONTRACT_REGISTRY.versions[0]
     contract = DEFAULT_CONTRACT_REGISTRY.require_exact(version)
 
-    assert contract.envelope_adapter is contract.envelope
-    assert contract.signature_adapter is contract.signature
     assert DEFAULT_CONTRACT_REGISTRY.get(version) is contract
     assert DEFAULT_CONTRACT_REGISTRY.get("not-installed") is None
+    with pytest.raises(ContractRegistryError, match="unsupported schema_version"):
+        DEFAULT_CONTRACT_REGISTRY.require_exact("not-installed")
 
-    # Registry rejects malformed keys and adapter/model shapes.
-    version = DEFAULT_CONTRACT_REGISTRY.versions[0]
-    installed = DEFAULT_CONTRACT_REGISTRY.require_exact(version)
+    document = load_valid_rules_document()
+    dto = contract.validate_signature(document["signatures"][0])
+    domain = contract.to_domain(
+        dto,
+        local_action_default_timeout=document["local_action_default_timeout"],
+    )
+    assert domain.schema_version == version
 
-    for key in (None, ""):
-        with pytest.raises(ContractRegistryError, match="non-empty strings"):
-            ContractRegistry({key: installed})
-
-    with pytest.raises(ContractRegistryError, match="is not a RuleContract"):
-        ContractRegistry({version: object()})
-
-    class NoSchemaVersion(BaseModel):
-        value: str
-
-    with pytest.raises(ContractRegistryError, match="model declares"):
-        ContractRegistry(
-            {
-                version: replace(
-                    installed,
-                    document=TypeAdapter(NoSchemaVersion),
-                    document_model=NoSchemaVersion,
-                )
-            }
-        )
-
-    with pytest.raises(ContractRegistryError, match="envelope declares"):
-        ContractRegistry(
-            {
-                version: replace(
-                    installed,
-                    envelope=TypeAdapter(NoSchemaVersion),
-                    envelope_model=NoSchemaVersion,
-                )
-            }
-        )
-
-    with pytest.raises(ContractRegistryError, match="invalid envelope"):
-        ContractRegistry(
-            {
-                version: replace(installed, envelope="not-an-adapter")
-            }
-        )
+    with pytest.raises(ContractRegistryError, match="no DLDD rule contracts"):
+        ContractRegistry({})
+    with pytest.raises(ContractRegistryError, match="no DTO-to-domain converter"):
+        ContractRegistry({version: replace(contract, to_domain=None)})

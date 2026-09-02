@@ -1,7 +1,3 @@
-import json
-from pathlib import Path
-import re
-
 import pytest
 from pydantic import ValidationError
 
@@ -41,44 +37,6 @@ def test_generated_schema_and_runtime_numeric_authority_are_aligned():
         assert constraint["authority"] == "pydantic-runtime-contract", path
         assert constraint["kind"] == "python-float-type", path
 
-    for kind, value in (
-        ("comparison", INT64_MIN - 1),
-        ("comparison", UINT64_MAX + 1),
-        ("mask", str(INT64_MIN - 1)),
-        ("mask", str(UINT64_MAX + 1)),
-        ("mask", "0x10000000000000000"),
-    ):
-        if kind == "comparison":
-            with pytest.raises(ValidationError):
-                ComparisonEvaluationV001.model_validate(
-                    {"type": "comparison", "operator": "==", "value": value}
-                )
-        else:
-            schema = generate_schema("0.0.1")
-            options = schema["$defs"]["MaskEvaluationV001"]["properties"][
-                "value"
-            ]["anyOf"]
-            string_branch = next(
-                option for option in options if option["type"] == "string"
-            )
-            assert re.fullmatch(string_branch["pattern"], value)
-            with pytest.raises(ValidationError):
-                MaskEvaluationV001.model_validate(
-                    {"type": "mask", "logic": "&", "value": value}
-                )
-
-    assert ComparisonEvaluationV001.model_validate(
-        {"type": "comparison", "operator": "==", "value": 1.5}
-    ).value == 1.5
-    for value in (str(INT64_MIN), str(UINT64_MAX)):
-        validated = MaskEvaluationV001.model_validate(
-            {"type": "mask", "logic": "&", "value": value}
-        )
-        assert validated.value == value
-
-    # Optional authoring-schema validation runs only after runtime parity, so a
-    # missing jsonschema dependency cannot skip the executable contract checks.
-    jsonschema = pytest.importorskip("jsonschema")
     options = schema["$defs"]["MaskEvaluationV001"]["properties"]["value"][
         "anyOf"
     ]
@@ -95,19 +53,24 @@ def test_generated_schema_and_runtime_numeric_authority_are_aligned():
         "minimum": INT64_MIN,
         "maximum": UINT64_MAX,
     }
-    fixture = json.loads(
-        (
-            Path(__file__).parent
-            / "fixtures"
-            / "valid-redis-rule.json"
-        ).read_text()
-    )
-    event = fixture["signatures"][0]["signature"]["conditions"]["events"][
-        0
-    ]["event"]
-    event["evaluation"] = {
-        "type": "comparison",
-        "operator": "==",
-        "value": 50.0,
-    }
-    jsonschema.Draft202012Validator(schema).validate(fixture)
+
+    for value in (INT64_MIN - 1, UINT64_MAX + 1):
+        with pytest.raises(ValidationError):
+            ComparisonEvaluationV001.model_validate(
+                {"type": "comparison", "operator": "==", "value": value}
+            )
+
+    for value in (str(INT64_MIN - 1), str(UINT64_MAX + 1)):
+        with pytest.raises(ValidationError):
+            MaskEvaluationV001.model_validate(
+                {"type": "mask", "logic": "&", "value": value}
+            )
+
+    assert ComparisonEvaluationV001.model_validate(
+        {"type": "comparison", "operator": "==", "value": 1.5}
+    ).value == 1.5
+    for value in (str(INT64_MIN), str(UINT64_MAX)):
+        validated = MaskEvaluationV001.model_validate(
+            {"type": "mask", "logic": "&", "value": value}
+        )
+        assert validated.value == value

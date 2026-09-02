@@ -40,27 +40,21 @@ def _reason(records: Iterable[Mapping[str, Any]]) -> str:
 def _monitor_indexes(monitors):
     state_by_key = {}
     plan_by_key = {}
+    templates_by_rule = defaultdict(list)
     for monitor in tuple(monitors):
         plan = monitor.plan
         _, states = plan.runtime_snapshot()
         for key, state in states.items():
             state_by_key[key] = state
             plan_by_key[key] = plan
-    return state_by_key, plan_by_key
-
-
-def _templates_by_rule(monitors):
-    result = defaultdict(list)
-    for monitor in tuple(monitors):
-        plan = monitor.plan
         for template_id, template in tuple(plan.templates_by_key.items()):
-            result[template.item.rule_id].append(
+            templates_by_rule[template.item.rule_id].append(
                 (
                     template,
                     plan.expansion_state_by_key.get(template_id),
                 )
             )
-    return result
+    return state_by_key, plan_by_key, templates_by_rule
 
 
 def _active_components_by_rule(orchestrator):
@@ -325,8 +319,7 @@ def build_rule_status_snapshot(
         if orchestrator is not None
         else ()
     )
-    state_by_key, plan_by_key = _monitor_indexes(monitors)
-    templates_by_rule = _templates_by_rule(monitors)
+    state_by_key, plan_by_key, templates_by_rule = _monitor_indexes(monitors)
     items_by_rule = _group_by_rule(work_items)
     broken_by_rule = _group_broken_by_rule(runtime_broken)
     active_by_rule = _active_components_by_rule(orchestrator)

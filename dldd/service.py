@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import json
-from dataclasses import replace
 import signal
 import threading
 import time
@@ -28,16 +27,16 @@ from .lifecycle import (
     RulePaths,
 )
 from .monitor import AsyncCollectionPool, MonitorThread
-from .models import BrokenRule, ValidationIssue
 from .orchestrator import PrimaryOrchestrator
 from .planner import build_plans
 from .platform import PlatformExtensions, detect_identity, load_extensions
-from .preflight import build_adapter_registry, preflight_activation
-from .runtime import (
-    MonitorCommandType,
-    MonitorWorkState,
-    make_rule_instance_id,
+from .preflight import (
+    ActivationPreflightResult,
+    build_adapter_registry,
+    preflight_activation,
+    validation_with_preflight_failures,
 )
+from .runtime import make_rule_instance_id
 from .rule_schema.errors import bound_diagnostic, bound_identity
 from .rule_status import build_rule_status_snapshot
 from .telemetry import SonicStateDB, TelemetryPublisher
@@ -46,7 +45,6 @@ from .validation import (
     MAX_SERIALIZED_DIAGNOSTIC_BYTES,
     ValidationContext,
     load_rules,
-    source_line_for_path,
 )
 
 
@@ -263,58 +261,21 @@ class DLDDService:
             compatibility_matcher=self.extensions.compatibility_matcher,
         )
         result = load_rules(path, context)
+        payload = result
         if result.materialized_rules:
             preflight = preflight_activation(
                 result,
                 self.extensions,
-                DLDDConfig().polling_intervals,
+                self.config.polling_intervals,
+                failure_message_limit=256,
             )
-            invalid = {
-                failure.rule_id: (
-                    bound_identity(failure.rule_name, 128),
-                    bound_diagnostic(failure.message, 256),
+            if isinstance(preflight, ActivationPreflightResult):
+                result, payload = preflight.validation, preflight
+            else:  # Compatibility with injected preflight implementations.
+                result = validation_with_preflight_failures(
+                    result, preflight.failures, 256
                 )
-                for failure in preflight.failures
-            }
-            if invalid:
-                materialized = tuple(
-                    rule
-                    for rule in result.materialized_rules
-                    if rule.signature.metadata.id not in invalid
-                )
-                added_broken = tuple(
-                    BrokenRule(
-                        rule_name=name,
-                        rule_id=rule_id,
-                        rule_version=bound_identity(
-                            next(
-                                rule.signature.metadata.version
-                                for rule in result.materialized_rules
-                                if rule.signature.metadata.id == rule_id
-                            ),
-                            64,
-                        ),
-                        issues=(
-                            ValidationIssue(
-                                scope="rule",
-                                code="activation_preflight_failed",
-                                message=reason,
-                                path="$.signatures",
-                                rule_name=name,
-                                rule_id=rule_id,
-                                line=source_line_for_path(
-                                    result.source_lines, "$.signatures"
-                                ),
-                            ),
-                        ),
-                    )
-                    for rule_id, (name, reason) in invalid.items()
-                )
-                result = replace(
-                    result,
-                    materialized_rules=materialized,
-                    broken_rules=result.broken_rules + added_broken,
-                )
+                payload = result
         validation_time = time.time()
         broken = _bounded_broken_rule_records(result, validation_time)
         errors = _bounded_file_error_strings(result.file_errors)
@@ -330,11 +291,14 @@ class DLDDService:
             schema_version=result.schema_version or "",
             broken_rules=broken,
             errors=errors,
-            payload=result,
+            payload=payload,
         )
 
     def _adapters(self):
-        return build_adapter_registry(self.extensions)
+        payload = getattr(self.activation, "payload", None)
+        return payload.adapters if isinstance(
+            payload, ActivationPreflightResult
+        ) else build_adapter_registry(self.extensions)
 
     def _fail_start(self, reason: str) -> None:
         """Record and publish one fatal startup outcome."""
@@ -360,26 +324,18 @@ class DLDDService:
     def _activation_status_fields(self):
         """Return status fields owned by the selected rules generation."""
 
-        if self.activation is None:
+        activation = self.activation
+        if activation is None:
             return {}
-        payload = getattr(self.activation, "payload", None)
+        payload = getattr(activation, "payload", None)
         ruleset = getattr(payload, "ruleset", None)
+        local_timeout = ruleset.local_action_default_timeout if ruleset is not None else None
         return {
-            "local_action_default_timeout": (
-                ruleset.local_action_default_timeout
-                if ruleset is not None
-                else None
-            ),
-            "active_rules_source": getattr(self.activation, "source", ""),
-            "activation_result": getattr(
-                self.activation, "validation_result", ""
-            ),
-            "activation_fallback_used": getattr(
-                self.activation, "fallback_used", False
-            ),
-            "previous_active_rules_checksum": getattr(
-                self.activation, "previous_checksum", ""
-            ),
+            "local_action_default_timeout": local_timeout,
+            "active_rules_source": getattr(activation, "source", ""),
+            "activation_result": getattr(activation, "validation_result", ""),
+            "activation_fallback_used": getattr(activation, "fallback_used", False),
+            "previous_active_rules_checksum": getattr(activation, "previous_checksum", ""),
         }
 
     def _async_pool_metrics(self):
@@ -432,12 +388,17 @@ class DLDDService:
             self._fail_start(str(error))
             return
 
-        validation = self.activation.payload
-        bundle = build_plans(
-            validation.materialized_rules,
-            self.activation.checksum,
-            self.config.polling_intervals,
-        )
+        payload = self.activation.payload
+        if isinstance(payload, ActivationPreflightResult):
+            validation = payload.validation
+            bundle = payload.plan_for_generation(self.activation.checksum)
+        else:
+            validation = payload
+            bundle = build_plans(
+                validation.materialized_rules,
+                self.activation.checksum,
+                self.config.polling_intervals,
+            )
         adapters = self._adapters()
         if not bundle.work_items and not bundle.templates:
             self._fail_start("zero usable monitor work items after activation")
@@ -502,13 +463,7 @@ class DLDDService:
         for record in persisted.get("broken_rules", ()):
             key = record.get("correlation_key")
             if key in bundle.work_items and record.get("state") == "BROKEN":
-                self.orchestrator.broken_rules[key] = record
-                self.orchestrator._command_key(
-                    key,
-                    MonitorCommandType.SUSPEND,
-                    MonitorWorkState.BROKEN,
-                    "restored broken rule after unclean restart",
-                )
+                self.orchestrator.restore_broken_work(key, record)
         if not self._reconcile_existing_faults_at_startup():
             return
         for plan in bundle.monitor_plans.values():
@@ -757,18 +712,9 @@ class DLDDService:
         work_items = {}
         state = "OK"
         if self.orchestrator is not None:
-            recovered_cutoff = time.time() - 30
-            for source_id, source_record in list(
-                self.orchestrator.source_status.items()
-            ):
-                if (
-                    source_record.get("state") == "RECOVERED"
-                    and source_record.get("since", 0) < recovered_cutoff
-                ):
-                    self.orchestrator.source_status.pop(source_id, None)
             work_items = getattr(self.orchestrator, "work_items", {})
             broken = tuple(self.orchestrator.broken_rules.values())
-            source = tuple(self.orchestrator.source_status.values())
+            source = self.orchestrator.source_status_snapshot()
             inflight = self._inflight_status()
             state = self.orchestrator.service_state()
             diagnostics = tuple(
@@ -808,6 +754,10 @@ class DLDDService:
         result = []
         monotonic_now = time.monotonic()
         wall_now = time.time()
+        pending_by_key = {}
+        for pending in self.orchestrator.pending.values():
+            for key in pending.execution.work_keys:
+                pending_by_key.setdefault(key, pending)
         for monitor in self.monitors:
             items, states = monitor.plan.runtime_snapshot()
             for key, state in states.items():
@@ -842,14 +792,7 @@ class DLDDService:
                     ),
                     "owning_monitor": monitor.plan.monitor_id,
                 }
-                pending = next(
-                    (
-                        item
-                        for item in self.orchestrator.pending.values()
-                        if key in item.execution.work_keys
-                    ),
-                    None,
-                )
+                pending = pending_by_key.get(key)
                 if pending is not None:
                     action_result = pending.action_result
                     wait_until = None

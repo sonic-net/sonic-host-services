@@ -80,12 +80,11 @@ def _normalize(raw: Any, config: ValueConfig) -> Any:
     elif value_type == "boolean":
         if isinstance(raw, bool):
             value = raw
-        elif str(raw).strip().lower() in ("true", "1", "yes", "on"):
-            value = True
-        elif str(raw).strip().lower() in ("false", "0", "no", "off"):
-            value = False
         else:
-            raise ValueError("invalid boolean value")
+            normalized = str(raw).strip().lower()
+            if normalized not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
+                raise ValueError("invalid boolean value")
+            value = normalized in ("true", "1", "yes", "on")
     elif value_type == "json":
         value = json.loads(raw) if isinstance(raw, str) else raw
     elif value_type == "bytes":
@@ -177,23 +176,18 @@ class DataSourceAdapter(ABC):
                 else _normalize(raw, item.value_config)
             )
             value = CollectedValue(raw, normalized, item.value_config)
-        except SourceUnavailable as error:
-            return EvaluationResult(
-                EvaluationResultType.SOURCE_UNAVAILABLE,
-                source_status=SourceAvailability.UNAVAILABLE,
-                collection_started_at=started,
-                completed_at=time.time(),
-                error_category="SOURCE_UNAVAILABLE",
-                error=str(error),
-                retryable=True,
-            )
         except Exception as error:  # adapter boundary: normalize external failures
+            result = (
+                EvaluationResultType.SOURCE_UNAVAILABLE
+                if isinstance(error, SourceUnavailable)
+                else EvaluationResultType.COLLECTION_ERROR
+            )
             return EvaluationResult(
-                EvaluationResultType.COLLECTION_ERROR,
+                result,
                 source_status=SourceAvailability.UNAVAILABLE,
                 collection_started_at=started,
                 completed_at=time.time(),
-                error_category="COLLECTION_ERROR",
+                error_category=result.value,
                 error=str(error),
                 retryable=True,
             )
@@ -358,15 +352,12 @@ class CLIAdapter(DataSourceAdapter):
             raise ValueError("CLI source max_output_bytes must be a positive integer")
 
     def get_value(self, item: MonitorWorkItem) -> Any:
-        argv = list(item.source["argv"])
-        timeout = item.source.get("timeout", 30)
-        max_output = int(
-            item.source.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
-        )
         stdout = run_checked_shell_free(
-            argv,
-            timeout=timeout,
-            max_output_bytes=max_output,
+            item.source["argv"],
+            timeout=item.source.get("timeout", 30),
+            max_output_bytes=int(
+                item.source.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+            ),
             runner=self._runner,
             error_type=AdapterError,
             error_context="CLI source",
@@ -430,36 +421,36 @@ class I2CAdapter(DataSourceAdapter):
 class PlatformAPIAdapter(DataSourceAdapter):
     source_type = "platform_api"
 
-    def __init__(self, hooks: VendorHookRegistry) -> None:
+    def __init__(
+        self,
+        hooks: VendorHookRegistry,
+        default_hook_name: Optional[str] = None,
+    ) -> None:
         self._hooks = hooks
+        self._default_hook_name = default_hook_name
+
+    def _hook(self, item: MonitorWorkItem):
+        name = item.source.get("hook", self._default_hook_name)
+        if self._default_hook_name is None and not name:
+            raise ValueError(
+                "platform API source requires a registered hook name"
+            )
+        return self._hooks.get(str(name))
 
     def validate(self, item: MonitorWorkItem) -> None:
         super().validate(item)
-        if not item.source.get("hook"):
-            raise ValueError("platform API source requires a registered hook name")
-        hook = self._hooks.get(str(item.source["hook"]))
-        hook.validate_source(item.source)
+        self._hook(item).validate_source(item.source)
 
     def get_value(self, item: MonitorWorkItem) -> Any:
-        hook = self._hooks.get(str(item.source["hook"]))
-        return hook.collect(item.source)
+        return self._hook(item).collect(item.source)
 
 
 class VendorAdapter(PlatformAPIAdapter):
     """Adapter for a vendor-advertised source type resolved by DSE."""
 
     def __init__(self, source_type: str, hooks: VendorHookRegistry) -> None:
-        super().__init__(hooks)
+        super().__init__(hooks, default_hook_name=source_type)
         self.source_type = source_type
-
-    def validate(self, item: MonitorWorkItem) -> None:
-        DataSourceAdapter.validate(self, item)
-        hook = self._hooks.get(str(item.source.get("hook", self.source_type)))
-        hook.validate_source(item.source)
-
-    def get_value(self, item: MonitorWorkItem) -> Any:
-        hook = self._hooks.get(str(item.source.get("hook", self.source_type)))
-        return hook.collect(item.source)
 
 
 class DSEAdapter(DataSourceAdapter):

@@ -21,10 +21,6 @@ from .runtime import (
 _MONITOR_BY_SOURCE = {
     "redis": "redis",
     "file": "file",
-    "platform_api": "common",
-    "i2c": "common",
-    "cli": "common",
-    "sysfs": "common",
 }
 
 
@@ -260,19 +256,8 @@ def build_plans(
     }
     signatures: Dict[Tuple[int, str], SignatureExecution] = {}
     templates: Dict[str, DSEWorkTemplate] = {}
-    common_prototypes: Dict[
-        int, Dict[Tuple[int, str], MonitorWorkItem]
-    ] = {}
-    static_common_items: Dict[
-        int, Dict[Tuple[int, str], MonitorWorkItem]
-    ] = {}
+    common_by_rule: Dict[int, Dict[Tuple[int, str], MonitorWorkItem]] = {}
     static_work_keys: Dict[int, list] = {}
-    grouped_templates: Dict[str, Dict[str, DSEWorkTemplate]] = {
-        "redis": {},
-        "file": {},
-        "common": {},
-    }
-
     for materialized in materialized_rules:
         signature = materialized.signature
         metadata = signature.metadata
@@ -329,9 +314,25 @@ def build_plans(
                     ),
                 )
                 templates[template_id] = template
-                grouped_templates["common"][template_id] = template
                 continue
             for source_index, source in enumerate(materialized_event.sources):
+                source_mapping = _source_mapping(source)
+                source_id = _source_identity(source)
+                monitor_type = monitor_type_for_source(source.type)
+                config = event.evaluation.value_configs.with_fallback(
+                    source.value_configs
+                )
+                if config.type == "N/A" and source_mapping.get("scaling") not in (
+                    None,
+                    "",
+                    "N/A",
+                ):
+                    config = type(config)(
+                        type="float",
+                        unit=str(source_mapping.get("unit", "N/A")),
+                        scaling=source_mapping["scaling"],
+                        encoding="N/A",
+                    )
                 targets = (
                     [_component_name(source.instance, metadata.component)]
                     if source.instance
@@ -341,27 +342,9 @@ def build_plans(
                 if prototype_only:
                     targets = [metadata.component]
                 for instance in targets:
-                    source_mapping = _source_mapping(source)
-                    source_id = _source_identity(source)
-                    monitor_type = monitor_type_for_source(source.type)
                     key = make_correlation_key(
                         metadata.id, event.id, instance, metadata.symptom, source_id
                     )
-                    config = event.evaluation.value_configs.with_fallback(
-                        source.value_configs
-                    )
-                    if config.type == "N/A" and source_mapping.get("scaling") not in (
-                        None,
-                        "",
-                        "N/A",
-                    ):
-                        config = type(config)(
-                            type="float",
-                            unit=str(source_mapping.get("unit", "N/A")),
-                            scaling=source_mapping["scaling"],
-                            encoding="N/A",
-                        )
-                    value_config = config
                     item = _build_work_item(
                         signature,
                         event,
@@ -371,7 +354,7 @@ def build_plans(
                         source_type=source.type,
                         source=source_mapping,
                         source_index=source_index,
-                        value_config=value_config,
+                        value_config=config,
                         common_predicate=source.instance is None,
                         sampling_interval=float(
                             event.sampling_interval
@@ -384,20 +367,23 @@ def build_plans(
                         ),
                     )
                     if prototype_only:
-                        common_prototypes.setdefault(metadata.id, {})[
-                            (event.id, source_id)
-                        ] = replace(
-                            item,
-                            correlation_key="prototype:" + key,
-                        )
+                        identity = (event.id, source_id)
+                        common = common_by_rule.setdefault(metadata.id, {})
+                        existing = common.get(identity)
+                        if existing is None or existing.correlation_key.startswith("prototype:"):
+                            common[identity] = replace(
+                                item, correlation_key="prototype:" + key
+                            )
                         continue
                     grouped[monitor_type][key] = item
                     all_items[key] = item
                     static_work_keys.setdefault(metadata.id, []).append(key)
                     if item.common_predicate:
-                        static_common_items.setdefault(metadata.id, {}).setdefault(
-                            (item.event_id, item.source_id), item
-                        )
+                        identity = (item.event_id, item.source_id)
+                        common = common_by_rule.setdefault(metadata.id, {})
+                        existing = common.get(identity)
+                        if existing is None or existing.correlation_key.startswith("prototype:"):
+                            common[identity] = item
                     items_by_instance[instance].setdefault(event.id, []).append(key)
 
         for instance, event_keys in items_by_instance.items():
@@ -410,25 +396,20 @@ def build_plans(
 
     for template_id, template in tuple(templates.items()):
         rule_id = template.item.rule_id
-        common = dict(static_common_items.get(rule_id, {}))
-        for identity, item in common_prototypes.get(rule_id, {}).items():
-            common.setdefault(identity, item)
         enriched = replace(
             template,
-            common_items=tuple(common.values()),
+            common_items=tuple(common_by_rule.get(rule_id, {}).values()),
             static_work_keys=tuple(static_work_keys.get(rule_id, ())),
         )
         templates[template_id] = enriched
-        grouped_templates["common"][template_id] = enriched
 
     plans = {}
     for monitor_type, items in grouped.items():
-        monitor_templates = grouped_templates[monitor_type]
+        monitor_templates = templates if monitor_type == "common" else {}
         if not items and not monitor_templates:
             continue
-        monitor_id = monitor_type
         plans[monitor_type] = MonitorExecutionPlan(
-            monitor_id=monitor_id,
+            monitor_id=monitor_type,
             monitor_type=monitor_type,
             polling_interval=float(polling_intervals[monitor_type]),
             plan_generation=plan_generation,

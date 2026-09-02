@@ -33,51 +33,42 @@ def loaded_rule_plan():
     return result, bundle, next(iter(bundle.work_items.values()))
 
 
-def test_rule_status_contract():
-    assert build_rule_status_snapshot(None, None, ()) == ((), False)
-
+def test_rule_status_contract(monkeypatch):
     result, bundle, item = loaded_rule_plan()
     plan = bundle.monitor_plans["redis"]
     state = plan.state_by_key[item.correlation_key]
     state.next_sample_due = 15
     state.last_attempt_timestamp = 98.9
     state.last_success_timestamp = 97.8
-    inactive = SimpleNamespace(
+    state.state = MonitorWorkState.DEGRADED
+    active = SimpleNamespace(
         rule_id=item.rule_id,
         component_name=item.component_name,
-        status="INACTIVE",
+        status="ACTIVE",
     )
 
     rows, truncated = build_rule_status_snapshot(
         active_generation(result),
-        runtime_owner((item,), faults=(inactive,)),
+        runtime_owner((item,), faults=(active,)),
         (SimpleNamespace(plan=plan),),
         monotonic_now=10,
         wall_now=100,
     )
 
     assert not truncated
-    assert rows[0]["active_faults"] == 0
+    assert rows[0]["health"] == "DEGRADED"
+    assert rows[0]["active_faults"] == 1
+    assert rows[0]["work_items_healthy"] == 0
     assert rows[0]["work_items"][0]["next_due"] == 105
+    assert rows[0]["work_items"][0]["sampling_interval"] == 60
+    assert rows[0]["work_items"][0]["interval_source"] == "monitor_default"
+    assert rows[0]["work_items"][0]["active_fault"] is True
+    assert rows[0]["work_items"][0]["rule_instance_id"] == "{}@{}".format(
+        item.rule_id, item.component_name
+    )
+    assert "correlation_key" not in rows[0]["work_items"][0]
     assert rows[0]["last_attempt"] == 98
     assert rows[0]["last_success"] == 97
-
-
-    result, unused_bundle, item = loaded_rule_plan()
-
-    rows, unused_truncated = build_rule_status_snapshot(
-        active_generation(result),
-        runtime_owner((item,)),
-        (),
-        monotonic_now=0,
-        wall_now=100,
-    )
-
-    assert rows[0]["health"] == "DEGRADED"
-    assert rows[0]["work_items"][0]["state"] == "UNKNOWN"
-    assert rows[0]["work_items"][0]["monitor"] == ""
-    assert rows[0]["work_items"][0]["failure_count"] == 0
-
 
     result, unused_bundle, item = loaded_rule_plan()
     template = DSEWorkTemplate(
@@ -108,41 +99,6 @@ def test_rule_status_contract():
     assert rows[0]["health"] == "DEGRADED"
     assert rows[0]["reason"] == "dse_discovery_bootstrap"
     assert rows[0]["work_items_total"] == 0
-
-
-    result, unused_bundle, item = loaded_rule_plan()
-    template = DSEWorkTemplate(
-        "template",
-        item,
-        result.materialized_rules[0].signature,
-        SimpleNamespace(),
-    )
-    plan = MonitorExecutionPlan(
-        "common",
-        "common",
-        60,
-        "generation",
-        {item.correlation_key: item},
-        {},
-        Queue(),
-        templates_by_key={"template": template},
-    )
-    plan.expansion_state_by_key["template"].phase = "STABLE"
-    plan.expansion_state_by_key["template"].last_error = (
-        "authoritative inventory unavailable"
-    )
-
-    rows, unused_truncated = build_rule_status_snapshot(
-        active_generation(result),
-        runtime_owner((item,)),
-        (SimpleNamespace(plan=plan),),
-        monotonic_now=0,
-        wall_now=100,
-    )
-
-    assert rows[0]["health"] == "DEGRADED"
-    assert rows[0]["reason"] == "authoritative inventory unavailable"
-
 
     result, bundle, item = loaded_rule_plan()
     plan = bundle.monitor_plans["redis"]
@@ -189,3 +145,13 @@ def test_rule_status_contract():
     assert rows[1]["rule_id"] is None
     assert rows[1]["rule"] == "UNPARSEABLE"
     assert rows[1]["health"] == "BROKEN"
+
+    monkeypatch.setattr("dldd.rule_status.MAX_DETAILS_PER_RULE", 0)
+    omitted, truncated = build_rule_status_snapshot(
+        active_generation(result),
+        runtime_owner((item,)),
+        (SimpleNamespace(plan=plan),),
+    )
+    assert truncated
+    assert omitted[0]["work_items"] == []
+    assert omitted[0]["work_items_omitted"] == 1

@@ -15,13 +15,13 @@ import threading
 import time
 import uuid
 from concurrent.futures import TimeoutError
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from queue import Full, Queue
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from .bounded_calls import BoundedCallGate, start_daemon_workers
 from .command_execution import DEFAULT_MAX_OUTPUT_BYTES, run_checked_shell_free
-from .filesystem import atomic_write_json
+from .filesystem import atomic_write_json, unlink_if_exists
 from .models import Operation
 from .timestamps import floor_timestamp_fields
 
@@ -44,15 +44,21 @@ class ArtifactRequest:
     last_error: str = ""
 
     def as_payload(self) -> Mapping[str, Any]:
-        return floor_timestamp_fields(
-            {
-                "artifact_id": self.artifact_id,
-                "state": self.state,
-                "requested_at": self.requested_at,
-                "completed_at": self.completed_at,
-                "last_error": self.last_error,
-            }
-        )
+        return floor_timestamp_fields(asdict(self))
+
+
+def _artifact_state(
+    artifact_base: str,
+    state: str,
+    requested_at: float,
+    completed_at: Optional[float] = None,
+    last_error: str = "",
+) -> ArtifactRequest:
+    """Build one persisted state for a canonical artifact base name."""
+
+    return ArtifactRequest(
+        artifact_base + ".tar.gz", state, requested_at, completed_at, last_error
+    )
 
 
 class HealthzArtifactClient:
@@ -115,8 +121,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         requested = time.time()
         artifact_base = "dldd-{}".format(uuid.uuid4().hex)
         artifact_id = artifact_base + ".tar.gz"
-        state_path = os.path.join(self.directory, artifact_base + ".json")
-        request = ArtifactRequest(artifact_id, "REQUESTED", requested)
+        request = _artifact_state(artifact_base, "REQUESTED", requested)
         job = (
             artifact_base,
             artifact_id,
@@ -129,13 +134,13 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             if self._closed:
                 raise RuntimeError("artifact client is shut down")
             self._prune_locked(reserve=1)
-            if self._entry_count_locked() >= self.max_artifacts:
+            if len(self._canonical_bases_locked()) >= self.max_artifacts:
                 raise RuntimeError(
                     "artifact store capacity is exhausted by active jobs"
                 )
             self._active.add(artifact_base)
             try:
-                atomic_write_json(state_path, request.as_payload())
+                self._record_state(artifact_base, request)
                 self._jobs.put_nowait(job)
             except Exception:
                 self._active.discard(artifact_base)
@@ -156,8 +161,8 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                     try:
                         self._record_terminal(
                             artifact_base,
-                            ArtifactRequest(
-                                artifact_id,
+                            _artifact_state(
+                                artifact_base,
                                 "FAILED",
                                 requested,
                                 time.time(),
@@ -191,7 +196,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             os.close(descriptor)
             self._record_state(
                 artifact_base,
-                ArtifactRequest(artifact_id, "RUNNING", requested),
+                _artifact_state(artifact_base, "RUNNING", requested),
             )
             with tarfile.open(staged_archive, "w:gz") as archive:
                 bytes_added = 0
@@ -222,7 +227,9 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                         if isinstance(output, bytes)
                         else str(output).encode("utf-8", "replace")
                     )
-                    data = data[: int(query.get("max_output_bytes", 1024 * 1024))]
+                    data = data[: int(
+                        query.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+                    )]
                     if bytes_added + len(data) > self.max_artifact_bytes:
                         break
                     info = tarfile.TarInfo("queries/{:03d}.txt".format(index))
@@ -237,32 +244,20 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             os.replace(staged_archive, archive_path)
             self._record_terminal(
                 artifact_base,
-                ArtifactRequest(
-                    artifact_id, "COMPLETED", requested, time.time()
-                ),
+                _artifact_state(artifact_base, "COMPLETED", requested, time.time()),
             )
         except Exception as error:
             if staged_archive is not None:
-                try:
-                    os.unlink(staged_archive)
-                except FileNotFoundError:
-                    pass
+                unlink_if_exists(staged_archive)
             self._record_terminal(
                 artifact_base,
-                ArtifactRequest(
-                    artifact_id, "FAILED", requested, time.time(), str(error)
+                _artifact_state(
+                    artifact_base, "FAILED", requested, time.time(), str(error)
                 ),
             )
 
-    def _record_state(self, artifact_base: str, request: ArtifactRequest) -> None:
-        with self._store_lock:
-            atomic_write_json(
-                os.path.join(self.directory, artifact_base + ".json"),
-                request.as_payload(),
-            )
-
-    def _record_terminal(
-        self, artifact_base: str, request: ArtifactRequest
+    def _record_state(
+        self, artifact_base: str, request: ArtifactRequest, terminal: bool = False
     ) -> None:
         with self._store_lock:
             try:
@@ -271,8 +266,14 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                     request.as_payload(),
                 )
             finally:
-                self._active.discard(artifact_base)
-                self._prune_locked()
+                if terminal:
+                    self._active.discard(artifact_base)
+                    self._prune_locked()
+
+    def _record_terminal(
+        self, artifact_base: str, request: ArtifactRequest
+    ) -> None:
+        self._record_state(artifact_base, request, terminal=True)
 
     @staticmethod
     def _add_log_file(archive, path: str, remaining: int) -> int:
@@ -283,11 +284,18 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             descriptor = os.open(path, flags)
         except OSError:
             return 0
-        file_stat = os.fstat(descriptor)
-        if not stat.S_ISREG(file_stat.st_mode):
+        try:
+            stream = os.fdopen(descriptor, "rb")
+        except OSError:
             os.close(descriptor)
             return 0
-        with os.fdopen(descriptor, "rb") as stream:
+        with stream:
+            try:
+                file_stat = os.fstat(stream.fileno())
+            except OSError:
+                return 0
+            if not stat.S_ISREG(file_stat.st_mode):
+                return 0
             if file_stat.st_size <= 0 or file_stat.st_size > remaining:
                 return 0
             info = tarfile.TarInfo(
@@ -359,24 +367,16 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                 worker.join()
 
     def _canonical_bases_locked(self):
-        result = []
-        for name in os.listdir(self.directory):
-            if not name.endswith(".json"):
-                continue
-            base = name[:-5]
-            if _ARTIFACT_BASE_PATTERN.fullmatch(base):
-                result.append(base)
-        return result
-
-    def _entry_count_locked(self) -> int:
-        return len(self._canonical_bases_locked())
+        return [
+            name[:-5]
+            for name in os.listdir(self.directory)
+            if name.endswith(".json")
+            and _ARTIFACT_BASE_PATTERN.fullmatch(name[:-5])
+        ]
 
     def _remove_pair_locked(self, artifact_base: str) -> None:
         for suffix in (".json", ".tar.gz"):
-            try:
-                os.unlink(os.path.join(self.directory, artifact_base + suffix))
-            except FileNotFoundError:
-                pass
+            unlink_if_exists(os.path.join(self.directory, artifact_base + suffix))
 
     def _prune_locked(self, reserve: int = 0) -> None:
         limit = max(0, self.max_artifacts - reserve)
@@ -425,10 +425,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             if state.get("artifact_id") != artifact_base + ".tar.gz":
                 return None
             if state.get("state") not in (
-                "REQUESTED",
-                "RUNNING",
-                "COMPLETED",
-                "FAILED",
+                "REQUESTED", "RUNNING", "COMPLETED", "FAILED"
             ):
                 return None
             return state
@@ -451,7 +448,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                     pass
 
         bases = set()
-        for name in os.listdir(self.directory):
+        for name in names:
             for suffix in (".json", ".tar.gz"):
                 if name.endswith(suffix):
                     base = name[: -len(suffix)]
@@ -474,41 +471,35 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                         requested_at = float(state.get("requested_at", requested_at))
                     except (TypeError, ValueError):
                         pass
-                atomic_write_json(
-                    manifest_path,
-                    ArtifactRequest(
-                        artifact_base + ".tar.gz",
+                self._record_state(
+                    artifact_base,
+                    _artifact_state(
+                        artifact_base,
                         "COMPLETED",
                         requested_at,
                         os.path.getmtime(archive_path),
-                    ).as_payload(),
+                    ),
                 )
                 continue
 
-            try:
-                os.unlink(archive_path)
-            except FileNotFoundError:
-                pass
+            unlink_if_exists(archive_path)
             if state is None:
-                try:
-                    os.unlink(manifest_path)
-                except FileNotFoundError:
-                    pass
+                unlink_if_exists(manifest_path)
                 continue
             if state.get("state") in ("REQUESTED", "RUNNING", "COMPLETED"):
                 try:
                     requested_at = float(state.get("requested_at", now))
                 except (TypeError, ValueError):
                     requested_at = now
-                atomic_write_json(
-                    manifest_path,
-                    ArtifactRequest(
-                        artifact_base + ".tar.gz",
+                self._record_state(
+                    artifact_base,
+                    _artifact_state(
+                        artifact_base,
                         "FAILED",
                         requested_at,
                         now,
                         "artifact generation was interrupted before completion",
-                    ).as_payload(),
+                    ),
                 )
 
     @staticmethod

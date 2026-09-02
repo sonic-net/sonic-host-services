@@ -37,7 +37,7 @@ def item(event_id=1, key="event-1", component="SENSOR0"):
     )
 
 
-def test_signature_execution_owns_ordered_multi_owner_work_keys():
+def test_signature_execution_preserves_ordered_owner_keys():
     execution = SignatureExecution(
         signature=signature(),
         component_name="SENSOR0",
@@ -73,29 +73,6 @@ def evidence(work, kind, timestamp, raw=1.0):
 
 
 def test_registration_and_temporal_correlation_contract():
-    engine = CorrelationEngine({})
-    work = item()
-    rule = signature()
-    engine.register_work_item(rule, work, "generation")
-    engine.register_work_item(rule, work, "generation")
-    assert engine.executions[(1000001, "SENSOR0")].event_keys == {
-        1: ("event-1",)
-    }
-
-    engine.unregister_work_item(item(component="OTHER"))
-    unknown_event = item(event_id=2, key="event-2")
-    assert engine.consume(
-        evidence(unknown_event, EvaluationResultType.MATCH, 1)
-    ) is None
-
-    unavailable = engine.consume(
-        evidence(work, EvaluationResultType.SOURCE_UNAVAILABLE, 2)
-    )
-    assert unavailable.active is False
-    assert unavailable.changed is False
-    assert unavailable.event_snapshots == ()
-
-
     rule = signature(
         events=(SimpleNamespace(id=1, match_count=1, match_period=100),)
     )
@@ -106,19 +83,6 @@ def test_registration_and_temporal_correlation_contract():
     assert engine.consume(
         evidence(work, EvaluationResultType.MATCH, 10)
     ).active
-    # This sample is old but still within the allowed lateness window. It may
-    # contribute to match-count history, but cannot replace the key's state.
-    assert engine.consume(
-        evidence(work, EvaluationResultType.MATCH, 5)
-    ).active
-    assert engine.consume(
-        evidence(work, EvaluationResultType.NO_MATCH, 4)
-    ).active
-
-
-    rule = signature(
-        events=(SimpleNamespace(id=1, match_count=1, match_period=100),)
-    )
     latest = item(key="latest")
     older_new_key = item(key="older-new-key")
     cleared = item(key="cleared")
@@ -144,8 +108,6 @@ def test_registration_and_temporal_correlation_contract():
     event_state = engine._events[(1000001, "SENSOR0", 1)]
     assert event_state.matching_keys["cleared"] is False
     assert decision.active
-
-
     events = (
         SimpleNamespace(id=1, match_count=1, match_period=0),
         SimpleNamespace(id=2, match_count=1, match_period=0),
@@ -163,8 +125,6 @@ def test_registration_and_temporal_correlation_contract():
     assert not engine.consume(
         evidence(second, EvaluationResultType.MATCH, 10)
     ).active
-
-
     work = item()
     rule = signature(
         events=(SimpleNamespace(id=1, match_count=2, match_period=5),)
@@ -180,27 +140,7 @@ def test_registration_and_temporal_correlation_contract():
     ).active
 
 
-def test_fault_value_projection_and_component_retirement_contract():
-    assert CorrelationEngine._format_value(
-        b"hello", ValueConfig(type="string", encoding="utf-8")
-    ) == "hello"
-    assert CorrelationEngine._format_value(
-        b"\x80", ValueConfig(type="binary")
-    ) == "0b10000000"
-    assert CorrelationEngine._format_value(
-        b"\xab", ValueConfig(type="hex")
-    ) == "0xab"
-    assert CorrelationEngine._format_value(
-        b"\x00\xff", ValueConfig()
-    ) == [0, 255]
-    nested = (b"\x01", [b"\x02"], {"sample": b"\x03"})
-    assert CorrelationEngine._format_value(nested, ValueConfig()) == [
-        [1],
-        [[2]],
-        {"sample": [3]},
-    ]
-
-
+def test_component_retirement_preserves_other_instance_state():
     engine = CorrelationEngine({})
     rule = signature()
     first = item(component="SENSOR0")

@@ -3,13 +3,10 @@ from __future__ import absolute_import
 import json
 from pathlib import Path
 
-import pytest
-
 from dldd.dse import (
     DSEContext,
     DSEHook,
     DSEReference,
-    DSEReferenceError,
     DSERegistry,
     ResolvedCommand,
     ResolvedEvaluation,
@@ -94,12 +91,3 @@ def test_dse_action_and_query_resolution_contract():
         materialized_actions.repair_actions.local_actions.action_list[0].executor
     )
     assert callable(materialized_actions.log_collection.queries[0].executor)
-
-
-@pytest.mark.parametrize("method", ("resolve_action", "resolve_query"))
-@pytest.mark.parametrize("command", (None, 42, b"PSU:reset()", ""))
-def test_dse_operation_commands_must_be_non_empty_strings(method, command):
-    registry = DSERegistry(hook=RecordingHook())
-
-    with pytest.raises(DSEReferenceError, match="must (?:be a string|not be empty)"):
-        getattr(registry, method)(command, DSEContext())

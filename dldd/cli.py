@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import logging
 import os
@@ -13,30 +14,31 @@ from .dse import DSERegistry
 from .hooks import VendorHookError
 from .lifecycle import RulePaths
 from .platform import PlatformIdentity, detect_identity, load_extensions
-from .preflight import preflight_activation
+from .preflight import (
+    ActivationPreflightFailure,
+    preflight_activation,
+    validation_with_preflight_failures,
+)
 from .qualification import qualify_e2e
 from .reset import clear_runtime_state
 from .service import run_service
 from .telemetry import SonicStateDB
-from .validation import ValidationContext, load_rules, source_line_for_path
-
-
-def _issue_payload(issue):
-    return {
-        "scope": issue.scope,
-        "code": issue.code,
-        "message": issue.message,
-        "path": issue.path,
-        "rule_name": issue.rule_name,
-        "rule_id": issue.rule_id,
-        "line": issue.line,
-    }
+from .validation import ValidationContext, load_rules
 
 
 def _issue_location(issue):
     if issue.get("line") is None:
         return issue["path"]
     return "{} (line {})".format(issue["path"], issue["line"])
+
+
+def _probe_result(correlation_key, state, error=None):
+    """Build one validation probe result row."""
+
+    result = {"correlation_key": correlation_key, "state": state}
+    if error is not None:
+        result["error"] = str(error)
+    return result
 
 
 def validate_rules(args) -> int:
@@ -52,49 +54,24 @@ def validate_rules(args) -> int:
     dse_path = args.dse or os.path.join(platform_dir, "dld_dse.yaml")
     extensions = None if static_only else load_extensions(identity, dse_path)
     compatibility_required = args.mode not in ("static-schema", "dse-resolve")
+    dse_registry = extensions.dse_registry if extensions else DSERegistry()
+    compatibility_matcher = (
+        extensions.compatibility_matcher
+        if extensions
+        else ValidationContext().compatibility_matcher
+    )
     context = ValidationContext(
         product_id=identity.product_id if compatibility_required else None,
         software_version=identity.software_version if compatibility_required else None,
         require_compatibility_identity=compatibility_required,
-        dse_registry=(
-            extensions.dse_registry
-            if extensions
-            else DSERegistry()
-        ),
-        compatibility_matcher=(
-            extensions.compatibility_matcher
-            if extensions
-            else ValidationContext().compatibility_matcher
-        ),
+        dse_registry=dse_registry,
+        compatibility_matcher=compatibility_matcher,
     )
     result = load_rules(args.file, context, materialize=not static_only)
-    valid_rule_count = (
-        len(result.ruleset.signatures)
-        if static_only and result.ruleset is not None
-        else len(result.materialized_rules)
-    )
-    payload = {
-        "schema_version": result.schema_version,
-        "rules_parsed_successfully": valid_rule_count,
-        "rules_failed_validation": len(result.broken_rules),
-        "file_level_result": "PASSED" if result.file_valid else "FAILED",
-        "rule_level_result": (
-            "PASSED"
-            if not result.broken_rules
-            else "DEGRADED"
-            if valid_rule_count
-            else "FAILED"
-        ),
-        "file_errors": [_issue_payload(issue) for issue in result.file_errors],
-        "broken_rules": [
-            {
-                "rule": item.rule_name,
-                "rule_id": item.rule_id,
-                "issues": [_issue_payload(issue) for issue in item.issues],
-            }
-            for item in result.broken_rules
-        ],
-    }
+    reported_result = result
+    probe_results = None
+    rule_results = None
+    runtime_failures = []
     probe_failed = False
     if args.mode in (
         "activation-dry-run",
@@ -110,16 +87,15 @@ def validate_rules(args) -> int:
         bundle = preflight.plan
         probe_results = []
         invalid_rule_ids = set(preflight.invalid_rule_ids)
-        invalid_reasons = {
-            failure.rule_id: (failure.code, failure.message)
-            for failure in preflight.failures
+        runtime_failures.extend(preflight.failures)
+        metadata_by_id = {
+            rule.signature.metadata.id: rule.signature.metadata
+            for rule in result.materialized_rules
         }
         for failure in preflight.failures:
-            failure_result = {
-                "correlation_key": failure.correlation_key,
-                "state": "FAILED",
-                "error": failure.message,
-            }
+            failure_result = _probe_result(
+                failure.correlation_key, "FAILED", failure.message
+            )
             if args.mode == "e2e-execute":
                 failure_result.update(
                     rule=failure.rule_name,
@@ -136,16 +112,13 @@ def validate_rules(args) -> int:
                 bundle, adapters, invalid_rule_ids
             )
             probe_results.extend(qualification.event_results)
-            payload["rule_results"] = list(qualification.rule_results)
+            rule_results = list(qualification.rule_results)
             probe_failed = probe_failed or qualification.failed
         if args.mode == "activation-dry-run":
             for item in bundle.work_items.values():
                 if item.rule_id not in invalid_rule_ids:
                     probe_results.append(
-                        {
-                            "correlation_key": item.correlation_key,
-                            "state": "VALID",
-                        }
+                        _probe_result(item.correlation_key, "VALID")
                     )
         elif args.mode == "hardware-probe":
             for item in bundle.work_items.values():
@@ -162,64 +135,56 @@ def validate_rules(args) -> int:
                     failure_code = "adapter_probe_failed"
                 else:
                     probe_results.append(
-                        {
-                            "correlation_key": item.correlation_key,
-                            "state": "AVAILABLE",
-                        }
+                        _probe_result(item.correlation_key, "AVAILABLE")
                     )
                     continue
                 probe_failed = True
                 invalid_rule_ids.add(item.rule_id)
-                invalid_reasons.setdefault(
-                    item.rule_id, (failure_code, str(error))
+                metadata = metadata_by_id[item.rule_id]
+                runtime_failures.append(
+                    ActivationPreflightFailure.from_metadata(
+                        metadata, item.correlation_key, error, failure_code
+                    )
                 )
                 probe_results.append(
-                    {
-                        "correlation_key": item.correlation_key,
-                        "state": "FAILED",
-                        "error": str(error),
-                    }
+                    _probe_result(item.correlation_key, "FAILED", error)
                 )
-        payload["probe_results"] = probe_results
-        if invalid_rule_ids:
-            invalid_rules = {
-                rule.signature.metadata.id: rule.signature.metadata.name
-                for rule in result.materialized_rules
-                if rule.signature.metadata.id in invalid_rule_ids
+        reported_result = validation_with_preflight_failures(
+            result,
+            sorted(runtime_failures, key=lambda failure: failure.rule_id),
+        )
+    valid_rule_count = (
+        len(reported_result.ruleset.signatures)
+        if static_only and reported_result.ruleset is not None
+        else len(reported_result.materialized_rules)
+    )
+    rule_level_result = "PASSED"
+    if reported_result.broken_rules:
+        rule_level_result = "DEGRADED" if valid_rule_count else "FAILED"
+    payload = {
+        "schema_version": reported_result.schema_version,
+        "rules_parsed_successfully": valid_rule_count,
+        "rules_failed_validation": len(reported_result.broken_rules),
+        "file_level_result": "PASSED" if reported_result.file_valid else "FAILED",
+        "rule_level_result": rule_level_result,
+        "file_errors": [asdict(issue) for issue in reported_result.file_errors],
+        "broken_rules": [
+            {
+                "rule": item.rule_name,
+                "rule_id": item.rule_id,
+                "issues": [asdict(issue) for issue in item.issues],
             }
-            for rule_id, rule_name in sorted(invalid_rules.items()):
-                code, message = invalid_reasons[rule_id]
-                payload["broken_rules"].append(
-                    {
-                        "rule": rule_name,
-                        "rule_id": rule_id,
-                        "issues": [
-                            {
-                                "scope": "rule",
-                                "code": code,
-                                "message": message,
-                                "path": "$.signatures",
-                                "rule_name": rule_name,
-                                "rule_id": rule_id,
-                                "line": source_line_for_path(
-                                    result.source_lines, "$.signatures"
-                                ),
-                            }
-                        ],
-                    }
-                )
-            valid_rule_count -= len(invalid_rules)
-            payload["rules_parsed_successfully"] = valid_rule_count
-            payload["rules_failed_validation"] = len(payload["broken_rules"])
-            payload["rule_level_result"] = (
-                "DEGRADED" if valid_rule_count else "FAILED"
-            )
+            for item in reported_result.broken_rules
+        ],
+    }
+    if probe_results is not None:
+        payload["probe_results"] = probe_results
+    if rule_results is not None:
+        payload["rule_results"] = rule_results
     if args.mode == "e2e-execute":
         payload["qualification_result"] = (
             "PASSED"
-            if result.activation_valid
-            and valid_rule_count > 0
-            and not probe_failed
+            if result.activation_valid and valid_rule_count and not probe_failed
             else "FAILED"
         )
     if args.json:

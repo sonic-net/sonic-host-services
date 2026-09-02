@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Mapping, Tuple
+from copy import copy
+from dataclasses import dataclass, replace
+from typing import Mapping, Optional, Tuple
 
 from .adapters import VendorAdapter, adapter_map, require_adapter
 from .hooks import VendorHookError, operation_hook_name
-from .planner import build_plans
+from .models import BrokenRule, ValidationIssue, ValidationResult
+from .planner import PlanBundle, build_plans
+from .rule_schema.errors import bound_diagnostic
+from .validation import source_line_for_path
 
 
 @dataclass(frozen=True)
@@ -18,6 +22,15 @@ class ActivationPreflightFailure:
     correlation_key: str
     code: str
     message: str
+
+    @classmethod
+    def from_metadata(
+        cls, metadata, correlation_key, error, code="activation_preflight_failed",
+    ):
+        return cls(
+            metadata.id, metadata.name, getattr(metadata, "version", ""), correlation_key,
+            code, str(error),
+        )
 
 
 @dataclass(frozen=True)
@@ -30,6 +43,64 @@ class ActivationPreflightResult:
     @property
     def invalid_rule_ids(self):
         return frozenset(failure.rule_id for failure in self.failures)
+
+    def __getattr__(self, name):
+        return getattr(self.validation, name)
+
+    def plan_for_generation(self, generation: str):
+        """Bind the validated plan to the activated rules checksum."""
+
+        return replace(
+            self.plan,
+            monitor_plans={key: replace(value, plan_generation=generation)
+                           for key, value in self.plan.monitor_plans.items()},
+            signatures={key: replace(value, plan_generation=generation)
+                        for key, value in self.plan.signatures.items()},
+        )
+
+
+def validation_with_preflight_failures(
+    validation,
+    failures,
+    message_limit: Optional[int] = None,
+):
+    """Return validation with rule-local preflight failures applied once."""
+
+    failures_by_id = {}
+    for failure in failures:
+        failures_by_id.setdefault(failure.rule_id, failure)
+    if not failures_by_id:
+        return validation
+
+    line = source_line_for_path(validation.source_lines, "$.signatures")
+    broken = []
+    for failure in failures_by_id.values():
+        message = str(failure.message)
+        if message_limit is not None:
+            message = bound_diagnostic(message, message_limit)
+        issue = ValidationIssue(
+            "rule", getattr(failure, "code", "activation_preflight_failed"),
+            message, "$.signatures", failure.rule_name, failure.rule_id, line,
+        )
+        broken.append(BrokenRule(
+            failure.rule_name, failure.rule_id, (issue,),
+            getattr(failure, "rule_version", ""),
+        ))
+    materialized = tuple(
+        rule
+        for rule in validation.materialized_rules
+        if rule.signature.metadata.id not in failures_by_id
+    )
+    if isinstance(validation, ValidationResult):
+        return replace(
+            validation,
+            materialized_rules=materialized,
+            broken_rules=validation.broken_rules + tuple(broken),
+        )
+    result = copy(validation)
+    result.materialized_rules = materialized
+    result.broken_rules = validation.broken_rules + tuple(broken)
+    return result
 
 
 def validate_runtime_operation_hooks(materialized_rule, vendor_hooks) -> None:
@@ -57,9 +128,7 @@ def build_adapter_registry(extensions) -> Mapping:
 
     adapters = adapter_map(hooks=extensions.vendor_hooks)
     for source_type in extensions.dse_registry.source_types:
-        adapters[source_type] = VendorAdapter(
-            source_type, extensions.vendor_hooks
-        )
+        adapters[source_type] = VendorAdapter(source_type, extensions.vendor_hooks)
     return adapters
 
 
@@ -67,37 +136,29 @@ def preflight_activation(
     validation,
     extensions,
     polling_intervals: Mapping[str, float],
+    failure_message_limit: Optional[int] = None,
 ) -> ActivationPreflightResult:
     """Build and validate runtime dispatch without reading a source."""
 
     materialized_rules = tuple(validation.materialized_rules)
-    plan = build_plans(
-        materialized_rules,
-        "validation",
-        polling_intervals,
-    )
+    plan = build_plans(materialized_rules, "validation", polling_intervals)
     adapters = build_adapter_registry(extensions)
     vendor_hooks = extensions.vendor_hooks
 
-    rules = materialized_rules
     metadata_by_id = {
-        rule.signature.metadata.id: rule.signature.metadata for rule in rules
+        rule.signature.metadata.id: rule.signature.metadata
+        for rule in materialized_rules
     }
     failures = {}
-    for rule in rules:
+    for rule in materialized_rules:
         metadata = rule.signature.metadata
         try:
             validate_runtime_operation_hooks(rule, vendor_hooks)
         except (ValueError, VendorHookError) as error:
             failures.setdefault(
                 metadata.id,
-                ActivationPreflightFailure(
-                    rule_id=metadata.id,
-                    rule_name=metadata.name,
-                    rule_version=metadata.version,
-                    correlation_key="rule:{}".format(metadata.id),
-                    code="activation_preflight_failed",
-                    message=str(error),
+                ActivationPreflightFailure.from_metadata(
+                    metadata, "rule:{}".format(metadata.id), error
                 ),
             )
 
@@ -114,20 +175,24 @@ def preflight_activation(
             metadata = metadata_by_id[item.rule_id]
             failures.setdefault(
                 item.rule_id,
-                ActivationPreflightFailure(
-                    rule_id=item.rule_id,
-                    rule_name=metadata.name,
-                    rule_version=metadata.version,
-                    correlation_key=item.correlation_key,
-                    code="activation_preflight_failed",
-                    message=str(error),
+                ActivationPreflightFailure.from_metadata(
+                    metadata, item.correlation_key, error
                 ),
             )
-            continue
-
+    failures = tuple(failures.values())
+    if failures and isinstance(validation, ValidationResult):
+        validation = validation_with_preflight_failures(
+            validation, failures, failure_message_limit
+        )
+        usable_rules = validation.materialized_rules
+        plan = (
+            build_plans(usable_rules, "validation", polling_intervals)
+            if usable_rules
+            else PlanBundle({}, {}, {}, {})
+        )
     return ActivationPreflightResult(
         validation=validation,
         plan=plan,
         adapters=adapters,
-        failures=tuple(failures.values()),
+        failures=failures,
     )

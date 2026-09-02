@@ -49,10 +49,7 @@ def _atomic_replace(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        unlink_if_exists(temporary)
 
 
 def atomic_write_json(path: str, document: Mapping[str, Any]) -> None:

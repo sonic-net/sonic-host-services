@@ -12,7 +12,6 @@ import pytest
 from dldd.actions import ActionSequenceResult
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine
-from dldd.models import Operation
 from dldd.orchestrator import PrimaryOrchestrator, Reconciliation
 from dldd.planner import build_plans
 from dldd.runtime import (
@@ -305,7 +304,7 @@ def test_source_failure_recovery_and_lifecycle_probe_transitions(caplog):
         individual_max_failure_threshold=1,
         source_unavailable_grace_period=5,
     )
-    orchestrator, bundle, item, _, clock = runtime_fixture(config=config)
+    orchestrator, bundle, item, database, clock = runtime_fixture(config=config)
     status = runtime_status(item, failures=2)
 
     orchestrator.process_event(
@@ -318,6 +317,7 @@ def test_source_failure_recovery_and_lifecycle_probe_transitions(caplog):
     first = bundle.monitor_plans["redis"].control_queue.get_nowait()
     assert first.target_state == MonitorWorkState.DEGRADED
     assert item.correlation_key not in orchestrator.broken_rules
+    assert database.values == {}
 
     clock[0] = 6
     orchestrator.process_event(
@@ -421,13 +421,23 @@ def test_service_health_and_monitor_release_state_projection():
     """Project service health and release keys to their owning monitor state."""
 
     orchestrator, _, item, _, _ = runtime_fixture(
-        config=DLDDConfig(broken_rules_max_threshold=0)
+        config=DLDDConfig(broken_rules_max_threshold=1)
     )
     assert orchestrator.service_state() == "OK"
     orchestrator.source_status[item.source_id] = {"state": "UNAVAILABLE"}
     assert orchestrator.service_state() == "DEGRADED"
     orchestrator.broken_rules[item.correlation_key] = {
         "rule_id": item.rule_id,
+        "state": "BROKEN",
+    }
+    assert orchestrator.service_state() == "DEGRADED"
+    orchestrator.broken_rules["same-rule-other-source"] = {
+        "rule_id": item.rule_id,
+        "state": "BROKEN",
+    }
+    assert orchestrator.service_state() == "DEGRADED"
+    orchestrator.broken_rules["second-rule"] = {
+        "rule_id": item.rule_id + 1,
         "state": "BROKEN",
     }
     assert orchestrator.service_state() == "BROKEN|FATAL"
@@ -454,41 +464,37 @@ def test_service_health_and_monitor_release_state_projection():
     assert queue.get_nowait().target_state == MonitorWorkState.READY
 
 
-class ArtifactStates:
-    def __init__(self, response=None, error=None):
-        self.response = response
-        self.error = error
+def test_artifact_completion_and_request_failure_are_contained():
+    class ArtifactClient:
+        def status(self, unused_artifact_id):
+            payload = {"artifact_id": "a", "state": "COMPLETED"}
+            return SimpleNamespace(as_payload=lambda: payload)
 
-    def status(self, _artifact_id):
-        if self.error:
-            raise self.error
-        return SimpleNamespace(as_payload=lambda: self.response)
+        def request(self, *unused_args):
+            raise RuntimeError("collector unavailable")
 
-
-def test_artifact_refresh_ignores_ineligible_unchanged_and_failed_requests():
     artifact = {"artifact_id": "a", "state": "REQUESTED"}
-    client = ArtifactStates(response=artifact)
-    orchestrator, _, item, database, _ = runtime_fixture(artifact_client=client)
-    identity, record = active_record(orchestrator, item, healthz_artifact=artifact)
-    orchestrator._refresh_artifact_states()
-    assert database.values == {}
+    orchestrator, bundle, item, database, _ = runtime_fixture(
+        artifact_client=ArtifactClient()
+    )
+    _, record = active_record(
+        orchestrator, item, healthz_artifact=artifact
+    )
 
-    client.response = {"artifact_id": "a", "state": "COMPLETED"}
     orchestrator._refresh_artifact_states()
     assert record.healthz_artifact["state"] == "COMPLETED"
-    assert record.redis_key in database.values
+    assert json.loads(database.values[record.redis_key]["healthz_artifact"])[
+        "state"
+    ] == "COMPLETED"
 
-    record.healthz_artifact = {"artifact_id": "a", "state": "REQUESTED"}
-    client.error = RuntimeError("healthz unavailable")
-    orchestrator._refresh_artifact_states()
-    assert identity in orchestrator.faults
-
-    record.healthz_artifact = {"state": "REQUESTED"}
-    orchestrator._refresh_artifact_states()
+    result = orchestrator._request_artifact(next(iter(bundle.signatures.values())))
+    assert result["state"] == "FAILED"
+    assert result["last_error"] == "collector unavailable"
+    assert result["requested_at"] == result["completed_at"] == 1000
 
 
-def test_fault_serialization_operation_payload_and_dirty_retry():
-    """Validate wire fields, retry filtering, and canonical operations."""
+def test_fault_serialization_and_dirty_retry():
+    """Validate retained-fault wire fields and dirty retry filtering."""
 
     with pytest.raises(ValueError, match="component_type"):
         PrimaryOrchestrator._fault_from_payload({"component_type": "PSU"})
@@ -534,27 +540,6 @@ def test_fault_serialization_operation_payload_and_dirty_retry():
     orchestrator._retry_dirty_faults()
     assert active_identity in orchestrator.dirty_faults
 
-    # Canonical optional fields survive operation materialization.
-    operation = Operation(
-        options={"token": "vendor", "path": "ignored"},
-        type="i2c",
-        command="read",
-        argv=("i2cget", "-y", "1"),
-        path={"bus": 1},
-        timeout=3,
-        max_output_bytes=8,
-        executor=None,
-    )
-    assert operation.as_runtime_payload() == {
-        "token": "vendor",
-        "type": "i2c",
-        "command": "read",
-        "argv": ["i2cget", "-y", "1"],
-        "path": {"bus": 1},
-        "timeout": 3,
-        "max_output_bytes": 8,
-    }
-
 
 def test_reconciliation_evidence_ownership_and_conservative_completion():
     """Quarantine ordinary evidence and conservatively finish nondecisions."""
@@ -562,7 +547,7 @@ def test_reconciliation_evidence_ownership_and_conservative_completion():
     orchestrator, bundle, item, _, _ = runtime_fixture()
     identity, record = active_record(orchestrator, item)
     execution = orchestrator.correlation.executions[identity]
-    orchestrator._start_reconciliation(execution, record, "bootstrap")
+    orchestrator._start_reconciliation(execution, "bootstrap")
     queue = bundle.monitor_plans["redis"].control_queue
     queue.get_nowait()
 
@@ -588,7 +573,7 @@ def test_reconciliation_evidence_ownership_and_conservative_completion():
     orchestrator, bundle, item, database, _ = runtime_fixture()
     identity, record = active_record(orchestrator, item)
     execution = orchestrator.correlation.executions[identity]
-    orchestrator._start_reconciliation(execution, record, "bootstrap")
+    orchestrator._start_reconciliation(execution, "bootstrap")
     queue = bundle.monitor_plans["redis"].control_queue
     queue.get_nowait()
 
@@ -695,7 +680,7 @@ def test_action_failure_reconciliation_retry_and_nondecisive_recheck():
     orchestrator, bundle, item, _, clock = runtime_fixture(config=config)
     identity, record = active_record(orchestrator, item)
     execution = orchestrator.correlation.executions[identity]
-    orchestrator._start_reconciliation(execution, record, "bootstrap")
+    orchestrator._start_reconciliation(execution, "bootstrap")
     queue = bundle.monitor_plans["redis"].control_queue
     queue.get_nowait()
 
@@ -801,7 +786,6 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     execution = orchestrator.correlation.executions[identity]
     state = Reconciliation(
         execution=execution,
-        record=record,
         outstanding_rechecks=set(),
     )
     orchestrator.reconciliation[identity] = state
@@ -818,7 +802,7 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     orchestrator, bundle, item, database, _ = runtime_fixture()
     identity, record = active_record(orchestrator, item)
     execution = orchestrator.correlation.executions[identity]
-    orchestrator._start_reconciliation(execution, record, "bootstrap")
+    orchestrator._start_reconciliation(execution, "bootstrap")
     queue = bundle.monitor_plans["redis"].control_queue
     queue.get_nowait()
 
@@ -854,24 +838,6 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     orchestrator._refresh_fault_source_staleness()
     assert active.stale_source is False
     assert database.values[active.redis_key].get("source_stale") is None
-
-
-def test_artifact_request_error_is_returned_as_bounded_failed_state():
-    class FailingArtifactClient:
-        def request(self, *_args):
-            raise RuntimeError("collector unavailable")
-
-    orchestrator, bundle, _, _, _ = runtime_fixture(
-        artifact_client=FailingArtifactClient()
-    )
-    execution = next(iter(bundle.signatures.values()))
-
-    result = orchestrator._request_artifact(execution)
-
-    assert result["state"] == "FAILED"
-    assert result["last_error"] == "collector unavailable"
-    assert result["requested_at"] == 1000
-    assert result["completed_at"] == 1000
 
 
 def test_removed_dse_work_cleans_only_its_runtime_state():
@@ -1343,7 +1309,7 @@ def test_inactive_and_uncertain_reconciliation_publication():
     decision = orchestrator.correlation.consume(
         event(item, EvaluationResultType.NO_MATCH)
     )
-    reconciliation = Reconciliation(execution, record, set())
+    reconciliation = Reconciliation(execution, set())
     reconciliation.last_decision = decision
     orchestrator.reconciliation[identity] = reconciliation
 
@@ -1359,7 +1325,7 @@ def test_inactive_and_uncertain_reconciliation_publication():
     orchestrator, _, item, database, _ = runtime_fixture()
     identity, record = active_record(orchestrator, item)
     execution = orchestrator.correlation.executions[identity]
-    reconciliation = Reconciliation(execution, record, set())
+    reconciliation = Reconciliation(execution, set())
     reconciliation.recheck_failed = True
     orchestrator.reconciliation[identity] = reconciliation
 

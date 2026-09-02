@@ -3,7 +3,7 @@
 from __future__ import absolute_import
 
 from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import json
 import logging
 import math
@@ -37,9 +37,9 @@ from .models import (
     ValidationIssue,
     ValidationResult,
     ValueConfig,
-    freeze_value,
 )
 from .rule_schema import (
+    ContractIssue,
     DEFAULT_CONTRACT_REGISTRY,
     DomainConversionError,
     normalize_validation_error,
@@ -173,6 +173,27 @@ def _reject_nonfinite_json_number(value):
     )
 
 
+def _enforce_scalar_limits(value):
+    """Reject scalar values that exceed the bounded input contract."""
+
+    if isinstance(value, str) and len(value.encode("utf-8")) > MAX_SCALAR_BYTES:
+        raise RulesParseError(
+            "rules document contains a scalar larger than {} bytes".format(
+                MAX_SCALAR_BYTES
+            ),
+            1,
+        )
+    if isinstance(value, bytes) and len(value) > MAX_SCALAR_BYTES:
+        raise RulesParseError(
+            "rules document contains a scalar larger than {} bytes".format(
+                MAX_SCALAR_BYTES
+            ),
+            1,
+        )
+    if isinstance(value, float) and not math.isfinite(value):
+        raise RulesParseError("non-finite numbers are not allowed", 1)
+
+
 def _enforce_document_limits(document):
     stack = [(document, 0, frozenset())]
     nodes = 0
@@ -191,22 +212,7 @@ def _enforce_document_limits(document):
                 ),
                 1,
             )
-        if isinstance(value, str) and len(value.encode("utf-8")) > MAX_SCALAR_BYTES:
-            raise RulesParseError(
-                "rules document contains a scalar larger than {} bytes".format(
-                    MAX_SCALAR_BYTES
-                ),
-                1,
-            )
-        if isinstance(value, bytes) and len(value) > MAX_SCALAR_BYTES:
-            raise RulesParseError(
-                "rules document contains a scalar larger than {} bytes".format(
-                    MAX_SCALAR_BYTES
-                ),
-                1,
-            )
-        if isinstance(value, float) and not math.isfinite(value):
-            raise RulesParseError("non-finite numbers are not allowed", 1)
+        _enforce_scalar_limits(value)
         if not isinstance(value, (Mapping, list, tuple)):
             continue
         identity = id(value)
@@ -224,20 +230,7 @@ def _enforce_document_limits(document):
             # Keys are input scalars too, but they are not counted as value
             # nodes so the established document-node boundary is unchanged.
             for key, item in value.items():
-                if isinstance(key, float) and not math.isfinite(key):
-                    raise RulesParseError("non-finite numbers are not allowed", 1)
-                if (
-                    isinstance(key, str)
-                    and len(key.encode("utf-8")) > MAX_SCALAR_BYTES
-                ) or (
-                    isinstance(key, bytes) and len(key) > MAX_SCALAR_BYTES
-                ):
-                    raise RulesParseError(
-                        "rules document contains a scalar larger than {} bytes".format(
-                            MAX_SCALAR_BYTES
-                        ),
-                        1,
-                    )
+                _enforce_scalar_limits(key)
                 stack.append((item, depth + 1, nested))
         else:
             stack.extend((item, depth + 1, nested) for item in value)
@@ -320,7 +313,7 @@ def _is_rule_id(value):
 
 
 def _issue(issues, code, message, path):
-    issues.append((code, message, path))
+    issues.append(ContractIssue(code=code, message=message, path=path))
 
 
 def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
@@ -388,24 +381,17 @@ def _duplicate_rule_identity_issues(signatures):
     return issues
 
 
-def _bounded_raw_issue(issue):
-    code, message, path = issue
-    return (
-        bound_diagnostic(code, 128),
-        bound_diagnostic(message, MAX_DIAGNOSTIC_MESSAGE_BYTES),
-        bound_path(path, MAX_DIAGNOSTIC_PATH_BYTES),
+def _bounded_issue(issue):
+    return ContractIssue(
+        code=bound_diagnostic(issue.code, 128),
+        message=bound_diagnostic(
+            issue.message, MAX_DIAGNOSTIC_MESSAGE_BYTES
+        ),
+        path=bound_path(issue.path, MAX_DIAGNOSTIC_PATH_BYTES),
     )
 
 
-def _raw_issue_size(issue):
-    code, message, path = issue
-    payload = {
-        "scope": "file",
-        "code": code,
-        "message": message,
-        "path": path,
-        "line": None,
-    }
+def _serialized_size(payload):
     return len(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8", "replace"
@@ -413,11 +399,23 @@ def _raw_issue_size(issue):
     )
 
 
+def _raw_issue_size(issue):
+    return _serialized_size(
+        {
+            "scope": "file",
+            "code": issue.code,
+            "message": issue.message,
+            "path": issue.path,
+            "line": None,
+        }
+    )
+
+
 def _truncation_issue(path):
-    return (
-        "validation_issues_truncated",
-        "additional validation issues were omitted",
-        bound_path(path, MAX_DIAGNOSTIC_PATH_BYTES),
+    return ContractIssue(
+        code="validation_issues_truncated",
+        message="additional validation issues were omitted",
+        path=bound_path(path, MAX_DIAGNOSTIC_PATH_BYTES),
     )
 
 
@@ -427,7 +425,7 @@ def _limit_file_issues(raw):
     selected = []
     used_bytes = 0
     for issue in raw:
-        bounded = _bounded_raw_issue(issue)
+        bounded = _bounded_issue(issue)
         size = _raw_issue_size(bounded)
         if (
             len(selected) + 1 >= MAX_ISSUES_PER_CANDIDATE
@@ -472,36 +470,12 @@ class _CandidateDiagnosticBudget(object):
         )
 
     def _record_size(self, identity, raw_issues):
-        name, rule_id, version = identity
-        issues = []
-        for raw_issue in raw_issues:
-            full_path = raw_issue[2]
-            code, message, path = _bounded_raw_issue(raw_issue)
-            issues.append(
-                {
-                    "scope": "rule",
-                    "code": code,
-                    "message": message,
-                    "path": path,
-                    "rule_name": name,
-                    "rule_id": rule_id,
-                    "line": source_line_for_path(self.source_lines, full_path),
-                }
-            )
-        payload = {
-            "rule_name": name,
-            "rule_id": rule_id,
-            "issues": issues,
-            "rule_version": version,
-        }
-        return len(
-            json.dumps(
-                payload, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8", "replace")
+        return _serialized_size(
+            asdict(_to_broken(identity, raw_issues, self.source_lines))
         )
 
     def limit(self, raw, base_path, remaining_signatures, identity):
-        bounded = tuple(_bounded_raw_issue(issue) for issue in raw)
+        bounded = tuple(_bounded_issue(issue) for issue in raw)
         marker = _truncation_issue(base_path)
         index = self.signature_count - remaining_signatures - 1
         future_minimum = sum(self.minimum_sizes[index + 1 :])
@@ -538,18 +512,51 @@ class _CandidateDiagnosticBudget(object):
         self.byte_count += selected_bytes
         return tuple(best)
 
+    def broken(self, index, raw):
+        base_path = "$.signatures[{}]".format(index)
+        identity = self.identities[index]
+        return _to_broken(
+            identity,
+            self.limit(
+                raw,
+                base_path,
+                self.signature_count - index - 1,
+                identity,
+            ),
+            self.source_lines,
+        )
+
+
+def _to_validation_issue(
+    issue, scope, source_lines, rule_name=None, rule_id=None
+):
+    full_path = issue.path
+    bounded = _bounded_issue(issue)
+    return ValidationIssue(
+        scope=scope,
+        code=bounded.code,
+        message=bounded.message,
+        path=bounded.path,
+        rule_name=rule_name,
+        rule_id=rule_id,
+        line=source_line_for_path(source_lines, full_path),
+    )
+
 
 def _to_file_issues(raw, source_lines=None):
     source_lines = source_lines or {}
     return tuple(
-        ValidationIssue(
-            scope="file",
-            code=code,
-            message=message,
-            path=path,
-            line=source_line_for_path(source_lines, path),
-        )
-        for code, message, path in _limit_file_issues(raw)
+        _to_validation_issue(issue, "file", source_lines)
+        for issue in _limit_file_issues(raw)
+    )
+
+
+def _file_failure(schema_version, raw_issues, source_lines):
+    return ValidationResult(
+        schema_version=schema_version,
+        ruleset=None,
+        file_errors=_to_file_issues(raw_issues, source_lines),
+        source_lines=source_lines,
     )
 
 
@@ -569,29 +576,23 @@ def _rule_identity(raw, index):
     )
 
 
-def _to_broken(raw, index, raw_issues, source_lines=None):
+def _to_broken(identity, raw_issues, source_lines=None):
     source_lines = source_lines or {}
-    name, rule_id, version = _rule_identity(raw, index)
-    issues = []
-    for code, message, path in raw_issues:
-        full_path = path
-        code, message, path = _bounded_raw_issue((code, message, path))
-        issues.append(
-            ValidationIssue(
-                scope="rule",
-                code=code,
-                message=message,
-                path=path,
-                rule_name=name,
-                rule_id=rule_id,
-                line=source_line_for_path(source_lines, full_path),
-            )
-        )
+    name, rule_id, version = identity
     return BrokenRule(
         rule_name=name,
         rule_id=rule_id,
         rule_version=version,
-        issues=tuple(issues),
+        issues=tuple(
+            _to_validation_issue(
+                issue,
+                "rule",
+                source_lines,
+                rule_name=name,
+                rule_id=rule_id,
+            )
+            for issue in raw_issues
+        ),
     )
 
 
@@ -632,7 +633,7 @@ def _direct_sources(event):
         result.append(
             ResolvedSource(
                 type=event.type,
-                path=freeze_value(path),
+                path=path,
                 instance=instance,
                 vendor_data=vendor_data,
             )
@@ -835,23 +836,15 @@ def validate_document(
     try:
         _enforce_document_limits(document)
     except (RulesParseError, RecursionError, UnicodeError) as error:
-        return ValidationResult(
-            schema_version=version,
-            ruleset=None,
-            file_errors=_to_file_issues(
-                (("parse_error", str(error), "$"),), source_lines
-            ),
-            source_lines=source_lines,
+        return _file_failure(
+            version,
+            (ContractIssue("parse_error", str(error), "$"),),
+            source_lines,
         )
     registry = contract_registry or DEFAULT_CONTRACT_REGISTRY
     file_issues = _file_gate(document, frozenset(registry.versions))
     if file_issues:
-        return ValidationResult(
-            schema_version=version,
-            ruleset=None,
-            file_errors=_to_file_issues(file_issues, source_lines),
-            source_lines=source_lines,
-        )
+        return _file_failure(version, file_issues, source_lines)
 
     contract = registry.require_exact(version)
     canonical_version = contract.version
@@ -859,26 +852,12 @@ def validate_document(
         envelope = contract.validate_envelope(document)
     except ValidationError as error:
         normalized = normalize_validation_error(error)
-        return ValidationResult(
-            schema_version=canonical_version,
-            ruleset=None,
-            file_errors=_to_file_issues(
-                tuple(
-                    (issue.code, issue.message, issue.path)
-                    for issue in normalized
-                ),
-                source_lines,
-            ),
-            source_lines=source_lines,
-        )
+        return _file_failure(canonical_version, normalized, source_lines)
 
     identity_issues = _duplicate_rule_identity_issues(document["signatures"])
     if identity_issues:
-        return ValidationResult(
-            schema_version=canonical_version,
-            ruleset=None,
-            file_errors=_to_file_issues(identity_issues, source_lines),
-            source_lines=source_lines,
+        return _file_failure(
+            canonical_version, identity_issues, source_lines
         )
 
     default_timeout = envelope.local_action_default_timeout
@@ -894,30 +873,13 @@ def validate_document(
     )
     for index, raw in enumerate(document["signatures"]):
         base_path = "$.signatures[{}]".format(index)
-        remaining_signatures = len(document["signatures"]) - index - 1
-        diagnostic_identity = diagnostic_identities[index]
         try:
             dto = contract.validate_signature(raw)
         except ValidationError as error:
             normalized = normalize_validation_error(
                 error, base_path=base_path
             )
-            broken.append(
-                _to_broken(
-                    raw,
-                    index,
-                    diagnostic_budget.limit(
-                        tuple(
-                            (issue.code, issue.message, issue.path)
-                            for issue in normalized
-                        ),
-                        base_path,
-                        remaining_signatures,
-                        diagnostic_identity,
-                    ),
-                    source_lines,
-                )
-            )
+            broken.append(diagnostic_budget.broken(index, normalized))
             continue
 
         try:
@@ -929,16 +891,15 @@ def validate_document(
                 error.path[1:] if error.path.startswith("$") else error.path
             )
             broken.append(
-                _to_broken(
-                    raw,
+                diagnostic_budget.broken(
                     index,
-                    diagnostic_budget.limit(
-                        ((error.code, error.message, base_path + relative_path),),
-                        base_path,
-                        remaining_signatures,
-                        diagnostic_identity,
+                    (
+                        ContractIssue(
+                            code=error.code,
+                            message=error.message,
+                            path=base_path + relative_path,
+                        ),
                     ),
-                    source_lines,
                 )
             )
             continue
@@ -950,16 +911,15 @@ def validate_document(
             result = materialize_signature(signature, context)
         except ValueError as error:
             broken.append(
-                _to_broken(
-                    raw,
+                diagnostic_budget.broken(
                     index,
-                    diagnostic_budget.limit(
-                        (("materialization_failed", str(error), base_path + ".signature"),),
-                        base_path,
-                        remaining_signatures,
-                        diagnostic_identity,
+                    (
+                        ContractIssue(
+                            code="materialization_failed",
+                            message=str(error),
+                            path=base_path + ".signature",
+                        ),
                     ),
-                    source_lines,
                 )
             )
             continue

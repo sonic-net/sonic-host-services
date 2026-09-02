@@ -13,9 +13,8 @@ DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 def _bounded_bytes(value, limit: int) -> bytes:
     if value is None:
         return b""
-    if isinstance(value, bytes):
-        return value[:limit]
-    return str(value).encode("utf-8", "replace")[:limit]
+    data = value if isinstance(value, bytes) else str(value).encode("utf-8", "replace")
+    return data[:limit]
 
 
 @dataclass(frozen=True)
@@ -61,8 +60,7 @@ def run_shell_free(
         timeout=timeout,
     )
     return ShellFreeResult(
-        command,
-        int(completed.returncode),
+        command, int(completed.returncode),
         _bounded_bytes(completed.stdout, max_output_bytes),
         _bounded_bytes(completed.stderr, max_output_bytes),
     )
@@ -121,14 +119,8 @@ def build_i2c_argv(
     executable = str(
         path.get("executable") or "/usr/sbin/i2c{}".format(operation)
     )
-    argv = [
-        executable,
-        "-f",
-        "-y",
-        str(selected_bus),
-        str(path["chip_addr"]),
-        str(path["command"]),
-    ]
+    argv = [executable, "-f", "-y", str(selected_bus)]
+    argv.extend((str(path["chip_addr"]), str(path["command"])))
     if operation == "set":
         argv.append(str(path["value"]))
     if path.get("size") not in (None, "", "N/A"):

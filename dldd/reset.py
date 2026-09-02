@@ -33,16 +33,14 @@ def _clear_artifacts(directory: str) -> int:
         return 0
     for name in names:
         if not (
-            (name.startswith("dldd-") and name.endswith(".tar.gz"))
-            or (name.startswith("dldd-") and name.endswith(".json"))
-            or (name.startswith(".dldd-") and name.endswith(".tar.gz"))
+            name.startswith("dldd-") and name.endswith((".tar.gz", ".json"))
+            or name.startswith(".dldd-") and name.endswith(".tar.gz")
         ):
             continue
         path = os.path.join(directory, name)
         if os.path.isdir(path) and not os.path.islink(path):
             continue
-        os.unlink(path)
-        removed += 1
+        removed += int(unlink_if_exists(path))
     return removed
 
 
@@ -60,21 +58,21 @@ def clear_runtime_state(
     another producer.
     """
 
-    keys = set()
-    for key in (
-        TelemetryPublisher.STATUS_KEY,
-        TelemetryPublisher.RULE_STATUS_KEY,
-    ):
-        if state_db.hgetall(key):
-            keys.add(key)
+    keys = {
+        key
+        for key in (TelemetryPublisher.STATUS_KEY, TelemetryPublisher.RULE_STATUS_KEY)
+        if state_db.hgetall(key)
+    }
     keys.update(_keys(state_db, TelemetryPublisher.RULE_STATUS_PREFIX + "*"))
     keys.update(_keys(state_db, TelemetryPublisher.RULE_DETAIL_PREFIX + "*"))
 
     fault_keys = set()
     if include_faults:
-        for key in _keys(state_db, "FAULT_INFO|*"):
-            if is_dldd_fault_payload(state_db.hgetall(key)):
-                fault_keys.add(key)
+        fault_keys = {
+            key
+            for key in _keys(state_db, "FAULT_INFO|*")
+            if is_dldd_fault_payload(state_db.hgetall(key))
+        }
         keys.update(fault_keys)
 
     state_db.delete_many(sorted(keys))

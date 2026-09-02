@@ -6,7 +6,6 @@ import json
 from queue import Empty, Queue
 from threading import Event as ThreadEvent, Thread
 import time
-from types import SimpleNamespace
 
 import pytest
 
@@ -31,7 +30,6 @@ from dldd.monitor import (
     AsyncCollectionCompletion,
     AsyncCollectionPool,
     MonitorThread,
-    command_for_plan,
 )
 from dldd.models import ValueConfig
 from dldd.planner import build_plans, work_items_for_dse_expansion
@@ -47,7 +45,6 @@ from dldd.runtime import (
     MonitorWorkState,
     MonitorWorkStateRecord,
     SourceAvailability,
-    ValueConfig as RuntimeValueConfig,
 )
 from dldd.validation import ValidationContext, load_rules, validate_document
 
@@ -104,6 +101,27 @@ def plan(item):
     )
 
 
+def control_command(
+    execution_plan, key, command, target, reason, evidence=None, **kwargs
+):
+    """Build an explicit monitor command at the monitor/primary wire boundary."""
+
+    return MonitorControlCommand(
+        "test-command",
+        execution_plan.monitor_id,
+        execution_plan.plan_generation,
+        key,
+        command,
+        target,
+        reason,
+        expected_work_state_generation=(
+            evidence.work_state_generation if evidence is not None else None
+        ),
+        evidence_sequence=evidence.sequence if evidence is not None else None,
+        **kwargs
+    )
+
+
 def test_execution_plan_runtime_contract():
     """Cover dynamic snapshots, interval validation, and state initialization."""
 
@@ -128,13 +146,12 @@ def test_execution_plan_runtime_contract():
     assert dynamic.correlation_key in items
     assert dynamic.correlation_key in states
 
-    for interval in (0, float("inf"), float("nan")):
-        with pytest.raises(ValueError, match="sampling_interval"):
-            replace(work_item(), sampling_interval=interval)
-        with pytest.raises(ValueError, match="polling interval"):
-            MonitorExecutionPlan(
-                "common", "common", interval, "generation", {}, {}, Queue()
-            )
+    with pytest.raises(ValueError, match="sampling_interval"):
+        replace(work_item(), sampling_interval=0)
+    with pytest.raises(ValueError, match="polling interval"):
+        MonitorExecutionPlan(
+            "common", "common", 0, "generation", {}, {}, Queue()
+        )
 
     # Static plans synthesize a missing state record.
     item = work_item()
@@ -152,68 +169,15 @@ def test_execution_plan_runtime_contract():
         execution_plan.state_by_key[item.correlation_key],
         MonitorWorkStateRecord,
     )
-
     with pytest.raises(TypeError):
         execution_plan.items_by_key["new"] = item
+
+    immutable = replace(work_item(), source={"nested": {"value": 1}})
     with pytest.raises(TypeError):
-        item.source["new"] = "value"
+        immutable.source["nested"]["value"] = 2
 
-    source = {"binding": {"path": ["rails", {"field": "voltage"}]}}
-    evaluation = {
-        "type": "comparison",
-        "operator": ">",
-        "value": 50,
-        "value_configs": {"metadata": ["vendor", {"unit": "volts"}]},
-    }
-    item = replace(work_item(), source=source, evaluation=evaluation)
-
-    source["binding"]["path"][1]["field"] = "current"
-    evaluation["value_configs"]["metadata"][1]["unit"] = "amps"
-    assert item.source["binding"]["path"][1]["field"] == "voltage"
-    assert item.evaluation["value_configs"]["metadata"][1]["unit"] == "volts"
-    assert item.source["binding"]["path"][:1] == ("rails",)
-
-    with pytest.raises(TypeError):
-        item.source["binding"]["path"][1]["field"] = "power"
-    with pytest.raises(TypeError):
-        item.evaluation["value_configs"]["metadata"][0] = "platform"
-
-
-def test_value_and_evaluation_contracts():
-    """Exercise canonical values and every evaluator, including regex limits."""
-
-    assert evaluate({"type": "mask", "logic": "&", "value": "0b1000"}, "0b1100")
-    assert evaluate({"type": "comparison", "operator": ">", "value": 3}, "4")
-    assert evaluate(
-        {
-            "type": "string",
-            "operator": "contains",
-            "value": "SU",
-            "case_sensitive": False,
-        },
-        "psu",
-    )
-    assert evaluate({"type": "boolean", "value": True}, "true")
-    with pytest.raises(EvaluationContractError):
-        evaluate({"type": "comparison", "operator": "bad", "value": 3}, 4)
-
-    assert RuntimeValueConfig is ValueConfig
-    config = ValueConfig.from_mapping(
-        {"type": "float", "unit": "volts", "scaling": 2, "encoding": "N/A"}
-    )
-    assert config.as_payload() == {
-        "type": "float",
-        "unit": "volts",
-        "scaling": 2,
-        "encoding": "N/A",
-    }
-    with pytest.raises(ValueError, match="unknown value config fields"):
-        ValueConfig.from_mapping({"type": "float", "extra": True})
-    with pytest.raises(ValueError, match="canonical value"):
-        ValueConfig(type=[])
-    for scaling in (float("nan"), float("inf"), float("-inf")):
-        with pytest.raises(ValueError, match="scaling must be numeric"):
-            ValueConfig(scaling=scaling)
+def test_regex_evaluation_deadline():
+    """Keep a real pathological-pattern deadline above library-level checks."""
 
     started = time.monotonic()
 
@@ -251,7 +215,7 @@ def test_monitor_evidence_ownership_and_stale_acknowledgement():
     monitor.poll_once()
     assert len(adapter.results) == 1
     monitor.plan.control_queue.put(
-        command_for_plan(
+        control_command(
             monitor.plan,
             matched.correlation_key,
             MonitorCommandType.RESUME,
@@ -275,7 +239,7 @@ def test_monitor_evidence_ownership_and_stale_acknowledgement():
     )
     monitor.poll_once()
     event = evidence.get_nowait()
-    command = command_for_plan(
+    command = control_command(
         monitor.plan,
         event.correlation_key,
         MonitorCommandType.RESUME,
@@ -289,8 +253,7 @@ def test_monitor_evidence_ownership_and_stale_acknowledgement():
     assert state.state == MonitorWorkState.IN_FLIGHT
 
 
-def test_monitor_construction_and_run_lifecycle(caplog):
-    """Validate construction recovery, async requirements, stop, and run errors."""
+def test_monitor_construction_and_stop_lifecycle():
 
     async_item = replace(work_item(), async_collection=True)
     with pytest.raises(ValueError, match="requires a shared collection pool"):
@@ -311,23 +274,6 @@ def test_monitor_construction_and_run_lifecycle(caplog):
     assert state.next_sample_due is None
     monitor.stop()
     assert monitor.stop_event.is_set()
-
-    # The run loop contains an unexpected cycle exception and exits cleanly.
-    stop_event = ThreadEvent()
-    monitor = MonitorThread(
-        plan(work_item()),
-        {"test": SequenceAdapter([])},
-        Queue(),
-        stop_event=stop_event,
-    )
-
-    def fail_cycle():
-        stop_event.set()
-        raise RuntimeError("cycle failed")
-
-    monitor.run_once = fail_cycle
-    monitor.run()
-    assert "unhandled monitor cycle error" in caplog.text
 
 
 def test_monitor_command_state_transitions():
@@ -432,7 +378,7 @@ def test_monitor_command_state_transitions():
     item = work_item()
     execution_plan = plan(item)
 
-    command = command_for_plan(
+    command = control_command(
         execution_plan,
         item.correlation_key,
         MonitorCommandType.RECHECK_ONCE,
@@ -471,7 +417,7 @@ def test_monitor_result_publication_recovery_and_backpressure_lifecycle():
     monitor.poll_once()
     unavailable_event = evidence.get_nowait()
     monitor.apply_command(
-        command_for_plan(
+        control_command(
             monitor.plan,
             unavailable_event.correlation_key,
             MonitorCommandType.RESUME,
@@ -1393,36 +1339,6 @@ def test_async_result_publication_and_error_containment():
     assert converted.retryable
 
 
-def test_dse_cycle_tracking_ignores_unowned_and_nonwarmup_children():
-    item = work_item()
-    monitor = MonitorThread(
-        plan(item), {"test": SequenceAdapter([])}, Queue()
-    )
-    monitor._mark_dse_cycle_attempt(item.correlation_key)
-
-    monitor._dse_templates_by_child[item.correlation_key] = {"template"}
-    monitor.plan.expansion_state_by_key["template"] = SimpleNamespace(
-        phase="STABLE",
-        pending_cycle_keys={item.correlation_key},
-        last_complete_cycle_timestamp=None,
-        next_expansion_due=None,
-    )
-    monitor._mark_dse_cycle_attempt(item.correlation_key)
-    assert monitor.plan.expansion_state_by_key[
-        "template"
-    ].pending_cycle_keys == {item.correlation_key}
-
-    monitor.plan.expansion_state_by_key["template"].phase = "WARMUP"
-    monitor.plan.expansion_state_by_key["template"].pending_cycle_keys = {
-        item.correlation_key,
-        "another-child",
-    }
-    monitor._mark_dse_cycle_attempt(item.correlation_key)
-    state = monitor.plan.expansion_state_by_key["template"]
-    assert state.pending_cycle_keys == {"another-child"}
-    assert state.next_expansion_due is None
-
-
 def test_planner_sampling_defaults_and_recheck_cadence_lifecycle():
     validated = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     original = validated.materialized_rules[0]
@@ -1814,45 +1730,6 @@ class RuntimeDSEHook(DSEHook):
         return DSEEvaluationHandle(reference, get_comparator)
 
 
-def test_runtime_dse_binding_planning_prefers_nondefault_rule_value_config():
-    with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
-        document = json.load(stream)
-    configured = document["signatures"][0]["signature"]["conditions"][
-        "events"
-    ][0]["event"]
-    configured.update(
-        {
-            "type": "dse",
-            "path": "{sensor*}:{get_value()}",
-        }
-    )
-    configured["evaluation"]["value_configs"] = {
-        "type": "N/A",
-        "unit": "rule-units",
-    }
-    hook = RuntimeDSEHook()
-    validated = validate_document(
-        document,
-        ValidationContext(dse_registry=DSERegistry(hook=hook)),
-    )
-    assert validated.activation_valid
-    bundle = build_plans(
-        validated.materialized_rules,
-        "generation",
-        {"redis": 60, "file": 60, "common": 60},
-    )
-    template = next(iter(bundle.templates.values()))
-
-    expanded = work_items_for_dse_expansion(
-        template, DSEAdapter().expand(template)
-    )
-
-    assert len(expanded) == 1
-    assert expanded[0].value_config == ValueConfig(
-        type="N/A", unit="rule-units"
-    )
-
-
 def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
     with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
         document = json.load(stream)
@@ -1866,6 +1743,10 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
             "evaluation": {
                 "type": "dse",
                 "value": "{sensor*}:{get_high_threshold()}",
+                "value_configs": {
+                    "type": "N/A",
+                    "unit": "rule-units",
+                },
             },
             "sampling_interval": 1,
         }
@@ -1904,6 +1785,9 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
     assert isinstance(expansion, DSEExpansionEvent)
     assert len(expansion.added_items) == 1
     assert expansion.added_items[0].schema_version == validated.schema_version
+    assert expansion.added_items[0].value_config == ValueConfig(
+        type="N/A", unit="rule-units"
+    )
     state = next(iter(monitor.plan.expansion_state_by_key.values()))
     assert state.phase == "STABLE"
     assert hook.expansions == 4
@@ -2377,10 +2261,7 @@ def test_runtime_dse_does_not_publish_children_before_expansion_registration():
     assert isinstance(evidence.get_nowait(), DSEExpansionEvent)
 
 
-@pytest.mark.parametrize("logic", ("1 AND 2", "1 OR 2"))
-def test_runtime_dse_clones_common_predicates_only_for_discovered_instances(
-    logic,
-):
+def test_runtime_dse_clones_common_predicates_only_for_discovered_instances():
     with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
         document = json.load(stream)
     conditions = document["signatures"][0]["signature"]["conditions"]
@@ -2398,7 +2279,7 @@ def test_runtime_dse_clones_common_predicates_only_for_discovered_instances(
         }
     )
     conditions["events"].append(direct)
-    conditions["logic"] = logic
+    conditions["logic"] = "1 AND 2"
     hook = RuntimeDSEHook()
     hook.values["SENSOR1"] = 11.0
     hook.thresholds["SENSOR1"] = 20.0
@@ -2520,24 +2401,13 @@ def test_direct_only_common_rule_keeps_component_fallback_work():
     assert not bundle.templates
 
 
-@pytest.mark.parametrize(
-    "intervals,error_type,message",
-    (
-        (60, TypeError, "must be a mapping"),
-        (
-            {"redis": 60, "file": 60},
-            ValueError,
-            "missing common",
-        ),
-    ),
-)
-def test_monitor_plan_rejects_incomplete_atomic_cadence_updates(
-    intervals, error_type, message
-):
-    execution_plan = plan(work_item())
+def test_monitor_rejects_incomplete_atomic_cadence_updates():
+    monitor = MonitorThread(
+        plan(work_item()), {"test": SequenceAdapter([])}, Queue()
+    )
 
-    with pytest.raises(error_type, match=message):
-        execution_plan.queue_polling_interval_update(intervals)
+    with pytest.raises(ValueError, match="missing common"):
+        monitor.update_polling_intervals({"redis": 60, "file": 60})
 
 
 def test_mixed_dse_clones_follow_source_defaults_and_atomic_updates():

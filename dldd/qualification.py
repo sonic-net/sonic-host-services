@@ -37,9 +37,7 @@ def _event_result(item, state, *, stage="execution", **details) -> Mapping:
     return result
 
 
-def qualify_e2e(
-    bundle, adapters, invalid_rule_ids=()
-) -> E2EQualificationResult:
+def qualify_e2e(bundle, adapters, invalid_rule_ids=()) -> E2EQualificationResult:
     """Run one complete, non-remediating monitoring pass.
 
     This deliberately uses the live adapter ``collect()`` and correlation
@@ -58,8 +56,6 @@ def qualify_e2e(
     rule_errors = {}
     rule_info = {}
     decisions = {}
-    failed = False
-
     for template in bundle.templates.values():
         base = template.item
         if base.rule_id in invalid_rule_ids:
@@ -68,7 +64,6 @@ def qualify_e2e(
             expansion = require_adapter(adapters, "dse").expand(template)
             expanded = work_items_for_dse_expansion(template, expansion)
         except Exception as error:
-            failed = True
             reason = str(error)
             event_results.append(
                 _event_result(
@@ -84,7 +79,6 @@ def qualify_e2e(
             continue
 
         if not expanded:
-            failed = True
             reason = "DSE expansion discovered no instances"
             event_results.append(
                 _event_result(
@@ -128,16 +122,11 @@ def qualify_e2e(
         identity = (item.rule_id, item.component_name)
         rule_info[identity] = item.rule_name
         try:
-            evaluated = require_adapter(
-                adapters, item.source_type
-            ).collect(item)
+            evaluated = require_adapter(adapters, item.source_type).collect(item)
             if not isinstance(evaluated, EvaluationResult):
-                raise TypeError(
-                    "adapter collect() must return EvaluationResult"
-                )
+                raise TypeError("adapter collect() must return EvaluationResult")
             state = evaluated.result.value
         except Exception as error:
-            failed = True
             reason = str(error)
             rule_errors.setdefault(identity, reason)
             event_results.append(
@@ -153,11 +142,7 @@ def qualify_e2e(
             EvaluationResultType.MATCH,
             EvaluationResultType.NO_MATCH,
         ):
-            failed = True
-            rule_errors.setdefault(
-                identity,
-                evaluated.error or state,
-            )
+            rule_errors.setdefault(identity, evaluated.error or state)
             continue
 
         sequence += 1
@@ -179,12 +164,10 @@ def qualify_e2e(
         try:
             decision = correlation.consume(evidence)
         except Exception as error:
-            failed = True
             reason = str(error)
             rule_errors.setdefault(identity, reason)
             continue
         if decision is None:
-            failed = True
             rule_errors.setdefault(
                 identity,
                 "rule correlation did not accept the event",
@@ -194,8 +177,7 @@ def qualify_e2e(
 
     rule_results = []
     for identity in sorted(
-        rule_info,
-        key=lambda item: (item[0], "" if item[1] is None else item[1]),
+        rule_info, key=lambda item: (item[0], "" if item[1] is None else item[1])
     ):
         rule_id, component = identity
         result = {
@@ -205,17 +187,12 @@ def qualify_e2e(
             "stage": "rule_logic",
         }
         if identity in rule_errors:
-            result.update(
-                state="UNQUALIFIED",
-                reason=rule_errors[identity],
-            )
+            result.update(state="UNQUALIFIED", reason=rule_errors[identity])
         else:
             decision = decisions[identity]
             result["state"] = "MATCH" if decision.active else "NO_MATCH"
         rule_results.append(result)
 
     return E2EQualificationResult(
-        event_results=tuple(event_results),
-        rule_results=tuple(rule_results),
-        failed=failed,
+        tuple(event_results), tuple(rule_results), bool(rule_errors)
     )

@@ -110,12 +110,8 @@ class ActionExecutor:
         operation = path.get("i2c_type")
         if operation not in ("get", "set"):
             raise ValueError("I2C action requires get or set")
-        configured_buses = path.get("bus")
-        buses = (
-            list(configured_buses)
-            if isinstance(configured_buses, (list, tuple))
-            else [configured_buses]
-        )
+        configured = path.get("bus")
+        buses = configured if isinstance(configured, (list, tuple)) else (configured,)
         deadline = time.monotonic() + timeout
         outputs = []
         for bus in buses:
@@ -210,12 +206,6 @@ class ActionRunner:
                     self._sequence_slots.release()
                 self._jobs.task_done()
 
-    def _start_call(self, action: Mapping[str, Any], timeout: float) -> Future:
-        return self._call_gate.start(
-            lambda: self.executor.execute(action, timeout),
-            "action execution capacity is exhausted by timed-out vendor calls",
-        )
-
     def _run_sequence(
         self,
         worker_id: str,
@@ -233,8 +223,13 @@ class ActionRunner:
                 last_error = "local action has no timeout"
             else:
                 try:
-                    call = self._start_call(action, float(timeout))
-                    output = call.result(timeout=float(timeout))
+                    call_timeout = float(timeout)
+                    call = self._call_gate.start(
+                        lambda: self.executor.execute(action, call_timeout),
+                        "action execution capacity is exhausted by timed-out "
+                        "vendor calls",
+                    )
+                    output = call.result(timeout=call_timeout)
                 except TimeoutError:
                     call.cancel()
                     last_error = "action timed out after {} seconds".format(

@@ -7,9 +7,10 @@ DLDD uses separate test tiers because they answer different questions.
 The existing files directly under `tests/dldd/` are build-time unit and
 contract tests. They replace Redis, time, files, subprocesses, hooks, and other
 external boundaries with deterministic fakes. A useful unit test asserts both
-the result and observable state or side effects, and includes normal, boundary,
-negative, exception, timeout, and cleanup behavior where the production branch
-supports those outcomes.
+the result and observable state or side effects. The suite retains representative
+normal behavior, primary failures, and distinct security, wire, concurrency,
+persistence, cleanup, and recovery boundaries; it does not enumerate equivalent
+field, type, default, or formatting permutations for coverage alone.
 
 Run the focused unit suite with:
 
@@ -97,48 +98,27 @@ and artifact boundaries are replaced.
 
 Current deterministic scenarios cover:
 
-- clean service exit when no rules source exists, contrasted with a fatal
-  result for a present invalid candidate with no fallback, and activation of a
-  usable fallback when one exists;
-- one valid and one Pydantic-invalid rule in the same generation, proving
-  localized `BROKEN` telemetry while the valid rule remains executable and the
-  service activates as `DEGRADED`;
-- healthy startup, fake threshold fault activation, clear, and clean shutdown;
-- one six-rule service generation covering Redis, file, sysfs, CLI, I2C, and
-  Platform API monitor routing, healthy collection, a controlled CLI fault,
-  and clear through real adapters with only external I/O replaced;
-- authoritative DSE expansion into two runtime children, live source/comparator
-  callbacks, fault activation, and retained inactive retirement with a reason
-  after child removal;
-- runtime-DSE restart reconciliation after expansion without changing the
-  retained fault lifetime, authoritative removal of an already inactive DSE
-  instance after restart with a refreshed reason/TTL, and a mixed
-  DSE/common-Redis rule with exactly the real discovered scopes and
-  source-specific cadence defaults;
-- empty DSE inventory progression into stable backoff;
-- non-authoritative DSE omission retaining both the runtime child and its active
-  fault;
-- source database read failure and recovery without a false fault;
-- retryable source failures progressing from `DEGRADED` to `BROKEN`, including
-  the configured service-level `BROKEN|FATAL` limit;
-- expected platform maintenance suspending a source without breaking its rule,
-  followed by normal recovery, while a lifecycle-hook exception falls back to
-  ordinary unavailable handling;
-- transient telemetry/reconciliation reads failing and then recovering without
-  terminating the service;
-- persistent telemetry write failure and unclean non-zero service failure;
-- persistent startup fault-scan failure stopping before monitor threads start;
-- restart reconciliation of a retained active fault without a new lifetime;
-- restart retirement of active faults whose generation checksum or schema no
-  longer matches, retaining the row as `INACTIVE` with an explicit reason;
-- default reset versus `--all` ownership behavior, including foreign fault and
-  artifact preservation;
-- asynchronous local action, wait, and priority recheck completion before fault
-  publication, plus bounded queue saturation and single-flight behavior;
-- zero-lookback current-truth correlation and positive historical lookback;
-- live inherited polling-cadence updates without postponing already due work;
-- fault arbitration and promotion of a still-active alternate rule; and
-- replacement of an unexpectedly stopped monitor while preserving its plan.
+- no-rules clean exit, invalid-without-fallback fatal startup, usable active
+  fallback, and mixed valid/broken activation;
+- healthy threshold match, clear, persisted state, and clean shutdown;
+- source-read failure and recovery without a false hardware fault;
+- bounded telemetry publication failure followed by unclean non-zero shutdown;
+- restart reconciliation of an existing static active fault without a new
+  lifetime;
+- one generation spanning Redis, file, sysfs, CLI, I2C, and Platform API
+  routing through the real adapters with only external I/O replaced;
+- authoritative DSE expansion, live value/comparator sampling, fault activation,
+  and retained inactive retirement after child removal;
+- current-generation DSE restart reconciliation only after expansion registers
+  the dynamic execution, without a false clear or new lifetime;
+- asynchronous action, wait, priority recheck, and publication ordering; and
+- replacement of an unexpectedly exited monitor with the same plan plus a
+  service diagnostic while the process remains healthy.
+
+Tier-1 tests own semantic variants that reuse those integrated lifecycles,
+including stale-generation retirement, non-authoritative discovery omission,
+expected-maintenance classification, current-truth/lookback variants, cadence
+updates, queue saturation, arbitration, reset ownership, and detailed bounds.
 
 Run integration tests with:
 

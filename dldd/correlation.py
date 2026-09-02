@@ -41,6 +41,13 @@ class SignatureExecution:
             for key in event_keys
         )
 
+    @property
+    def has_all_events(self) -> bool:
+        """Return whether every signature event has registered work."""
+
+        required = {event.id for event in self.signature.conditions.events}
+        return required.issubset(self.event_keys)
+
 
 @dataclass(frozen=True)
 class CorrelationDecision:
@@ -124,7 +131,8 @@ class CorrelationEngine:
             self.executions.pop(identity, None)
 
     def consume(self, event: FaultEvidenceEvent) -> Optional[CorrelationDecision]:
-        execution = self.executions.get((event.signature_id, event.component_name))
+        identity = (event.signature_id, event.component_name)
+        execution = self.executions.get(identity)
         if execution is None:
             return None
         if event.event_id not in execution.event_keys:
@@ -132,7 +140,7 @@ class CorrelationEngine:
         result_type = event.result.result
         if result_type not in (EvaluationResultType.MATCH, EvaluationResultType.NO_MATCH):
             return CorrelationDecision(
-                execution, self._active[(event.signature_id, event.component_name)], False, (), event
+                execution, self._active[identity], False, (), event
             )
 
         event_definition = next(
@@ -162,7 +170,6 @@ class CorrelationEngine:
                     "observed_at": time.time(),
                 }
             )
-            identity = (event.signature_id, event.component_name)
             return CorrelationDecision(
                 execution, self._active[identity], False, (), event
             )
@@ -192,7 +199,7 @@ class CorrelationEngine:
             (
                 item.latest_timestamp
                 for item_key, item in self._events.items()
-                if item_key[:2] == (event.signature_id, event.component_name)
+                if item_key[:2] == identity
                 and item.latest_timestamp is not None
             ),
             default=timestamp,
@@ -213,7 +220,6 @@ class CorrelationEngine:
                 snapshots.append(other.snapshot)
 
         active = evaluate_logic(execution.signature.conditions.logic_tree, event_truth)
-        identity = (event.signature_id, event.component_name)
         changed = active != self._active[identity]
         self._active[identity] = active
         return CorrelationDecision(execution, active, changed, tuple(snapshots), event)
@@ -282,9 +288,7 @@ class CorrelationEngine:
                 return "0x" + value.hex()
             # A list retains every byte without inventing an encoding.
             return list(value)
-        if isinstance(value, tuple):
-            return [CorrelationEngine._format_value(item, config) for item in value]
-        if isinstance(value, list):
+        if isinstance(value, (tuple, list)):
             return [CorrelationEngine._format_value(item, config) for item in value]
         if isinstance(value, dict):
             return {
@@ -338,18 +342,17 @@ class FaultArbiter:
         return self._winner((component_name, symptom))
 
     def _winner(self, fault_key) -> Optional[SignatureExecution]:
-        candidates = [
-            (key, execution)
-            for key, execution in self._active.items()
-            if key[:2] == fault_key
-        ]
-        if not candidates:
-            return None
-        candidates.sort(
+        winner = min(
+            (
+                (key, execution)
+                for key, execution in self._active.items()
+                if key[:2] == fault_key
+            ),
             key=lambda item: (
                 _SEVERITY.get(item[1].signature.metadata.severity, 99),
                 item[1].signature.metadata.priority,
                 self._detected_at[item[0]],
-            )
+            ),
+            default=None,
         )
-        return candidates[0][1]
+        return winner[1] if winner is not None else None

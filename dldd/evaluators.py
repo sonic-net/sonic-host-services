@@ -67,10 +67,18 @@ def evaluate(specification: Mapping[str, Any], actual: Any) -> bool:
         mask = parse_integer(expected)
         return parse_integer(actual) & mask == mask
 
-    if evaluator_type == "comparison":
+    if evaluator_type in ("comparison", "dse"):
         op = specification.get("operator")
+        if evaluator_type == "dse" and not op:
+            comparator = specification.get("comparator")
+            if not callable(comparator):
+                raise EvaluationContractError(
+                    "DSE evaluation requires an operator or resolved comparator"
+                )
+            return bool(comparator(actual))
         if op not in COMPARATORS:
-            raise EvaluationContractError("unsupported comparison operator: {}".format(op))
+            label = "DSE" if evaluator_type == "dse" else "comparison"
+            raise EvaluationContractError("unsupported {} operator: {}".format(label, op))
         left, right = _coerce_pair(actual, expected)
         return COMPARATORS[op](left, right)
 
@@ -106,20 +114,6 @@ def evaluate(specification: Mapping[str, Any], actual: Any) -> bool:
         if not isinstance(right, bool) or not isinstance(left, bool):
             raise EvaluationContractError("boolean evaluation requires boolean values")
         return left is right
-
-    if evaluator_type == "dse":
-        op = specification.get("operator")
-        if not op:
-            comparator = specification.get("comparator")
-            if not callable(comparator):
-                raise EvaluationContractError(
-                    "DSE evaluation requires an operator or resolved comparator"
-                )
-            return bool(comparator(actual))
-        if op not in COMPARATORS:
-            raise EvaluationContractError("unsupported DSE operator: {}".format(op))
-        left, right = _coerce_pair(actual, expected)
-        return COMPARATORS[op](left, right)
 
     raise EvaluationContractError(
         "unsupported evaluation type: {}".format(evaluator_type)

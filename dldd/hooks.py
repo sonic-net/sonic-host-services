@@ -98,11 +98,14 @@ class VendorHookRegistry:
         return resolved
 
     def validate_i2c_source(self, operation: Mapping[str, Any]) -> None:
+        """Validate one source and every configured logical bus."""
+
         hook = self.get_optional("i2c")
+        if hook is not None:
+            hook.validate_source(operation)
+        configured = operation.get("bus")
         if hook is None:
             return
-        hook.validate_source(operation)
-        configured = operation.get("bus")
         buses = configured if isinstance(configured, (list, tuple)) else (configured,)
         for bus in buses:
             self.resolve_i2c_bus(bus, operation)

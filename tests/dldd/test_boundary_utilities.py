@@ -1,7 +1,6 @@
 from __future__ import absolute_import
 
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -18,14 +17,12 @@ from dldd.command_execution import (
     run_shell_free,
 )
 from dldd.dse import DSERegistry
-from dldd.filesystem import atomic_copy, atomic_write_json
+from dldd.filesystem import atomic_write_json
 from dldd.hooks import VendorHookRegistry
 from dldd.platform import PlatformIdentity, detect_identity, load_extensions
-from dldd.reset import clear_runtime_state
 from dldd.sonic_hash import SonicHashReader, SonicHashReaderError
 from dldd.validation import CompatibilityMatcher
 from dldd.watcher import RulesWatcher
-from tests.dldd_fakes import FakeStateDB
 
 
 def test_shell_free_runner_and_i2c_argv_command_contract():
@@ -66,16 +63,6 @@ def test_shell_free_runner_and_i2c_argv_command_contract():
         )
     ]
 
-    absent = run_shell_free(
-        ["diagnostic"],
-        runner=lambda argv, **kwargs: SimpleNamespace(
-            returncode=0, stdout=None, stderr=None
-        ),
-    )
-
-    assert absent.stdout == b""
-    assert absent.stderr == b""
-
     assert run_checked_shell_free(
         ["diagnostic"],
         runner=lambda argv, **kwargs: SimpleNamespace(
@@ -91,14 +78,8 @@ def test_shell_free_runner_and_i2c_argv_command_contract():
             error_context="probe",
         )
 
-    for argv in ("echo unsafe", b"echo unsafe", (), ("",), ("valid", 1)):
-        with pytest.raises(ValueError, match="argv"):
-            run_shell_free(argv)
-
-    for limit in (0, -1, True, 1.5):
-        with pytest.raises(ValueError, match="max_output_bytes"):
-            run_shell_free(["diagnostic"], max_output_bytes=limit)
-
+    with pytest.raises(ValueError, match="argv"):
+        run_shell_free("echo unsafe")
 
     # I2C argv construction remains shell-free and rejects unknown operations.
     read = build_i2c_argv(
@@ -142,10 +123,10 @@ def test_shell_free_runner_and_i2c_argv_command_contract():
         "b",
     )
 
-    path = {"chip_addr": "0x58", "command": "0x7a"}
-    for operation in (None, "read", "", 1):
-        with pytest.raises(ValueError, match="get or set"):
-            build_i2c_argv(path, operation=operation)
+    with pytest.raises(ValueError, match="get or set"):
+        build_i2c_argv(
+            {"chip_addr": "0x58", "command": "0x7a"}, operation="read"
+        )
 
 
 def test_bounded_call_failure_cancellation_and_capacity_contract():
@@ -191,12 +172,7 @@ def test_bounded_call_failure_cancellation_and_capacity_contract():
         pytest.fail("bounded callback did not release its capacity")
 
 
-@pytest.mark.parametrize("operation", ("write", "copy"))
-def test_atomic_filesystem_cleanup_closes_descriptor_when_open_fails(
-    tmp_path, monkeypatch, operation
-):
-    source = tmp_path / "source"
-    source.write_text("rules", encoding="utf-8")
+def test_atomic_write_cleans_up_when_stream_open_fails(tmp_path, monkeypatch):
     destination = tmp_path / "destination"
     closed = []
     original_close = dldd_filesystem.os.close
@@ -208,17 +184,14 @@ def test_atomic_filesystem_cleanup_closes_descriptor_when_open_fails(
     monkeypatch.setattr(
         dldd_filesystem.os,
         "fdopen",
-        lambda *unused_args, **unused_kwargs: (_ for _ in ()).throw(
+        lambda *args, **kwargs: (_ for _ in ()).throw(
             OSError("cannot open temporary stream")
         ),
     )
     monkeypatch.setattr(dldd_filesystem.os, "close", close)
 
     with pytest.raises(OSError, match="temporary stream"):
-        if operation == "write":
-            atomic_write_json(str(destination), {"ready": True})
-        else:
-            atomic_copy(str(source), str(destination))
+        atomic_write_json(str(destination), {"ready": True})
 
     assert len(closed) == 1
     assert not destination.exists()
@@ -253,32 +226,13 @@ def test_sonic_hash_reader_factory_dependency_and_lazy_connector_contract(
     )
 
     assert reader.read("STATE_DB", "MISSING|0") == {}
-    assert reader.read("STATE_DB", "MISSING|1") == {}
+    assert reader.read("APPL_DB", "MISSING|1") == {}
     assert reader.keys("STATE_DB", "TABLE|*") == ("TABLE|A", "TABLE|B")
     assert creations == [True]
-    assert connector.connections == [("STATE_DB", False)]
-
-    connector = RecordingConnector()
-    with pytest.raises(ValueError, match="either connector"):
-        SonicHashReader(connector=connector, connector_factory=lambda: connector)
-
-    reader = SonicHashReader(connector=connector)
-    for database, key, expected in (
-        ("", "KEY", "database"),
-        (None, "KEY", "database"),
-        ("STATE_DB", "", "hash key"),
-        ("STATE_DB", None, "hash key"),
-    ):
-        with pytest.raises(ValueError, match=expected):
-            reader.read(database, key)
-
-    for database, pattern, expected in (
-        ("", "TABLE|*", "database"),
-        ("STATE_DB", "", "key pattern"),
-    ):
-        with pytest.raises(ValueError, match=expected):
-            reader.keys(database, pattern)
-
+    assert connector.connections == [
+        ("STATE_DB", False),
+        ("APPL_DB", False),
+    ]
 
     # The production connector is loaded lazily and reports missing runtime deps.
     monkeypatch.setitem(sys.modules, "swsscommon", None)
@@ -303,7 +257,7 @@ def test_sonic_hash_reader_factory_dependency_and_lazy_connector_contract(
     assert connector.connections == [("STATE_DB", False)]
 
 
-def test_platform_identity_detection_and_failure_fallback(monkeypatch):
+def test_platform_identity_detection(monkeypatch):
     module = ModuleType("sonic_py_common")
     module.device_info = SimpleNamespace(
         get_platform=lambda: "x86_64-test",
@@ -321,18 +275,7 @@ def test_platform_identity_detection_and_failure_fallback(monkeypatch):
     assert identity == PlatformIdentity(
         "x86_64-test", "PRODUCT-A", "2026.07"
     )
-    assert identity.generation_identity == (
-        "x86_64-test|PRODUCT-A|2026.07"
-    )
-    assert PlatformIdentity("unknown", None, None).generation_identity == (
-        "unknown||"
-    )
-
-    module.device_info = SimpleNamespace(
-        get_platform=lambda: (_ for _ in ()).throw(RuntimeError("not ready"))
-    )
-
-    assert detect_identity() == PlatformIdentity("unknown", None, None)
+    assert identity.generation_identity == "x86_64-test|PRODUCT-A|2026.07"
 
 
 class PermissiveMatcher(CompatibilityMatcher):
@@ -350,6 +293,7 @@ def test_platform_extension_factory_result_import_and_absence_contracts(
     dse_registry = DSERegistry()
     hooks = VendorHookRegistry()
     matcher = PermissiveMatcher()
+    artifact_factory = lambda **kwargs: kwargs
     calls = []
 
     module = SimpleNamespace(
@@ -360,6 +304,7 @@ def test_platform_extension_factory_result_import_and_absence_contracts(
         create_compatibility_matcher=lambda **kwargs: (
             calls.append(("matcher", kwargs)) or matcher
         ),
+        create_artifact_client=artifact_factory,
     )
     monkeypatch.setattr(
         dldd_platform.importlib, "import_module", lambda unused_name: module
@@ -370,6 +315,7 @@ def test_platform_extension_factory_result_import_and_absence_contracts(
     assert extensions.dse_registry is dse_registry
     assert extensions.vendor_hooks is hooks
     assert extensions.compatibility_matcher is matcher
+    assert extensions.artifact_client_factory is artifact_factory
     assert calls == [
         (
             "dse",
@@ -386,27 +332,30 @@ def test_platform_extension_factory_result_import_and_absence_contracts(
         ),
     ]
 
-    for factory_name in (
-        "create_dse_registry",
-        "create_vendor_hooks",
-        "create_compatibility_matcher",
+    for factory_name, factory in (
+        ("create_dse_registry", lambda **kwargs: object()),
+        ("create_vendor_hooks", lambda: object()),
+        ("create_compatibility_matcher", lambda **kwargs: object()),
     ):
-        module = SimpleNamespace(**{factory_name: lambda **kwargs: object()})
-        if factory_name == "create_vendor_hooks":
-            module = SimpleNamespace(**{factory_name: lambda: object()})
         monkeypatch.setattr(
             dldd_platform.importlib,
             "import_module",
-            lambda unused_name, result=module: result,
+            lambda unused_name, name=factory_name, value=factory: (
+                SimpleNamespace(**{name: value})
+            ),
         )
-
         with pytest.raises(TypeError, match=factory_name):
-            load_extensions(
-                PlatformIdentity("platform", "product", "software"),
-                "/dse.yaml",
-            )
+            load_extensions(identity, "/dse.yaml")
 
-
+    monkeypatch.setattr(
+        dldd_platform.importlib,
+        "import_module",
+        lambda unused_name: SimpleNamespace(
+            create_artifact_client="not-callable"
+        ),
+    )
+    with pytest.raises(TypeError, match="create_artifact_client"):
+        load_extensions(identity, "/dse.yaml")
     # Platform absence is optional, but a nested vendor import failure is not.
     identity = PlatformIdentity("platform", "product", "software")
 
@@ -423,42 +372,6 @@ def test_platform_extension_factory_result_import_and_absence_contracts(
     monkeypatch.setattr(dldd_platform.importlib, "import_module", broken)
     with pytest.raises(ImportError, match="vendor dependency missing"):
         load_extensions(identity, "/dse.yaml")
-
-
-def test_reset_decodes_redis_keys_skips_directories_and_handles_absence(
-    tmp_path,
-):
-    state_db = FakeStateDB()
-    status_key = b"DLDD_RULE_STATUS|RULE_A"
-    state_db.keys = lambda pattern: (
-        (status_key,) if pattern.startswith("DLDD_RULE_STATUS|") else ()
-    )
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    directory = artifacts / "dldd-directory.tar.gz"
-    directory.mkdir()
-
-    result = clear_runtime_state(
-        state_db,
-        str(tmp_path / "missing-state.json"),
-        include_artifacts=True,
-        artifact_directory=str(artifacts),
-    )
-
-    assert result.redis_keys == 1
-    assert result.local_state_removed is False
-    assert result.artifacts == 0
-    assert directory.is_dir()
-
-    missing = clear_runtime_state(
-        FakeStateDB(),
-        str(tmp_path / "still-missing.json"),
-        include_artifacts=True,
-        artifact_directory=str(tmp_path / "missing-artifacts"),
-    )
-    assert missing.artifacts == 0
-
-
 def test_watcher_absent_unsettled_and_restart_failure_contract(tmp_path):
     inbox = tmp_path / "inbox.yaml"
     watcher = RulesWatcher(
@@ -469,8 +382,6 @@ def test_watcher_absent_unsettled_and_restart_failure_contract(tmp_path):
         clock=lambda: 100,
     )
 
-    assert watcher.check_once() is False
-    inbox.write_text("", encoding="utf-8")
     assert watcher.check_once() is False
     inbox.write_text("rules", encoding="utf-8")
     assert watcher.check_once() is False

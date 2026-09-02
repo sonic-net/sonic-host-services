@@ -34,7 +34,6 @@ from ..models import (
     RepairActions as DomainRepairActions,
     Signature as DomainSignature,
     ValueConfig as DomainValueConfig,
-    frozen_mapping,
 )
 from .base import (
     ContractModel,
@@ -323,6 +322,25 @@ EvaluationV001 = Annotated[
 ]
 
 
+def _validate_positional_lists(
+    values, instances, code, missing_label, mismatch_label=None
+):
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        if not instances:
+            message = "list-valued {} requires positional instances".format(
+                missing_label
+            )
+        elif len(value) != len(instances):
+            message = "list-valued {} must match instances length".format(
+                mismatch_label or missing_label
+            )
+        else:
+            continue
+        raise PydanticCustomError(code, message)
+
+
 class EventBaseV001(ContractModel):
     id: EventId
     instances: NonEmptyInstanceList = Field(
@@ -353,16 +371,12 @@ class EventBaseV001(ContractModel):
             isinstance(self.evaluation, ComparisonEvaluationV001)
             and isinstance(self.evaluation.value, list)
         ):
-            if not self.instances:
-                raise PydanticCustomError(
-                    "instance_value_mismatch",
-                    "list-valued comparison value requires positional instances",
-                )
-            if len(self.evaluation.value) != len(self.instances):
-                raise PydanticCustomError(
-                    "instance_value_mismatch",
-                    "list-valued comparison value must match instances length",
-                )
+            _validate_positional_lists(
+                (self.evaluation.value,),
+                self.instances,
+                "instance_value_mismatch",
+                "comparison value",
+            )
         return self
 
 
@@ -372,17 +386,10 @@ class I2CEventV001(EventBaseV001):
 
     @model_validator(mode="after")
     def validate_positional_bus(self):
-        if isinstance(self.path.bus, list):
-            if not self.instances:
-                raise PydanticCustomError(
-                    "instance_path_mismatch",
-                    "list-valued I2C bus requires positional instances",
-                )
-            if len(self.path.bus) != len(self.instances):
-                raise PydanticCustomError(
-                    "instance_path_mismatch",
-                    "list-valued path field must match instances length",
-                )
+        _validate_positional_lists(
+            (self.path.bus,), self.instances,
+            "instance_path_mismatch", "I2C bus", "path field"
+        )
         return self
 
 
@@ -392,19 +399,10 @@ class RedisEventV001(EventBaseV001):
 
     @model_validator(mode="after")
     def validate_positional_path(self):
-        for value in self.path.model_dump().values():
-            if not isinstance(value, list):
-                continue
-            if not self.instances:
-                raise PydanticCustomError(
-                    "instance_path_mismatch",
-                    "list-valued Redis path requires positional instances",
-                )
-            if len(value) != len(self.instances):
-                raise PydanticCustomError(
-                    "instance_path_mismatch",
-                    "list-valued path field must match instances length",
-                )
+        _validate_positional_lists(
+            self.path.model_dump().values(), self.instances,
+            "instance_path_mismatch", "Redis path", "path field"
+        )
         return self
 
 
@@ -436,20 +434,14 @@ class PlatformAPIEventV001(EventBaseV001):
     def validate_positional_vendor_path(self):
         if not self.instances or isinstance(self.path, str):
             return self
-        path_values = {
-            **self.path.model_dump(exclude_unset=True),
-            **_model_extras(self.path),
-        }
-        for key, value in path_values.items():
-            if (
-                isinstance(value, list)
-                and key != "argv"
-                and len(value) != len(self.instances)
-            ):
-                raise PydanticCustomError(
-                    "instance_path_mismatch",
-                    "list-valued path field must match instances length",
-                )
+        _validate_positional_lists(
+            (
+                value
+                for key, value in self.path.model_dump(exclude_unset=True).items()
+                if key != "argv"
+            ),
+            self.instances, "instance_path_mismatch", "platform path", "path field"
+        )
         return self
 
 
@@ -715,55 +707,23 @@ class RulesDocumentV001(ContractModel):
 def _domain_value_config(config) -> DomainValueConfig:
     if config is None:
         return DomainValueConfig()
-    return DomainValueConfig(
-        type=config.type,
-        unit=config.unit,
-        scaling=config.scaling,
-        encoding=config.encoding,
-    )
-
-
-def _model_extras(model) -> Dict[str, JsonValue]:
-    return dict(getattr(model, "__pydantic_extra__", None) or {})
+    return DomainValueConfig(**config.model_dump())
 
 
 def _event_path_to_domain(path):
     if isinstance(path, str):
         return path
-    if isinstance(path, I2CReadPathV001):
-        result = {
-            "bus": path.bus,
-            "chip_addr": path.chip_addr,
-            "i2c_type": path.i2c_type,
-            "command": path.command,
-            "size": path.size,
-        }
-        if "scaling" in path.model_fields_set:
-            result["scaling"] = path.scaling
-        return result
-    if isinstance(path, RedisPathV001):
-        return {
-            "database": path.database,
-            "table": path.table,
-            "key": path.key,
-            "path": path.path,
-        }
-    if isinstance(path, CLIPathV001):
-        result = {"argv": list(path.argv)}
-        if "timeout" in path.model_fields_set:
-            result["timeout"] = path.timeout
-        return result
-    if isinstance(path, FilePathV001):
-        result = {"file": path.file, "format": path.format}
-        if "scaling" in path.model_fields_set:
-            result["scaling"] = path.scaling
-        if "unit" in path.model_fields_set:
-            result["unit"] = path.unit
-        return result
-    if isinstance(path, PlatformAPIHookPathV001):
-        result = {"hook": path.hook}
-        result.update(_model_extras(path))
-        return result
+    if isinstance(
+        path,
+        (
+            I2CReadPathV001,
+            RedisPathV001,
+            CLIPathV001,
+            FilePathV001,
+            PlatformAPIHookPathV001,
+        ),
+    ):
+        return path.model_dump(exclude_unset=True)
     raise TypeError(
         "unsupported validated event path model: {}".format(
             type(path).__name__
@@ -772,61 +732,31 @@ def _event_path_to_domain(path):
 
 
 def _evaluation_to_domain(evaluation) -> DomainEvaluation:
-    common = {
-        "type": evaluation.type,
-        "value": evaluation.value,
-        "value_configs": _domain_value_config(evaluation.value_configs),
-    }
-    if isinstance(evaluation, MaskEvaluationV001):
-        return DomainEvaluation(logic=evaluation.logic, **common)
-    if isinstance(evaluation, ComparisonEvaluationV001):
-        return DomainEvaluation(
-            operator=evaluation.operator,
-            unit=evaluation.unit,
-            **common,
+    if type(evaluation) not in (
+        MaskEvaluationV001,
+        ComparisonEvaluationV001,
+        StringEvaluationV001,
+        BooleanEvaluationV001,
+        DSEEvaluationV001,
+    ):
+        raise TypeError(
+            "unsupported validated evaluation model: {}".format(
+                type(evaluation).__name__
+            )
         )
-    if isinstance(evaluation, StringEvaluationV001):
-        return DomainEvaluation(
-            operator=evaluation.operator,
-            case_sensitive=evaluation.case_sensitive,
-            **common,
-        )
-    if isinstance(evaluation, BooleanEvaluationV001):
-        return DomainEvaluation(**common)
-    if isinstance(evaluation, DSEEvaluationV001):
-        return DomainEvaluation(operator=evaluation.operator, **common)
-    raise TypeError(
-        "unsupported validated evaluation model: {}".format(
-            type(evaluation).__name__
-        )
+    payload = evaluation.model_dump(exclude={"value_configs"})
+    payload["value_configs"] = _domain_value_config(
+        evaluation.value_configs
     )
+    return DomainEvaluation(**payload)
 
 
 def _event_to_domain(event) -> DomainEvent:
     return DomainEvent(
-        id=event.id,
-        type=event.type,
+        **event.model_dump(exclude={"path", "evaluation"}),
         path=_event_path_to_domain(event.path),
         evaluation=_evaluation_to_domain(event.evaluation),
-        match_count=event.match_count,
-        match_period=event.match_period,
-        instances=tuple(event.instances),
-        sampling_interval=event.sampling_interval,
-        async_collection=event.async_collection,
     )
-
-
-def _i2c_action_path_to_domain(path: I2CActionPathV001):
-    result = {
-        "bus": path.bus,
-        "chip_addr": path.chip_addr,
-        "i2c_type": path.i2c_type,
-        "command": path.command,
-        "size": path.size,
-    }
-    if "value" in path.model_fields_set:
-        result["value"] = path.value
-    return result
 
 
 def _operation_to_domain(
@@ -846,30 +776,20 @@ def _operation_to_domain(
             )
         timeout = default_timeout
 
-    if isinstance(operation, CLIOperationV001):
-        return DomainOperation(
-            type=operation.type,
-            argv=tuple(operation.argv),
-            timeout=timeout,
-            max_output_bytes=operation.max_output_bytes,
-        )
-    if isinstance(operation, DSEOperationV001):
-        return DomainOperation(
-            type=operation.type,
-            command=operation.command,
-            timeout=timeout,
-        )
-    if isinstance(operation, I2COperationV001):
-        return DomainOperation(
-            type=operation.type,
-            path=frozen_mapping(_i2c_action_path_to_domain(operation.path)),
-            timeout=timeout,
-        )
-    if isinstance(operation, VendorOperationV001):
+    if type(operation) in (
+        CLIOperationV001,
+        DSEOperationV001,
+        I2COperationV001,
+    ):
+        payload = operation.model_dump(exclude={"timeout"})
+        if type(operation) is I2COperationV001:
+            payload["path"] = operation.path.model_dump(exclude_unset=True)
+        return DomainOperation(**payload, timeout=timeout)
+    if type(operation) is VendorOperationV001:
         return DomainOperation(
             type=operation.type,
             timeout=timeout,
-            options=frozen_mapping(_model_extras(operation)),
+            options=operation.model_dump(exclude={"type", "timeout"}),
         )
     raise TypeError(
         "unsupported validated operation model: {}".format(
@@ -884,9 +804,9 @@ def _actions_to_domain(
     repair = actions.repair_actions
     local = None
     if repair.local_actions is not None:
-        operations = []
-        for index, wrapper in enumerate(repair.local_actions.action_list):
-            operations.append(
+        local = DomainLocalActions(
+            wait_period=repair.local_actions.wait_period,
+            action_list=tuple(
                 _operation_to_domain(
                     wrapper.action,
                     default_timeout=default_timeout,
@@ -896,22 +816,19 @@ def _actions_to_domain(
                         "action_list[{}].action"
                     ).format(index),
                 )
-            )
-        local = DomainLocalActions(
-            wait_period=repair.local_actions.wait_period,
-            action_list=tuple(operations),
+                for index, wrapper in enumerate(
+                    repair.local_actions.action_list
+                )
+            ),
         )
 
-    remote = DomainRemoteActions(
-        action_list=tuple(repair.remote_actions.action_list),
-        time_window=repair.remote_actions.time_window,
-    )
+    remote = DomainRemoteActions(**repair.remote_actions.model_dump())
 
     logs = None
     if actions.log_collection is not None:
-        queries = []
-        for index, wrapper in enumerate(actions.log_collection.queries):
-            queries.append(
+        logs = DomainLogCollection(
+            logs=tuple(item.log for item in actions.log_collection.logs),
+            queries=tuple(
                 _operation_to_domain(
                     wrapper.query,
                     default_timeout=default_timeout,
@@ -920,10 +837,10 @@ def _actions_to_domain(
                         "$.signature.actions.log_collection.queries[{}].query"
                     ).format(index),
                 )
-            )
-        logs = DomainLogCollection(
-            logs=tuple(item.log for item in actions.log_collection.logs),
-            queries=tuple(queries),
+                for index, wrapper in enumerate(
+                    actions.log_collection.queries
+                )
+            ),
         )
 
     return DomainActions(
@@ -944,20 +861,7 @@ def signature_v001_to_domain(
 
     signature = wrapper.signature
     metadata = signature.metadata
-    domain_metadata = DomainMetadata(
-        name=metadata.name,
-        id=metadata.id,
-        version=metadata.version,
-        description=metadata.description,
-        product_ids=tuple(metadata.product_ids),
-        sw_versions=tuple(metadata.sw_versions),
-        component=metadata.component,
-        symptom=metadata.symptom,
-        error_type=metadata.error_type,
-        severity=metadata.severity,
-        priority=metadata.priority,
-        tags=tuple(metadata.tags),
-    )
+    domain_metadata = DomainMetadata(**metadata.model_dump())
 
     events = tuple(
         _event_to_domain(wrapper.event)
@@ -967,9 +871,8 @@ def signature_v001_to_domain(
         signature.conditions.logic, [event.id for event in events]
     )
     conditions = DomainConditions(
-        logic=signature.conditions.logic,
+        **signature.conditions.model_dump(exclude={"events"}),
         logic_tree=logic_tree,
-        logic_lookback_time=signature.conditions.logic_lookback_time,
         events=events,
     )
     return DomainSignature(

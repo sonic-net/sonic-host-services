@@ -14,7 +14,7 @@ from .ownership import DLDD_FAULT_PRODUCER
 from .rule_schema.errors import bound_diagnostic
 from .runtime import FaultRecord
 from .sonic_hash import SonicHashReader, decode_db_hash, decode_db_text
-from .timestamps import floor_timestamp_fields
+from .timestamps import floor_timestamp, floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
@@ -50,6 +50,12 @@ def _redis_value(value: Any) -> str:
             _json_safe(value), sort_keys=True, separators=(",", ":")
         )
     return str(value)
+
+
+def _redis_mapping(values: Mapping[str, Any]) -> Mapping[str, str]:
+    """Encode one logical telemetry row for the Redis client boundary."""
+
+    return {name: _redis_value(value) for name, value in values.items()}
 
 
 class StateDB:
@@ -152,34 +158,26 @@ class SonicStateDB(StateDB):
             socket_path = swsscommon.SonicDBConfig.getDbSock(
                 database, database_key
             )
+            connection = {"db": database_id}
             if socket_path:
-                self._redis_client = redis.Redis(
-                    unix_socket_path=socket_path,
-                    db=database_id,
-                )
+                connection["unix_socket_path"] = socket_path
             else:
-                self._redis_client = redis.Redis(
-                    host=swsscommon.SonicDBConfig.getDbHostname(
-                        database, database_key
-                    ),
-                    port=swsscommon.SonicDBConfig.getDbPort(
-                        database, database_key
-                    ),
-                    db=database_id,
+                connection.update(
+                    host=swsscommon.SonicDBConfig.getDbHostname(database, database_key),
+                    port=swsscommon.SonicDBConfig.getDbPort(database, database_key),
                 )
+            self._redis_client = redis.Redis(**connection)
         return self._redis_client
 
     def hset(self, key: str, values: Mapping[str, Any]) -> None:
-        mapping = {name: _redis_value(value) for name, value in values.items()}
-        self._db().hset(key, mapping=mapping)
+        self._db().hset(key, mapping=_redis_mapping(values))
 
     def hset_with_ttl(
         self, key: str, values: Mapping[str, Any], seconds: int
     ) -> None:
         client = self._db()
-        mapping = {name: _redis_value(value) for name, value in values.items()}
         transaction = client.pipeline(transaction=True)
-        transaction.hset(key, mapping=mapping)
+        transaction.hset(key, mapping=_redis_mapping(values))
         transaction.expire(key, seconds)
         transaction.execute()
 
@@ -199,7 +197,7 @@ class SonicStateDB(StateDB):
         self, key: str, values: Mapping[str, Any], ttl_seconds: Optional[int]
     ) -> None:
         client = self._db()
-        mapping = {name: _redis_value(value) for name, value in values.items()}
+        mapping = _redis_mapping(values)
         existing = client.hkeys(key)
         existing_fields = {decode_db_text(name) for name in existing}
         stale_fields = tuple(sorted(existing_fields - set(mapping)))
@@ -229,12 +227,9 @@ class SonicStateDB(StateDB):
     def keys(self, pattern: str) -> Iterable[str]:
         if self._hash_reader is not None:
             return self._hash_reader.keys("STATE_DB", pattern)
-        return tuple(
-            sorted(
-                decode_db_text(key)
-                for key in self._db().scan_iter(match=pattern)
-            )
-        )
+        return tuple(sorted(
+            decode_db_text(key) for key in self._db().scan_iter(match=pattern)
+        ))
 
 
 class TelemetryPublisher:
@@ -274,9 +269,7 @@ class TelemetryPublisher:
         previous_active_rules_checksum: str = "",
         async_pool_metrics: Optional[Mapping[str, float]] = None,
     ) -> bool:
-        pool_metrics = dict(EMPTY_ASYNC_POOL_METRICS)
-        if async_pool_metrics:
-            pool_metrics.update(async_pool_metrics)
+        pool_metrics = {**EMPTY_ASYNC_POOL_METRICS, **(async_pool_metrics or {})}
         payload = {
             "state": state,
             "running_schema": running_schema,
@@ -297,7 +290,7 @@ class TelemetryPublisher:
         }
         payload = floor_timestamp_fields(payload)
         try:
-            self.state_db.hset_with_ttl(self.STATUS_KEY, payload, self.STATUS_TTL)
+            self.state_db.replace_hash(self.STATUS_KEY, payload, self.STATUS_TTL)
             return True
         except Exception as error:
             LOGGER.error("unable to publish DLDD_STATUS: %s", error)
@@ -311,9 +304,7 @@ class TelemetryPublisher:
     ) -> bool:
         """Publish one bounded hash per rule plus a small active index."""
 
-        published_at = floor_timestamp_fields(
-            {"published_at": time.time()}
-        )["published_at"]
+        published_at = floor_timestamp(time.time())
         status_keys = []
         detail_keys = []
         try:
@@ -341,16 +332,10 @@ class TelemetryPublisher:
                     "work_items": work_items,
                     "published_at": published_at,
                 }
-                self.state_db.replace_hash(
-                    detail_key,
-                    floor_timestamp_fields(detail),
-                    self.STATUS_TTL,
-                )
-                self.state_db.replace_hash(
-                    status_key,
-                    floor_timestamp_fields(summary),
-                    self.STATUS_TTL,
-                )
+                for key, values in ((detail_key, detail), (status_key, summary)):
+                    self.state_db.replace_hash(
+                        key, floor_timestamp_fields(values), self.STATUS_TTL
+                    )
                 status_keys.append(status_key)
                 detail_keys.append(detail_key)
 
@@ -367,14 +352,9 @@ class TelemetryPublisher:
                 self.STATUS_TTL,
             )
             keep = set(status_keys + detail_keys + [self.RULE_STATUS_KEY])
-            for pattern in (
-                self.RULE_STATUS_PREFIX + "*",
-                self.RULE_DETAIL_PREFIX + "*",
-            ):
-                for raw_key in tuple(self.state_db.keys(pattern)):
-                    key = decode_db_text(raw_key)
-                    if key not in keep:
-                        self.state_db.delete(key)
+            self.state_db.delete_many(
+                self._published_rule_status_keys() - keep
+            )
             return True
         except Exception as error:
             LOGGER.error("unable to publish DLDD_RULE_STATUS: %s", error)
@@ -382,21 +362,20 @@ class TelemetryPublisher:
 
     def clear_rule_status(self) -> bool:
         try:
-            keys = {self.RULE_STATUS_KEY}
-            for pattern in (
-                self.RULE_STATUS_PREFIX + "*",
-                self.RULE_DETAIL_PREFIX + "*",
-            ):
-                keys.update(
-                    decode_db_text(key)
-                    for key in self.state_db.keys(pattern)
-                )
-            for key in keys:
-                self.state_db.delete(key)
+            self.state_db.delete_many(self._published_rule_status_keys())
             return True
         except Exception as error:
             LOGGER.error("unable to clear DLDD_RULE_STATUS: %s", error)
             return False
+
+    def _published_rule_status_keys(self):
+        keys = {self.RULE_STATUS_KEY}
+        for prefix in (self.RULE_STATUS_PREFIX, self.RULE_DETAIL_PREFIX):
+            keys.update(
+                decode_db_text(key)
+                for key in self.state_db.keys(prefix + "*")
+            )
+        return keys
 
     def publish_fault(
         self,

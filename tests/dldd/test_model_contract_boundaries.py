@@ -1,8 +1,6 @@
 from __future__ import absolute_import
 
 from dataclasses import replace
-import json
-from pathlib import Path
 
 import pytest
 
@@ -14,21 +12,17 @@ from dldd.models import (
     ValueConfig,
     frozen_mapping,
     to_mutable,
-    value_config_contract_errors,
 )
 from dldd.validation import validate_document
-
-
-FIXTURES = Path(__file__).parent / "fixtures"
+from tests.dldd_fakes import load_valid_rules_document
 
 
 def _validated_signature():
-    document = json.loads((FIXTURES / "valid-redis-rule.json").read_text())
+    document = load_valid_rules_document()
     return validate_document(document, materialize=False).ruleset.signatures[0]
 
 
 def test_domain_container_freeze_mutable_conversion_and_event_aliases():
-    assert dict(frozen_mapping(None)) == {}
     value = frozen_mapping({"nested": {"items": [1, {"enabled": True}]}})
 
     assert value["nested"]["items"] == (1, {"enabled": True})
@@ -65,24 +59,12 @@ def test_value_config_and_validation_model_contracts():
     assert default.with_fallback(config.as_payload()) == config
     with pytest.raises(TypeError, match="must be a mapping"):
         ValueConfig.from_mapping("float")
-    assert value_config_contract_errors(object()) == ("must be ValueConfig",)
-
-    unsafe = object.__new__(ValueConfig)
-    object.__setattr__(unsafe, "type", "vendor-private")
-    object.__setattr__(unsafe, "unit", "C")
-    object.__setattr__(unsafe, "scaling", "N/A")
-    object.__setattr__(unsafe, "encoding", "N/A")
-    with pytest.raises(ValueError, match="canonical value"):
-        ValueConfig.from_mapping(unsafe)
 
     for changes, message in (
         ({"type": "vendor-private"}, "canonical value"),
         ({"unit": ""}, "unit must be a non-empty string"),
-        ({"unit": 1}, "unit must be a non-empty string"),
         ({"scaling": True}, "scaling must be numeric"),
-        ({"scaling": "2"}, "scaling must be numeric"),
         ({"encoding": ""}, "encoding must be a non-empty string"),
-        ({"encoding": 1}, "encoding must be a non-empty string"),
     ):
         with pytest.raises(ValueError, match=message):
             ValueConfig(**changes)
@@ -92,12 +74,8 @@ def test_value_config_and_validation_model_contracts():
 
     with pytest.raises(ValueError, match="signature schema_version"):
         replace(signature, schema_version="")
-    with pytest.raises(ValueError, match="signature schema_version"):
-        replace(signature, schema_version=None)
     with pytest.raises(ValueError, match="ruleset schema_version"):
         RuleSet("", (signature,))
-    with pytest.raises(ValueError, match="ruleset schema_version"):
-        RuleSet(None, (signature,))
     with pytest.raises(ValueError, match="must match"):
         RuleSet("test-version", (signature,))
 

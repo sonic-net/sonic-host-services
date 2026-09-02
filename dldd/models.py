@@ -13,8 +13,8 @@ VALUE_CONFIG_TYPES = frozenset(
 )
 
 
-def frozen_mapping(value):
-    """Return a recursively immutable, shallowly typed representation."""
+def frozen_mapping(value=None):
+    """Return a recursively immutable mapping, empty when value is omitted."""
 
     if value is None:
         return MappingProxyType({})
@@ -69,24 +69,22 @@ class ValueConfig(object):
         """Build validated value metadata from its wire representation."""
 
         if isinstance(value, cls):
-            config = value
-        else:
-            if not isinstance(value, Mapping):
-                raise TypeError("value config must be a mapping")
-            unknown = set(value) - {"type", "unit", "scaling", "encoding"}
-            if unknown:
+            errors = value_config_contract_errors(value)
+            if errors:
                 raise ValueError(
-                    "unknown value config fields: {}".format(
-                        ", ".join(sorted(str(item) for item in unknown))
-                    )
+                    "invalid value config: {}".format("; ".join(errors))
                 )
-            config = cls(**dict(value))
-        errors = value_config_contract_errors(config)
-        if errors:
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("value config must be a mapping")
+        unknown = set(value) - {"type", "unit", "scaling", "encoding"}
+        if unknown:
             raise ValueError(
-                "invalid value config: {}".format("; ".join(errors))
+                "unknown value config fields: {}".format(
+                    ", ".join(sorted(str(item) for item in unknown))
+                )
             )
-        return config
+        return cls(**dict(value))
 
     def as_payload(self):
         return {
@@ -206,13 +204,11 @@ class Operation(object):
     type: str
     command: Optional[str] = None
     argv: Tuple[str, ...] = ()
-    path: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    path: Mapping[str, Any] = field(default_factory=frozen_mapping)
     timeout: Optional[int] = None
     max_output_bytes: Optional[int] = None
     executor: Optional[Callable[..., Any]] = None
-    options: Mapping[str, Any] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    options: Mapping[str, Any] = field(default_factory=frozen_mapping)
 
     def __post_init__(self):
         object.__setattr__(self, "argv", tuple(self.argv))
@@ -222,34 +218,26 @@ class Operation(object):
     def as_runtime_payload(self) -> Mapping[str, Any]:
         """Return the canonical action/query dispatch representation."""
 
-        reserved = {
-            "type",
-            "command",
-            "argv",
-            "path",
-            "timeout",
-            "max_output_bytes",
-            "executor",
-            "materialized_operation",
-        }
+        reserved = {item.name for item in fields(self)} - {"options"}
+        reserved.add("materialized_operation")
         payload = {
             key: value
             for key, value in self.options.items()
             if key not in reserved
         }
         payload["type"] = self.type
-        if self.command is not None:
-            payload["command"] = self.command
-        if self.argv:
-            payload["argv"] = list(self.argv)
-        if self.path:
-            payload["path"] = dict(self.path)
-        if self.timeout is not None:
-            payload["timeout"] = self.timeout
-        if self.max_output_bytes is not None:
-            payload["max_output_bytes"] = self.max_output_bytes
+        runtime_values = (
+            ("command", self.command),
+            ("argv", list(self.argv) if self.argv else None),
+            ("path", dict(self.path) if self.path else None),
+            ("timeout", self.timeout),
+            ("max_output_bytes", self.max_output_bytes),
+            ("executor", self.executor),
+        )
+        payload.update(
+            (key, value) for key, value in runtime_values if value is not None
+        )
         if self.executor is not None:
-            payload["executor"] = self.executor
             payload["materialized_operation"] = self
         return payload
 
@@ -344,9 +332,7 @@ class ResolvedSource(object):
     path: Any
     instance: Optional[str] = None
     value_configs: ValueConfig = field(default_factory=ValueConfig)
-    vendor_data: Mapping[str, Any] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    vendor_data: Mapping[str, Any] = field(default_factory=frozen_mapping)
 
     def __post_init__(self):
         object.__setattr__(self, "path", freeze_value(self.path))
@@ -410,9 +396,7 @@ class ValidationResult(object):
     materialized_rules: Tuple[MaterializedRule, ...] = ()
     file_errors: Tuple[ValidationIssue, ...] = ()
     broken_rules: Tuple[BrokenRule, ...] = ()
-    source_lines: Mapping[str, int] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    source_lines: Mapping[str, int] = field(default_factory=frozen_mapping)
 
     def __post_init__(self):
         object.__setattr__(self, "materialized_rules", tuple(self.materialized_rules))

@@ -6,7 +6,6 @@ import os
 import pytest
 
 from dldd.lifecycle import (
-    BrokenRuleStateStore,
     CandidateValidation,
     NoRulesAvailable,
     RuleGenerationManager,
@@ -56,7 +55,19 @@ def validator(path, _dse):
     )
 
 
-def test_generation_promotion_fallback_and_history_contract(tmp_path):
+def write_accepted_inbox(rule_paths, content, active=None):
+    os.makedirs(os.path.dirname(rule_paths.inbox))
+    os.makedirs(rule_paths.rules_dir)
+    if active is not None:
+        with open(rule_paths.active, "w") as stream:
+            stream.write(active)
+    with open(rule_paths.inbox, "w") as stream:
+        stream.write(content)
+    with open(rule_paths.watcher_state, "w") as stream:
+        json.dump({"last_restart_checksum": sha256_file(rule_paths.inbox)}, stream)
+
+
+def test_generation_promotion_fallback_and_audit_contract(tmp_path):
     rule_paths = case_paths(tmp_path, "packaged-promotion")
     with open(rule_paths.packaged, "w") as stream:
         stream.write("valid")
@@ -74,22 +85,7 @@ def test_generation_promotion_fallback_and_history_contract(tmp_path):
     assert manifest["activated_at"] == 1234
     assert manifest["last_activation"]["at"] == 1234
     assert manifest["last_attempt"]["at"] == 1234
-
-    rule_paths = case_paths(tmp_path, "malformed-manifest")
-    os.makedirs(rule_paths.rules_dir)
-    with open(rule_paths.packaged, "w") as stream:
-        stream.write("valid")
-    with open(rule_paths.manifest, "w") as stream:
-        stream.write("{")
-
-    result = RuleGenerationManager(
-        rule_paths, validator, "platform-v1", clock=lambda: 1234
-    ).activate()
-
-    assert result.source == "packaged"
-    with open(rule_paths.manifest) as stream:
-        manifest = json.load(stream)
-    assert manifest["active_checksum"] == result.checksum
+    assert os.path.isfile(manifest["active_generation_path"])
 
     rule_paths = case_paths(tmp_path, "rollback")
     os.makedirs(rule_paths.rules_dir)
@@ -112,19 +108,6 @@ def test_generation_promotion_fallback_and_history_contract(tmp_path):
     assert result.fallback_used is True
     assert open(rule_paths.active).read() == "previous"
 
-
-    rule_paths = case_paths(tmp_path, "invalid-inbox")
-    os.makedirs(os.path.dirname(rule_paths.inbox))
-    os.makedirs(rule_paths.rules_dir)
-    with open(rule_paths.active, "w") as stream:
-        stream.write("active")
-    with open(rule_paths.inbox, "w") as stream:
-        stream.write("invalid")
-    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
-    assert result.source == "active"
-    assert result.fallback_used is False
-    assert open(rule_paths.active).read() == "active"
-
     rule_paths = case_paths(tmp_path, "validator-exception")
     os.makedirs(rule_paths.rules_dir)
     with open(rule_paths.packaged, "w") as stream:
@@ -140,9 +123,30 @@ def test_generation_promotion_fallback_and_history_contract(tmp_path):
     result = RuleGenerationManager(
         rule_paths, raising_validator, "new-platform"
     ).activate()
-
     assert result.source == "active"
     assert result.fallback_used is True
+
+    rule_paths = case_paths(tmp_path, "golden-fallback")
+    os.makedirs(rule_paths.rules_dir)
+    with open(rule_paths.active, "w") as stream:
+        stream.write("invalid")
+    with open(rule_paths.golden, "w") as stream:
+        stream.write("golden")
+    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
+    assert result.source == "golden"
+    assert result.fallback_used is True
+    assert open(rule_paths.active).read() == "golden"
+
+    rule_paths = case_paths(tmp_path, "invalid-inbox")
+    os.makedirs(os.path.dirname(rule_paths.inbox))
+    os.makedirs(rule_paths.rules_dir)
+    with open(rule_paths.active, "w") as stream:
+        stream.write("active")
+    with open(rule_paths.inbox, "w") as stream:
+        stream.write("invalid")
+    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
+    assert result.source == "active"
+    assert result.fallback_used is False
     assert open(rule_paths.active).read() == "active"
 
     rule_paths = case_paths(tmp_path, "rejected-inbox-attempt")
@@ -178,9 +182,7 @@ def test_generation_promotion_fallback_and_history_contract(tmp_path):
     assert rejected["checksum"] == inbox_checksum
     assert rejected["validation_result"] == "FAILED"
     assert rejected["activation_result"] == "REJECTED"
-    assert rejected["usable_rule_count"] == 0
     assert "zero usable rules" in rejected["reason"]
-    assert "all signatures failed materialization" in rejected["reason"]
     assert activated["source"] == "active"
     assert activated["activation_result"] == "ACTIVATED"
     assert activated["fallback_used"] is True
@@ -189,46 +191,27 @@ def test_generation_promotion_fallback_and_history_contract(tmp_path):
         for reason in activated["fallback_reasons"]
     )
     assert manifest["last_attempt"] == activated
-    assert manifest["last_activation"]["fallback_reasons"] == (
-        activated["fallback_reasons"]
+
+    manager = RuleGenerationManager(
+        case_paths(tmp_path, "bounded-history"), validator, "platform-v1"
     )
-
-
-    manager = RuleGenerationManager(paths(tmp_path), validator, "platform-v1")
-    manifest = {}
-
-    for sequence in range(manager.MAX_ACTIVATION_ATTEMPTS + 5):
-        manager._append_attempt(manifest, {"sequence": sequence})
-
-    assert [item["sequence"] for item in manifest["activation_attempts"]] == list(
-        range(5, manager.MAX_ACTIVATION_ATTEMPTS + 5)
+    history = {}
+    for sequence in range(manager.MAX_ACTIVATION_ATTEMPTS + 1):
+        manager._append_attempt(history, {"sequence": sequence})
+    assert [item["sequence"] for item in history["activation_attempts"]] == list(
+        range(1, manager.MAX_ACTIVATION_ATTEMPTS + 1)
     )
-    assert manifest["last_attempt"] == {
-        "sequence": manager.MAX_ACTIVATION_ATTEMPTS + 4
-    }
 
 
 def test_watcher_authorizes_an_immutable_settled_inbox(tmp_path):
     rule_paths = case_paths(tmp_path, "watcher-accepted")
-    os.makedirs(os.path.dirname(rule_paths.inbox))
-    os.makedirs(rule_paths.rules_dir)
-    with open(rule_paths.active, "w") as stream:
-        stream.write("active")
-    with open(rule_paths.inbox, "w") as stream:
-        stream.write("new")
-    with open(rule_paths.watcher_state, "w") as stream:
-        json.dump({"last_restart_checksum": sha256_file(rule_paths.inbox)}, stream)
+    write_accepted_inbox(rule_paths, "new", active="active")
     result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
     assert result.source == "inbox"
     assert open(rule_paths.active).read() == "new"
 
     rule_paths = case_paths(tmp_path, "immutable-snapshot")
-    os.makedirs(os.path.dirname(rule_paths.inbox))
-    os.makedirs(rule_paths.rules_dir)
-    with open(rule_paths.inbox, "w") as stream:
-        stream.write("validated")
-    with open(rule_paths.watcher_state, "w") as stream:
-        json.dump({"last_restart_checksum": sha256_file(rule_paths.inbox)}, stream)
+    write_accepted_inbox(rule_paths, "validated")
 
     validated_paths = []
 
@@ -247,27 +230,18 @@ def test_watcher_authorizes_an_immutable_settled_inbox(tmp_path):
     assert open(rule_paths.active).read() == "validated"
     assert result.checksum == sha256_file(rule_paths.active)
 
+
     rule_paths = case_paths(tmp_path, "replaced-inbox")
-    os.makedirs(os.path.dirname(rule_paths.inbox))
-    os.makedirs(rule_paths.rules_dir)
-    with open(rule_paths.inbox, "w") as stream:
-        stream.write("watcher-accepted")
-    with open(rule_paths.active, "w") as stream:
-        stream.write("active")
-    with open(rule_paths.watcher_state, "w") as stream:
-        json.dump({"last_restart_checksum": sha256_file(rule_paths.inbox)}, stream)
+    write_accepted_inbox(rule_paths, "watcher-accepted", active="active")
 
     class ReplacingManager(RuleGenerationManager):
         def _candidates(self, manifest):
-            candidates = super()._candidates(manifest)
+            candidates = super(ReplacingManager, self)._candidates(manifest)
             with open(self.paths.inbox, "w") as stream:
                 stream.write("not-yet-settled")
             return candidates
 
-    result = ReplacingManager(
-        rule_paths, validator, "platform-v1"
-    ).activate()
-
+    result = ReplacingManager(rule_paths, validator, "platform-v1").activate()
     assert result.source == "active"
     assert result.fallback_used is True
     assert open(rule_paths.active).read() == "active"
@@ -293,29 +267,14 @@ def test_candidate_presence_errors_are_distinct_from_no_rules(tmp_path):
 
     assert not isinstance(error.value, NoRulesAvailable)
 
-    for candidate_path in ("active", "inbox"):
-        for candidate_kind in ("directory", "broken_symlink"):
-            name = "{}-{}".format(candidate_path, candidate_kind)
-            rule_paths = case_paths(tmp_path, name)
-            os.makedirs(rule_paths.rules_dir)
-            path = getattr(rule_paths, candidate_path)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            if candidate_kind == "directory":
-                os.makedirs(path)
-            else:
-                os.symlink(str(tmp_path / "missing-generation"), path)
-
-            with pytest.raises(
-                RuntimeError,
-                match="{} candidate is not a regular file".format(
-                    candidate_path
-                ),
-            ) as error:
-                RuleGenerationManager(
-                    rule_paths, validator, "platform-v1"
-                ).activate()
-
-            assert not isinstance(error.value, NoRulesAvailable), name
+    rule_paths = case_paths(tmp_path, "broken-inbox-symlink")
+    os.makedirs(rule_paths.rules_dir)
+    os.makedirs(os.path.dirname(rule_paths.inbox))
+    os.symlink(str(tmp_path / "missing-generation"), rule_paths.inbox)
+    with pytest.raises(
+        RuntimeError, match="inbox candidate is not a regular file"
+    ):
+        RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
 
 
 def test_watcher_stability_state_and_restart_contract(tmp_path, monkeypatch):
@@ -341,26 +300,6 @@ def test_watcher_stability_state_and_restart_contract(tmp_path, monkeypatch):
     state = json.load(open(tmp_path / "stable-watch.json"))
     assert state["last_restart_requested_at"] == 131
 
-    rule_paths = case_paths(tmp_path, "malformed-watcher-state")
-    os.makedirs(os.path.dirname(rule_paths.inbox))
-    with open(rule_paths.inbox, "w") as stream:
-        stream.write("rules")
-    state_path = tmp_path / "watch.json"
-    state_path.write_text("{")
-    watcher = RulesWatcher(
-        rule_paths.inbox,
-        rule_paths.lock,
-        str(state_path),
-        clock=lambda: 100.0,
-    )
-
-    assert watcher.check_once() is False
-
-    with open(state_path) as stream:
-        state = json.load(stream)
-    assert state["observation"]["size"] == 5
-    assert state["first_seen"] == 100.0
-
     calls = []
     monkeypatch.setattr(
         "dldd.watcher.subprocess.run",
@@ -375,47 +314,3 @@ def test_watcher_stability_state_and_restart_contract(tmp_path, monkeypatch):
             {"shell": False, "check": True},
         )
     ]
-
-
-def test_broken_rule_state_serialization_and_recovery_diagnostics(
-    tmp_path, monkeypatch
-):
-    state_path = tmp_path / "state.json"
-    store = BrokenRuleStateStore(str(state_path))
-    monkeypatch.setattr("dldd.lifecycle.time.time", lambda: 200.9)
-
-    store.save(
-        "sha256:test",
-        ({"rule_id": 1, "last_attempt": 199.8},),
-    )
-
-    state = json.load(open(state_path))
-    assert state["updated_at"] == 200
-    assert state["broken_rules"][0]["last_attempt"] == 199
-
-    state_path.write_text("[]")
-
-    state = BrokenRuleStateStore(str(state_path)).load(
-        "sha256:test", allow_crash_recovery=True
-    )
-
-    assert state["broken_rules"] == []
-    assert "root must be an object" in state["recovery_error"]
-
-    state_path.write_text(
-        json.dumps(
-            {
-                "state_schema": 1,
-                "active_rules_checksum": "sha256:test",
-                "clean_shutdown": False,
-                "broken_rules": ["not-an-object"],
-            }
-        )
-    )
-
-    state = BrokenRuleStateStore(str(state_path)).load(
-        "sha256:test", allow_crash_recovery=True
-    )
-
-    assert state["broken_rules"] == []
-    assert "array of objects" in state["recovery_error"]

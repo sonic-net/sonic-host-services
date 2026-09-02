@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 import math
 from numbers import Real
 import re
-from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 from .models import (
@@ -35,6 +34,14 @@ class DSEReferenceError(DSEError):
 
 class DSEUnresolvedError(DSEError):
     pass
+
+
+def _require_value_configs(value_configs, label, error_type):
+    errors = value_config_contract_errors(value_configs)
+    if errors:
+        raise error_type(
+            "invalid {} value_configs: {}".format(label, "; ".join(errors))
+        )
 
 
 @dataclass(frozen=True)
@@ -94,9 +101,7 @@ class DSEBinding(object):
 
     instance: str
     source_id: str
-    data: Mapping[str, Any] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    data: Mapping[str, Any] = field(default_factory=frozen_mapping)
     value_configs: ValueConfig = field(default_factory=ValueConfig)
 
     def __post_init__(self):
@@ -105,13 +110,7 @@ class DSEBinding(object):
         if not isinstance(self.source_id, str) or not self.source_id:
             raise ValueError("DSE binding source_id must be a non-empty string")
         object.__setattr__(self, "data", frozen_mapping(self.data))
-        errors = value_config_contract_errors(self.value_configs)
-        if errors:
-            raise ValueError(
-                "invalid DSE binding value_configs: {}".format(
-                    "; ".join(errors)
-                )
-            )
+        _require_value_configs(self.value_configs, "DSE binding", ValueError)
 
 
 @dataclass(frozen=True)
@@ -198,13 +197,9 @@ def validate_resolved_evaluation(
 
     if not isinstance(resolved, ResolvedEvaluation):
         raise DSEError("DSE comparator must return ResolvedEvaluation")
-    value_config_errors = value_config_contract_errors(resolved.value_configs)
-    if value_config_errors:
-        raise DSEError(
-            "invalid DSE resolved evaluation value_configs: {}".format(
-                "; ".join(value_config_errors)
-            )
-        )
+    _require_value_configs(
+        resolved.value_configs, "DSE resolved evaluation", DSEError
+    )
     if resolved.comparator is not None and not callable(resolved.comparator):
         raise DSEError("DSE evaluation comparator must be callable")
     if (
@@ -249,9 +244,7 @@ class ResolvedCommand(object):
     """Runtime command whose executor accepts one immutable Operation."""
 
     executor: Callable[[Operation], Any]
-    vendor_data: Mapping[str, Any] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    vendor_data: Mapping[str, Any] = field(default_factory=frozen_mapping)
 
     def __post_init__(self):
         object.__setattr__(self, "vendor_data", frozen_mapping(self.vendor_data))
@@ -415,15 +408,9 @@ class DSERegistry(object):
                 raise DSEError(
                     "DSE resolved source instance must be a non-empty string"
                 )
-            value_config_errors = value_config_contract_errors(
-                source.value_configs
+            _require_value_configs(
+                source.value_configs, "DSE resolved source", DSEError
             )
-            if value_config_errors:
-                raise DSEError(
-                    "invalid DSE resolved source value_configs: {}".format(
-                        "; ".join(value_config_errors)
-                    )
-                )
             if (
                 ("*" in reference.selector or "?" in reference.selector)
                 and not source.instance
