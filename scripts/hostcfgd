@@ -3,6 +3,7 @@
 import copy
 import ipaddress
 import os
+import socket
 import sys
 import subprocess
 import syslog
@@ -73,6 +74,8 @@ SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries",
                   "ciphers": "Ciphers",
                   "kex_algorithms": "KexAlgorithms",
                   "macs": "MACs"}
+# Wildcard listeners restored whenever listen_addresses is absent/removed
+SSH_DEFAULT_LISTEN_ADDRESSES = [ "0.0.0.0", "::" ]
 
 ACCOUNT_NAME = 0 # index of account name
 AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>-?\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
@@ -275,6 +278,23 @@ def is_match(pattern, file_path):
                 res_match = True
                 break
     return res_match
+
+
+def get_dut_ip_addresses():
+    """ Return the set of IPv4/IPv6 addresses (canonical form) currently
+        assigned to any interface (including loopback) on this device. """
+    assigned_addresses = set()
+    for addrs in psutil.net_if_addrs().values():
+        for snic in addrs:
+            if snic.family not in (socket.AF_INET, socket.AF_INET6):
+                continue
+            # Strip IPv6 zone id (e.g. "fe80::1%eth0") before parsing
+            address = snic.address.split('%')[0]
+            try:
+                assigned_addresses.add(ipaddress.ip_address(address).compressed)
+            except ValueError:
+                continue
+    return assigned_addresses
 
 
 class Iptables(object):
@@ -1045,6 +1065,9 @@ class PasswHardening(object):
 class SshServer(object):
     def __init__(self):
         self.policies = {}
+        # Tracks whether listen_addresses is currently applied, so its
+        # removal (leaving the field absent) can restore the wildcards.
+        self.listen_addresses_configured = False
 
     def load(self, policies_conf):
         if 'POLICIES' in policies_conf:
@@ -1058,8 +1081,10 @@ class SshServer(object):
         ssh_policies = {}
         ssh_policies.update(self.policies)
 
-        # set new SSH server policies.
-        if len(ssh_policies) > 0:
+        # set new SSH server policies. Also run when listen_addresses was
+        # previously applied so the wildcard listeners get restored even if
+        # no other policy is currently configured.
+        if len(ssh_policies) > 0 or self.listen_addresses_configured:
             self.set_policies(ssh_policies)
 
     def policies_update(self, key, data, modify_conf=True):
@@ -1069,6 +1094,10 @@ class SshServer(object):
             if 'ports' in data:
                 data['ports'] = data['ports'].split(',')
             self.policies = data
+        else:
+            # Key/row removed (e.g. whole POLICIES row deleted) - drop the
+            # stale policy state instead of silently re-applying it.
+            self.policies = {}
 
         if modify_conf:
             self.modify_conf_file()
@@ -1107,6 +1136,55 @@ class SshServer(object):
             modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(port_line_num)} i Port {str(port_num)}'])
         return True
 
+    def handle_listen_addresses_set(self, values_list):
+        if len(values_list) == 0:
+            return False
+
+        # Duplicate addresses are rejected outright (rather than silently
+        # de-duplicated) so operators get explicit, deterministic feedback.
+        canonical_addresses = []
+        seen_addresses = set()
+        for addr in values_list:
+            try:
+                canonical = ipaddress.ip_address(str(addr)).compressed
+            except ValueError:
+                syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is not a valid IP address".format(addr))
+                return False
+            if canonical in seen_addresses:
+                syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is a duplicate address".format(addr))
+                return False
+            seen_addresses.add(canonical)
+            canonical_addresses.append(canonical)
+
+        # Every configured address must currently be assigned to the DUT
+        # (management or loopback interfaces included). The wildcards are
+        # exempt since they mean "all interfaces" rather than a specific one.
+        # Reject the whole update if any other address isn't currently assigned.
+        assigned_addresses = get_dut_ip_addresses()
+        for addr in canonical_addresses:
+            if addr in SSH_DEFAULT_LISTEN_ADDRESSES:
+                continue
+            if addr not in assigned_addresses:
+                syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is not currently assigned to any interface on this device".format(addr))
+                return False
+
+        listen_line_num = self.get_line_num_of_pattern("ListenAddress", SSH_CONFG_TMP, True)
+        modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
+
+        for addr in canonical_addresses:
+            # add listen address in original line
+            modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(listen_line_num)} i ListenAddress {addr}'])
+        return True
+
+    def restore_default_listen_addresses(self):
+        # Restore the IPv4/IPv6 wildcard listeners once listen_addresses is
+        # removed (either alone or via deleting the whole POLICIES row).
+        listen_line_num = self.get_line_num_of_pattern("ListenAddress", SSH_CONFG_TMP, True)
+        modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
+
+        for addr in SSH_DEFAULT_LISTEN_ADDRESSES:
+            modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(listen_line_num)} i ListenAddress {addr}'])
+
     def set_policies(self, ssh_policies):
         # Ssh server flow
         # The ssh_policies from CONFIG_DB will be set in the ssh config files /etc/ssh/sshd_config
@@ -1117,6 +1195,15 @@ class SshServer(object):
                 if not self.handle_ports_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
                     return
+                continue
+
+            if key == 'listen_addresses':
+                if not self.handle_listen_addresses_set(value):
+                    syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong listen_addresses configuration")
+                    if os.path.exists(SSH_CONFG_TMP):
+                        os.remove(SSH_CONFG_TMP)
+                    return
+                self.listen_addresses_configured = True
                 continue
 
             if key in SSH_INT_VALUES and (int(value) < SSH_MIN_VALUES.get(key, 65535) or
@@ -1146,6 +1233,13 @@ class SshServer(object):
                 continue
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
+
+        if 'listen_addresses' not in ssh_policies and self.listen_addresses_configured:
+            # listen_addresses was configured previously and is now absent
+            # (removed alone, or via deleting the whole POLICIES row).
+            # Actively restore both IPv4/IPv6 wildcard listeners.
+            self.restore_default_listen_addresses()
+            self.listen_addresses_configured = False
 
         ssh_verify_res = subprocess.run(['sudo', 'sshd', '-T', '-f', SSH_CONFG_TMP], capture_output=True)
         if ssh_verify_res.returncode == 0:
