@@ -87,6 +87,7 @@ LIMITS_CONF = "/etc/security/limits.conf"
 TACPLUS_SERVER_PASSKEY_DEFAULT = ""
 TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
 TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+TACPLUS_TRACEID_AUTHORIZATION_DEFAULT = False
 
 # RADIUS
 RADIUS_SERVER_AUTH_PORT_DEFAULT = "1812"
@@ -366,7 +367,8 @@ class AaaCfg(object):
         self.tacplus_global_default = {
             'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
             'timeout': TACPLUS_SERVER_TIMEOUT_DEFAULT,
-            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT
+            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT,
+            'traceid_authorization': TACPLUS_TRACEID_AUTHORIZATION_DEFAULT
         }
         self.tacplus_global = {}
         self.tacplus_servers = {}
@@ -467,6 +469,8 @@ class AaaCfg(object):
     def tacacs_global_update(self, key, data, modify_conf=True):
         if key == 'global':
             self.tacplus_global = data
+            if 'traceid_authorization' in self.tacplus_global:
+                self.tacplus_global['traceid_authorization'] = is_true(self.tacplus_global['traceid_authorization'])
             if modify_conf:
                 self.modify_conf_file()
 
@@ -808,7 +812,8 @@ class AaaCfg(object):
                                         local_accounting=local_accounting_conf,
                                         tacacs_accounting=tacacs_accounting_conf,
                                         local_authorization=local_authorization_conf,
-                                        tacacs_authorization=tacacs_authorization_conf)
+                                        tacacs_authorization=tacacs_authorization_conf,
+                                        traceid_authorization=tacplus_global['traceid_authorization'])
         with open(NSS_TACPLUS_CONF, 'w') as f:
             f.write(nss_tacplus_conf)
 
