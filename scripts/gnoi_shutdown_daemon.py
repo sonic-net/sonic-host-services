@@ -9,9 +9,14 @@ SmartSwitch DPU module enters a "shutdown" transition, issues a gNOI Reboot
 
 import json
 import time
-import subprocess
 import os
+import ssl
 import threading
+from typing import NamedTuple, Optional
+
+import grpc
+from sonic_grpc.gnoi import GnoiClient, system_pb2
+
 import sonic_py_common.daemon_base as daemon_base
 from sonic_platform_base.module_base import ModuleBase
 from sonic_py_common import syslogger, device_info
@@ -23,7 +28,7 @@ STATUS_POLL_TIMEOUT_SEC = 60  # overall time - polling RebootStatus
 STATUS_POLL_INTERVAL_SEC = 1  # delay between reboot status polls
 HALT_IN_PROGRESS_POLL_INTERVAL_SEC = 5  # delay between halt_in_progress checks
 STATUS_RPC_TIMEOUT_SEC = 10  # per RebootStatus RPC timeout
-REBOOT_METHOD_HALT = 3  # gNOI System.Reboot method: HALT
+PORT_PROBE_TIMEOUT_SEC = 10  # total budget per candidate port: cert fetch + System.Time combined
 CONFIG_DB_INDEX = 4
 COMMON_GNMI_PORTS = ("8080", "50052")
 
@@ -54,18 +59,6 @@ def _get_halt_timeout() -> int:
     except (OSError, IOError, ValueError, KeyError) as e:
         logger.log_info(f"Could not load timeout from platform.json: {e}, using default {STATUS_POLL_TIMEOUT_SEC}s")
     return STATUS_POLL_TIMEOUT_SEC
-
-
-def execute_command(command_args, timeout_sec=REBOOT_RPC_TIMEOUT_SEC, suppress_stderr=False):
-    """Run gnoi_client with a timeout; return (rc, stdout, stderr)."""
-    try:
-        stderr_dest = subprocess.DEVNULL if suppress_stderr else subprocess.PIPE
-        result = subprocess.run(command_args, stdout=subprocess.PIPE, stderr=stderr_dest, text=True, timeout=timeout_sec)
-        return result.returncode, result.stdout.strip(), result.stderr.strip() if not suppress_stderr else ""
-    except subprocess.TimeoutExpired as e:
-        return -1, "", f"Command timed out after {int(e.timeout)}s."
-    except Exception as e:
-        return -2, "", f"Command failed: {e}"
 
 
 def get_dpu_ip(config_db, dpu_name: str) -> str:
@@ -110,6 +103,50 @@ def get_dpu_gnmi_ports(config_db, dpu_name: str):
         if port and port not in ports:
             ports.append(port)
     return ports
+
+
+# #########################
+# DPU TLS (isolated on purpose)
+# #########################
+#
+# DPU gNOI/gNMI servers generate a new self-signed certificate at every
+# startup, so there is no stable CA to trust ahead of time. Per SONiC
+# maintainer guidance (sonic-net/sonic-buildimage#29188), the fetched
+# certificate is pinned directly as root_certificates for that same
+# connection -- this is ephemeral-certificate pinning, not plaintext: the
+# RPC channel itself is always encrypted TLS.
+#
+# Kept in small, isolated functions so this can be swapped out cleanly if
+# SONiC settles on a different DPU trust policy.
+
+
+class DpuEndpoint(NamedTuple):
+    """A DPU gNMI/gNOI port that has been probed successfully, plus the
+    channel credentials pinned to its current certificate — reused for
+    Reboot and RebootStatus so we don't redo the TLS fetch per RPC."""
+    port: str
+    credentials: "grpc.ChannelCredentials"
+
+
+def _fetch_dpu_cert_pem(dpu_ip: str, port: str, timeout: float) -> bytes:
+    """Unverified TLS fetch of the DPU's current ephemeral certificate —
+    there is nothing to verify it against yet. TLS is required for this
+    fetch; any failure here (unreachable, handshake error, or a malformed
+    port -- e.g. a bad configured gnmi_port -- surfacing as a DNS/socket
+    error) must be treated by the caller as this candidate port failing,
+    never a plaintext fallback.
+    """
+    pem = ssl.get_server_certificate((dpu_ip, port), timeout=timeout)
+    return pem.encode()
+
+
+def _build_dpu_endpoint(dpu_ip: str, port: str, timeout: float) -> DpuEndpoint:
+    """Fetch the DPU's current ephemeral certificate and pin the gRPC
+    channel credentials to it. Raises on any TLS failure."""
+    pem = _fetch_dpu_cert_pem(dpu_ip, port, timeout)
+    credentials = grpc.ssl_channel_credentials(root_certificates=pem)
+    return DpuEndpoint(port=port, credentials=credentials)
+
 
 # ###############
 # gNOI Reboot Handler
@@ -203,21 +240,21 @@ class GnoiRebootHandler:
             self._clear_halt_flag(dpu_name)
             return False
 
-        port = self._find_working_port(dpu_name, dpu_ip, ports)
-        if port is None:
+        endpoint = self._find_working_port(dpu_name, dpu_ip, ports)
+        if endpoint is None:
             logger.log_error(f"{dpu_name}: No reachable gNMI port found")
             self._clear_halt_flag(dpu_name)
             return False
 
         # Send gNOI Reboot HALT command
-        reboot_sent = self._send_reboot_command(dpu_name, dpu_ip, port)
+        reboot_sent = self._send_reboot_command(dpu_name, dpu_ip, endpoint)
         if not reboot_sent:
             logger.log_error(f"{dpu_name}: Failed to send Reboot command")
             self._clear_halt_flag(dpu_name)
             return False
 
         # Poll for RebootStatus completion
-        reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, port)
+        reboot_successful = self._poll_reboot_status(dpu_name, dpu_ip, endpoint)
 
         if self._clear_halt_flag(dpu_name):
             logger.log_notice(f"{dpu_name}: Halting the services on DPU is successful for {dpu_name}")
@@ -252,57 +289,109 @@ class GnoiRebootHandler:
 
         return False
 
-    def _find_working_port(self, dpu_name: str, dpu_ip: str, ports):
-        """Return the first port that responds to System.Time.
+    def _probe_port(self, dpu_name: str, dpu_ip: str, port: str) -> Optional[DpuEndpoint]:
+        """Probe a single port: fetch/pin its current certificate, then
+        confirm it's actually a live gNOI endpoint via System.Time. Returns
+        the endpoint only on an actually successful Time RPC.
 
-        Each probe can block for STATUS_RPC_TIMEOUT_SEC, so probing two
-        unreachable ports can add up to 20 seconds to graceful shutdown.
+        Certificate fetch and the Time RPC share ONE overall
+        PORT_PROBE_TIMEOUT_SEC budget for this candidate port, not two
+        independent timeouts -- otherwise an unreachable port could cost
+        up to 2x PORT_PROBE_TIMEOUT_SEC, and probing all of
+        configured+8080+50052 could add proportionally more delay before
+        Reboot is even attempted.
+        """
+        probe_deadline = time.monotonic() + PORT_PROBE_TIMEOUT_SEC
+        try:
+            endpoint = _build_dpu_endpoint(dpu_ip, port, PORT_PROBE_TIMEOUT_SEC)
+        except (ssl.SSLError, OSError) as e:
+            logger.log_warning(f"{dpu_name}: TLS setup failed (target={dpu_ip}:{port}): {e}")
+            return None
+
+        remaining = probe_deadline - time.monotonic()
+        if remaining <= 0:
+            logger.log_warning(f"{dpu_name}: probe budget exhausted after certificate fetch (target={dpu_ip}:{port})")
+            return None
+
+        try:
+            with GnoiClient(f"{dpu_ip}:{port}", credentials=endpoint.credentials) as client:
+                client.system.Time(system_pb2.TimeRequest(), timeout=remaining)
+            return endpoint
+        except grpc.RpcError as e:
+            logger.log_warning(f"{dpu_name}: gNMI probe failed (target={dpu_ip}:{port}): {e.code()}: {e.details()}")
+            return None
+
+    def _find_working_port(self, dpu_name: str, dpu_ip: str, ports) -> Optional[DpuEndpoint]:
+        """Return the endpoint for the first port that responds to System.Time.
+
+        Each probe (TLS fetch + RPC) can block for up to PORT_PROBE_TIMEOUT_SEC,
+        so probing multiple unreachable ports adds proportional delay to
+        graceful shutdown.
         """
         for port in ports:
-            probe_cmd = [
-                "docker", "exec", "gnmi", "gnoi_client",
-                f"-target={dpu_ip}:{port}",
-                "-logtostderr", "-insecure",
-                "-module", "System",
-                "-rpc", "Time",
-            ]
-            rc, out, err = execute_command(probe_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
-            if rc == 0:
-                return port
-            logger.log_warning(f"{dpu_name}: gNMI probe failed (rc={rc}, target={dpu_ip}:{port}): {err}")
+            endpoint = self._probe_port(dpu_name, dpu_ip, port)
+            if endpoint is not None:
+                return endpoint
         return None
 
-    def _send_reboot_command(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
-        """Send one gNOI Reboot HALT command to the selected DPU port."""
-        reboot_cmd = [
-            "docker", "exec", "gnmi", "gnoi_client",
-            f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-insecure",
-            "-module", "System",
-            "-rpc", "Reboot",
-            "-jsonin", json.dumps({"method": REBOOT_METHOD_HALT, "message": "Triggered by SmartSwitch graceful shutdown"})
-        ]
-        rc, out, err = execute_command(reboot_cmd, timeout_sec=REBOOT_RPC_TIMEOUT_SEC)
-        if rc != 0:
-            logger.log_error(f"{dpu_name}: Reboot command failed (rc={rc}, target={dpu_ip}:{port}): {err}")
+    def _send_reboot_command(self, dpu_name: str, dpu_ip: str, endpoint: DpuEndpoint) -> bool:
+        """Send one gNOI Reboot HALT command to the selected DPU endpoint."""
+        try:
+            with GnoiClient(f"{dpu_ip}:{endpoint.port}", credentials=endpoint.credentials) as client:
+                client.system.Reboot(
+                    system_pb2.RebootRequest(
+                        method=system_pb2.HALT,
+                        message="Triggered by SmartSwitch graceful shutdown",
+                    ),
+                    timeout=REBOOT_RPC_TIMEOUT_SEC,
+                )
+            return True
+        except grpc.RpcError as e:
+            logger.log_error(f"{dpu_name}: Reboot command failed (target={dpu_ip}:{endpoint.port}): {e.code()}: {e.details()}")
             return False
-        return True
 
-    def _poll_reboot_status(self, dpu_name: str, dpu_ip: str, port: str) -> bool:
-        """Poll RebootStatus until completion or timeout."""
+    def _poll_reboot_status(self, dpu_name: str, dpu_ip: str, endpoint: DpuEndpoint) -> bool:
+        """Poll RebootStatus on the selected endpoint until completion or timeout.
+
+        Completion is a successful, non-active RebootStatusResponse whose
+        status is either absent (legacy servers) or explicitly SUCCESS.
+        Any other observed state (active=True, an explicit non-SUCCESS
+        status, or an RPC error such as the DPU going unreachable right
+        after HALT) is treated as "not yet confirmed" and polling
+        continues until the halt timeout, matching the accepted behavior
+        in sonic-utilities' reboot_smartswitch_helper.
+        """
         deadline = time.monotonic() + _get_halt_timeout()
-        status_cmd = [
-            "docker", "exec", "gnmi", "gnoi_client",
-            f"-target={dpu_ip}:{port}",
-            "-logtostderr", "-insecure",
-            "-module", "System",
-            "-rpc", "RebootStatus"
-        ]
-        while time.monotonic() < deadline:
-            rc_s, out_s, err_s = execute_command(status_cmd, timeout_sec=STATUS_RPC_TIMEOUT_SEC)
-            if rc_s == 0 and out_s and ("reboot complete" in out_s.lower()):
-                return True
-            time.sleep(STATUS_POLL_INTERVAL_SEC)
+        logged_error = False
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            status_timeout = min(STATUS_RPC_TIMEOUT_SEC, remaining)
+
+            try:
+                with GnoiClient(f"{dpu_ip}:{endpoint.port}", credentials=endpoint.credentials) as client:
+                    resp = client.system.RebootStatus(system_pb2.RebootStatusRequest(), timeout=status_timeout)
+                if not resp.active and (
+                    not resp.HasField("status")
+                    or resp.status.status == system_pb2.RebootStatus.Status.STATUS_SUCCESS
+                ):
+                    return True
+                logged_error = False
+            except grpc.RpcError as e:
+                # The DPU is expected to become unreachable once it actually
+                # halts, so don't spam a warning on every 1s retry.
+                if not logged_error:
+                    logger.log_warning(f"{dpu_name}: RebootStatus probe failed (target={dpu_ip}:{endpoint.port}): {e.code()}: {e.details()}")
+                    logged_error = True
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(STATUS_POLL_INTERVAL_SEC, remaining))
+
         logger.log_notice(f"{dpu_name}: Timeout waiting for RebootStatus completion, proceeding with halt flag clear")
         return False
 
