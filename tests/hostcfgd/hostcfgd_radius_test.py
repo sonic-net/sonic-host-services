@@ -10,6 +10,7 @@ from parameterized import parameterized
 from unittest import TestCase, mock
 from tests.hostcfgd.test_radius_vectors import HOSTCFGD_TEST_RADIUS_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_restart_waiter import MockRestartWaiter
 from sonic_py_common.general import getstatusoutput_noshell
 
 
@@ -33,6 +34,8 @@ sys.modules['hostcfgd'] = hostcfgd
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+hostcfgd.swsscommon.RestartWaiter = MockRestartWaiter
+
 
 class TestHostcfgdRADIUS(TestCase):
     """
@@ -41,6 +44,18 @@ class TestHostcfgdRADIUS(TestCase):
     def run_diff(self, file1, file2):
         _, output = getstatusoutput_noshell(['diff', '-ur', file1, file2])
         return output
+
+    @parameterized.expand([
+        ('ipv4', {'ip': '192.0.2.1', 'auth_port': '1812'}, True),
+        ('ipv6', {'ip': '2001:db8::1', 'auth_port': '1812'}, True),
+        ('invalid_address', {'ip': 'invalid-address', 'auth_port': '1812'}, False),
+        ('invalid_port', {'ip': '192.0.2.1', 'auth_port': 'invalid'}, False),
+        ('port_too_low', {'ip': '192.0.2.1', 'auth_port': '0'}, False),
+        ('port_too_high', {'ip': '192.0.2.1', 'auth_port': '65536'}, False),
+    ])
+    def test_radius_server_entry_valid(self, _, server, expected):
+        with mock.patch.object(hostcfgd.syslog, 'syslog'):
+            self.assertEqual(hostcfgd.radius_server_entry_valid(server), expected)
 
 
     @parameterized.expand(HOSTCFGD_TEST_RADIUS_VECTOR)

@@ -91,6 +91,15 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "timeout": "1",
                         "passkey": "pass1",
                         "skip_msg_auth": "true",
+                    },
+                    "invalid-address": {
+                        "auth_type": "pap",
+                        "passkey": "invalid1",
+                    },
+                    "10.10.10.6": {
+                        "auth_port": "65536",
+                        "auth_type": "pap",
+                        "passkey": "invalid2",
                     }
                 },
             },
