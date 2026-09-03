@@ -117,7 +117,7 @@ class PrimaryOrchestrator:
                 self._dse_template_ids_by_rule.setdefault(
                     template.item.rule_id, set()
                 ).add(template_id)
-        self._authoritative_dse_instances: Dict[str, Set[str]] = {}
+        self._dse_instances_by_template: Dict[str, Set[str]] = {}
         self._dse_retirement_candidates: Set[Tuple[int, str]] = set()
         self.correlation = correlation
         self.telemetry = telemetry
@@ -252,18 +252,13 @@ class PrimaryOrchestrator:
             or event.plan_generation != plan.plan_generation
         ):
             raise ValueError("DSE expansion belongs to an unknown plan")
-        if event.removed_keys and not event.authoritative:
-            raise ValueError(
-                "non-authoritative DSE expansion cannot remove runtime instances"
+        self._dse_instances_by_template[event.template_id] = set(
+            event.present_instances
+        )
+        for component_name in event.present_instances:
+            self._dse_retirement_candidates.discard(
+                (event.signature.metadata.id, component_name)
             )
-        if event.authoritative:
-            self._authoritative_dse_instances[event.template_id] = set(
-                event.present_instances
-            )
-            for component_name in event.present_instances:
-                self._dse_retirement_candidates.discard(
-                    (event.signature.metadata.id, component_name)
-                )
         added_identities = set()
         for item in event.added_items:
             # Runtime DSE children, including cloned direct predicates, are
@@ -290,13 +285,12 @@ class PrimaryOrchestrator:
             self.broken_rules.pop(key, None)
             self._forget_removed_work_state(key, item)
         reconciliation_identities = set(added_identities)
-        if event.authoritative:
-            reconciliation_identities.update(
-                identity
-                for identity in self.pending_dynamic_faults
-                if identity[0] == event.signature.metadata.id
-                and identity[1] in event.present_instances
-            )
+        reconciliation_identities.update(
+            identity
+            for identity in self.pending_dynamic_faults
+            if identity[0] == event.signature.metadata.id
+            and identity[1] in event.present_instances
+        )
         for identity in reconciliation_identities:
             record = self.pending_dynamic_faults.get(identity)
             execution = self.correlation.executions.get(identity)
@@ -311,19 +305,18 @@ class PrimaryOrchestrator:
             self._start_reconciliation(
                 execution, "runtime_expansion_fault_reconciliation"
             )
-        if event.authoritative:
-            candidates = {
-                identity
-                for identity in self._dse_retirement_candidates
-                if identity[0] == event.signature.metadata.id
-            }
-            candidates.update(
-                identity
-                for identity in self.pending_dynamic_faults
-                if identity[0] == event.signature.metadata.id
-            )
-            for identity in sorted(candidates):
-                self._retire_absent_dse_fault(identity, event)
+        candidates = {
+            identity
+            for identity in self._dse_retirement_candidates
+            if identity[0] == event.signature.metadata.id
+        }
+        candidates.update(
+            identity
+            for identity in self.pending_dynamic_faults
+            if identity[0] == event.signature.metadata.id
+        )
+        for identity in sorted(candidates):
+            self._retire_absent_dse_fault(identity, event)
         if event.removed_keys:
             self._refresh_fault_source_staleness()
 
@@ -368,9 +361,9 @@ class PrimaryOrchestrator:
         rule_id, component_name = identity
         template_ids = self._dse_template_ids_by_rule.get(rule_id, set())
         if not template_ids or any(
-            template_id not in self._authoritative_dse_instances
+            template_id not in self._dse_instances_by_template
             or component_name
-            in self._authoritative_dse_instances[template_id]
+            in self._dse_instances_by_template[template_id]
             for template_id in template_ids
         ):
             return False
@@ -429,7 +422,7 @@ class PrimaryOrchestrator:
             return True
 
         reason = bound_diagnostic(
-            "authoritative DSE discovery no longer reports instance '{}'".format(
+            "DSE discovery no longer reports instance '{}'".format(
                 component_name
             ),
             512,
@@ -583,7 +576,7 @@ class PrimaryOrchestrator:
                 future.set_result(
                     ActionSequenceResult(
                         "",
-                        "FAILED",
+                        "EXECUTION_ERROR",
                         event.event_timestamp,
                         completed_at,
                         (),
@@ -1086,7 +1079,6 @@ class PrimaryOrchestrator:
         self._apply_queued_config_updates()
         now = self.clock()
         self._retry_dirty_faults()
-        self._refresh_artifact_states()
         self._recover_expected_source_suspensions()
         for identity, pending in list(self.pending.items()):
             action_finished = False
@@ -1109,7 +1101,7 @@ class PrimaryOrchestrator:
                 now_wall = self.wall_clock()
                 pending.action_result = ActionSequenceResult(
                     getattr(pending.future, "dldd_worker_id", ""),
-                    "FAILED",
+                    "TIMED_OUT" if action_deadline_expired else "EXECUTION_ERROR",
                     pending.first_decision.event.event_timestamp,
                     now_wall,
                     (),
@@ -1191,25 +1183,6 @@ class PrimaryOrchestrator:
                 self.source_status.pop(source_id, None)
         return tuple(self.source_status.values())
 
-    def _refresh_artifact_states(self) -> None:
-        if self.artifact_client is None:
-            return
-        for identity, record in self.faults.items():
-            artifact = record.healthz_artifact
-            if not artifact or artifact.get("state") not in ("REQUESTED", "RUNNING"):
-                continue
-            artifact_id = artifact.get("artifact_id")
-            if not artifact_id:
-                continue
-            try:
-                current = self.artifact_client.status(artifact_id).as_payload()
-            except Exception:
-                continue
-            if current == artifact:
-                continue
-            record.healthz_artifact = current
-            self._publish_fault_record(record, refresh_remote_window=True)
-
     def _complete_pending(self, identity, pending: PendingFault) -> None:
         decision = pending.last_decision or pending.first_decision
         active = decision.active or pending.recheck_failed
@@ -1230,7 +1203,11 @@ class PrimaryOrchestrator:
             ),
             decision.event,
         )
-        action_state = pending.action_result.state if pending.action_result else "FAILED"
+        action_state = (
+            pending.action_result.state
+            if pending.action_result
+            else "EXECUTION_ERROR"
+        )
         actions_taken = (
             tuple(item.as_payload() for item in pending.action_result.actions)
             if pending.action_result
@@ -1261,7 +1238,7 @@ class PrimaryOrchestrator:
                 else "action result unavailable"
             ),
         }
-        if action_state == "FAILED":
+        if action_state != "COMPLETED":
             LOGGER.error(
                 "local action sequence failed for rule %s component %s: %s",
                 identity[0],
@@ -1345,7 +1322,7 @@ class PrimaryOrchestrator:
                 if pending_dynamic:
                     # A current-generation dynamic component may have vanished
                     # while DLDD was stopped.  Keep the retained history row,
-                    # but let the first complete authoritative inventory either
+                    # but let the first successful current inventory either
                     # confirm the instance or refresh the row with the explicit
                     # DSE-removal reason and normal inactive TTL.
                     self._dse_retirement_candidates.add(identity)
@@ -1733,10 +1710,8 @@ class PrimaryOrchestrator:
         except Exception as error:
             return floor_timestamp_fields(
                 {
-                    "state": "FAILED",
                     "requested_at": self.wall_clock(),
-                    "completed_at": self.wall_clock(),
-                    "last_error": str(error),
+                    "request_error": str(error),
                 }
             )
 

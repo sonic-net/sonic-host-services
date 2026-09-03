@@ -38,6 +38,6 @@ def test_real_service_action_waits_then_rechecks_before_publication(
         assert not environment.row(FAULT_KEY)
 
         active = environment.wait_for_row(FAULT_KEY, status="ACTIVE")
-        assert json.loads(active["actions_taken"])[0]["status"] == "SUCCESS"
+        assert json.loads(active["actions_taken"])[0]["status"] == "COMPLETED"
         assert json.loads(active["local_action_state"])["state"] == "COMPLETED"
         assert len(source.read_calls) >= 3

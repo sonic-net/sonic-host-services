@@ -145,18 +145,12 @@ class DSEWorkTemplate:
 
 @dataclass
 class DSEExpansionState:
-    phase: str = "BOOTSTRAP"
-    bootstrap_scans_completed: int = 0
-    warmup_cycles_completed: int = 0
-    cycle_id: int = 0
-    binding_fingerprint: Tuple[Tuple[str, str], ...] = ()
+    unchanged_scans: int = 0
+    binding_fingerprint: Optional[Tuple[Tuple[str, str], ...]] = None
     child_keys: Set[str] = field(default_factory=set)
-    pending_cycle_keys: Set[str] = field(default_factory=set)
     next_expansion_due: Optional[float] = None
     last_expansion_timestamp: Optional[float] = None
-    last_complete_cycle_timestamp: Optional[float] = None
     last_error: str = ""
-    authoritative: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,8 +162,6 @@ class DSEExpansionEvent:
     added_items: Tuple[MonitorWorkItem, ...] = ()
     removed_keys: Tuple[str, ...] = ()
     present_instances: Tuple[str, ...] = ()
-    phase: str = "BOOTSTRAP"
-    authoritative: bool = False
     observed_at: float = field(default_factory=time.time)
 
 

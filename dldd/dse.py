@@ -9,8 +9,6 @@ from __future__ import absolute_import
 
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
-import math
-from numbers import Real
 import re
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
@@ -66,36 +64,6 @@ class DSEContext(object):
 
 
 @dataclass(frozen=True)
-class DSEExpansionPolicy(object):
-    """Vendor-selected scheduling policy executed by the monitor thread."""
-
-    bootstrap_scans: int = 2
-    bootstrap_interval: float = 5.0
-    warmup_cycles: int = 3
-    stable_interval: float = 300.0
-
-    def __post_init__(self):
-        for name in ("bootstrap_scans", "warmup_cycles"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError("{} must be a positive integer".format(name))
-            if value < 1:
-                raise ValueError("{} must be positive".format(name))
-        for name in ("bootstrap_interval", "stable_interval"):
-            value = getattr(self, name)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, Real)
-                or not math.isfinite(value)
-            ):
-                raise TypeError(
-                    "{} must be a finite positive number".format(name)
-                )
-            if value <= 0:
-                raise ValueError("{} must be positive".format(name))
-
-
-@dataclass(frozen=True)
 class DSEBinding(object):
     """One runtime instance returned by a DSE source expander."""
 
@@ -118,11 +86,8 @@ class DSEExpansionResult(object):
     """Runtime source expansion returned by a trusted vendor handle."""
 
     bindings: Tuple[DSEBinding, ...]
-    authoritative: bool = False
 
     def __post_init__(self):
-        if not isinstance(self.authoritative, bool):
-            raise TypeError("DSE expansion authoritative must be a bool")
         bindings = tuple(self.bindings)
         if any(not isinstance(item, DSEBinding) for item in bindings):
             raise TypeError("DSE expansion bindings must be DSEBinding objects")
@@ -138,7 +103,6 @@ class DSEInvocationContext(object):
 
     rule: DSEContext
     binding: DSEBinding
-    cycle_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -148,15 +112,12 @@ class DSESourceHandle(object):
     reference: DSEReference
     expand: Callable[[DSEContext], DSEExpansionResult]
     get_value: Callable[[DSEInvocationContext], Any]
-    policy: DSEExpansionPolicy = field(default_factory=DSEExpansionPolicy)
 
     def __post_init__(self):
         if not isinstance(self.reference, DSEReference):
             raise TypeError("DSE source handle requires a DSEReference")
         if not callable(self.expand) or not callable(self.get_value):
             raise TypeError("DSE source handle functions must be callable")
-        if not isinstance(self.policy, DSEExpansionPolicy):
-            raise TypeError("DSE source handle requires DSEExpansionPolicy")
 
 
 @dataclass(frozen=True)

@@ -17,7 +17,6 @@ from dldd.correlation import CorrelationEngine
 from dldd.dse import (
     DSEBinding,
     DSEEvaluationHandle,
-    DSEExpansionPolicy,
     DSEExpansionResult,
     DSEHook,
     DSERegistry,
@@ -1676,7 +1675,6 @@ class RuntimeDSEHook(DSEHook):
     def __init__(self):
         self.values = {"SENSOR0": 10.0}
         self.thresholds = {"SENSOR0": 20.0}
-        self.authoritative = False
         self.expansion_error = None
         self.expansions = 0
         self.collections = 0
@@ -1698,8 +1696,7 @@ class RuntimeDSEHook(DSEHook):
                         ),
                     )
                     for name in sorted(self.values)
-                ),
-                authoritative=self.authoritative,
+                )
             )
 
         def get_value(invocation):
@@ -1710,12 +1707,6 @@ class RuntimeDSEHook(DSEHook):
             reference,
             expand,
             get_value,
-            DSEExpansionPolicy(
-                bootstrap_scans=2,
-                bootstrap_interval=1,
-                warmup_cycles=2,
-                stable_interval=10,
-            ),
         )
 
     def resolve_evaluation(self, reference, context):
@@ -1730,7 +1721,7 @@ class RuntimeDSEHook(DSEHook):
         return DSEEvaluationHandle(reference, get_comparator)
 
 
-def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
+def test_runtime_dse_adapts_inventory_cadence_and_refreshes_each_sample():
     with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
         document = json.load(stream)
     configured = document["signatures"][0]["signature"]["conditions"][
@@ -1777,7 +1768,7 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
         wall_clock=lambda: 1000.0 + clock.value,
     )
 
-    for value in (0.0, 1.0, 2.0, 3.0):
+    for value in (0.0, 5.0, 10.0, 15.0):
         clock.value = value
         monitor.run_once()
 
@@ -1789,13 +1780,14 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
         type="N/A", unit="rule-units"
     )
     state = next(iter(monitor.plan.expansion_state_by_key.values()))
-    assert state.phase == "STABLE"
+    assert state.unchanged_scans == 3
+    assert state.next_expansion_due == 315.0
     assert hook.expansions == 4
     assert hook.collections == 4
     assert hook.evaluations == 4
 
     hook.thresholds["SENSOR0"] = 5.0
-    clock.value = 4.0
+    clock.value = 20.0
     monitor.run_once()
 
     matched = evidence.get_nowait()
@@ -1818,7 +1810,7 @@ def test_runtime_dse_expands_warms_up_and_refreshes_evaluator_each_sample():
         MonitorWorkState.HELD_BY_PRIMARY,
     ),
 )
-def test_authoritative_dse_removal_waits_for_primary_owned_child(
+def test_dse_removal_waits_for_primary_owned_child(
     blocked_state,
 ):
     with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
@@ -1837,7 +1829,6 @@ def test_authoritative_dse_removal_waits_for_primary_owned_child(
         }
     )
     hook = RuntimeDSEHook()
-    hook.authoritative = True
     validated = validate_document(
         document,
         ValidationContext(dse_registry=DSERegistry(hook=hook)),
@@ -1867,7 +1858,6 @@ def test_authoritative_dse_removal_waits_for_primary_owned_child(
         template_id, template, expansion_state, adapter_map()["dse"], 1.0
     )
     deferred = evidence.get_nowait()
-    assert deferred.authoritative
     assert deferred.present_instances == ()
     assert deferred.removed_keys == ()
     assert child_key in monitor.plan.expanded_items_by_key
@@ -1908,9 +1898,7 @@ def _runtime_dse_bundle(hook):
     )
 
 
-def test_dse_discovery_phase_lifecycle():
-    """Exercise failures, empty inventory, scheduling, change, and stability."""
-
+def test_dse_discovery_retains_inventory_on_error_and_slows_when_stable():
     hook = RuntimeDSEHook()
     bundle = _runtime_dse_bundle(hook)
     monitor = MonitorThread(
@@ -1918,134 +1906,25 @@ def test_dse_discovery_phase_lifecycle():
     )
     template_id, template = next(iter(bundle.templates.items()))
     state = monitor.plan.expansion_state_by_key[template_id]
-    state.phase = "STABLE"
+    adapter = adapter_map()["dse"]
+
+    monitor._expand_template(template_id, template, state, adapter, 0.0)
+    original_keys = set(state.child_keys)
+    for now in (5.0, 10.0, 15.0):
+        monitor._expand_template(template_id, template, state, adapter, now)
+    assert state.unchanged_scans == 3
+    assert state.next_expansion_due == 315.0
+
     hook.expansion_error = RuntimeError("inventory unavailable")
-
-    monitor._expand_template(
-        template_id, template, state, adapter_map()["dse"], 10.0
-    )
-
-    assert state.phase == "WARMUP"
-    assert state.warmup_cycles_completed == 0
-    assert state.next_expansion_due == (
-        10.0 + template.source_handle.policy.bootstrap_interval
-    )
+    monitor._expand_template(template_id, template, state, adapter, 20.0)
+    assert state.child_keys == original_keys
+    assert state.unchanged_scans == 0
+    assert state.next_expansion_due == 25.0
     assert state.last_error == "inventory unavailable"
-    assert "DSE expansion failed" in monitor.diagnostics[-1]["reason"]
-
-    state.phase = "BOOTSTRAP"
-    monitor._expand_template(
-        template_id, template, state, adapter_map()["dse"], 20.0
-    )
-    assert state.phase == "BOOTSTRAP"
-    assert state.next_expansion_due == (
-        20.0 + template.source_handle.policy.bootstrap_interval
-    )
-
-    # Authoritative empty inventory progresses through the normal phases.
-    hook = RuntimeDSEHook()
-    hook.authoritative = True
-    hook.values.clear()
-    hook.thresholds.clear()
-    bundle = _runtime_dse_bundle(hook)
-    evidence = Queue()
-    monitor = MonitorThread(
-        bundle.monitor_plans["common"], adapter_map(), evidence
-    )
-    template_id, template = next(iter(bundle.templates.items()))
-    state = monitor.plan.expansion_state_by_key[template_id]
-    adapter = adapter_map()["dse"]
-
-    monitor._expand_template(template_id, template, state, adapter, 0.0)
-    assert state.phase == "BOOTSTRAP"
-    monitor._expand_template(template_id, template, state, adapter, 1.0)
-    assert state.phase == "WARMUP"
-    monitor._expand_template(template_id, template, state, adapter, 2.0)
-    assert state.phase == "WARMUP"
-    monitor._expand_template(template_id, template, state, adapter, 3.0)
-
-    assert state.phase == "STABLE"
-    assert state.child_keys == set()
-    assert state.next_expansion_due == (
-        3.0 + template.source_handle.policy.stable_interval
-    )
-    events = tuple(evidence.get_nowait() for unused in range(4))
-    assert all(event.authoritative for event in events)
-    assert all(event.present_instances == () for event in events)
-
-    # Discovery scheduling waits for both child-cycle and time gates.
-    hook = RuntimeDSEHook()
-    bundle = _runtime_dse_bundle(hook)
-    monitor = MonitorThread(
-        bundle.monitor_plans["common"], adapter_map(), Queue()
-    )
-    template_id = next(iter(bundle.templates))
-    state = monitor.plan.expansion_state_by_key[template_id]
-    calls = []
-    monitor._expand_template = lambda *args: calls.append(args)
-
-    state.pending_cycle_keys = {"child"}
-    monitor._expand_due_templates(5.0)
-    assert calls == []
-    monitor._refresh_next_poll(5.0)
-    assert monitor._next_poll == 65.0
-
-    state.pending_cycle_keys.clear()
-    state.next_expansion_due = 10.0
-    monitor._expand_due_templates(5.0)
-    assert calls == []
-    monitor._expand_due_templates(10.0)
-    assert len(calls) == 1
-
-    # Inventory changes reset warmup; unchanged scans restore stable cadence.
-    hook = RuntimeDSEHook()
-    hook.authoritative = True
-    bundle = _runtime_dse_bundle(hook)
-    evidence = Queue()
-    monitor = MonitorThread(
-        bundle.monitor_plans["common"], adapter_map(), evidence
-    )
-    template_id, template = next(iter(bundle.templates.items()))
-    state = monitor.plan.expansion_state_by_key[template_id]
-    adapter = adapter_map()["dse"]
-
-    monitor._expand_template(template_id, template, state, adapter, 0.0)
-    evidence.get_nowait()
-    state.phase = "WARMUP"
-    state.warmup_cycles_completed = 2
-    hook.values = {"SENSOR1": 11.0}
-    hook.thresholds = {"SENSOR1": 20.0}
-    monitor._expand_template(template_id, template, state, adapter, 1.0)
-    evidence.get_nowait()
-    assert state.phase == "WARMUP"
-    assert state.warmup_cycles_completed == 0
-
-    state.warmup_cycles_completed = template.source_handle.policy.warmup_cycles - 1
-    monitor._expand_template(template_id, template, state, adapter, 2.0)
-    evidence.get_nowait()
-    assert state.phase == "STABLE"
-    assert state.next_expansion_due == (
-        2.0 + template.source_handle.policy.stable_interval
-    )
-
-    monitor._expand_template(template_id, template, state, adapter, 3.0)
-    evidence.get_nowait()
-    assert state.phase == "STABLE"
-    assert state.next_expansion_due == (
-        3.0 + template.source_handle.policy.stable_interval
-    )
-
-    hook.values = {"SENSOR2": 12.0}
-    hook.thresholds = {"SENSOR2": 20.0}
-    monitor._expand_template(template_id, template, state, adapter, 4.0)
-    evidence.get_nowait()
-    assert state.phase == "WARMUP"
-    assert state.warmup_cycles_completed == 0
 
 
 def test_shared_dse_child_is_removed_only_after_last_template_relinquishes():
     hook = RuntimeDSEHook()
-    hook.authoritative = True
     bundle = _runtime_dse_bundle(hook)
     first_id, first = next(iter(bundle.templates.items()))
     second_id = first_id + ":second"
@@ -2254,7 +2133,7 @@ def test_runtime_dse_does_not_publish_children_before_expansion_registration():
 
     evidence.get_nowait()
     evidence.task_done()
-    clock.value = 1.0
+    clock.value = 5.0
     monitor.run_once()
 
     assert len(monitor.plan.expanded_items_by_key) == 1

@@ -38,7 +38,6 @@ from .preflight import (
 )
 from .runtime import make_rule_instance_id
 from .rule_schema.errors import bound_diagnostic, bound_identity
-from .rule_status import build_rule_status_snapshot
 from .telemetry import SonicStateDB, TelemetryPublisher
 from .timestamps import floor_timestamp
 from .validation import (
@@ -320,28 +319,6 @@ class DLDDService:
             async_collection_pool=self.async_collection_pool,
             stop_event=self.stop_event,
         )
-
-    def _activation_status_fields(self):
-        """Return status fields owned by the selected rules generation."""
-
-        activation = self.activation
-        if activation is None:
-            return {}
-        payload = getattr(activation, "payload", None)
-        ruleset = getattr(payload, "ruleset", None)
-        local_timeout = ruleset.local_action_default_timeout if ruleset is not None else None
-        return {
-            "local_action_default_timeout": local_timeout,
-            "active_rules_source": getattr(activation, "source", ""),
-            "activation_result": getattr(activation, "validation_result", ""),
-            "activation_fallback_used": getattr(activation, "fallback_used", False),
-            "previous_active_rules_checksum": getattr(activation, "previous_checksum", ""),
-        }
-
-    def _async_pool_metrics(self):
-        if self.async_collection_pool is None:
-            return None
-        return self.async_collection_pool.metrics()
 
     def _create_artifact_client(self) -> HealthzArtifactClient:
         factory = getattr(self.extensions, "artifact_client_factory", None)
@@ -651,174 +628,65 @@ class DLDDService:
         )
         self._state_fingerprint = fingerprint
 
-    def _rule_status_snapshot(self):
-        """Aggregate the active generation into bounded operator-facing rows."""
-        return build_rule_status_snapshot(
-            self.activation,
-            self.orchestrator,
-            self.monitors,
-        )
-
-    def _publish_rule_status(self) -> bool:
-        if self.telemetry is None:
-            return False
-        if self.activation is None:
-            return self.telemetry.clear_rule_status()
-        try:
-            rules, detail_truncated = self._rule_status_snapshot()
-        except Exception:
-            LOGGER.exception("unable to build DLDD rule status snapshot")
-            return False
-        return self.telemetry.publish_rule_status(
-            self.activation.checksum,
-            rules,
-            detail_truncated=detail_truncated,
-        )
-
     def _publish_status(self) -> bool:
         if self.telemetry is None:
             return False
         if self.activation is None:
-            rule_status_published = self._publish_rule_status()
-            status_published = self.telemetry.publish_status(
+            return self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 "",
                 "",
                 "",
                 reason=self.fatal_reason or "no active rules generation",
-                async_pool_metrics=self._async_pool_metrics(),
             )
-            return status_published and rule_status_published
         if self.fatal_reason:
-            rule_status_published = self._publish_rule_status()
             broken = _operator_status_records(
                 self.startup_broken or tuple(self.activation.broken_rules)
             )
-            status_published = self.telemetry.publish_status(
+            return self.telemetry.publish_status(
                 "BROKEN|FATAL",
                 self.activation.schema_version,
                 self.activation.active_file,
                 self.activation.checksum,
                 broken_rules=broken,
                 reason=self.fatal_reason,
-                async_pool_metrics=self._async_pool_metrics(),
-                **self._activation_status_fields(),
+                active_rules_source=self.activation.source,
+                activation_result=self.activation.validation_result,
             )
-            return status_published and rule_status_published
         broken = tuple(self.activation.broken_rules)
         source = ()
-        inflight = ()
-        diagnostics = ()
         work_items = {}
         state = "OK"
+        active_fault_count = 0
+        inflight_count = 0
         if self.orchestrator is not None:
             work_items = getattr(self.orchestrator, "work_items", {})
             broken = tuple(self.orchestrator.broken_rules.values())
             source = self.orchestrator.source_status_snapshot()
-            inflight = self._inflight_status()
             state = self.orchestrator.service_state()
-            diagnostics = tuple(
-                diagnostic
-                for monitor in self.monitors
-                for diagnostic in monitor.diagnostics
-            ) + tuple(self.orchestrator.service_diagnostics) + tuple(
-                self.orchestrator.correlation.diagnostics
+            active_fault_count = sum(
+                record.status == "ACTIVE"
+                for record in self.orchestrator.faults.values()
+            )
+            inflight_count = len(self.orchestrator.pending) + len(
+                self.orchestrator.reconciliation
             )
         broken = _operator_status_records(broken, work_items)
-        diagnostics = _operator_status_records(diagnostics, work_items)
-        status_published = self.telemetry.publish_status(
+        payload = getattr(self.activation, "payload", None)
+        return self.telemetry.publish_status(
             state,
             self.activation.schema_version,
             self.activation.active_file,
             self.activation.checksum,
+            rule_count=len(getattr(payload, "materialized_rules", ())),
+            active_fault_count=active_fault_count,
             broken_rules=broken,
             source_status=source,
-            inflight_fault_evidence=inflight,
-            service_diagnostics=diagnostics,
+            inflight_count=inflight_count,
             reason="" if state == "OK" else "DLDD has degraded or broken rules/sources",
-            async_pool_metrics=self._async_pool_metrics(),
-            **self._activation_status_fields(),
+            active_rules_source=self.activation.source,
+            activation_result=self.activation.validation_result,
         )
-        return status_published and self._publish_rule_status()
-
-    def _inflight_status(self):
-        """Return durable primary-owned work, not transient queue handoffs.
-
-        Process status is refreshed every 30 seconds.  Publishing a normal
-        COLLECTING or IN_FLIGHT handoff can therefore make a sub-second state
-        look stuck for an entire heartbeat interval.  Lease failures already
-        surface through service diagnostics, so this operator view is limited
-        to intentional holds and requested rechecks.
-        """
-
-        result = []
-        monotonic_now = time.monotonic()
-        wall_now = time.time()
-        pending_by_key = {}
-        for pending in self.orchestrator.pending.values():
-            for key in pending.execution.work_keys:
-                pending_by_key.setdefault(key, pending)
-        for monitor in self.monitors:
-            items, states = monitor.plan.runtime_snapshot()
-            for key, state in states.items():
-                if state.state.value not in (
-                    "HELD_BY_PRIMARY",
-                    "RECHECK_REQUESTED",
-                ):
-                    continue
-                item = items.get(key)
-                if item is None:
-                    LOGGER.warning(
-                        "unable to publish in-flight status for missing work item %s",
-                        key,
-                    )
-                    continue
-                status = {
-                    "rule_instance_id": make_rule_instance_id(
-                        item.rule_id, item.component_name
-                    ),
-                    "rule": item.rule_name,
-                    "rule_id": item.rule_id,
-                    "event_id": item.event_id,
-                    "component_type": item.component_type,
-                    "component_name": item.component_name,
-                    "state": state.state.value,
-                    "reason": "primary_owned",
-                    "since": state.last_enqueue_timestamp,
-                    "hold_deadline": (
-                        wall_now + (state.hold_deadline - monotonic_now)
-                        if state.hold_deadline is not None
-                        else None
-                    ),
-                    "owning_monitor": monitor.plan.monitor_id,
-                }
-                pending = pending_by_key.get(key)
-                if pending is not None:
-                    action_result = pending.action_result
-                    wait_until = None
-                    if pending.wait_until is not None:
-                        wait_until = wall_now + (pending.wait_until - monotonic_now)
-                    status["local_action_state"] = {
-                        "state": (
-                            "RUNNING"
-                            if pending.phase == "ACTIONS"
-                            else "WAITING_FOR_RECHECK"
-                        ),
-                        "worker_id": (
-                            action_result.worker_id
-                            if action_result is not None
-                            else getattr(pending.future, "dldd_worker_id", "")
-                        ),
-                        "started_at": pending.first_decision.event.event_timestamp,
-                        "wait_until": wait_until,
-                        "last_error": (
-                            action_result.last_error
-                            if action_result is not None
-                            else ""
-                        ),
-                    }
-                result.append(status)
-        return tuple(result)
 
     def shutdown(self, clean_shutdown: bool = True) -> None:
         self.stop_event.set()

@@ -100,44 +100,20 @@ def test_status_publication_ttl_failure_and_reason_boundary_contract(caplog):
         "sha256:test",
         active_rules_source="inbox",
         activation_result="DEGRADED",
-        activation_fallback_used=True,
-        previous_active_rules_checksum="sha256:old",
+        rule_count=12,
+        active_fault_count=2,
+        broken_rules=({"rule": "bad"},),
+        source_status=({"source": "redis"},),
     )
     status = database.values[publisher.STATUS_KEY]
     assert database.ttls[publisher.STATUS_KEY] == 120
     assert status["active_rules_source"] == "inbox"
     assert status["activation_result"] == "DEGRADED"
-    assert status["activation_fallback_used"] == "true"
-    metric_names = (
-        "async_pool_workers",
-        "async_pool_busy",
-        "async_pool_queued",
-        "async_pool_avg_queue_latency_ms",
-        "async_pool_avg_execution_time_ms",
-        "async_pool_avg_utilization_percent",
-    )
-    assert [status[name] for name in metric_names] == [
-        "0", "0", "0", "0.0", "0.0", "0.0"
-    ]
-
-    publisher.publish_status(
-        "OK",
-        "0.0.1",
-        "/active",
-        "sha256:test",
-        async_pool_metrics={
-            "async_pool_workers": 8,
-            "async_pool_busy": 3,
-            "async_pool_queued": 4,
-            "async_pool_avg_queue_latency_ms": 1.25,
-            "async_pool_avg_execution_time_ms": 4.5,
-            "async_pool_avg_utilization_percent": 12.5,
-        },
-    )
-    status = database.values[publisher.STATUS_KEY]
-    assert [status[name] for name in metric_names] == [
-        "8", "3", "4", "1.25", "4.5", "12.5"
-    ]
+    assert status["rule_count"] == "12"
+    assert status["active_fault_count"] == "2"
+    assert status["rule_exception_count"] == "1"
+    assert status["source_exception_count"] == "1"
+    assert "async_pool_workers" not in status
 
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
@@ -154,77 +130,6 @@ def test_status_publication_ttl_failure_and_reason_boundary_contract(caplog):
     assert len(database.values[record.redis_key]["reason"].encode()) <= 512
 
 
-def test_rule_status_snapshot_replacement_and_key_namespace_contract():
-    database = FakeStateDB()
-    publisher = TelemetryPublisher(database, DLDDConfig())
-    rules = (
-        {
-            "rule_id": 1000001,
-            "rule": "PSU_FAULT",
-            "health": "OK",
-            "active_faults": 0,
-            "work_items": [],
-        },
-    )
-
-    assert publisher.publish_rule_status(
-        "sha256:test", rules, detail_truncated=True
-    )
-
-    row = database.values[publisher.RULE_STATUS_KEY]
-    assert database.ttls[publisher.RULE_STATUS_KEY] == 120
-    assert row["active_rules_checksum"] == "sha256:test"
-    assert json.loads(row["rule_keys"]) == [
-        "DLDD_RULE_STATUS|rule|PSU_FAULT"
-    ]
-    assert row["rule_count"] == "1"
-    assert row["detail_truncated"] == "true"
-    assert row["published_at"].isdigit()
-    summary = database.values["DLDD_RULE_STATUS|rule|PSU_FAULT"]
-    detail = database.values["DLDD_RULE_DETAIL|rule|PSU_FAULT"]
-    assert summary["rule_id"] == "1000001"
-    assert summary["health"] == "OK"
-    assert "work_items" not in summary
-    assert json.loads(detail["work_items"]) == []
-    assert all(
-        database.ttls[key] == 120
-        for key in (
-            publisher.RULE_STATUS_KEY,
-            "DLDD_RULE_STATUS|rule|PSU_FAULT",
-            "DLDD_RULE_DETAIL|rule|PSU_FAULT",
-        )
-    )
-
-    assert publisher.clear_rule_status()
-    assert publisher.RULE_STATUS_KEY not in database.values
-    assert "DLDD_RULE_STATUS|rule|PSU_FAULT" not in database.values
-    assert "DLDD_RULE_DETAIL|rule|PSU_FAULT" not in database.values
-
-    database.hset(
-        publisher.RULE_STATUS_KEY,
-        {"rules": [{"rule": "legacy-monolith"}]},
-    )
-    publisher.publish_rule_status(
-        "sha256:first",
-        (
-            {"rule_id": 1, "rule": "RULE_ONE", "work_items": []},
-            {"rule_id": 2, "rule": "RULE_TWO", "work_items": []},
-        ),
-    )
-    assert "rules" not in database.values[publisher.RULE_STATUS_KEY]
-    assert "DLDD_RULE_STATUS|rule|RULE_TWO" in database.values
-    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" in database.values
-
-    publisher.publish_rule_status(
-        "sha256:second",
-        ({"rule_id": 1, "rule": "RULE_ONE", "work_items": []},),
-    )
-    assert json.loads(
-        database.values[publisher.RULE_STATUS_KEY]["rule_keys"]
-    ) == ["DLDD_RULE_STATUS|rule|RULE_ONE"]
-    assert "DLDD_RULE_STATUS|rule|RULE_TWO" not in database.values
-    assert "DLDD_RULE_DETAIL|rule|RULE_TWO" not in database.values
-
 def test_publications_floor_timestamps_and_preserve_duration_precision():
     database = FakeStateDB()
     publisher = TelemetryPublisher(database, DLDDConfig())
@@ -237,30 +142,6 @@ def test_publications_floor_timestamps_and_preserve_duration_precision():
     )
     status = database.values[publisher.STATUS_KEY]
     assert json.loads(status["broken_rules"])[0]["last_attempt"] == 100
-
-    publisher.publish_rule_status(
-        "sha256:test",
-        (
-            {
-                "rule_id": 1000001,
-                "rule": "TIMESTAMP_RULE",
-                "last_attempt": 107.2,
-                "work_items": [
-                    {
-                        "next_due": 109.9,
-                        "sampling_interval": 60.25,
-                    }
-                ],
-            },
-        ),
-    )
-    detail = json.loads(
-        database.values["DLDD_RULE_DETAIL|rule|TIMESTAMP_RULE"]["work_items"]
-    )
-    assert detail[0] == {
-        "next_due": 109,
-        "sampling_interval": 60.25,
-    }
 
     record = fault()
     record.origin_time = 110.8

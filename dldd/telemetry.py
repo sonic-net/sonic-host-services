@@ -5,29 +5,17 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import logging
-import time
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
-from urllib.parse import quote
 
 from .config import DLDDConfig
 from .ownership import DLDD_FAULT_PRODUCER
 from .rule_schema.errors import bound_diagnostic
 from .runtime import FaultRecord
 from .sonic_hash import SonicHashReader, decode_db_hash, decode_db_text
-from .timestamps import floor_timestamp, floor_timestamp_fields
+from .timestamps import floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-EMPTY_ASYNC_POOL_METRICS = {
-    "async_pool_workers": 0,
-    "async_pool_busy": 0,
-    "async_pool_queued": 0,
-    "async_pool_avg_queue_latency_ms": 0.0,
-    "async_pool_avg_execution_time_ms": 0.0,
-    "async_pool_avg_utilization_percent": 0.0,
-}
 
 
 def _json_safe(value: Any) -> Any:
@@ -233,9 +221,10 @@ class SonicStateDB(StateDB):
 
 
 class TelemetryPublisher:
-    """Publish bounded DLDD process, rule, and fault records to STATE_DB."""
+    """Publish bounded DLDD process and fault records to STATE_DB."""
 
     STATUS_KEY = "DLDD_STATUS|process_state"
+    # Retained only so reset can remove telemetry produced by older images.
     RULE_STATUS_KEY = "DLDD_RULE_STATUS|active"
     RULE_STATUS_PREFIX = "DLDD_RULE_STATUS|rule|"
     RULE_DETAIL_PREFIX = "DLDD_RULE_DETAIL|rule|"
@@ -257,19 +246,17 @@ class TelemetryPublisher:
         running_schema: str,
         active_rules_file: str,
         active_rules_checksum: str,
+        rule_count: int = 0,
+        active_fault_count: int = 0,
         broken_rules=(),
         source_status=(),
-        inflight_fault_evidence=(),
-        service_diagnostics=(),
+        inflight_count: int = 0,
         reason: str = "",
-        local_action_default_timeout: Optional[int] = None,
         active_rules_source: str = "",
         activation_result: str = "",
-        activation_fallback_used: bool = False,
-        previous_active_rules_checksum: str = "",
-        async_pool_metrics: Optional[Mapping[str, float]] = None,
     ) -> bool:
-        pool_metrics = {**EMPTY_ASYNC_POOL_METRICS, **(async_pool_metrics or {})}
+        broken_rules = list(broken_rules)
+        source_status = list(source_status)
         payload = {
             "state": state,
             "running_schema": running_schema,
@@ -277,15 +264,14 @@ class TelemetryPublisher:
             "active_rules_checksum": active_rules_checksum,
             "active_rules_source": active_rules_source,
             "activation_result": activation_result,
-            "activation_fallback_used": activation_fallback_used,
-            "previous_active_rules_checksum": previous_active_rules_checksum,
-            **pool_metrics,
-            **asdict(self.config),
-            "local_action_default_timeout": local_action_default_timeout,
-            "broken_rules": list(broken_rules),
-            "source_status": list(source_status),
-            "inflight_fault_evidence": list(inflight_fault_evidence),
-            "service_diagnostics": list(service_diagnostics),
+            "rule_count": rule_count,
+            "active_fault_count": active_fault_count,
+            "rule_exception_count": len(broken_rules),
+            "source_exception_count": len(source_status),
+            "inflight_count": inflight_count,
+            "broken_rules": broken_rules,
+            "source_status": source_status,
+            "effective_config": asdict(self.config),
             "reason": reason,
         }
         payload = floor_timestamp_fields(payload)
@@ -295,87 +281,6 @@ class TelemetryPublisher:
         except Exception as error:
             LOGGER.error("unable to publish DLDD_STATUS: %s", error)
             return False
-
-    def publish_rule_status(
-        self,
-        active_rules_checksum: str,
-        rules=(),
-        detail_truncated: bool = False,
-    ) -> bool:
-        """Publish one bounded hash per rule plus a small active index."""
-
-        published_at = floor_timestamp(time.time())
-        status_keys = []
-        detail_keys = []
-        try:
-            for index, rule_value in enumerate(rules):
-                rule = dict(rule_value)
-                identity = str(
-                    rule.get("rule")
-                    or rule.get("rule_id")
-                    or "unknown-{}".format(index)
-                )
-                suffix = quote(identity, safe="")
-                status_key = self.RULE_STATUS_PREFIX + suffix
-                detail_key = self.RULE_DETAIL_PREFIX + suffix
-                work_items = list(rule.pop("work_items", ()) or ())
-                summary = {
-                    **rule,
-                    "active_rules_checksum": active_rules_checksum,
-                    "detail_key": detail_key,
-                    "published_at": published_at,
-                }
-                detail = {
-                    "active_rules_checksum": active_rules_checksum,
-                    "rule_id": rule.get("rule_id"),
-                    "rule": rule.get("rule", ""),
-                    "work_items": work_items,
-                    "published_at": published_at,
-                }
-                for key, values in ((detail_key, detail), (status_key, summary)):
-                    self.state_db.replace_hash(
-                        key, floor_timestamp_fields(values), self.STATUS_TTL
-                    )
-                status_keys.append(status_key)
-                detail_keys.append(detail_key)
-
-            index_payload = {
-                "active_rules_checksum": active_rules_checksum,
-                "rule_keys": status_keys,
-                "rule_count": len(status_keys),
-                "detail_truncated": detail_truncated,
-                "published_at": published_at,
-            }
-            self.state_db.replace_hash(
-                self.RULE_STATUS_KEY,
-                index_payload,
-                self.STATUS_TTL,
-            )
-            keep = set(status_keys + detail_keys + [self.RULE_STATUS_KEY])
-            self.state_db.delete_many(
-                self._published_rule_status_keys() - keep
-            )
-            return True
-        except Exception as error:
-            LOGGER.error("unable to publish DLDD_RULE_STATUS: %s", error)
-            return False
-
-    def clear_rule_status(self) -> bool:
-        try:
-            self.state_db.delete_many(self._published_rule_status_keys())
-            return True
-        except Exception as error:
-            LOGGER.error("unable to clear DLDD_RULE_STATUS: %s", error)
-            return False
-
-    def _published_rule_status_keys(self):
-        keys = {self.RULE_STATUS_KEY}
-        for prefix in (self.RULE_STATUS_PREFIX, self.RULE_DETAIL_PREFIX):
-            keys.update(
-                decode_db_text(key)
-                for key in self.state_db.keys(prefix + "*")
-            )
-        return keys
 
     def publish_fault(
         self,

@@ -1,4 +1,4 @@
-"""Asynchronous Healthz artifact production boundary."""
+"""Asynchronous host-side Healthz artifact generation."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ import threading
 import time
 import uuid
 from concurrent.futures import TimeoutError
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from queue import Full, Queue
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from .bounded_calls import BoundedCallGate, start_daemon_workers
 from .command_execution import DEFAULT_MAX_OUTPUT_BYTES, run_checked_shell_free
-from .filesystem import atomic_write_json, unlink_if_exists
+from .filesystem import unlink_if_exists
 from .models import Operation
 from .timestamps import floor_timestamp_fields
 
@@ -29,36 +29,28 @@ from .timestamps import floor_timestamp_fields
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_ARTIFACT_DIRECTORY = "/var/lib/sonic/dldd/artifacts"
-_ARTIFACT_BASE_PATTERN = re.compile(r"^dldd-[0-9a-f]{32}$")
-_STAGED_ARCHIVE_PATTERN = re.compile(
+_ARTIFACT_PATTERN = re.compile(r"^dldd-[0-9a-f]{32}\.tar\.gz$")
+_STAGED_PATTERN = re.compile(
     r"^\.dldd-[0-9a-f]{32}-[A-Za-z0-9_-]+\.tar\.gz$"
 )
 
 
 @dataclass(frozen=True)
-class ArtifactRequest:
+class ArtifactReference:
+    """Stable reference published once when collection is accepted."""
+
     artifact_id: str
-    state: str
     requested_at: float
-    completed_at: Optional[float] = None
-    last_error: str = ""
+    location: str
 
     def as_payload(self) -> Mapping[str, Any]:
-        return floor_timestamp_fields(asdict(self))
-
-
-def _artifact_state(
-    artifact_base: str,
-    state: str,
-    requested_at: float,
-    completed_at: Optional[float] = None,
-    last_error: str = "",
-) -> ArtifactRequest:
-    """Build one persisted state for a canonical artifact base name."""
-
-    return ArtifactRequest(
-        artifact_base + ".tar.gz", state, requested_at, completed_at, last_error
-    )
+        return floor_timestamp_fields(
+            {
+                "artifact_id": self.artifact_id,
+                "requested_at": self.requested_at,
+                "location": self.location,
+            }
+        )
 
 
 class HealthzArtifactClient:
@@ -67,13 +59,8 @@ class HealthzArtifactClient:
         metadata: Mapping[str, Any],
         logs: Iterable[str],
         queries: Iterable[Mapping[str, Any]],
-    ) -> ArtifactRequest:
-        """Queue one bounded artifact request and return its initial state."""
-
-        raise NotImplementedError
-
-    def status(self, artifact_id: str) -> ArtifactRequest:
-        """Return the latest state for one artifact identifier."""
+    ) -> ArtifactReference:
+        """Accept one collection request and return its stable reference."""
 
         raise NotImplementedError
 
@@ -82,7 +69,7 @@ class HealthzArtifactClient:
 
 
 class FilesystemArtifactClient(HealthzArtifactClient):
-    """Produce artifacts in a directory exported by the gNOI Healthz server."""
+    """Generate final archives atomically in the host Healthz directory."""
 
     def __init__(
         self,
@@ -98,55 +85,39 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         self.max_artifact_bytes = max(1024, max_artifact_bytes)
         max_workers = max(1, int(max_workers))
         self._jobs = Queue(maxsize=self.max_artifacts)
-        self._query_gate = BoundedCallGate(
-            max_workers, "dldd-artifact-query"
-        )
+        self._query_gate = BoundedCallGate(max_workers, "dldd-artifact-query")
         self._store_lock = threading.RLock()
         self._active = set()
         self._closed = False
         os.makedirs(self.directory, mode=0o750, exist_ok=True)
         with self._store_lock:
-            self._reconcile_store_locked()
+            self._remove_interrupted_staging_locked()
             self._prune_locked()
         self._workers = start_daemon_workers(
             max_workers, "dldd-artifacts-", self._worker
         )
 
-    def request(
-        self,
-        metadata: Mapping[str, Any],
-        logs: Iterable[str],
-        queries: Iterable[Mapping[str, Any]],
-    ) -> ArtifactRequest:
-        requested = time.time()
-        artifact_base = "dldd-{}".format(uuid.uuid4().hex)
-        artifact_id = artifact_base + ".tar.gz"
-        request = _artifact_state(artifact_base, "REQUESTED", requested)
-        job = (
-            artifact_base,
-            artifact_id,
-            requested,
-            dict(metadata),
-            tuple(logs),
-            tuple(queries),
-        )
+    def request(self, metadata, logs, queries) -> ArtifactReference:
+        requested_at = time.time()
+        artifact_id = "dldd-{}.tar.gz".format(uuid.uuid4().hex)
+        job = (artifact_id, dict(metadata), tuple(logs), tuple(queries))
         with self._store_lock:
             if self._closed:
                 raise RuntimeError("artifact client is shut down")
             self._prune_locked(reserve=1)
-            if len(self._canonical_bases_locked()) >= self.max_artifacts:
-                raise RuntimeError(
-                    "artifact store capacity is exhausted by active jobs"
-                )
-            self._active.add(artifact_base)
+            if len(self._archives_locked()) + len(self._active) >= self.max_artifacts:
+                raise RuntimeError("artifact store capacity is exhausted")
+            self._active.add(artifact_id)
             try:
-                self._record_state(artifact_base, request)
                 self._jobs.put_nowait(job)
             except Exception:
-                self._active.discard(artifact_base)
-                self._remove_pair_locked(artifact_base)
+                self._active.discard(artifact_id)
                 raise
-        return request
+        return ArtifactReference(
+            artifact_id,
+            requested_at,
+            os.path.join(self.directory, artifact_id),
+        )
 
     def _worker(self) -> None:
         while True:
@@ -156,129 +127,75 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                     return
                 try:
                     self._collect(*job)
-                except Exception as error:
-                    artifact_base, artifact_id, requested = job[:3]
-                    try:
-                        self._record_terminal(
-                            artifact_base,
-                            _artifact_state(
-                                artifact_base,
-                                "FAILED",
-                                requested,
-                                time.time(),
-                                str(error),
-                            ),
-                        )
-                    except Exception:
-                        LOGGER.exception(
-                            "unable to record failed artifact %s", artifact_id
-                        )
+                except Exception:
+                    LOGGER.exception("artifact generation failed for %s", job[0])
             finally:
+                if job is not None:
+                    with self._store_lock:
+                        self._active.discard(job[0])
+                        self._prune_locked()
                 self._jobs.task_done()
 
-    def _collect(
-        self,
-        artifact_base: str,
-        artifact_id: str,
-        requested: float,
-        metadata: Mapping[str, Any],
-        logs,
-        queries,
-    ) -> None:
+    def _collect(self, artifact_id, metadata, logs, queries) -> None:
         archive_path = os.path.join(self.directory, artifact_id)
-        staged_archive = None
+        descriptor, staged = tempfile.mkstemp(
+            prefix=".{}-".format(artifact_id[:-7]),
+            suffix=".tar.gz",
+            dir=self.directory,
+        )
+        os.close(descriptor)
         try:
-            descriptor, staged_archive = tempfile.mkstemp(
-                prefix=".{}-".format(artifact_base),
-                suffix=".tar.gz",
-                dir=self.directory,
-            )
-            os.close(descriptor)
-            self._record_state(
-                artifact_base,
-                _artifact_state(artifact_base, "RUNNING", requested),
-            )
-            with tarfile.open(staged_archive, "w:gz") as archive:
-                bytes_added = 0
-                metadata_data = json.dumps(
-                    floor_timestamp_fields(metadata),
-                    sort_keys=True,
-                    indent=2,
-                ).encode()
-                if len(metadata_data) > self.max_artifact_bytes:
-                    raise RuntimeError("artifact metadata exceeds the size limit")
-                info = tarfile.TarInfo("metadata.json")
-                info.size = len(metadata_data)
-                info.mtime = int(time.time())
-                archive.addfile(info, io.BytesIO(metadata_data))
-                bytes_added += len(metadata_data)
+            with tarfile.open(staged, "w:gz") as archive:
+                bytes_added = self._add_bytes(
+                    archive,
+                    "metadata.json",
+                    json.dumps(
+                        floor_timestamp_fields(metadata),
+                        sort_keys=True,
+                        indent=2,
+                    ).encode(),
+                    0,
+                )
                 for pattern in logs:
                     for path in sorted(glob.glob(pattern)):
-                        added = self._add_log_file(
+                        bytes_added += self._add_log_file(
                             archive,
                             path,
                             self.max_artifact_bytes - bytes_added,
                         )
-                        bytes_added += added
                 for index, query in enumerate(queries):
                     output = self._run_bounded_query(query)
-                    data = (
-                        output
-                        if isinstance(output, bytes)
-                        else str(output).encode("utf-8", "replace")
+                    data = output if isinstance(output, bytes) else str(output).encode(
+                        "utf-8", "replace"
                     )
-                    data = data[: int(
-                        query.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
-                    )]
+                    data = data[: int(query.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES))]
                     if bytes_added + len(data) > self.max_artifact_bytes:
                         break
-                    info = tarfile.TarInfo("queries/{:03d}.txt".format(index))
-                    info.size = len(data)
-                    info.mtime = int(time.time())
-                    archive.addfile(info, io.BytesIO(data))
-                    bytes_added += len(data)
-            if os.path.getsize(staged_archive) > self.max_artifact_bytes:
+                    bytes_added = self._add_bytes(
+                        archive,
+                        "queries/{:03d}.txt".format(index),
+                        data,
+                        bytes_added,
+                    )
+            if os.path.getsize(staged) > self.max_artifact_bytes:
                 raise RuntimeError("generated artifact exceeds the size limit")
-            with open(staged_archive, "rb") as stream:
+            with open(staged, "rb") as stream:
                 os.fsync(stream.fileno())
-            os.replace(staged_archive, archive_path)
-            self._record_terminal(
-                artifact_base,
-                _artifact_state(artifact_base, "COMPLETED", requested, time.time()),
-            )
-        except Exception as error:
-            if staged_archive is not None:
-                unlink_if_exists(staged_archive)
-            self._record_terminal(
-                artifact_base,
-                _artifact_state(
-                    artifact_base, "FAILED", requested, time.time(), str(error)
-                ),
-            )
+            os.replace(staged, archive_path)
+        finally:
+            unlink_if_exists(staged)
 
-    def _record_state(
-        self, artifact_base: str, request: ArtifactRequest, terminal: bool = False
-    ) -> None:
-        with self._store_lock:
-            try:
-                atomic_write_json(
-                    os.path.join(self.directory, artifact_base + ".json"),
-                    request.as_payload(),
-                )
-            finally:
-                if terminal:
-                    self._active.discard(artifact_base)
-                    self._prune_locked()
-
-    def _record_terminal(
-        self, artifact_base: str, request: ArtifactRequest
-    ) -> None:
-        self._record_state(artifact_base, request, terminal=True)
+    def _add_bytes(self, archive, name, data, bytes_added):
+        if bytes_added + len(data) > self.max_artifact_bytes:
+            raise RuntimeError("artifact content exceeds the size limit")
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        info.mtime = int(time.time())
+        archive.addfile(info, io.BytesIO(data))
+        return bytes_added + len(data)
 
     @staticmethod
     def _add_log_file(archive, path: str, remaining: int) -> int:
-        """Add one regular file without following links or recursing."""
-
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
             descriptor = os.open(path, flags)
@@ -290,17 +207,14 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             os.close(descriptor)
             return 0
         with stream:
-            try:
-                file_stat = os.fstat(stream.fileno())
-            except OSError:
+            file_stat = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(file_stat.st_mode)
+                or file_stat.st_size <= 0
+                or file_stat.st_size > remaining
+            ):
                 return 0
-            if not stat.S_ISREG(file_stat.st_mode):
-                return 0
-            if file_stat.st_size <= 0 or file_stat.st_size > remaining:
-                return 0
-            info = tarfile.TarInfo(
-                os.path.join("logs", os.path.basename(path))
-            )
+            info = tarfile.TarInfo(os.path.join("logs", os.path.basename(path)))
             info.size = file_stat.st_size
             info.mtime = int(file_stat.st_mtime)
             info.mode = stat.S_IMODE(file_stat.st_mode)
@@ -308,8 +222,6 @@ class FilesystemArtifactClient(HealthzArtifactClient):
             return file_stat.st_size
 
     def _run_bounded_query(self, query: Mapping[str, Any]) -> Any:
-        """Enforce a declared query timeout without unbounded helper threads."""
-
         timeout = query.get("timeout")
         if timeout is None:
             return self.query_runner(query)
@@ -328,179 +240,40 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                 "artifact query timed out after {} seconds".format(timeout)
             )
 
-    def status(self, artifact_id: str) -> ArtifactRequest:
-        suffix = ".tar.gz"
-        base = artifact_id[:-len(suffix)] if artifact_id.endswith(suffix) else ""
-        if not _ARTIFACT_BASE_PATTERN.fullmatch(base):
-            raise ValueError("invalid DLDD artifact identifier")
-        path = os.path.join(self.directory, base + ".json")
-        with self._store_lock:
-            with open(path, "r", encoding="utf-8") as stream:
-                state = json.load(stream)
-        return ArtifactRequest(
-            artifact_id=str(state["artifact_id"]),
-            state=str(state["state"]),
-            requested_at=float(state["requested_at"]),
-            completed_at=(
-                float(state["completed_at"])
-                if state.get("completed_at") is not None
-                else None
-            ),
-            last_error=str(state.get("last_error", "")),
-        )
-
     def shutdown(self, wait: bool = True) -> None:
         with self._store_lock:
             should_signal = not self._closed
             self._closed = True
         if should_signal:
             for unused in self._workers:
-                if wait:
-                    self._jobs.put(None)
-                else:
-                    try:
-                        self._jobs.put_nowait(None)
-                    except Full:
-                        break
+                try:
+                    self._jobs.put(None) if wait else self._jobs.put_nowait(None)
+                except Full:
+                    break
         if wait:
             for worker in self._workers:
                 worker.join()
 
-    def _canonical_bases_locked(self):
+    def _archives_locked(self):
         return [
-            name[:-5]
+            name
             for name in os.listdir(self.directory)
-            if name.endswith(".json")
-            and _ARTIFACT_BASE_PATTERN.fullmatch(name[:-5])
+            if _ARTIFACT_PATTERN.fullmatch(name)
         ]
 
-    def _remove_pair_locked(self, artifact_base: str) -> None:
-        for suffix in (".json", ".tar.gz"):
-            unlink_if_exists(os.path.join(self.directory, artifact_base + suffix))
-
     def _prune_locked(self, reserve: int = 0) -> None:
-        limit = max(0, self.max_artifacts - reserve)
-        bases = self._canonical_bases_locked()
-        if len(bases) <= limit:
-            return
-        terminal = sorted(
-            (base for base in bases if base not in self._active),
-            key=lambda base: os.path.getmtime(
-                os.path.join(self.directory, base + ".json")
-            ),
+        limit = max(0, self.max_artifacts - reserve - len(self._active))
+        archives = sorted(
+            self._archives_locked(),
+            key=lambda name: os.path.getmtime(os.path.join(self.directory, name)),
         )
-        remove_count = len(bases) - limit
-        for artifact_base in terminal[:remove_count]:
-            self._remove_pair_locked(artifact_base)
+        for name in archives[: max(0, len(archives) - limit)]:
+            unlink_if_exists(os.path.join(self.directory, name))
 
-    def _valid_archive_locked(self, artifact_base: str) -> bool:
-        path = os.path.join(self.directory, artifact_base + ".tar.gz")
-        try:
-            file_stat = os.lstat(path)
-        except FileNotFoundError:
-            return False
-        if (
-            not stat.S_ISREG(file_stat.st_mode)
-            or file_stat.st_size <= 0
-            or file_stat.st_size > self.max_artifact_bytes
-        ):
-            return False
-        try:
-            with tarfile.open(path, "r:gz") as archive:
-                metadata = archive.getmember("metadata.json")
-                return metadata.isfile() and metadata.size <= self.max_artifact_bytes
-        except (KeyError, OSError, tarfile.TarError):
-            return False
-
-    def _load_manifest_locked(self, artifact_base: str):
-        path = os.path.join(self.directory, artifact_base + ".json")
-        try:
-            file_stat = os.lstat(path)
-            if not stat.S_ISREG(file_stat.st_mode):
-                return None
-            with open(path, "r", encoding="utf-8") as stream:
-                state = json.load(stream)
-            if not isinstance(state, dict):
-                return None
-            if state.get("artifact_id") != artifact_base + ".tar.gz":
-                return None
-            if state.get("state") not in (
-                "REQUESTED", "RUNNING", "COMPLETED", "FAILED"
-            ):
-                return None
-            return state
-        except (OSError, ValueError, TypeError):
-            return None
-
-    def _reconcile_store_locked(self) -> None:
-        now = time.time()
-        names = tuple(os.listdir(self.directory))
-        for name in names:
-            if _STAGED_ARCHIVE_PATTERN.fullmatch(name):
-                path = os.path.join(self.directory, name)
-                try:
-                    file_stat = os.lstat(path)
-                    if stat.S_ISREG(file_stat.st_mode) or stat.S_ISLNK(
-                        file_stat.st_mode
-                    ):
-                        os.unlink(path)
-                except FileNotFoundError:
-                    pass
-
-        bases = set()
-        for name in names:
-            for suffix in (".json", ".tar.gz"):
-                if name.endswith(suffix):
-                    base = name[: -len(suffix)]
-                    if _ARTIFACT_BASE_PATTERN.fullmatch(base):
-                        bases.add(base)
-                    break
-
-        for artifact_base in bases:
-            manifest_path = os.path.join(
-                self.directory, artifact_base + ".json"
-            )
-            archive_path = os.path.join(
-                self.directory, artifact_base + ".tar.gz"
-            )
-            state = self._load_manifest_locked(artifact_base)
-            if self._valid_archive_locked(artifact_base):
-                requested_at = os.path.getmtime(archive_path)
-                if state is not None:
-                    try:
-                        requested_at = float(state.get("requested_at", requested_at))
-                    except (TypeError, ValueError):
-                        pass
-                self._record_state(
-                    artifact_base,
-                    _artifact_state(
-                        artifact_base,
-                        "COMPLETED",
-                        requested_at,
-                        os.path.getmtime(archive_path),
-                    ),
-                )
-                continue
-
-            unlink_if_exists(archive_path)
-            if state is None:
-                unlink_if_exists(manifest_path)
-                continue
-            if state.get("state") in ("REQUESTED", "RUNNING", "COMPLETED"):
-                try:
-                    requested_at = float(state.get("requested_at", now))
-                except (TypeError, ValueError):
-                    requested_at = now
-                self._record_state(
-                    artifact_base,
-                    _artifact_state(
-                        artifact_base,
-                        "FAILED",
-                        requested_at,
-                        now,
-                        "artifact generation was interrupted before completion",
-                    ),
-                )
+    def _remove_interrupted_staging_locked(self) -> None:
+        for name in os.listdir(self.directory):
+            if _STAGED_PATTERN.fullmatch(name):
+                unlink_if_exists(os.path.join(self.directory, name))
 
     @staticmethod
     def _run_query(query: Mapping[str, Any]) -> Any:
@@ -517,7 +290,5 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         return run_checked_shell_free(
             list(query["argv"]),
             timeout=query.get("timeout"),
-            max_output_bytes=int(
-                query.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
-            ),
+            max_output_bytes=int(query.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)),
         )

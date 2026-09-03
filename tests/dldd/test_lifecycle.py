@@ -67,7 +67,7 @@ def write_accepted_inbox(rule_paths, content, active=None):
         json.dump({"last_restart_checksum": sha256_file(rule_paths.inbox)}, stream)
 
 
-def test_generation_promotion_fallback_and_audit_contract(tmp_path):
+def test_generation_promotion_without_automatic_rollback(tmp_path):
     rule_paths = case_paths(tmp_path, "packaged-promotion")
     with open(rule_paths.packaged, "w") as stream:
         stream.write("valid")
@@ -100,13 +100,27 @@ def test_generation_promotion_fallback_and_audit_contract(tmp_path):
                 "platform_identity": "platform-v1",
                 "active_checksum": "sha256:bad",
                 "previous_active_generation_path": previous,
+                "previous_active_checksum": "sha256:previous",
+                "activation_attempts": [
+                    {
+                        "source": "active",
+                        "previous_checksum": "sha256:previous",
+                        "fallback_used": True,
+                        "fallback_reasons": ["legacy"],
+                        "rollback_used": True,
+                    }
+                ],
             },
             stream,
         )
-    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
-    assert result.source == "previous_active"
-    assert result.fallback_used is True
-    assert open(rule_paths.active).read() == "previous"
+    with pytest.raises(RuntimeError, match="no candidate produced"):
+        RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
+    assert open(rule_paths.active).read() == "invalid"
+    assert open(previous).read() == "previous"
+    manifest = json.load(open(rule_paths.manifest))
+    assert "previous_active_generation_path" not in manifest
+    assert "previous_active_checksum" not in manifest
+    assert set(manifest["activation_attempts"][0]) == {"source"}
 
     rule_paths = case_paths(tmp_path, "validator-exception")
     os.makedirs(rule_paths.rules_dir)
@@ -124,7 +138,6 @@ def test_generation_promotion_fallback_and_audit_contract(tmp_path):
         rule_paths, raising_validator, "new-platform"
     ).activate()
     assert result.source == "active"
-    assert result.fallback_used is True
 
     rule_paths = case_paths(tmp_path, "golden-fallback")
     os.makedirs(rule_paths.rules_dir)
@@ -132,10 +145,9 @@ def test_generation_promotion_fallback_and_audit_contract(tmp_path):
         stream.write("invalid")
     with open(rule_paths.golden, "w") as stream:
         stream.write("golden")
-    result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
-    assert result.source == "golden"
-    assert result.fallback_used is True
-    assert open(rule_paths.active).read() == "golden"
+    with pytest.raises(RuntimeError, match="no candidate produced"):
+        RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
+    assert open(rule_paths.active).read() == "invalid"
 
     rule_paths = case_paths(tmp_path, "invalid-inbox")
     os.makedirs(os.path.dirname(rule_paths.inbox))
@@ -146,7 +158,6 @@ def test_generation_promotion_fallback_and_audit_contract(tmp_path):
         stream.write("invalid")
     result = RuleGenerationManager(rule_paths, validator, "platform-v1").activate()
     assert result.source == "active"
-    assert result.fallback_used is False
     assert open(rule_paths.active).read() == "active"
 
     rule_paths = case_paths(tmp_path, "rejected-inbox-attempt")
@@ -175,7 +186,6 @@ def test_generation_promotion_fallback_and_audit_contract(tmp_path):
     ).activate()
 
     assert result.source == "active"
-    assert result.fallback_used is True
     manifest = json.load(open(rule_paths.manifest))
     rejected, activated = manifest["activation_attempts"][-2:]
     assert rejected["source"] == "inbox"
@@ -185,11 +195,8 @@ def test_generation_promotion_fallback_and_audit_contract(tmp_path):
     assert "zero usable rules" in rejected["reason"]
     assert activated["source"] == "active"
     assert activated["activation_result"] == "ACTIVATED"
-    assert activated["fallback_used"] is True
-    assert any(
-        "inbox candidate rejected: zero usable rules" in reason
-        for reason in activated["fallback_reasons"]
-    )
+    assert "fallback_used" not in activated
+    assert "fallback_reasons" not in activated
     assert manifest["last_attempt"] == activated
 
     manager = RuleGenerationManager(
@@ -243,7 +250,6 @@ def test_watcher_authorizes_an_immutable_settled_inbox(tmp_path):
 
     result = ReplacingManager(rule_paths, validator, "platform-v1").activate()
     assert result.source == "active"
-    assert result.fallback_used is True
     assert open(rule_paths.active).read() == "active"
 
 

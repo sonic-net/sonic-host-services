@@ -10,7 +10,7 @@ from .conftest import DSE_FAULT_KEY, eventually
 pytestmark = pytest.mark.dldd_integration
 
 
-def test_full_service_expands_samples_and_retires_authoritative_dse_child(
+def test_full_service_expands_samples_and_retires_missing_dse_child(
     dse_integration_environment,
 ):
     state_db = dse_integration_environment.state_db
@@ -42,7 +42,7 @@ def test_full_service_expands_samples_and_retires_authoritative_dse_child(
             DSE_FAULT_KEY, status="INACTIVE"
         )
         assert inactive["origin_time"] == active["origin_time"]
-        assert "authoritative DSE discovery" in inactive["reason"]
+        assert "DSE discovery" in inactive["reason"]
         assert state_db.ttls[DSE_FAULT_KEY] == 3600
         eventually(
             lambda: all(

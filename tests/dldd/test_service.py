@@ -123,7 +123,7 @@ def test_candidate_localizes_invalid_rules_and_bounds_external_diagnostics(
     assert all("\0" not in record["rule"] for record in records)
 
 
-def test_candidate_keeps_valid_rules_when_activation_preflight_rejects_one(
+def test_candidate_rejects_file_when_activation_preflight_rejects_one(
     tmp_path, monkeypatch
 ):
     accepted = SimpleNamespace(
@@ -165,8 +165,9 @@ def test_candidate_keeps_valid_rules_when_activation_preflight_rejects_one(
 
     candidate = service._validate_candidate("rules.yaml", "dse.yaml")
 
-    assert candidate.activatable
-    assert candidate.payload.materialized_rules == (accepted,)
+    assert not candidate.activatable
+    assert candidate.usable_rule_count == 0
+    assert not candidate.payload.materialized_rules
     assert candidate.broken_rules[0]["rule_id"] == 1000002
     assert "unsupported source binding" in candidate.broken_rules[0]["reason"]
 

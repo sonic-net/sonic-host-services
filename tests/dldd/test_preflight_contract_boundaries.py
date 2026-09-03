@@ -142,8 +142,9 @@ def test_activation_support_and_side_effect_free_rule_isolation(monkeypatch):
         {"redis": 60, "file": 60, "common": 60},
     )
 
-    assert result.validation.materialized_rules == (valid,)
-    assert result.plan is filtered_plan
+    assert result.validation.materialized_rules == ()
+    assert not result.validation.file_valid
+    assert not result.plan.work_items
     assert result.adapters["redis"] is adapter
     assert result.invalid_rule_ids == frozenset((1000001, 1000002, 1000004))
     assert adapter.validated == ["1000003:1"]

@@ -9,7 +9,6 @@ from dldd.dse import (
     DSEContext,
     DSEError,
     DSEEvaluationHandle,
-    DSEExpansionPolicy,
     DSEExpansionResult,
     DSEHook,
     DSEReference,
@@ -51,35 +50,21 @@ class ConfigurableHook(DSEHook):
         self.validated.append((operation, context))
 
 
-def test_reference_and_expansion_value_contracts():
+def test_reference_and_binding_value_contracts():
     assert DSEReference("sensor", "read").canonical == "sensor:read()"
     assert REFERENCE.canonical == "{sensor*}:{read()}"
     with pytest.raises(DSEReferenceError, match="must be a string"):
         parse_reference(None)
 
-    policy = DSEExpansionPolicy(
-        bootstrap_interval=0.05, stable_interval=0.1
-    )
-    assert policy.bootstrap_interval == 0.05
-    assert policy.stable_interval == 0.1
-    with pytest.raises(ValueError, match="bootstrap_scans"):
-        DSEExpansionPolicy(bootstrap_scans=0)
-    with pytest.raises(TypeError, match="finite positive number"):
-        DSEExpansionPolicy(stable_interval=float("inf"))
-
-
-def test_expansion_inventory_identity_and_authority_contract():
+def test_expansion_inventory_identity_contract():
     binding = DSEBinding("sensor", "key")
-    result = DSEExpansionResult([binding], authoritative=True)
+    result = DSEExpansionResult([binding])
     assert result.bindings == (binding,)
-    assert result.authoritative is True
 
     with pytest.raises(ValueError, match="instance"):
         DSEBinding("", "key")
     with pytest.raises(ValueError, match="must be unique"):
         DSEExpansionResult((binding, binding))
-    with pytest.raises(TypeError, match="must be a bool"):
-        DSEExpansionResult((), authoritative="true")
 
 
 def test_runtime_handles_require_executable_typed_contracts():

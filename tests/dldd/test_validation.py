@@ -515,7 +515,7 @@ def test_operation_discriminator_localizes_malformed_builtin_and_unhashable_type
     )
     issues = [(issue.code, issue.path) for issue in result.broken_rules[0].issues]
     if expected_field is None:
-        assert result.file_valid
+        assert not result.file_valid
         assert issues == [("invalid_type", base + ".type")]
     else:
         assert ("missing_field", "{}.{}".format(base, expected_field)) in issues
@@ -531,7 +531,7 @@ def test_platform_vendor_positional_lists_must_match_instances():
 
     result = validate_document(document, materialize=False)
 
-    assert result.file_valid
+    assert not result.file_valid
     assert any(
         issue.code == "instance_path_mismatch"
         for issue in result.broken_rules[0].issues
@@ -610,7 +610,7 @@ def test_i2c_set_action_rejects_explicit_null_value():
 
     result = validate_document(document, materialize=False)
 
-    assert result.file_valid
+    assert not result.file_valid
     assert any(
         issue.code == "invalid_type" and issue.path.endswith(".action.path.value")
         for issue in result.broken_rules[0].issues
@@ -635,15 +635,8 @@ def test_validation_localizes_rule_failures_and_enforces_activation_guard(scenar
             "duplicate_rule_id",
             "duplicate_rule_name",
         }
-    elif scenario == "mixed":
-        assert result.activation_valid
-        assert len(result.usable_rules) == 1
-        assert result.broken_rules[0].rule_name == "BAD_SOURCE"
-        assert "unsupported_type" in {
-            issue.code for issue in result.broken_rules[0].issues
-        }
     else:
-        assert result.file_valid
+        assert not result.file_valid
         assert not result.activation_valid
         assert len(result.broken_rules) == 1
 
@@ -1021,7 +1014,7 @@ def test_dse_document_materialization_and_source_resolution_failures():
     result = validate_document(document)
 
     assert not result.activation_valid
-    assert result.broken_rules[0].issues[0].code == "materialization_failed"
+    assert result.broken_rules[0].issues[0].code == "dse_hook_unresolved"
 
     class BuggyHook(FakeHook):
         def resolve_source(self, reference, context):
@@ -1166,7 +1159,7 @@ def test_vendor_operations_require_explicit_advertisement_and_hook_validation(mo
         )
 
     unsupported = validate_document(document)
-    assert "materialization_failed" in {
+    assert "dse_hook_unresolved" in {
         issue.code for issue in unsupported.broken_rules[0].issues
     }
     assert "not advertised" in unsupported.broken_rules[0].issues[0].message

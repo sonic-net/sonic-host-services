@@ -64,7 +64,7 @@ def validation_with_preflight_failures(
     failures,
     message_limit: Optional[int] = None,
 ):
-    """Return validation with rule-local preflight failures applied once."""
+    """Reject a candidate that references any unavailable installed hook."""
 
     failures_by_id = {}
     for failure in failures:
@@ -73,32 +73,35 @@ def validation_with_preflight_failures(
         return validation
 
     line = source_line_for_path(validation.source_lines, "$.signatures")
+    issues = []
     broken = []
     for failure in failures_by_id.values():
         message = str(failure.message)
         if message_limit is not None:
             message = bound_diagnostic(message, message_limit)
         issue = ValidationIssue(
-            "rule", getattr(failure, "code", "activation_preflight_failed"),
+            "file", getattr(failure, "code", "activation_preflight_failed"),
             message, "$.signatures", failure.rule_name, failure.rule_id, line,
         )
-        broken.append(BrokenRule(
-            failure.rule_name, failure.rule_id, (issue,),
-            getattr(failure, "rule_version", ""),
-        ))
-    materialized = tuple(
-        rule
-        for rule in validation.materialized_rules
-        if rule.signature.metadata.id not in failures_by_id
-    )
+        issues.append(issue)
+        broken.append(
+            BrokenRule(
+                failure.rule_name,
+                failure.rule_id,
+                (issue,),
+                getattr(failure, "rule_version", ""),
+            )
+        )
     if isinstance(validation, ValidationResult):
         return replace(
             validation,
-            materialized_rules=materialized,
+            materialized_rules=(),
+            file_errors=validation.file_errors + tuple(issues),
             broken_rules=validation.broken_rules + tuple(broken),
         )
     result = copy(validation)
-    result.materialized_rules = materialized
+    result.materialized_rules = ()
+    result.file_errors = validation.file_errors + tuple(issues)
     result.broken_rules = validation.broken_rules + tuple(broken)
     return result
 
@@ -184,12 +187,7 @@ def preflight_activation(
         validation = validation_with_preflight_failures(
             validation, failures, failure_message_limit
         )
-        usable_rules = validation.materialized_rules
-        plan = (
-            build_plans(usable_rules, "validation", polling_intervals)
-            if usable_rules
-            else PlanBundle({}, {}, {}, {})
-        )
+        plan = PlanBundle({}, {}, {}, {})
     return ActivationPreflightResult(
         validation=validation,
         plan=plan,

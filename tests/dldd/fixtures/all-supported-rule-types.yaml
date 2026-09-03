@@ -1206,7 +1206,7 @@ signatures:
         name: DLDD_CORPUS_DSE_EXPANSION_VARIANTS
         id: 9901409
         version: 1.0.0
-        description: Covers empty, authoritative, non-authoritative, and multi-source expansion.
+        description: Covers empty, stable, changing, and multi-source expansion.
         product_ids: [TEST-PRODUCT]
         sw_versions: [TEST-SOFTWARE]
         component: DLDD_CORPUS_DSE
@@ -1217,8 +1217,8 @@ signatures:
           - dldd-corpus
           - coverage-dse
           - dse-empty-expansion
-          - dse-authoritative-expansion
-          - dse-non-authoritative-expansion
+          - dse-stable-inventory
+          - dse-changing-inventory
           - dse-multiple-source-ids
           - async-false
       conditions:
@@ -1236,14 +1236,14 @@ signatures:
           - event:
               id: 2
               type: dse
-              path: "{authoritative_sensor*}:{get_value()}"
+              path: "{stable_sensor*}:{get_value()}"
               evaluation: {type: comparison, operator: ">", value: 10.0}
               match_count: 1
               match_period: 0
           - event:
               id: 3
               type: dse
-              path: "{nonauthoritative_sensor*}:{get_value()}"
+              path: "{changing_sensor*}:{get_value()}"
               evaluation: {type: comparison, operator: ">", value: 10.0}
               match_count: 1
               match_period: 0

@@ -3,7 +3,7 @@
 from __future__ import absolute_import
 
 from abc import ABCMeta, abstractmethod
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 import json
 import logging
 import math
@@ -439,94 +439,6 @@ def _limit_file_issues(raw):
     return tuple(selected)
 
 
-class _CandidateDiagnosticBudget(object):
-    """Exactly bound serialized rule diagnostics.
-
-    The budget measures the same compact JSON representation exposed by the
-    validation result.  It reserves one truncation marker for every later
-    signature, then releases that reservation as valid signatures pass.  This
-    is deliberately serialization-aware: UTF-8 length is not a safe proxy for
-    JSON when an otherwise valid identity contains control characters.
-    """
-
-    def __init__(self, identities, source_lines):
-        self.identities = tuple(identities)
-        self.signature_count = len(self.identities)
-        self.source_lines = source_lines or {}
-        self.issue_count = 0
-        # Two list delimiters and at most one comma between every possible
-        # broken-rule record are accounted for outside individual records.
-        self.byte_limit = MAX_SERIALIZED_DIAGNOSTIC_BYTES - 2 - max(
-            0, self.signature_count - 1
-        )
-        self.byte_count = 0
-
-        self.minimum_sizes = tuple(
-            self._record_size(
-                identity,
-                (_truncation_issue("$.signatures[{}]".format(index)),),
-            )
-            for index, identity in enumerate(self.identities)
-        )
-
-    def _record_size(self, identity, raw_issues):
-        return _serialized_size(
-            asdict(_to_broken(identity, raw_issues, self.source_lines))
-        )
-
-    def limit(self, raw, base_path, remaining_signatures, identity):
-        bounded = tuple(_bounded_issue(issue) for issue in raw)
-        marker = _truncation_issue(base_path)
-        index = self.signature_count - remaining_signatures - 1
-        future_minimum = sum(self.minimum_sizes[index + 1 :])
-        bytes_for_this_rule = max(
-            self.minimum_sizes[index],
-            self.byte_limit - self.byte_count - future_minimum,
-        )
-
-        count_for_this_rule = max(
-            1,
-            MAX_ISSUES_PER_CANDIDATE
-            - self.issue_count
-            - remaining_signatures,
-        )
-
-        best = None
-        for count in range(1, len(bounded) + 1):
-            candidate = bounded[:count]
-            if count < len(bounded):
-                candidate += (marker,)
-            if len(candidate) > count_for_this_rule:
-                break
-            size = self._record_size(identity, candidate)
-            if size > bytes_for_this_rule:
-                break
-            best = candidate
-
-        # Preserve a stable marker even for an empty or unexpectedly huge raw
-        # issue collection.  Its exact size was reserved at construction.
-        if best is None:
-            best = (marker,)
-        selected_bytes = self._record_size(identity, best)
-        self.issue_count += len(best)
-        self.byte_count += selected_bytes
-        return tuple(best)
-
-    def broken(self, index, raw):
-        base_path = "$.signatures[{}]".format(index)
-        identity = self.identities[index]
-        return _to_broken(
-            identity,
-            self.limit(
-                raw,
-                base_path,
-                self.signature_count - index - 1,
-                identity,
-            ),
-            self.source_lines,
-        )
-
-
 def _to_validation_issue(
     issue, scope, source_lines, rule_name=None, rule_id=None
 ):
@@ -551,11 +463,35 @@ def _to_file_issues(raw, source_lines=None):
     )
 
 
-def _file_failure(schema_version, raw_issues, source_lines):
+def _file_failure(schema_version, raw_issues, source_lines, document=None):
+    broken = []
+    signatures = (
+        document.get("signatures", ())
+        if isinstance(document, Mapping)
+        else ()
+    )
+    grouped = {}
+    for issue in raw_issues:
+        prefix = "$.signatures["
+        if not issue.path.startswith(prefix):
+            continue
+        try:
+            index = int(issue.path[len(prefix) :].split("]", 1)[0])
+            raw = signatures[index]
+        except (ValueError, IndexError, TypeError):
+            continue
+        grouped.setdefault(index, []).append(issue)
+    for index, issues in sorted(grouped.items()):
+        broken.append(
+            _to_broken(
+                _rule_identity(signatures[index], index), issues, source_lines
+            )
+        )
     return ValidationResult(
         schema_version=schema_version,
         ruleset=None,
         file_errors=_to_file_issues(raw_issues, source_lines),
+        broken_rules=tuple(broken),
         source_lines=source_lines,
     )
 
@@ -821,8 +757,8 @@ def validate_document(
 ):
     """Validate a parsed document with its exact Pydantic contract.
 
-    The shallow envelope is a file-level gate.  Signature bodies are then
-    validated independently so a usable subset can activate as ``DEGRADED``.
+    Schema validation is atomic: one malformed signature rejects the file.
+    Runtime collection/evaluation errors remain rule-local after activation.
     Generated JSON Schema files are deliberately not read by this path.
     """
 
@@ -849,10 +785,12 @@ def validate_document(
     contract = registry.require_exact(version)
     canonical_version = contract.version
     try:
-        envelope = contract.validate_envelope(document)
+        validated_document = contract.validate_document(document)
     except ValidationError as error:
         normalized = normalize_validation_error(error)
-        return _file_failure(canonical_version, normalized, source_lines)
+        return _file_failure(
+            canonical_version, normalized, source_lines, document
+        )
 
     identity_issues = _duplicate_rule_identity_issues(document["signatures"])
     if identity_issues:
@@ -860,28 +798,14 @@ def validate_document(
             canonical_version, identity_issues, source_lines
         )
 
-    default_timeout = envelope.local_action_default_timeout
+    default_timeout = validated_document.local_action_default_timeout
     signatures = []
     materialized = []
     broken = []
-    diagnostic_identities = tuple(
-        _rule_identity(raw, index)
-        for index, raw in enumerate(document["signatures"])
-    )
-    diagnostic_budget = _CandidateDiagnosticBudget(
-        diagnostic_identities, source_lines
-    )
-    for index, raw in enumerate(document["signatures"]):
+    for index, (raw, dto) in enumerate(
+        zip(document["signatures"], validated_document.signatures)
+    ):
         base_path = "$.signatures[{}]".format(index)
-        try:
-            dto = contract.validate_signature(raw)
-        except ValidationError as error:
-            normalized = normalize_validation_error(
-                error, base_path=base_path
-            )
-            broken.append(diagnostic_budget.broken(index, normalized))
-            continue
-
         try:
             signature = contract.to_domain(
                 dto, local_action_default_timeout=default_timeout
@@ -890,36 +814,48 @@ def validate_document(
             relative_path = (
                 error.path[1:] if error.path.startswith("$") else error.path
             )
-            broken.append(
-                diagnostic_budget.broken(
-                    index,
-                    (
-                        ContractIssue(
-                            code=error.code,
-                            message=error.message,
-                            path=base_path + relative_path,
-                        ),
+            return _file_failure(
+                canonical_version,
+                (
+                    ContractIssue(
+                        code=error.code,
+                        message=error.message,
+                        path=base_path + relative_path,
                     ),
-                )
+                ),
+                source_lines,
+                document,
             )
-            continue
 
         if not materialize:
             signatures.append(signature)
             continue
         try:
             result = materialize_signature(signature, context)
+        except DSEError as error:
+            return _file_failure(
+                canonical_version,
+                (
+                    ContractIssue(
+                        code="dse_hook_unresolved",
+                        message=str(error),
+                        path=base_path + ".signature",
+                    ),
+                ),
+                source_lines,
+                document,
+            )
         except ValueError as error:
             broken.append(
-                diagnostic_budget.broken(
-                    index,
+                _to_broken(
+                    _rule_identity(raw, index),
                     (
                         ContractIssue(
                             code="materialization_failed",
                             message=str(error),
                             path=base_path + ".signature",
                         ),
-                    ),
+                    ), source_lines,
                 )
             )
             continue

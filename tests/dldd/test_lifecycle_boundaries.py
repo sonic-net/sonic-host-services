@@ -170,7 +170,7 @@ def test_failed_archive_and_generation_retention_contract(tmp_path):
     )
 
     retained = {path for path in generation_paths if os.path.exists(path)}
-    assert retained == set(generation_paths[:2] + generation_paths[4:])
+    assert retained == set(generation_paths[:1] + generation_paths[4:])
 
 
 def _write_state(path, **overrides):

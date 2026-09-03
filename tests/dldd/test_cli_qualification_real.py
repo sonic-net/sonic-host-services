@@ -276,10 +276,10 @@ def test_real_yaml_static_cli_localizes_one_broken_rule(
         capsys, rules_path, tmp_path, "static-schema"
     )
 
-    assert status == 0
-    assert payload["file_level_result"] == "PASSED"
-    assert payload["rule_level_result"] == "DEGRADED"
-    assert payload["rules_parsed_successfully"] == 1
+    assert status == 1
+    assert payload["file_level_result"] == "FAILED"
+    assert payload["rule_level_result"] == "FAILED"
+    assert payload["rules_parsed_successfully"] == 0
     assert payload["rules_failed_validation"] == 1
     issue = payload["broken_rules"][0]["issues"][0]
     assert issue["code"] == "missing_field"

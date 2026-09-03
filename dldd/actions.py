@@ -28,8 +28,6 @@ class ActionResult:
     status: str
     started_at: float
     completed_at: float
-    command: Any = None
-    output: Any = None
     error: str = ""
 
     def as_payload(self) -> Mapping[str, Any]:
@@ -39,10 +37,6 @@ class ActionResult:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
         }
-        if self.command is not None:
-            payload["command"] = self.command
-        if self.output is not None:
-            payload["output"] = self.output
         if self.error:
             payload["error"] = self.error
         return floor_timestamp_fields(payload)
@@ -169,7 +163,7 @@ class ActionRunner:
             future.set_result(
                 ActionSequenceResult(
                     worker_id,
-                    "FAILED",
+                    "EXECUTION_ERROR",
                     now,
                     now,
                     (),
@@ -215,12 +209,13 @@ class ActionRunner:
         started = time.time()
         results = []
         last_error = ""
+        sequence_state = "COMPLETED"
         for action in actions:
             action_started = time.time()
             timeout = action.get("timeout", default_timeout)
-            output = None
             if timeout is None:
                 last_error = "local action has no timeout"
+                sequence_state = "EXECUTION_ERROR"
             else:
                 try:
                     call_timeout = float(timeout)
@@ -229,22 +224,22 @@ class ActionRunner:
                         "action execution capacity is exhausted by timed-out "
                         "vendor calls",
                     )
-                    output = call.result(timeout=call_timeout)
-                except TimeoutError:
+                    call.result(timeout=call_timeout)
+                except (TimeoutError, subprocess.TimeoutExpired):
                     call.cancel()
                     last_error = "action timed out after {} seconds".format(
                         timeout
                     )
+                    sequence_state = "TIMED_OUT"
                 except Exception as error:
                     last_error = str(error)
+                    sequence_state = "EXECUTION_ERROR"
             results.append(
                 ActionResult(
                     str(action.get("type", "")),
-                    "FAILED" if last_error else "SUCCESS",
+                    sequence_state if last_error else "COMPLETED",
                     action_started,
                     time.time(),
-                    action.get("command", action.get("argv")),
-                    output=output,
                     error=last_error,
                 )
             )
@@ -252,7 +247,7 @@ class ActionRunner:
                 break
         return ActionSequenceResult(
             worker_id,
-            "FAILED" if last_error else "COMPLETED",
+            sequence_state,
             started,
             time.time(),
             tuple(results),

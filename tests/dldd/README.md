@@ -58,22 +58,17 @@ The checked-in rule fixtures have deliberately different deployment scopes:
 - `fixtures/mixed-sensor-rules.yaml` is the only fixture intended for controlled
   activation on the identified lab DUT. It is an integration fixture, not a
   second schema conformance corpus: three DSE rules discover live sensor
-  inventory and thresholds instead of copying a target snapshot. Executable
-  rules carry `dut-live`; the
-  two `dut-schema-sentinel` rules intentionally remain non-executable to prove
-  rule isolation, so `DEGRADED` is the expected activation result. Its valid
-  rules perform read-only collection and declare remote recommendations only.
+  inventory and thresholds instead of copying a target snapshot. Every
+  signature is schema-valid because activation is atomic. Rules perform
+  read-only collection and declare remote recommendations only.
   `DLDD_DUT_RULE_INSTANCE_BROKEN` is an executable runtime sentinel: it
   deterministically produces a non-retryable evaluation error after resolving
   `DLDD_RULE_INSTANCE_TEST`, so operator output must identify the broken work
   as `9999302@DLDD_RULE_INSTANCE_TEST`. Use the fixture in an isolated lab
   because an external controller could consume its recommendations.
-- `fixtures/dut-unsupported-extension-rules.yaml` is the software-pinned DUT
-  extension failure catalog. Run it only with `activation-dry-run`; never
-  install it or use hardware-probe/e2e modes. One Redis control must survive
-  while each `broken-*` case proves an unsupported platform/DSE reference is
-  localized. Resolution details belong to the vendor implementation, so common
-  tests assert categories rather than vendor error text.
+- `fixtures/dut-unsupported-extension-rules.yaml` is a negative activation
+  catalog. Run it only with `activation-dry-run`; never install it. Any missing
+  installed hook rejects the complete file.
 
 Conformance tests derive finite wire values from the installed contract and
 inspect the actual event, evaluation, and operation fields. Metadata tags stay
@@ -83,11 +78,9 @@ duplicate YAML key, or forbidden alias remain separate parser/unit inputs
 because any one of them correctly rejects the complete file and cannot coexist
 in a degraded-but-usable rules generation.
 
-Rule-local failures are synthesized from the canonical valid rule fixture with
-small named mutation tables. Missing, unsupported, semantic, materialization,
-and preflight failures remain independently identifiable without duplicating
-complete rule documents. Mixed valid/broken inputs still prove that one bad
-rule does not prevent usable siblings from activating.
+Schema and preflight failures are synthesized from the canonical valid fixture
+with small named mutations. One bad signature rejects the complete document;
+runtime failures are tested separately after a valid activation.
 
 ## Runtime integration tests
 
@@ -98,8 +91,8 @@ and artifact boundaries are replaced.
 
 Current deterministic scenarios cover:
 
-- no-rules clean exit, invalid-without-fallback fatal startup, usable active
-  fallback, and mixed valid/broken activation;
+- no-rules clean exit, whole-file rejection, accepted inbox promotion, and
+  reuse of an unchanged active copy after a rejected inbox update;
 - healthy threshold match, clear, persisted state, and clean shutdown;
 - source-read failure and recovery without a false hardware fault;
 - bounded telemetry publication failure followed by unclean non-zero shutdown;
@@ -107,17 +100,17 @@ Current deterministic scenarios cover:
   lifetime;
 - one generation spanning Redis, file, sysfs, CLI, I2C, and Platform API
   routing through the real adapters with only external I/O replaced;
-- authoritative DSE expansion, live value/comparator sampling, fault activation,
-  and retained inactive retirement after child removal;
+- current-inventory DSE expansion, adaptive refresh, live value/comparator
+  sampling, error retention, and inactive retirement after child removal;
 - current-generation DSE restart reconciliation only after expansion registers
   the dynamic execution, without a false clear or new lifetime;
 - asynchronous action, wait, priority recheck, and publication ordering; and
 - replacement of an unexpectedly exited monitor with the same plan plus a
   service diagnostic while the process remains healthy.
 
-Tier-1 tests own semantic variants that reuse those integrated lifecycles,
-including stale-generation retirement, non-authoritative discovery omission,
-expected-maintenance classification, current-truth/lookback variants, cadence
+Tier-1 tests own materially distinct semantic variants, including
+stale-generation retirement, expansion-error retention, expected-maintenance
+classification, current-truth/lookback variants, cadence
 updates, queue saturation, arbitration, reset ownership, and detailed bounds.
 
 Run integration tests with:

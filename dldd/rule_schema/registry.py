@@ -48,6 +48,9 @@ class RuleContract:
     def validate_signature(self, value):
         return self.signature.validate_python(value, strict=True)
 
+    def validate_document(self, value):
+        return self.document.validate_python(value, strict=True)
+
 
 def _literal_version(model: type[BaseModel]) -> Optional[str]:
     try:

@@ -21,10 +21,11 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 - The default product/software matcher uses exact strings and can be replaced
   by the trusted platform factory. Activation fails closed when required
   product or software identity is unavailable.
-- Parse errors, unsupported schema versions, invalid top-level structure,
-  invalid top-level timeout, and duplicate rule IDs/names are file failures.
-  Signature-local path/evaluator/action/DSE/compatibility errors are isolated
-  rule failures.  Zero usable rules rejects activation.
+- Parse, exact-schema, semantic, materialization, compatibility, and missing
+  installed-hook errors reject the complete candidate. Signature paths remain
+  in diagnostics so the file can be corrected without implying partial use.
+  Expansion/get/compare/collection/action errors after activation are isolated
+  runtime failures.
 - Ingestion `broken_rules` records retain the signature version, use the HLD
   reason categories (`schema_error`, `dse_error`, `evaluation_error`, or the
   default `validation_error`), and timestamp `last_attempt` when activation
@@ -47,24 +48,23 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 
 ## Rules generations and persisted state
 
-- A previously unattempted stable inbox file has first priority.  A packaged
-  file is considered before active rules after platform/image identity changes.
-  Otherwise a compatible active generation wins, followed by packaged and
-  golden fallbacks.  Invalid or zero-rule candidates never displace a working
-  active generation.
+- A previously unattempted stable inbox file has first priority. Packaged rules
+  are used for first boot or an explicit platform identity change; otherwise
+  the active generation is reused. Golden rules are a bootstrap source only.
+  Rejected inbox bytes are not promoted, and an activated generation is never
+  replaced automatically because of later runtime failures.
 - The active file is an atomically replaced regular file backed by immutable
   versioned copies. Every candidate is first copied to an immutable snapshot on
   the promotion filesystem; hashing, validation, failed-candidate archival, and
   promotion all use those same bytes. A staged inbox checksum must still match
   the watcher-accepted generation. The activation manifest records checksums,
-  platform identity, source, prior generation, and attempted inbox content.
+  platform identity, source, active generation, and attempted inbox content.
 - `activation.json` keeps an oldest-to-newest, additive `activation_attempts`
   list bounded to the 20 most recent candidates. Every attempt records `at`,
   `source`, `checksum`, `file_valid`, `usable_rule_count`, `broken_rule_count`,
   `validation_result`, `activation_result`, `reason`, and `errors`. An activated
-  attempt also records `generation_path`, `previous_checksum`,
-  `active_checksum`, `fallback_used`, `rollback_used`, and
-  `fallback_reasons`. `last_attempt` mirrors the newest record;
+  attempt also records `generation_path` and `active_checksum`.
+  `last_attempt` mirrors the newest record;
   `last_activation` describes the current activation. This preserves rejected
   candidate and zero-usable-rule diagnostics when a later candidate succeeds.
 - The watcher records and releases its lock before asking systemd to restart
@@ -95,9 +95,9 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 - Competing signatures use severity, lower numeric priority, then first
   detection.  A winner change while the component/symptom stays active does not
   increment the fault occurrence count.
-- Artifact completion, source-stale refresh, and Redis retry publication all
-  pass through the same ownership check as initial arbitration; a suppressed
-  signature cannot overwrite the winning component/symptom row.
+- Source-stale refresh and Redis retry publication pass through the same
+  ownership check as initial arbitration; a suppressed signature cannot
+  overwrite the winning component/symptom row.
 - Retained inactive rows are loaded on restart so a later assertion preserves
   and increments occurrence history without resetting its TTL during startup.
 - A source grace interval delays broken-rule accounting; it does not imply a
@@ -113,10 +113,9 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 - Candidate fault records exist only in process memory.  Their origin and event
   snapshots come from the first signature assertion; the final recheck supplies
   the controller-visible status and `last_detection_time`.
-- Ownership-lease expirations are exposed in the additive
-  `DLDD_STATUS.service_diagnostics` array.  Active records held conservatively
-  through source loss use the additive `source_stale` diagnostic field; UMF
-  ignores both fields when translating the canonical OpenConfig subtree.
+- Active records held conservatively through source loss use the additive
+  `source_stale` fault field; process status exposes bounded exception counts
+  rather than internal lease/work snapshots.
 - Event histories are kept in event-time order.  Samples older than both the
   match and logic windows are discarded and counted in service diagnostics;
   an older clear cannot erase a newer match.
@@ -133,11 +132,10 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   required failed-action artifact, wait, and recheck path.
 - Log-only rules request an artifact asynchronously and publish after signature
   confirmation without inventing a local-action wait/recheck phase.
-- The initial artifact store is a bounded host filesystem integration owned by
-  DLDD.  gNOI exposes safe opaque IDs from that fixed directory.  Current SONiC
-  Healthz D-Bus APIs cannot register externally produced, asynchronous
-  rule-defined artifacts, so lifecycle ownership remains with DLDD until that
-  producer API exists. A trusted platform may replace this fallback through
+- The initial artifact store is a bounded host filesystem integration. DLDD
+  triggers generation, returns a stable reference, and writes one final file;
+  it does not track or publish artifact lifecycle state. gNOI waits for and
+  exposes safe opaque IDs from that fixed directory. A trusted platform may replace this client through
   `sonic_platform.dldd.create_artifact_client`; the returned
   `HealthzArtifactClient` can bridge a vendor Healthz implementation or apply
   platform retention/size policy without changing orchestration code.
@@ -146,12 +144,9 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   beneath the fixed artifact directory, rejects traversal/symlinks and private
   state manifests, and never accepts a rule-selected filesystem path. Legacy
   absolute Healthz debug-artifact paths remain confined to `/tmp/dump`.
-- Artifact capacity covers active and retained generations together. Store
-  mutations are serialized, active jobs are never pruned, terminal transitions
-  reapply retention, and a request is rejected before publication when active
-  work leaves no capacity. On daemon startup, valid atomically published
-  archives are recovered, interrupted requests are marked failed, and owned
-  staging/orphan files are reconciled before retention is applied.
+- Artifact admission and final archives are bounded. Final publication uses an
+  atomic replace; interrupted staging files are disposable and there are no
+  sidecar manifests or startup lifecycle reconciliation.
 - Each archive carries structured request metadata including the request
   timestamp, rule identity, symptom, and full component type/name context.
 - Artifact log inputs are regular files opened without following symlinks.

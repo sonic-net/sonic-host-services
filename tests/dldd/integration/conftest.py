@@ -10,11 +10,10 @@ import pytest
 import yaml
 
 from dldd.adapters import adapter_map
-from dldd.artifacts import ArtifactRequest, HealthzArtifactClient
+from dldd.artifacts import HealthzArtifactClient
 from dldd.dse import (
     DSEBinding,
     DSEEvaluationHandle,
-    DSEExpansionPolicy,
     DSEExpansionResult,
     DSEHook,
     DSERegistry,
@@ -109,8 +108,7 @@ class ControlledDSEHook(DSEHook):
                             value_configs=ValueConfig(type="float"),
                         )
                         for instance in sorted(self._visible_instances)
-                    ),
-                    authoritative=True,
+                    )
                 )
 
         def get_value(invocation):
@@ -123,12 +121,6 @@ class ControlledDSEHook(DSEHook):
             reference,
             expand,
             get_value,
-            DSEExpansionPolicy(
-                bootstrap_scans=1,
-                bootstrap_interval=0.05,
-                warmup_cycles=1,
-                stable_interval=0.1,
-            ),
         )
 
     def resolve_evaluation(self, reference, context):
@@ -180,9 +172,6 @@ class NullArtifactClient(HealthzArtifactClient):
 
     def request(self, metadata, logs, queries):
         raise AssertionError("integration rule unexpectedly requested an artifact")
-
-    def status(self, artifact_id):
-        return ArtifactRequest(artifact_id, "FAILED", time.time())
 
     def shutdown(self, wait=True):
         return None

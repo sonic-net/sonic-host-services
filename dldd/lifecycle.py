@@ -94,8 +94,6 @@ class ActivationResult:
     schema_version: str
     broken_rules: Tuple[Mapping[str, Any], ...]
     payload: Any
-    fallback_used: bool = False
-    previous_checksum: str = ""
     validation_result: str = "PASSED"
 
 
@@ -146,6 +144,20 @@ class RuleGenerationManager:
     def activate(self) -> ActivationResult:
         with self.locked():
             manifest = load_json_object(self.paths.manifest)
+            # Drop fields written by the retired automatic-rollback design.
+            # Existing devices shed the stale operator-facing metadata on the
+            # next activation attempt instead of carrying it indefinitely.
+            for key in ("previous_active_checksum", "previous_active_generation_path"):
+                manifest.pop(key, None)
+            for attempt in manifest.get("activation_attempts", []):
+                if isinstance(attempt, dict):
+                    for key in (
+                        "previous_checksum",
+                        "fallback_used",
+                        "fallback_reasons",
+                        "rollback_used",
+                    ):
+                        attempt.pop(key, None)
             candidates = self._candidates(manifest)
             failures = []
             candidate_present = False
@@ -245,26 +257,16 @@ class RuleGenerationManager:
                     continue
                 finally:
                     unlink_if_exists(staged)
-                previous = manifest.get("active_checksum")
-                previous_generation = manifest.get("active_generation_path")
                 validation_result = (
                     "DEGRADED" if validation.broken_rules else "PASSED"
                 )
-                fallback_used = bool(failures)
-                rollback_used = source == "previous_active"
                 activated_at = floor_timestamp(self.clock())
                 attempt.update(
                     {
                         "activation_result": "ACTIVATED",
-                        "reason": (
-                            "activated after fallback" if fallback_used else "activated"
-                        ),
+                        "reason": "activated",
                         "generation_path": generation_path,
-                        "previous_checksum": previous or "",
                         "active_checksum": checksum,
-                        "fallback_used": fallback_used,
-                        "rollback_used": rollback_used,
-                        "fallback_reasons": list(failures),
                     }
                 )
                 manifest["last_attempt"] = attempt
@@ -272,7 +274,6 @@ class RuleGenerationManager:
                     {
                         "active_checksum": checksum,
                         "active_source": source,
-                        "previous_active_checksum": previous,
                         "platform_identity": self.platform_identity,
                         "activated_at": activated_at,
                         "schema_version": validation.schema_version,
@@ -280,26 +281,18 @@ class RuleGenerationManager:
                         "last_activation": {
                             "at": activated_at,
                             "source": source,
-                            "previous_checksum": previous or "",
                             "active_checksum": checksum,
                             "validation_result": validation_result,
                             "activation_result": "ACTIVATED",
-                            "fallback_used": fallback_used,
-                            "rollback_used": rollback_used,
-                            "fallback_reasons": list(failures),
                         },
                     }
                 )
-                if previous and previous != checksum:
-                    manifest["previous_active_generation_path"] = previous_generation
                 atomic_write_json(self.paths.manifest, manifest)
                 self._prune_generations(manifest)
                 LOGGER.info(
-                    "activated DLDD rules source=%s checksum=%s previous=%s fallback=%s validation=%s",
+                    "activated DLDD rules source=%s checksum=%s validation=%s",
                     source,
                     checksum,
-                    previous or "",
-                    fallback_used,
                     validation_result,
                 )
                 return ActivationResult(
@@ -309,8 +302,6 @@ class RuleGenerationManager:
                     schema_version=validation.schema_version,
                     broken_rules=validation.broken_rules,
                     payload=validation.payload,
-                    fallback_used=fallback_used,
-                    previous_checksum=previous or "",
                     validation_result=validation_result,
                 )
 
@@ -375,16 +366,20 @@ class RuleGenerationManager:
                     != manifest.get("last_attempted_inbox_checksum")
                 ):
                     candidates.append(("inbox", self.paths.inbox))
-        platform_changed = manifest.get("platform_identity") != self.platform_identity
+        recorded_platform = manifest.get("platform_identity")
+        platform_changed = bool(
+            recorded_platform and recorded_platform != self.platform_identity
+        )
         if platform_changed:
             candidates.append(("packaged", self.paths.packaged))
-        candidates.append(("active", self.paths.active))
-        previous = manifest.get("previous_active_generation_path")
-        if previous:
-            candidates.append(("previous_active", previous))
-        if not platform_changed:
-            candidates.append(("packaged", self.paths.packaged))
-        candidates.append(("golden", self.paths.golden))
+            if not os.path.lexists(self.paths.active):
+                candidates.append(("golden", self.paths.golden))
+        elif os.path.lexists(self.paths.active):
+            candidates.append(("active", self.paths.active))
+        else:
+            candidates.extend(
+                (("packaged", self.paths.packaged), ("golden", self.paths.golden))
+            )
 
         unique = []
         seen = set()
@@ -490,7 +485,6 @@ class RuleGenerationManager:
         paths.sort(reverse=True)
         protected = {
             manifest.get("active_generation_path"),
-            manifest.get("previous_active_generation_path"),
         }
         protected.discard(None)
         kept = 0

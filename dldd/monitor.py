@@ -35,6 +35,9 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_ASYNC_COLLECTION_WORKERS = 8
 DEFAULT_ASYNC_COLLECTION_PENDING = 256
 DEFAULT_ASYNC_RECHECK_RESERVE = 8
+DSE_EXPANSION_FAST_INTERVAL = 5.0
+DSE_EXPANSION_STABLE_SCANS = 3
+DSE_EXPANSION_STABLE_INTERVAL = 300.0
 _LEASE_RECOVERY = {
     MonitorWorkState.IN_FLIGHT: (
         "ack_deadline", "acknowledgement lease", False
@@ -384,8 +387,6 @@ class MonitorThread(threading.Thread):
                 now if state.next_sample_due is None else state.next_sample_due
             )
         for state in self.plan.expansion_state_by_key.values():
-            if state.pending_cycle_keys:
-                continue
             due_times.append(
                 now
                 if state.next_expansion_due is None
@@ -489,8 +490,6 @@ class MonitorThread(threading.Thread):
             return
         for template_id in sorted(self.plan.templates_by_key):
             state = self.plan.expansion_state_by_key[template_id]
-            if state.pending_cycle_keys:
-                continue
             if (
                 state.next_expansion_due is not None
                 and now < state.next_expansion_due
@@ -504,31 +503,19 @@ class MonitorThread(threading.Thread):
                 now,
             )
 
-    def _warmup_keys(self, keys):
-        return {
-            key
-            for key in keys
-            if self.plan.state_by_key[key].state
-            not in (MonitorWorkState.BROKEN, MonitorWorkState.SUSPENDED)
-        }
-
     def _expand_template(
         self, template_id, template, state, adapter, now
     ) -> None:
-        policy = template.source_handle.policy
-        previous_phase = state.phase
         try:
             result = adapter.expand(template)
             items = work_items_for_dse_expansion(template, result)
         except Exception as error:
             state.last_error = str(error)
-            state.next_expansion_due = now + policy.bootstrap_interval
-            if state.phase == "STABLE":
-                state.phase = "WARMUP"
-                state.warmup_cycles_completed = 0
+            state.unchanged_scans = 0
+            state.next_expansion_due = now + DSE_EXPANSION_FAST_INTERVAL
             self._record_diagnostic(
                 "DSE expansion failed: {}".format(error),
-                state.phase,
+                "EXPANSION",
                 template_id=template_id,
             )
             return
@@ -540,8 +527,9 @@ class MonitorThread(threading.Thread):
                 if item.dse_binding is not None
             )
         )
-        changed = bool(state.binding_fingerprint) and (
-            fingerprint != state.binding_fingerprint
+        changed = (
+            state.binding_fingerprint is None
+            or fingerprint != state.binding_fingerprint
         )
         desired = {item.correlation_key: item for item in items}
         added = []
@@ -553,26 +541,24 @@ class MonitorThread(threading.Thread):
 
         relinquished = []
         removed = []
-        if result.authoritative:
-            for key in tuple(state.child_keys - set(desired)):
-                child_state = self.plan.state_by_key.get(key)
-                if child_state is None or child_state.state not in (
-                    MonitorWorkState.READY,
-                    MonitorWorkState.DEGRADED,
-                    MonitorWorkState.SUSPENDED,
-                    MonitorWorkState.BROKEN,
-                ):
-                    continue
-                relinquished.append(key)
-                owners = self._dse_templates_by_child.get(key, set())
-                if not (owners - {template_id}):
-                    removed.append(key)
+        for key in tuple(state.child_keys - set(desired)):
+            child_state = self.plan.state_by_key.get(key)
+            if child_state is None or child_state.state not in (
+                MonitorWorkState.READY,
+                MonitorWorkState.DEGRADED,
+                MonitorWorkState.SUSPENDED,
+                MonitorWorkState.BROKEN,
+            ):
+                continue
+            relinquished.append(key)
+            owners = self._dse_templates_by_child.get(key, set())
+            if not (owners - {template_id}):
+                removed.append(key)
 
-        # An authoritative result is also primary-thread evidence when its
-        # inventory is unchanged or empty.  Persisted DSE faults have no
-        # monitor child after restart, so the primary needs the complete
-        # instance snapshot to decide whether an old instance is truly gone.
-        if added or removed or result.authoritative:
+        # The first successful scan and every inventory change are primary-
+        # thread evidence. This also lets an empty first scan retire a stale
+        # persisted dynamic instance without invoking vendor code elsewhere.
+        if added or removed or changed:
             event = DSEExpansionEvent(
                 monitor_id=self.plan.monitor_id,
                 plan_generation=self.plan.plan_generation,
@@ -583,8 +569,6 @@ class MonitorThread(threading.Thread):
                 present_instances=tuple(
                     sorted({binding.instance for binding in result.bindings})
                 ),
-                phase=state.phase,
-                authoritative=result.authoritative,
                 observed_at=self.wall_clock(),
             )
             try:
@@ -594,10 +578,10 @@ class MonitorThread(threading.Thread):
                 self.evidence_queue.put_nowait(event)
             except Full:
                 state.last_error = "primary evidence queue is full"
-                state.next_expansion_due = now + policy.bootstrap_interval
+                state.next_expansion_due = now + DSE_EXPANSION_FAST_INTERVAL
                 self._record_diagnostic(
                     "DSE expansion registration queue is full",
-                    state.phase,
+                    "EXPANSION",
                     template_id=template_id,
                 )
                 return
@@ -620,50 +604,13 @@ class MonitorThread(threading.Thread):
         state.binding_fingerprint = fingerprint
         state.last_expansion_timestamp = self.wall_clock()
         state.last_error = ""
-        state.authoritative = result.authoritative
-        state.cycle_id += 1
-
-        if state.phase == "BOOTSTRAP":
-            state.bootstrap_scans_completed += 1
-            if state.bootstrap_scans_completed >= policy.bootstrap_scans:
-                state.phase = "WARMUP"
-                state.warmup_cycles_completed = 0
-                state.pending_cycle_keys = self._warmup_keys(state.child_keys)
-                state.next_expansion_due = None
-            else:
-                state.next_expansion_due = now + policy.bootstrap_interval
-        elif state.phase == "WARMUP":
-            if changed:
-                state.warmup_cycles_completed = 0
-            else:
-                state.warmup_cycles_completed += 1
-            if state.warmup_cycles_completed >= policy.warmup_cycles:
-                state.phase = "STABLE"
-                state.pending_cycle_keys.clear()
-                state.next_expansion_due = now + policy.stable_interval
-            else:
-                state.pending_cycle_keys = self._warmup_keys(state.child_keys)
-                state.next_expansion_due = (
-                    None
-                    if state.pending_cycle_keys
-                    else now + policy.bootstrap_interval
-                )
-        else:
-            if changed:
-                state.phase = "WARMUP"
-                state.warmup_cycles_completed = 0
-                state.pending_cycle_keys = self._warmup_keys(state.child_keys)
-                state.next_expansion_due = None
-            else:
-                state.next_expansion_due = now + policy.stable_interval
-
-        if state.phase != previous_phase:
-            LOGGER.info(
-                "DSE template %s discovery phase changed from %s to %s",
-                template_id,
-                previous_phase,
-                state.phase,
-            )
+        state.unchanged_scans = 0 if changed else state.unchanged_scans + 1
+        interval = (
+            DSE_EXPANSION_STABLE_INTERVAL
+            if state.unchanged_scans >= DSE_EXPANSION_STABLE_SCANS
+            else DSE_EXPANSION_FAST_INTERVAL
+        )
+        state.next_expansion_due = now + interval
 
     def _record_diagnostic(
         self, reason: str, state: str, now=None, **context
@@ -734,7 +681,6 @@ class MonitorThread(threading.Thread):
             adapter = self.adapters[item.source_type]
             result = self._collect_result(adapter, item)
             self._handle_result(key, state, item, result, recheck)
-            self._mark_dse_cycle_attempt(key)
         self.drain_async_completions()
 
     def _submit_async_collection(self, key, state, item) -> bool:
@@ -796,7 +742,6 @@ class MonitorThread(threading.Thread):
                     completion.result,
                     previous_state == MonitorWorkState.RECHECK_REQUESTED,
                 )
-                self._mark_dse_cycle_attempt(key)
             finally:
                 self._async_completions.task_done()
 
@@ -805,20 +750,6 @@ class MonitorThread(threading.Thread):
             return adapter.collect(item)
         except Exception as error:
             return _monitor_error_result(error, self.wall_clock())
-
-    def _mark_dse_cycle_attempt(self, key: str) -> None:
-        template_ids = self._dse_templates_by_child.get(key, ())
-        for template_id in tuple(template_ids):
-            state = self.plan.expansion_state_by_key[template_id]
-            if state.phase != "WARMUP":
-                continue
-            state.pending_cycle_keys.discard(key)
-            if not state.pending_cycle_keys:
-                state.last_complete_cycle_timestamp = self.wall_clock()
-                state.next_expansion_due = self.clock()
-                self._next_poll = min(
-                    self._next_poll, state.next_expansion_due
-                )
 
     def _handle_result(
         self,

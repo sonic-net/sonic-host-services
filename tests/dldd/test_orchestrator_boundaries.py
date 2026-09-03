@@ -464,33 +464,18 @@ def test_service_health_and_monitor_release_state_projection():
     assert queue.get_nowait().target_state == MonitorWorkState.READY
 
 
-def test_artifact_completion_and_request_failure_are_contained():
+def test_artifact_request_failure_is_contained():
     class ArtifactClient:
-        def status(self, unused_artifact_id):
-            payload = {"artifact_id": "a", "state": "COMPLETED"}
-            return SimpleNamespace(as_payload=lambda: payload)
-
         def request(self, *unused_args):
             raise RuntimeError("collector unavailable")
 
-    artifact = {"artifact_id": "a", "state": "REQUESTED"}
-    orchestrator, bundle, item, database, _ = runtime_fixture(
+    orchestrator, bundle, unused_item, unused_database, _ = runtime_fixture(
         artifact_client=ArtifactClient()
     )
-    _, record = active_record(
-        orchestrator, item, healthz_artifact=artifact
-    )
-
-    orchestrator._refresh_artifact_states()
-    assert record.healthz_artifact["state"] == "COMPLETED"
-    assert json.loads(database.values[record.redis_key]["healthz_artifact"])[
-        "state"
-    ] == "COMPLETED"
 
     result = orchestrator._request_artifact(next(iter(bundle.signatures.values())))
-    assert result["state"] == "FAILED"
-    assert result["last_error"] == "collector unavailable"
-    assert result["requested_at"] == result["completed_at"] == 1000
+    assert result["request_error"] == "collector unavailable"
+    assert result["requested_at"] == 1000
 
 
 def test_fault_serialization_and_dirty_retry():
@@ -672,7 +657,7 @@ def test_action_failure_reconciliation_retry_and_nondecisive_recheck():
 
     pending = orchestrator.pending[(item.rule_id, item.component_name)]
     assert pending.phase == "WAITING_FOR_RECHECK"
-    assert pending.action_result.state == "FAILED"
+    assert pending.action_result.state == "EXECUTION_ERROR"
     assert pending.action_result.last_error == "worker crashed"
 
     # Tick retries owned reconciliation and drops orphaned active schedules.
@@ -737,7 +722,7 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
         item,
         status="INACTIVE",
         occurrences=4,
-        reason="authoritative DSE discovery removed the instance",
+        reason="DSE discovery removed the instance",
     )
     first.telemetry.publish_fault(inactive)
 
@@ -756,7 +741,7 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     assert second.faults[identity].status == "INACTIVE"
     assert second.faults[identity].occurrences == 4
     assert second.faults[identity].reason == (
-        "authoritative DSE discovery removed the instance"
+        "DSE discovery removed the instance"
     )
     assert identity not in second.reconciliation
     assert bundle.monitor_plans["redis"].control_queue.empty()
@@ -864,7 +849,6 @@ def test_removed_dse_work_cleans_only_its_runtime_state():
     orchestrator.process_expansion(
         dse_expansion_event(
             signature,
-            authoritative=True,
             removed_keys=(item.correlation_key, "unknown-key"),
         )
     )
@@ -937,28 +921,28 @@ def test_removed_dse_work_cleans_only_its_runtime_state():
     assert orchestrator.source_status[item.source_id] == {"state": "RECOVERED"}
 
 
-def test_authoritative_dse_retirement_waits_then_retains_inactive_history():
+def test_dse_retirement_waits_then_retains_inactive_history():
     """Follow one removed scope from ownership gates through retained history."""
 
     orchestrator, _, plan, item, signature, _ = dse_retirement_fixture()
     identity = (item.rule_id, item.component_name)
     plan.add_expanded_item(item)
-    authoritative = dse_expansion_event(signature, authoritative=True)
-    orchestrator._authoritative_dse_instances["template"] = set()
+    inventory = dse_expansion_event(signature)
+    orchestrator._dse_instances_by_template["template"] = set()
 
-    assert not orchestrator._retire_absent_dse_fault(identity, authoritative)
+    assert not orchestrator._retire_absent_dse_fault(identity, inventory)
     plan.remove_expanded_item(item.correlation_key)
     orchestrator.pending[identity] = SimpleNamespace()
-    assert not orchestrator._retire_absent_dse_fault(identity, authoritative)
+    assert not orchestrator._retire_absent_dse_fault(identity, inventory)
     orchestrator.pending.clear()
     orchestrator.reconciliation[identity] = SimpleNamespace()
-    assert not orchestrator._retire_absent_dse_fault(identity, authoritative)
+    assert not orchestrator._retire_absent_dse_fault(identity, inventory)
 
     # With no persisted fault, retirement clears correlation history only.
     orchestrator, _, _, item, signature, record = dse_retirement_fixture()
     identity = (item.rule_id, item.component_name)
-    authoritative = dse_expansion_event(signature, authoritative=True)
-    orchestrator._authoritative_dse_instances["template"] = set()
+    inventory = dse_expansion_event(signature)
+    orchestrator._dse_instances_by_template["template"] = set()
     orchestrator._dse_retirement_candidates.add(identity)
     orchestrator.correlation.consume(
         evidence(item, EvaluationResultType.MATCH, 1)
@@ -968,7 +952,7 @@ def test_authoritative_dse_retirement_waits_then_retains_inactive_history():
     orchestrator.work_items.pop(item.correlation_key)
     orchestrator.correlation.unregister_work_item(item)
 
-    assert orchestrator._retire_absent_dse_fault(identity, authoritative)
+    assert orchestrator._retire_absent_dse_fault(identity, inventory)
     assert identity not in orchestrator._dse_retirement_candidates
     assert not any(
         key[:2] == identity for key in orchestrator.correlation._events
@@ -979,10 +963,10 @@ def test_authoritative_dse_retirement_waits_then_retains_inactive_history():
     orchestrator.faults[identity] = record
     record.status = "INACTIVE"
     orchestrator._dse_retirement_candidates.add(identity)
-    assert orchestrator._retire_absent_dse_fault(identity, authoritative)
+    assert orchestrator._retire_absent_dse_fault(identity, inventory)
     assert identity not in orchestrator._dse_retirement_candidates
     assert record.status == "INACTIVE"
-    assert "authoritative DSE discovery" in record.reason
+    assert "DSE discovery" in record.reason
     assert record.inactive_deadline == 1276.9
 
     # Startup reconciliation follows the same contract and refreshes the TTL.
@@ -993,13 +977,13 @@ def test_authoritative_dse_retirement_waits_then_retains_inactive_history():
     identity = (record.rule_id, record.component_name)
     assert identity in orchestrator._dse_retirement_candidates
     orchestrator.process_expansion(
-        dse_expansion_event(signature, authoritative=True)
+        dse_expansion_event(signature)
     )
 
     payload = database.values[record.redis_key]
     assert identity not in orchestrator._dse_retirement_candidates
     assert payload["status"] == "INACTIVE"
-    assert "authoritative DSE discovery" in payload["reason"]
+    assert "DSE discovery" in payload["reason"]
     assert payload["last_detection_time"] == "1234"
     assert database.ttls[record.redis_key] == 42
     assert database.delete_calls == 0
@@ -1007,10 +991,10 @@ def test_authoritative_dse_retirement_waits_then_retains_inactive_history():
     # A missing publisher-owner projection is reconstructed, not deleted.
     orchestrator, database, _, item, signature, record = dse_retirement_fixture()
     identity = (item.rule_id, item.component_name)
-    orchestrator._authoritative_dse_instances["template"] = set()
+    orchestrator._dse_instances_by_template["template"] = set()
     orchestrator.published_by_key.clear()
     assert orchestrator._retire_absent_dse_fault(
-        identity, dse_expansion_event(signature, authoritative=True)
+        identity, dse_expansion_event(signature)
     )
     assert orchestrator.published_by_key[(record.component_name, record.symptom)] == (
         item.rule_id
@@ -1028,11 +1012,11 @@ def test_dse_retirement_defers_to_remaining_static_scope():
     static = add_static_owner(orchestrator, item, signature, register=True)
     orchestrator.work_items.pop(item.correlation_key)
     orchestrator.correlation.unregister_work_item(item)
-    orchestrator._authoritative_dse_instances["template"] = set()
+    orchestrator._dse_instances_by_template["template"] = set()
 
     assert not orchestrator._retire_absent_dse_fault(
         identity,
-        dse_expansion_event(signature, authoritative=True),
+        dse_expansion_event(signature),
     )
 
     assert record.status == "ACTIVE"
@@ -1061,11 +1045,11 @@ def test_dse_retirement_defers_to_remaining_static_scope():
                 orchestrator.faults.pop(identity)
             else:
                 record.status = "INACTIVE"
-            orchestrator._authoritative_dse_instances["template"] = set()
+            orchestrator._dse_instances_by_template["template"] = set()
 
             assert not orchestrator._retire_absent_dse_fault(
                 identity,
-                dse_expansion_event(signature, authoritative=True),
+                dse_expansion_event(signature),
             )
             assert identity not in orchestrator.reconciliation
             if not register_static:
@@ -1113,10 +1097,10 @@ def test_dse_retirement_respects_fault_arbitration():
                 status="ACTIVE",
             )
             orchestrator.faults[(alternate_id, item.component_name)] = alternate
-        orchestrator._authoritative_dse_instances["template"] = set()
+        orchestrator._dse_instances_by_template["template"] = set()
 
         assert orchestrator._retire_absent_dse_fault(
-            identity, dse_expansion_event(signature, authoritative=True)
+            identity, dse_expansion_event(signature)
         )
 
         payload = database.values[record.redis_key]
@@ -1130,12 +1114,12 @@ def test_dse_retirement_respects_fault_arbitration():
     # A retired rule which was already suppressed cannot replace the owner.
     orchestrator, database, _, item, signature, record = dse_retirement_fixture()
     identity = (item.rule_id, item.component_name)
-    orchestrator._authoritative_dse_instances["template"] = set()
+    orchestrator._dse_instances_by_template["template"] = set()
     orchestrator.published_by_key[(record.component_name, record.symptom)] = 999
     before = dict(database.values[record.redis_key])
 
     assert orchestrator._retire_absent_dse_fault(
-        identity, dse_expansion_event(signature, authoritative=True)
+        identity, dse_expansion_event(signature)
     )
     assert database.values[record.redis_key] == before
     assert record.status == "INACTIVE"

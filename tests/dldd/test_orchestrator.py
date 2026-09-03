@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from dldd.actions import ActionResult, ActionSequenceResult
-from dldd.artifacts import ArtifactRequest
+from dldd.artifacts import ArtifactReference
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine, SignatureExecution
 from dldd.logic import parse_logic
@@ -47,7 +47,7 @@ class CompletedActionRunner(object):
                 101.0,
                 (
                     ActionResult(
-                        "cli", "SUCCESS", 100.0, 101.0, command=["reset"]
+                        "cli", "COMPLETED", 100.0, 101.0
                     ),
                 ),
             )
@@ -57,10 +57,9 @@ class CompletedActionRunner(object):
 
 class FakeArtifactClient(object):
     def request(self, metadata, logs, queries):
-        return ArtifactRequest("dldd-test.tar.gz", "REQUESTED", 101.0)
-
-    def status(self, artifact_id):
-        return ArtifactRequest(artifact_id, "COMPLETED", 101.0, 102.0)
+        return ArtifactReference(
+            "dldd-test.tar.gz", 101.0, "/var/lib/sonic/dldd/artifacts/dldd-test.tar.gz"
+        )
 
 
 class RecordingArtifactClient(FakeArtifactClient):
@@ -427,7 +426,6 @@ def dse_expansion_event(
     signature,
     template_id="template",
     *,
-    authoritative,
     present_instances=(),
     added_items=(),
     removed_keys=(),
@@ -441,13 +439,12 @@ def dse_expansion_event(
         added_items=tuple(added_items),
         removed_keys=tuple(removed_keys),
         present_instances=tuple(present_instances),
-        authoritative=authoritative,
         observed_at=observed_at,
     )
 
 
-def test_authoritative_dse_retirement_ownership_lifecycle():
-    """Retire only after authoritative discovery releases every live owner."""
+def test_dse_retirement_ownership_lifecycle():
+    """Retire only after discovery releases every live owner."""
 
     orchestrator, database, plan, item, signature, record = (
         dse_retirement_fixture()
@@ -456,7 +453,6 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
     orchestrator.process_expansion(
         dse_expansion_event(
             signature,
-            authoritative=True,
             removed_keys=(item.correlation_key,),
         )
     )
@@ -464,7 +460,7 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
     payload = database.values[record.redis_key]
     assert payload["status"] == "INACTIVE"
     assert payload["reason"] == (
-        "authoritative DSE discovery no longer reports instance 'DYNAMIC0'"
+        "DSE discovery no longer reports instance 'DYNAMIC0'"
     )
     assert payload["last_detection_time"] == "1234"
     assert json.loads(payload["repair_actions"]) == []
@@ -478,7 +474,6 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
     orchestrator.process_expansion(
         dse_expansion_event(
             signature,
-            authoritative=True,
             present_instances=("DYNAMIC0",),
             added_items=(item,),
         )
@@ -503,7 +498,6 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
     orchestrator.process_expansion(
         dse_expansion_event(
             signature,
-            authoritative=True,
             removed_keys=(item.correlation_key,),
         )
     )
@@ -530,32 +524,11 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
     orchestrator.process_expansion(
         dse_expansion_event(
             signature,
-            authoritative=True,
             removed_keys=(item.correlation_key,),
         )
     )
 
     assert database.values[record.redis_key]["status"] == "ACTIVE"
-
-    # Non-authoritative discovery cannot issue removals.
-    orchestrator, database, unused_plan, item, signature, record = (
-        dse_retirement_fixture()
-    )
-
-    with pytest.raises(ValueError, match="non-authoritative"):
-        orchestrator.process_expansion(
-            dse_expansion_event(
-                signature,
-                authoritative=False,
-                removed_keys=(item.correlation_key,),
-            )
-        )
-
-    assert item.correlation_key in orchestrator.work_items
-    assert database.values[record.redis_key]["status"] == "ACTIVE"
-    assert "reason" not in database.values[record.redis_key] or not database.values[
-        record.redis_key
-    ]["reason"]
 
     # Multiple templates must all relinquish the instance before retirement.
     orchestrator, database, plan, item, signature, record = (
@@ -566,7 +539,6 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
         dse_expansion_event(
             signature,
             "template-a",
-            authoritative=True,
             removed_keys=(item.correlation_key,),
         )
     )
@@ -584,7 +556,6 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
         dse_expansion_event(
             signature,
             "template-b",
-            authoritative=True,
             present_instances=("DYNAMIC0",),
             added_items=(second,),
         )
@@ -596,7 +567,6 @@ def test_authoritative_dse_retirement_ownership_lifecycle():
         dse_expansion_event(
             signature,
             "template-b",
-            authoritative=True,
             removed_keys=(second.correlation_key,),
         )
     )
@@ -614,21 +584,15 @@ def test_dse_restart_reconciliation_retry_and_rediscovery():
     assert identity in orchestrator.pending_dynamic_faults
 
     orchestrator.process_expansion(
-        dse_expansion_event(signature, authoritative=False)
-    )
-    assert identity in orchestrator.pending_dynamic_faults
-    assert database.values[record.redis_key]["status"] == "ACTIVE"
-
-    orchestrator.process_expansion(
-        dse_expansion_event(signature, authoritative=True)
+        dse_expansion_event(signature)
     )
     assert identity not in orchestrator.pending_dynamic_faults
     assert database.values[record.redis_key]["status"] == "INACTIVE"
-    assert "authoritative DSE discovery" in database.values[record.redis_key][
+    assert "DSE discovery" in database.values[record.redis_key][
         "reason"
     ]
 
-    # An unchanged authoritative inventory still reconciles a retained fault.
+    # An unchanged current inventory still reconciles a retained fault.
     orchestrator, unused_database, plan, item, signature, record = (
         dse_retirement_fixture(runtime_item=False)
     )
@@ -644,7 +608,6 @@ def test_dse_restart_reconciliation_retry_and_rediscovery():
     orchestrator.process_expansion(
         dse_expansion_event(
             signature,
-            authoritative=True,
             present_instances=(record.component_name,),
         )
     )
@@ -662,7 +625,6 @@ def test_dse_restart_reconciliation_retry_and_rediscovery():
     orchestrator.process_expansion(
         dse_expansion_event(
             signature,
-            authoritative=True,
             removed_keys=(item.correlation_key,),
         )
     )
@@ -835,8 +797,8 @@ def test_local_action_recheck_and_artifact_lifecycle():
     assert database.values[fault_key]["last_detection_time"] == "102"
     assert json.loads(database.values[fault_key]["events"])[0]["value_read"] == 51.5
     assert (
-        json.loads(database.values[fault_key]["healthz_artifact"])["state"]
-        == "REQUESTED"
+        json.loads(database.values[fault_key]["healthz_artifact"])["artifact_id"]
+        == "dldd-test.tar.gz"
     )
 
     # Artifact requests receive floored time and complete component identity.
@@ -862,7 +824,11 @@ def test_local_action_recheck_and_artifact_lifecycle():
 
     request = orchestrator._request_artifact(execution)
 
-    assert request["state"] == "REQUESTED"
+    assert request == {
+        "artifact_id": "dldd-test.tar.gz",
+        "requested_at": 101,
+        "location": "/var/lib/sonic/dldd/artifacts/dldd-test.tar.gz",
+    }
     assert artifact_client.metadata["timestamp"] == 1234
     assert artifact_client.metadata["component_info"] == {
         "component": "PSU",
@@ -1141,7 +1107,7 @@ def test_action_runner_failure_and_deadline_still_recheck():
 
     fault = database.values["FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"]
     assert fault["status"] == "INACTIVE"
-    assert json.loads(fault["local_action_state"])["state"] == "FAILED"
+    assert json.loads(fault["local_action_state"])["state"] == "EXECUTION_ERROR"
 
     # A future which misses its action deadline also advances to recheck.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
@@ -1172,7 +1138,7 @@ def test_action_runner_failure_and_deadline_still_recheck():
     orchestrator.tick()
 
     assert pending.phase == "WAITING_FOR_RECHECK"
-    assert pending.action_result.state == "FAILED"
+    assert pending.action_result.state == "TIMED_OUT"
     assert any(
         item["reason"] == "local_action_deadline_expired"
         for item in orchestrator.service_diagnostics
