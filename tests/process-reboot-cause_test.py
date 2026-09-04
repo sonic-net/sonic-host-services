@@ -49,6 +49,9 @@ class TestProcessRebootCause(TestCase):
 
         # Verify DB interactions
         mock_db.connect.assert_called()
+        written_fields = {call.args[2] for call in mock_db.set.call_args_list}
+        self.assertNotIn("boot_id", written_fields)
+        self.assertNotIn("device", written_fields)
 
     @patch("builtins.open", new_callable=mock_open, read_data='{"invalid_json": ')  # Malformed JSON
     @patch("os.listdir", return_value=["file1.json"])
@@ -81,7 +84,7 @@ class TestProcessRebootCause(TestCase):
         output = mock_stdout.getvalue()
 
     # Test read_reboot_cause_files_and_save_to_db - smartswitch
-    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "name": "2024_12_13_01_12_36", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
+    @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "name": "2024_12_13_01_12_36", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024", "boot_id": "e4252288-be0d-40ec-8338-d1e5ec206771"}')
     @patch("os.listdir", return_value=["file1.json"])
     @patch("os.path.isfile", return_value=True)
     @patch("os.path.exists", return_value=True)
@@ -103,7 +106,21 @@ class TestProcessRebootCause(TestCase):
 
         # Simulate running the script
         with patch.object(sys, "argv", ["process-reboot-cause"]):
-            process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu1')
+            process_reboot_cause.read_reboot_cause_files_and_save_to_db('dpu0')
+
+        mock_db.set.assert_any_call(
+            mock_db.CHASSIS_STATE_DB,
+            "REBOOT_CAUSE|DPU0|2024_12_13_01_12_36",
+            "boot_id",
+            "e4252288-be0d-40ec-8338-d1e5ec206771",
+        )
+
+        mock_db.set.assert_any_call(
+            mock_db.CHASSIS_STATE_DB,
+            "REBOOT_CAUSE|DPU0|2024_12_13_01_12_36",
+            "device",
+            "DPU0",
+        )
 
     # Test read_reboot_cause_files_and_save_to_db - smartswitch - name not in data
     @patch("builtins.open", new_callable=mock_open, read_data='{"cause": "Non-Hardware", "user": "admin", "comment": "Switch rebooted DPU", "device": "DPU0", "time": "Fri Dec 13 01:12:36 AM UTC 2024"}')
