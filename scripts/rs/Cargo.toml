@@ -1,0 +1,18 @@
+[package]
+name = "procdockerstatsd_rs"
+version = "1.0.0"
+edition = "2024"
+description = "Daemon to collect process and Docker stats and push them to Redis"
+license = "MIT"
+authors = ["Feng Pan"]
+
+[dependencies]
+redis = "0.23"
+sysinfo = "0.30"
+regex = "1.10"
+daemonize = "0.5"
+chrono = "0.4"
+
+[[bin]]
+name = "procdockerstatsd_rs"
+path = "main.rs"
