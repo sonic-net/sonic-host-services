@@ -49,6 +49,9 @@ class TestProcessRebootCause(TestCase):
 
         # Verify DB interactions
         mock_db.connect.assert_called()
+        written_fields = {call.args[2] for call in mock_db.set.call_args_list}
+        self.assertNotIn("boot_id", written_fields)
+        self.assertNotIn("device", written_fields)
 
     @patch("builtins.open", new_callable=mock_open, read_data='{"invalid_json": ')  # Malformed JSON
     @patch("os.listdir", return_value=["file1.json"])
