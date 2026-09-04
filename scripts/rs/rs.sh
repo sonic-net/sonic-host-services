@@ -1,0 +1,1 @@
+OTEL_CONFIG_FILE=./otel.toml cargo run --bin telemetry_rs
