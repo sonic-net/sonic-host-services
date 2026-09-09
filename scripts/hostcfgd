@@ -966,7 +966,7 @@ class PasswHardening(object):
         for normal_account in normal_accounts:
             try:
                 chage_p_m = subprocess.Popen(('chage', chage_flag + str(curr_expiration), normal_account), stdout=subprocess.PIPE)
-                return_code_chage_p_m = chage_p_m.poll()
+                return_code_chage_p_m = chage_p_m.wait()
                 if return_code_chage_p_m != 0:
                     syslog.syslog(syslog.LOG_ERR, "failed: return code - {}".format(return_code_chage_p_m))
 
