@@ -2783,6 +2783,33 @@ class TestConsoleLoggingCoverage(TestCase):
                     self.assertFalse(os.path.exists(conf_path))
                     self.assertEqual(service._logrotate_links, set())
 
+    def test_sync_logrotate_removes_stale_config_after_restart(self):
+        """Test stale logrotate files are removed even when _logrotate_links is empty."""
+        MockConfigDb.set_config_db({
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "no",
+                    "log_file": "/var/log/console0.log",
+                },
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale_conf_path = os.path.join(tmpdir, "console-0")
+            with open(stale_conf_path, 'w') as conf_file:
+                conf_file.write("stale config")
+
+            with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
+                with mock.patch.object(console_monitor.os, 'remove', posix.remove):
+                    service = console_monitor.DCEService()
+                    service.config_db = MockConfigDb()
+                    self.assertEqual(service._logrotate_links, set())
+
+                    service._sync_logrotate_configs()
+
+                    self.assertFalse(os.path.exists(stale_conf_path))
+                    self.assertEqual(service._logrotate_links, set())
+
     def test_sync_logrotate_write_failure(self):
         MockConfigDb.set_config_db({
             "CONSOLE_PORT": {

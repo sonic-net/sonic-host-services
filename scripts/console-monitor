@@ -15,6 +15,7 @@ Usage:
     console-monitor dte [tty] [baud]      # Start DTE service
 """
 
+import glob
 import os
 import re
 import sys
@@ -743,7 +744,7 @@ class ProxyService:
                     self.log_fd = os.open(
                         self.log_file_path,
                         os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                        0o644,
+                        0o640,
                     )
                     log.info(f"[{self.link_id}] Console logging enabled: {self.log_file_path}")
                 except OSError as e:
@@ -1201,12 +1202,20 @@ class DCEService:
                 except OSError as e:
                     log.error(f"DCE: [{link_id}] Failed to write logrotate config {conf_path}: {e}")
 
-            for link_id in self._logrotate_links - desired_links:
+            # Reconcile against configs actually present on disk, not just the
+            # in-memory set, so stale files left by a previous DCE run are cleaned up.
+            # This glob-based reconciliation assumes console-monitor owns every
+            # LOGROTATE_CONF_PREFIX file under LOGROTATE_DIR.
+            existing_links = set()
+            pattern = os.path.join(LOGROTATE_DIR, f"{LOGROTATE_CONF_PREFIX}*")
+            for conf_path in glob.glob(pattern):
+                existing_links.add(os.path.basename(conf_path)[len(LOGROTATE_CONF_PREFIX):])
+
+            for link_id in existing_links - desired_links:
                 conf_path = logrotate_conf_path(link_id)
                 try:
-                    if os.path.exists(conf_path):
-                        os.remove(conf_path)
-                        log.info(f"DCE: [{link_id}] Removed logrotate config: {conf_path}")
+                    os.remove(conf_path)
+                    log.info(f"DCE: [{link_id}] Removed logrotate config: {conf_path}")
                 except OSError as e:
                     log.error(f"DCE: [{link_id}] Failed to remove logrotate config {conf_path}: {e}")
 
