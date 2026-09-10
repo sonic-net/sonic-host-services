@@ -37,6 +37,7 @@ from swsscommon.swsscommon import (
     Table,
     ConfigDBConnector,
 )
+from host_modules.console_mirror import MirrorControlServer, MirrorManager
 
 # ============================================================
 # Logging Configuration
@@ -569,6 +570,9 @@ class ProxyService:
         # Proxy resources
         self.state_db: Optional[DBConnector] = None
         self.state_table: Optional[Table] = None
+        self.mirror_state_table: Optional[Table] = None
+        self.mirror_manager: Optional[MirrorManager] = None
+        self.mirror_control_server: Optional[MirrorControlServer] = None
         self.ser_fd: int = -1
         self.ptm_fd: int = -1
         self.filter: Optional[FrameFilter] = None
@@ -698,6 +702,14 @@ class ProxyService:
                 on_user_data=self._on_user_data_received,
             )
 
+            # Initialize mirror manager and control server
+            self.mirror_state_table = Table(self.state_db, "CONSOLE_MIRROR")
+            self.mirror_manager = MirrorManager(self.link_id, self.mirror_state_table)
+            self.mirror_control_server = MirrorControlServer(
+                self.link_id, self.mirror_manager
+            )
+            self.mirror_control_server.start()
+
             self._last_heartbeat_time = time.monotonic()
             self._last_data_activity = time.monotonic()
 
@@ -706,6 +718,7 @@ class ProxyService:
 
         except Exception as e:
             log.error(f"[{self.link_id}] Failed to initialize: {e}")
+            self._cleanup()
             return False
 
     def _run_loop(self) -> None:
@@ -787,7 +800,9 @@ class ProxyService:
         try:
             data = os.read(self.ptm_fd, 4096)
             if data:
-                os.write(self.ser_fd, data)
+                written = os.write(self.ser_fd, data)
+                if written and self.mirror_manager:
+                    self.mirror_manager.submit("tx", data[:written])
         except (BlockingIOError, OSError):
             pass
 
@@ -804,7 +819,9 @@ class ProxyService:
         """User data callback"""
         if self.ptm_fd >= 0:
             try:
-                os.write(self.ptm_fd, data)
+                written = os.write(self.ptm_fd, data)
+                if written and self.mirror_manager:
+                    self.mirror_manager.submit("rx", data[:written])
             except OSError:
                 pass
 
@@ -855,6 +872,15 @@ class ProxyService:
 
     def _cleanup(self) -> None:
         """Cleanup all resources"""
+        # Stop accepting new control requests before closing the current
+        # writer.  Shutdown is bounded and leaves any unfinished source logs.
+        if self.mirror_control_server:
+            self.mirror_control_server.stop()
+            self.mirror_control_server = None
+        if self.mirror_manager:
+            self.mirror_manager.shutdown()
+            self.mirror_manager = None
+
         # Cleanup STATE_DB
         self._cleanup_state()
 

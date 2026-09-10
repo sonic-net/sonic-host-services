@@ -332,6 +332,7 @@ class TestReboot(object):
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.sleep") as mock_sleep,
             mock.patch("time.time", return_value=TIME),
+            mock.patch("reboot.time.monotonic", side_effect=[0, 0, 61]),
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=True) as mock_is_halt_command_running,
             mock.patch("reboot.Reboot.is_container_running", return_value=True) as mock_is_container_running,
             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
