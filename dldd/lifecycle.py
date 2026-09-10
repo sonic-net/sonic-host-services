@@ -387,12 +387,12 @@ class RuleGenerationManager:
 
     def _record_attempt(
         self,
-        manifest: dict[str, Any],
+        manifest: dict,
         source: str,
         checksum: str,
         validation: Optional[CandidateValidation] = None,
         failure_reason: str = "",
-    ) -> dict[str, Any]:
+    ) -> dict:
         """Append one validation or pre-validation activation attempt."""
 
         file_valid = validation.file_valid if validation else False
@@ -431,12 +431,12 @@ class RuleGenerationManager:
         return attempt
 
     def _append_attempt(
-        self, manifest: dict[str, Any], attempt: Mapping[str, Any]
+        self, manifest: dict, attempt: Mapping
     ) -> None:
         history = manifest.get("activation_attempts", [])
         if not isinstance(history, list):
             history = []
-        normalized_history: List[Mapping[str, Any]] = [
+        normalized_history = [
             dict(item) for item in history if isinstance(item, Mapping)
         ]
         normalized_history.append(attempt)

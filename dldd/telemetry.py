@@ -40,7 +40,7 @@ def _redis_value(value: Any) -> str:
     return str(value)
 
 
-def _redis_mapping(values: Mapping[str, Any]) -> Dict[str, str]:
+def _redis_mapping(values: Mapping[str, Any]) -> Mapping[str, str]:
     """Encode one logical telemetry row for the Redis client boundary."""
 
     return {name: _redis_value(value) for name, value in values.items()}
@@ -367,7 +367,6 @@ class TelemetryPublisher:
             raw = decode_db_hash(self.state_db.hgetall(key))
             decoded: Dict[str, Any] = {}
             for name, value in raw.items():
-                decoded_value: Any = value
                 if name in (
                     "events",
                     "repair_actions",
@@ -376,10 +375,10 @@ class TelemetryPublisher:
                     "healthz_artifact",
                 ):
                     try:
-                        decoded_value = json.loads(value)
+                        value = json.loads(value)
                     except (TypeError, ValueError):
                         pass
-                decoded[name] = decoded_value
+                decoded[name] = value
             decoded["redis_key"] = key
             rows.append(decoded)
         return tuple(rows)

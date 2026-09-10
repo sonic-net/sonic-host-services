@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from copy import copy
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Optional, Tuple
+from typing import Mapping, Optional, Tuple
 
 from .adapters import DataSourceAdapter, VendorAdapter, adapter_map, require_adapter
 from .hooks import VendorHookError, operation_hook_name
@@ -35,7 +34,7 @@ class ActivationPreflightFailure:
 
 @dataclass(frozen=True)
 class ActivationPreflightResult:
-    validation: Any
+    validation: ValidationResult
     plan: PlanBundle
     adapters: Mapping[str, DataSourceAdapter]
     failures: Tuple[ActivationPreflightFailure, ...]
@@ -60,7 +59,7 @@ class ActivationPreflightResult:
 
 
 def validation_with_preflight_failures(
-    validation,
+    validation: ValidationResult,
     failures,
     message_limit: Optional[int] = None,
 ):
@@ -92,18 +91,12 @@ def validation_with_preflight_failures(
                 getattr(failure, "rule_version", ""),
             )
         )
-    if isinstance(validation, ValidationResult):
-        return replace(
-            validation,
-            materialized_rules=(),
-            file_errors=validation.file_errors + tuple(issues),
-            broken_rules=validation.broken_rules + tuple(broken),
-        )
-    result = copy(validation)
-    result.materialized_rules = ()
-    result.file_errors = validation.file_errors + tuple(issues)
-    result.broken_rules = validation.broken_rules + tuple(broken)
-    return result
+    return replace(
+        validation,
+        materialized_rules=(),
+        file_errors=validation.file_errors + tuple(issues),
+        broken_rules=validation.broken_rules + tuple(broken),
+    )
 
 
 def validate_runtime_operation_hooks(materialized_rule, vendor_hooks) -> None:
@@ -136,7 +129,7 @@ def build_adapter_registry(extensions) -> Mapping:
 
 
 def preflight_activation(
-    validation,
+    validation: ValidationResult,
     extensions,
     polling_intervals: Mapping[str, float],
     failure_message_limit: Optional[int] = None,
@@ -183,7 +176,7 @@ def preflight_activation(
                 ),
             )
     failures = tuple(failures_by_rule.values())
-    if failures and isinstance(validation, ValidationResult):
+    if failures:
         validation = validation_with_preflight_failures(
             validation, failures, failure_message_limit
         )

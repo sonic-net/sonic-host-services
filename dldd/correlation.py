@@ -76,7 +76,7 @@ class CorrelationEngine:
         self._events: Dict[Tuple[int, str, int], _EventState] = {}
         self._active: Dict[Tuple[int, str], bool] = defaultdict(bool)
         self.late_events_discarded = 0
-        self.diagnostics: Deque[Mapping[str, Any]] = deque(maxlen=64)
+        self.diagnostics = deque(maxlen=64)
 
     def register_work_item(self, signature, item, plan_generation: str) -> None:
         """Register one monitor-expanded key before its evidence is consumed."""

@@ -8,7 +8,7 @@ import json
 import logging
 import math
 import os
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from pydantic import ValidationError
 from typing_extensions import TypeGuard
@@ -107,11 +107,8 @@ class RulesParseError(ValueError):
         self.line = line
 
 
-_UniqueKeySafeLoader: Any = None
 if yaml is not None:
-    _yaml = yaml
-
-    class _UniqueKeySafeLoaderImpl(yaml.SafeLoader):
+    class _UniqueKeySafeLoader(yaml.SafeLoader):
         """SafeLoader variant that rejects ambiguous duplicate keys."""
 
         def construct_mapping(self, node, deep=False):
@@ -123,7 +120,7 @@ if yaml is not None:
                 except TypeError:
                     duplicate = False
                 if duplicate:
-                    raise _yaml.constructor.ConstructorError(
+                    raise yaml.constructor.ConstructorError(
                         "while constructing a mapping",
                         node.start_mark,
                         "found duplicate key {!r}".format(key),
@@ -135,7 +132,8 @@ if yaml is not None:
                     pass
             return super().construct_mapping(node, deep=deep)
 
-    _UniqueKeySafeLoader = _UniqueKeySafeLoaderImpl
+else:  # pragma: no cover - SONiC images provide PyYAML
+    _UniqueKeySafeLoader = None
 
 
 def _bounded_text(value):
@@ -197,9 +195,7 @@ def _enforce_scalar_limits(value):
 
 
 def _enforce_document_limits(document):
-    stack: List[Tuple[Any, int, frozenset[int]]] = [
-        (document, 0, frozenset())
-    ]
+    stack = [(document, 0, frozenset())]
     nodes = 0
     while stack:
         value, depth, ancestors = stack.pop()

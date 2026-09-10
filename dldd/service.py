@@ -8,7 +8,7 @@ import signal
 import threading
 import time
 from queue import Queue
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from .actions import ActionExecutor, ActionRunner
 from .adapters import DataSourceAdapter
@@ -229,12 +229,12 @@ class DLDDService:
         self.async_collection_pool: Optional[AsyncCollectionPool] = None
         self.artifact_client: Optional[HealthzArtifactClient] = None
         self.adapters: Optional[Mapping[str, DataSourceAdapter]] = None
-        self.evidence_queue: Optional[Queue[Any]] = None
+        self.evidence_queue: Optional[Queue] = None
         self.state_store = BrokenRuleStateStore(self.paths.state_file)
         self.config_thread: Optional[threading.Thread] = None
         self._state_fingerprint: Optional[str] = None
         self.fatal_reason = ""
-        self.startup_broken: Tuple[Mapping[str, Any], ...] = ()
+        self.startup_broken = ()
         self._serial_cache: Dict[Tuple[str, str], str] = {}
 
     def _load_config(self) -> DLDDConfig:
@@ -375,7 +375,7 @@ class DLDDService:
             self._fail_start("zero usable monitor work items after activation")
             return
 
-        evidence_queue: Queue[Any] = Queue(maxsize=4096)
+        evidence_queue = Queue(maxsize=4096)
         try:
             artifact_client = self._create_artifact_client()
         except Exception as error:
@@ -399,6 +399,9 @@ class DLDDService:
             self.async_collection_pool = AsyncCollectionPool()
         self.artifact_client = artifact_client
         correlation = CorrelationEngine(bundle.signatures)
+        ruleset = validation.ruleset
+        if ruleset is None:
+            raise RuntimeError("validated ruleset is unavailable")
         orchestrator = PrimaryOrchestrator(
             evidence_queue,
             bundle.monitor_plans,
@@ -409,7 +412,7 @@ class DLDDService:
             activation.checksum,
             action_runner=self.action_runner,
             artifact_client=artifact_client,
-            local_action_default_timeout=validation.ruleset.local_action_default_timeout,
+            local_action_default_timeout=ruleset.local_action_default_timeout,
             source_lifecycle_probe=self._source_is_in_expected_maintenance,
         )
         self.orchestrator = orchestrator
@@ -651,8 +654,8 @@ class DLDDService:
                 activation_result=self.activation.validation_result,
             )
         broken = tuple(self.activation.broken_rules)
-        source: Tuple[Mapping[str, Any], ...] = ()
-        work_items: Dict[str, Any] = {}
+        source = ()
+        work_items = {}
         state = "OK"
         active_fault_count = 0
         inflight_count = 0

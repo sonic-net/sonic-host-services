@@ -6,7 +6,7 @@ import fcntl
 import os
 import subprocess
 import time
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from .filesystem import atomic_write_json, load_json_object
 from .lifecycle import sha256_file
@@ -22,7 +22,7 @@ class RulesWatcher:
         lock_path: str,
         state_path: str,
         settle_time: int = 30,
-        restart: Optional[Callable[[], Any]] = None,
+        restart: Optional[Callable[[], None]] = None,
         clock=time.time,
     ) -> None:
         self.inbox_path = inbox_path

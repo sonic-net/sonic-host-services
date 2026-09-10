@@ -187,8 +187,13 @@ def test_preflight_validates_each_dse_common_item_once(monkeypatch):
         lambda unused_extensions: {"redis": adapter},
     )
 
+    validation = ValidationResult(
+        schema_version="0.0.1",
+        ruleset=None,
+        materialized_rules=(rule,),
+    )
     result = preflight.preflight_activation(
-        SimpleNamespace(materialized_rules=(rule,)),
+        validation,
         extensions,
         {"redis": 60, "file": 60, "common": 60},
     )
@@ -205,7 +210,7 @@ def test_preflight_validates_each_dse_common_item_once(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="adapter bug"):
         preflight.preflight_activation(
-            SimpleNamespace(materialized_rules=(rule,)),
+            validation,
             extensions,
             {"redis": 60, "file": 60, "common": 60},
         )

@@ -8,6 +8,7 @@ import pytest
 from dldd import cli as dldd_cli
 from dldd.dse import DSERegistry
 from dldd.hooks import VendorHookRegistry
+from dldd.models import ValidationResult
 from dldd.platform import PlatformIdentity
 from dldd.preflight import (
     ActivationPreflightFailure,
@@ -17,14 +18,12 @@ from dldd.preflight import (
 
 
 def _validation(materialized):
-    return SimpleNamespace(
+    return ValidationResult(
         schema_version="0.0.1",
         ruleset=None,
         materialized_rules=tuple(materialized),
         broken_rules=(),
         file_errors=(),
-        file_valid=True,
-        activation_valid=True,
         source_lines={"$": 1, "$.signatures": 2},
     )
 

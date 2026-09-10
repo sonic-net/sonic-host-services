@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import subprocess
-from typing import Any, Mapping, Optional
 
 from .config import DLDDConfig
 from .dse import DSERegistry
@@ -33,10 +32,10 @@ def _issue_location(issue):
     return "{} (line {})".format(issue["path"], issue["line"])
 
 
-def _probe_result(correlation_key, state, error=None) -> dict[str, Any]:
+def _probe_result(correlation_key, state, error=None):
     """Build one validation probe result row."""
 
-    result: dict[str, Any] = {
+    result = {
         "correlation_key": correlation_key,
         "state": state,
     }
@@ -73,7 +72,7 @@ def validate_rules(args) -> int:
     )
     result = load_rules(args.file, context, materialize=not static_only)
     reported_result = result
-    probe_results: Optional[list[Mapping[str, Any]]] = None
+    probe_results = None
     rule_results = None
     runtime_failures: list[ActivationPreflightFailure] = []
     probe_failed = False

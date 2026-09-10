@@ -6,7 +6,7 @@ import glob
 import json
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, cast
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from .dse import (
     DSEBinding,
@@ -94,7 +94,7 @@ def _normalize(raw: Any, config: ValueConfig) -> Any:
         raise ValueError("unsupported value type: {}".format(value_type))
 
     if config.scaling not in (None, "", "N/A"):
-        value = cast(Any, value) * float(config.scaling)
+        value = value * float(config.scaling)
     return value
 
 
@@ -304,7 +304,6 @@ class FileAdapter(DataSourceAdapter):
         with open(path, "r", encoding=item.source.get("encoding", "utf-8")) as stream:
             content = stream.read()
         format_name = str(item.source.get("format", "text")).lower()
-        parsed: Any
         if format_name in ("text", "string", "raw"):
             parsed = content.strip()
         elif format_name == "json":

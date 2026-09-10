@@ -10,7 +10,7 @@ from collections import deque
 from dataclasses import dataclass
 from itertools import count
 from queue import Empty, Full, PriorityQueue, Queue
-from typing import Any, Callable, Deque, Dict, Mapping, Optional, Set, Tuple
+from typing import Callable, Dict, Mapping, Optional, Set
 
 from .adapters import DataSourceAdapter
 from .bounded_calls import start_daemon_workers
@@ -83,7 +83,7 @@ class AsyncCollectionPool:
         max_pending = max(0, int(max_pending))
         recheck_reserve = min(max(0, int(recheck_reserve)), max_pending)
         self._clock = monotonic_clock
-        self._jobs: PriorityQueue[Tuple[Any, ...]] = PriorityQueue()
+        self._jobs = PriorityQueue()
         self._sequence = count()
         self._total_slots = threading.BoundedSemaphore(
             max_workers + max_pending
@@ -281,9 +281,9 @@ class MonitorThread(threading.Thread):
         self._sequence = 0
         self._next_poll = self.clock()
         self._async_completions: Queue[AsyncCollectionCompletion] = Queue()
-        self._async_jobs: Dict[str, Tuple[Any, ...]] = {}
+        self._async_jobs = {}
         self._dse_templates_by_child: Dict[str, Set[str]] = {}
-        self.diagnostics: Deque[Dict[str, Any]] = deque(maxlen=32)
+        self.diagnostics = deque(maxlen=32)
         async_work = any(
             item.async_collection
             for item in self.plan.items_by_key.values()

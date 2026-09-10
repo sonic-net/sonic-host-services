@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Union
+from typing import Dict, List, Union
 
 from pydantic import (
     BaseModel,
@@ -105,7 +105,7 @@ NonNullJsonValue = TypeAliasType(
 )
 
 
-def omitted_non_null_field() -> Any:
+def omitted_non_null_field():
     """Describe an omissible wire field for which explicit null is invalid.
 
     A default factory keeps the field out of JSON Schema's ``required`` list

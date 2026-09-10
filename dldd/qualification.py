@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Mapping, Tuple
 
 from .adapters import require_adapter
 from .correlation import CorrelationEngine
@@ -47,10 +47,10 @@ def qualify_e2e(bundle, adapters, invalid_rule_ids=()) -> E2EQualificationResult
         for item in bundle.work_items.values()
         if item.rule_id not in invalid_rule_ids
     }
-    event_results: List[Mapping[str, Any]] = []
-    rule_errors: Dict[Tuple[int, Any], str] = {}
-    rule_info: Dict[Tuple[int, Any], str] = {}
-    decisions: Dict[Tuple[int, Any], Any] = {}
+    event_results = []
+    rule_errors = {}
+    rule_info = {}
+    decisions = {}
     for template in bundle.templates.values():
         base = template.item
         if base.rule_id in invalid_rule_ids:
@@ -172,7 +172,7 @@ def qualify_e2e(bundle, adapters, invalid_rule_ids=()) -> E2EQualificationResult
             continue
         decisions[identity] = decision
 
-    rule_results: List[Mapping[str, Any]] = []
+    rule_results = []
     for identity in sorted(
         rule_info, key=lambda item: (item[0], "" if item[1] is None else item[1])
     ):
