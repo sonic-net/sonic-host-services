@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Future, InvalidStateError
-from typing import Callable, Tuple
+from typing import Any, Callable, Tuple
 
 
 def start_daemon_workers(
@@ -37,20 +37,17 @@ class BoundedCallGate:
 
         if not self._slots.acquire(False):
             raise RuntimeError(capacity_error)
-        result = Future()
+        result: Future[Any] = Future()
 
         def invoke():
             try:
                 try:
-                    value = callback()
-                    setter = result.set_result
+                    result.set_result(callback())
                 except BaseException as error:
-                    value = error
-                    setter = result.set_exception
-                try:
-                    setter(value)
-                except InvalidStateError:
-                    pass
+                    try:
+                        result.set_exception(error)
+                    except InvalidStateError:
+                        pass
             finally:
                 self._slots.release()
 

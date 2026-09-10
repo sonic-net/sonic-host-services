@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import subprocess
+from typing import Any, Mapping, Optional
 
 from .config import DLDDConfig
 from .dse import DSERegistry
@@ -32,10 +33,13 @@ def _issue_location(issue):
     return "{} (line {})".format(issue["path"], issue["line"])
 
 
-def _probe_result(correlation_key, state, error=None):
+def _probe_result(correlation_key, state, error=None) -> dict[str, Any]:
     """Build one validation probe result row."""
 
-    result = {"correlation_key": correlation_key, "state": state}
+    result: dict[str, Any] = {
+        "correlation_key": correlation_key,
+        "state": state,
+    }
     if error is not None:
         result["error"] = str(error)
     return result
@@ -69,9 +73,9 @@ def validate_rules(args) -> int:
     )
     result = load_rules(args.file, context, materialize=not static_only)
     reported_result = result
-    probe_results = None
+    probe_results: Optional[list[Mapping[str, Any]]] = None
     rule_results = None
-    runtime_failures = []
+    runtime_failures: list[ActivationPreflightFailure] = []
     probe_failed = False
     if args.mode in (
         "activation-dry-run",
@@ -127,28 +131,27 @@ def validate_rules(args) -> int:
                 try:
                     adapter = adapters[item.source_type]
                     adapter.get_value(item)
-                except (ValueError, VendorHookError) as caught:
-                    error = caught
-                    failure_code = "adapter_validation_failed"
-                except Exception as caught:
-                    error = caught
-                    failure_code = "adapter_probe_failed"
+                except Exception as error:
+                    failure_code = (
+                        "adapter_validation_failed"
+                        if isinstance(error, (ValueError, VendorHookError))
+                        else "adapter_probe_failed"
+                    )
+                    probe_failed = True
+                    invalid_rule_ids.add(item.rule_id)
+                    metadata = metadata_by_id[item.rule_id]
+                    runtime_failures.append(
+                        ActivationPreflightFailure.from_metadata(
+                            metadata, item.correlation_key, error, failure_code
+                        )
+                    )
+                    probe_results.append(
+                        _probe_result(item.correlation_key, "FAILED", error)
+                    )
                 else:
                     probe_results.append(
                         _probe_result(item.correlation_key, "AVAILABLE")
                     )
-                    continue
-                probe_failed = True
-                invalid_rule_ids.add(item.rule_id)
-                metadata = metadata_by_id[item.rule_id]
-                runtime_failures.append(
-                    ActivationPreflightFailure.from_metadata(
-                        metadata, item.correlation_key, error, failure_code
-                    )
-                )
-                probe_results.append(
-                    _probe_result(item.correlation_key, "FAILED", error)
-                )
         reported_result = validation_with_preflight_failures(
             result,
             sorted(runtime_failures, key=lambda failure: failure.rule_id),

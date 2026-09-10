@@ -273,10 +273,9 @@ def _wire_location(parts: Iterable[object]) -> Tuple[object, ...]:
                 expect_union_branch = False
                 nested_json_value = True
                 force_wire_component = True
-                if part.startswith("dict["):
-                    forced_container = "dict"
-                else:
-                    forced_container = "sequence"
+                forced_container = (
+                    "dict" if part.startswith("dict[") else "sequence"
+                )
                 continue
             expect_union_branch = False
 

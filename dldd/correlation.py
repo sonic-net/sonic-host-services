@@ -76,7 +76,7 @@ class CorrelationEngine:
         self._events: Dict[Tuple[int, str, int], _EventState] = {}
         self._active: Dict[Tuple[int, str], bool] = defaultdict(bool)
         self.late_events_discarded = 0
-        self.diagnostics = deque(maxlen=64)
+        self.diagnostics: Deque[Mapping[str, Any]] = deque(maxlen=64)
 
     def register_work_item(self, signature, item, plan_generation: str) -> None:
         """Register one monitor-expanded key before its evidence is consumed."""
@@ -104,9 +104,7 @@ class CorrelationEngine:
         execution = self.executions.get(identity)
         if execution is None:
             return
-        # Inventory removal invalidates this event's sampled truth.  Keeping
-        # it would let a rediscovered instance combine new evidence with stale
-        # pre-removal history.
+        # A rediscovered instance must not inherit pre-removal evidence.
         self._events.pop((item.rule_id, item.component_name, item.event_id), None)
         self._active.pop(identity, None)
         event_keys = {
@@ -187,13 +185,12 @@ class CorrelationEngine:
                     state.snapshot = self._snapshot(event)
             elif state.matching_keys.get(event.correlation_key, False):
                 insort(state.matches, timestamp)
-        else:
-            if key_timestamp is None or timestamp >= key_timestamp:
-                state.matching_keys[event.correlation_key] = False
-                state.key_timestamps[event.correlation_key] = timestamp
-                if not any(state.matching_keys.values()):
-                    state.matches.clear()
-                    state.last_match = None
+        elif key_timestamp is None or timestamp >= key_timestamp:
+            state.matching_keys[event.correlation_key] = False
+            state.key_timestamps[event.correlation_key] = timestamp
+            if not any(state.matching_keys.values()):
+                state.matches.clear()
+                state.last_match = None
 
         evaluation_time = max(
             (
@@ -212,9 +209,14 @@ class CorrelationEngine:
                 (event.signature_id, event.component_name, definition.id)
             )
             truth = self._event_truth(other, definition, evaluation_time)
-            if truth and other is not None and other.last_match is not None:
-                if lookback and evaluation_time - other.last_match > lookback:
-                    truth = False
+            if (
+                truth
+                and other is not None
+                and other.last_match is not None
+                and lookback
+                and evaluation_time - other.last_match > lookback
+            ):
+                truth = False
             event_truth[definition.id] = truth
             if truth and other is not None and other.snapshot is not None:
                 snapshots.append(other.snapshot)
@@ -302,8 +304,8 @@ class FaultArbiter:
     """Choose one published signature per component/symptom."""
 
     def __init__(self) -> None:
-        self._active = {}
-        self._detected_at = {}
+        self._active: Dict[Tuple[str, str, int], SignatureExecution] = {}
+        self._detected_at: Dict[Tuple[str, str, int], float] = {}
 
     def restore_active(
         self, execution: SignatureExecution, detected_at: float

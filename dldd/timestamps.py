@@ -44,11 +44,7 @@ def _is_timestamp_field(name: Any) -> bool:
 
 
 def floor_timestamp_fields(value: Any) -> Any:
-    """Recursively floor values whose field names identify timestamps.
-
-    Durations, intervals, and monotonic scheduler values are intentionally not
-    matched. They retain their original precision and type.
-    """
+    """Floor wall-clock timestamp fields without changing durations."""
 
     if isinstance(value, Mapping):
         result = {}

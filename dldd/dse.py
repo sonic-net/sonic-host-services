@@ -179,13 +179,15 @@ def validate_resolved_evaluation(
                 effective_operator
             )
         )
-    if effective_operator in _ORDERING_OPERATORS:
-        if not isinstance(
+    if effective_operator in _ORDERING_OPERATORS and (
+        not isinstance(
             resolved.expected_value, (int, float, str)
-        ) or isinstance(resolved.expected_value, bool):
-            raise DSEError(
-                "DSE ordering operator requires a numeric or string expected value"
-            )
+        )
+        or isinstance(resolved.expected_value, bool)
+    ):
+        raise DSEError(
+            "DSE ordering operator requires a numeric or string expected value"
+        )
     if rule_operator is None and not resolved.complete:
         label = (
             reference.canonical
@@ -240,13 +242,7 @@ def parse_reference(value):
 
 
 def _operation_command(value):
-    """Return a typed reference or an opaque vendor action/query command.
-
-    Source and evaluation values always use :func:`parse_reference`.  The
-    schema intentionally gives action/query ``command`` a wider contract: a
-    canonical DSE reference is parsed for backward compatibility, while any
-    other non-empty string is passed unchanged to the trusted vendor hook.
-    """
+    """Parse a DSE reference or preserve an opaque vendor command."""
 
     if not isinstance(value, str):
         raise DSEReferenceError("DSE operation command must be a string")
@@ -271,12 +267,7 @@ class DSEHook(object, metaclass=ABCMeta):
 
     @abstractmethod
     def resolve_source(self, reference, context) -> DSESourceHandle:
-        """Return configured sources without sampling or executing them.
-
-        Resolution runs during activation validation.  Implementations must
-        be side-effect-free and must not read hardware or external source
-        values.
-        """
+        """Return configured sources without reading their values."""
 
     @abstractmethod
     def resolve_evaluation(self, reference, context) -> DSEEvaluationHandle:
@@ -297,12 +288,7 @@ class DSEHook(object, metaclass=ABCMeta):
         )
 
     def validate_vendor_operation(self, operation, context):
-        """Validate a platform-advertised action/query operation.
-
-        Vendors may raise :class:`DSEError` (or ``ValueError``) with a useful
-        diagnostic.  Returning normally means the contract is supported.
-        Validation must not execute the operation or read its target.
-        """
+        """Validate an operation without executing it or reading its target."""
 
         return None
 

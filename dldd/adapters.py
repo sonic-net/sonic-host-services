@@ -6,7 +6,7 @@ import glob
 import json
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, cast
 
 from .dse import (
     DSEBinding,
@@ -94,7 +94,7 @@ def _normalize(raw: Any, config: ValueConfig) -> Any:
         raise ValueError("unsupported value type: {}".format(value_type))
 
     if config.scaling not in (None, "", "N/A"):
-        value = value * float(config.scaling)
+        value = cast(Any, value) * float(config.scaling)
     return value
 
 
@@ -260,8 +260,11 @@ class RedisAdapter(DataSourceAdapter):
             )
         else:
             redis_key = source["key"] or source["table"]
+            hash_reader = self._hash_reader
+            if hash_reader is None:
+                raise AdapterError("Redis hash reader is unavailable")
             try:
-                value = self._hash_reader.read(source["database"], redis_key)
+                value = hash_reader.read(source["database"], redis_key)
             except SonicHashReaderError as error:
                 raise SourceUnavailable(str(error))
             if not value:
@@ -301,6 +304,7 @@ class FileAdapter(DataSourceAdapter):
         with open(path, "r", encoding=item.source.get("encoding", "utf-8")) as stream:
             content = stream.read()
         format_name = str(item.source.get("format", "text")).lower()
+        parsed: Any
         if format_name in ("text", "string", "raw"):
             parsed = content.strip()
         elif format_name == "json":

@@ -1,9 +1,4 @@
-"""Parser and evaluator for DLDD signature Boolean expressions.
-
-The initial rule contract intentionally has a very small language: positive integer event
-IDs, ``AND``, ``OR``, and parentheses.  Keeping the parser here avoids using
-Python expression evaluation for vendor supplied input.
-"""
+"""Safe parser for event IDs, ``AND``, ``OR``, and parentheses."""
 
 from __future__ import absolute_import
 
@@ -55,7 +50,11 @@ def _tokenize(expression):
     nesting = 0
     while position < len(expression):
         match = _TOKEN.match(expression, position)
-        operator, number, left, right, invalid = match.groups()
+        if match is None:
+            raise LogicSyntaxError(
+                "unable to tokenize expression at character {}".format(position)
+            )
+        operator, number, left, _right, invalid = match.groups()
         if invalid is not None:
             raise LogicSyntaxError(
                 "unsupported token {!r} at character {}".format(invalid, position)
@@ -118,9 +117,6 @@ class _Parser(object):
         return token
 
     def _parse_or(self):
-        # AND has the conventional higher precedence.  Parentheses remain the
-        # preferred form for rules where author intent might otherwise be hard
-        # to read.
         result = self._parse_and()
         while self._peek() == "OR":
             self._consume()

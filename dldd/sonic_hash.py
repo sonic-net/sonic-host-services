@@ -34,7 +34,7 @@ class SonicHashReader:
             raise ValueError("provide either connector or connector_factory")
         self._connector = connector
         self._connector_factory = connector_factory
-        self._connected_databases = set()
+        self._connected_databases: set[str] = set()
         self._lock = RLock()
 
     def _get_connector(self):

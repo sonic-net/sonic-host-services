@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from copy import copy
 from dataclasses import dataclass, replace
-from typing import Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
-from .adapters import VendorAdapter, adapter_map, require_adapter
+from .adapters import DataSourceAdapter, VendorAdapter, adapter_map, require_adapter
 from .hooks import VendorHookError, operation_hook_name
 from .models import BrokenRule, ValidationIssue, ValidationResult
 from .planner import PlanBundle, build_plans
@@ -35,9 +35,9 @@ class ActivationPreflightFailure:
 
 @dataclass(frozen=True)
 class ActivationPreflightResult:
-    validation: object
-    plan: object
-    adapters: Mapping
+    validation: Any
+    plan: PlanBundle
+    adapters: Mapping[str, DataSourceAdapter]
     failures: Tuple[ActivationPreflightFailure, ...]
 
     @property
@@ -66,7 +66,7 @@ def validation_with_preflight_failures(
 ):
     """Reject a candidate that references any unavailable installed hook."""
 
-    failures_by_id = {}
+    failures_by_id: dict[int, ActivationPreflightFailure] = {}
     for failure in failures:
         failures_by_id.setdefault(failure.rule_id, failure)
     if not failures_by_id:
@@ -152,13 +152,13 @@ def preflight_activation(
         rule.signature.metadata.id: rule.signature.metadata
         for rule in materialized_rules
     }
-    failures = {}
+    failures_by_rule: dict[int, ActivationPreflightFailure] = {}
     for rule in materialized_rules:
         metadata = rule.signature.metadata
         try:
             validate_runtime_operation_hooks(rule, vendor_hooks)
         except (ValueError, VendorHookError) as error:
-            failures.setdefault(
+            failures_by_rule.setdefault(
                 metadata.id,
                 ActivationPreflightFailure.from_metadata(
                     metadata, "rule:{}".format(metadata.id), error
@@ -170,19 +170,19 @@ def preflight_activation(
         for item in template.common_items:
             preflight_items.setdefault(item.correlation_key, item)
     for item in preflight_items.values():
-        if item.rule_id in failures:
+        if item.rule_id in failures_by_rule:
             continue
         try:
             require_adapter(adapters, item.source_type).validate(item)
         except (ValueError, VendorHookError) as error:
             metadata = metadata_by_id[item.rule_id]
-            failures.setdefault(
+            failures_by_rule.setdefault(
                 item.rule_id,
                 ActivationPreflightFailure.from_metadata(
                     metadata, item.correlation_key, error
                 ),
             )
-    failures = tuple(failures.values())
+    failures = tuple(failures_by_rule.values())
     if failures and isinstance(validation, ValidationResult):
         validation = validation_with_preflight_failures(
             validation, failures, failure_message_limit

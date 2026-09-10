@@ -1,4 +1,4 @@
-"""Authoritative Pydantic wire contract for DLDD schema version 0.0.1."""
+"""Pydantic wire contract for DLDD schema version 0.0.1."""
 
 from __future__ import annotations
 
@@ -117,9 +117,7 @@ ComparisonScalar = Union[FiniteNumber, StrictStr]
 ComparisonValueList = Annotated[List[ComparisonScalar], Field(min_length=1)]
 ScalingValue = Union[FiniteNumber, Literal["N/A"]]
 
-# Component types are vendor/platform identities. DLDD requires a usable
-# string but deliberately does not maintain an allowlist: a platform can
-# define any number of component classes without a schema revision.
+# Platforms may define component types without a schema revision.
 ComponentType = NonEmptyString
 SymptomType = Literal[
     "SYMPTOM_OVER_THRESHOLD",
@@ -141,9 +139,7 @@ ValueType = Literal[
     "bytes",
     "N/A",
 ]
-# OpenConfig remediation identities are extensible. Preserve any non-empty
-# identity string and leave namespace/identity resolution to the controller's
-# OpenConfig implementation rather than embedding a DLDD-side enum.
+# The OpenConfig controller resolves extensible remediation identities.
 RemoteActionType = NonEmptyString
 
 
@@ -338,7 +334,7 @@ def _validate_positional_lists(
             )
         else:
             continue
-        raise PydanticCustomError(code, message)
+        raise PydanticCustomError(code, "{reason}", {"reason": message})
 
 
 class EventBaseV001(ContractModel):
@@ -679,14 +675,12 @@ class SignatureWrapperV001(ContractModel):
 
 
 class ShallowSignatureWrapperV001(ContractModel):
-    # The shallow file gate owns only the wrapper shape.  The bounded parser
-    # has already made the body safe to retain; the per-signature adapter owns
-    # every nested type so one YAML-specific scalar cannot poison the file.
+    # Nested validation is isolated to each signature.
     signature: dict
 
 
 class EnvelopeV001(ContractModel):
-    schema_version: Literal[SCHEMA_VERSION]
+    schema_version: Literal["0.0.1"]
     local_action_default_timeout: PositiveSeconds = omitted_non_null_field()
     signatures: Annotated[
         List[ShallowSignatureWrapperV001],
@@ -697,7 +691,7 @@ class EnvelopeV001(ContractModel):
 class RulesDocumentV001(ContractModel):
     """Fully nested publication model; runtime uses :class:`EnvelopeV001`."""
 
-    schema_version: Literal[SCHEMA_VERSION]
+    schema_version: Literal["0.0.1"]
     local_action_default_timeout: PositiveSeconds = omitted_non_null_field()
     signatures: Annotated[
         List[SignatureWrapperV001], Field(min_length=1, max_length=MAX_SIGNATURES)
@@ -886,16 +880,16 @@ def signature_v001_to_domain(
 
 
 __all__ = (
-    "ActionsV001",
     "BUILTIN_OPERATION_TYPES",
+    "SCHEMA_VERSION",
+    "ActionsV001",
     "DomainConversionError",
     "EnvelopeV001",
-    "EventV001",
     "EvaluationV001",
+    "EventV001",
     "MetadataV001",
     "OperationV001",
     "RulesDocumentV001",
-    "SCHEMA_VERSION",
     "ShallowSignatureWrapperV001",
     "SignatureV001",
     "SignatureWrapperV001",

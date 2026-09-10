@@ -106,9 +106,7 @@ class ConfigDBProvider:
 
         def handle(_table, key, data):
             if key == "global":
-                # Notification payloads may be partial updates.  Re-read the
-                # complete row so an update to one threshold cannot silently
-                # discard the other configured overrides.
+                # Re-read the complete row because notifications may be partial.
                 callback(self.load())
 
         connector.subscribe("DLDD_CONFIG", handle)

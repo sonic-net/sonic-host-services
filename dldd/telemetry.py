@@ -40,7 +40,7 @@ def _redis_value(value: Any) -> str:
     return str(value)
 
 
-def _redis_mapping(values: Mapping[str, Any]) -> Mapping[str, str]:
+def _redis_mapping(values: Mapping[str, Any]) -> Dict[str, str]:
     """Encode one logical telemetry row for the Redis client boundary."""
 
     return {name: _redis_value(value) for name, value in values.items()}
@@ -224,7 +224,7 @@ class TelemetryPublisher:
     """Publish bounded DLDD process and fault records to STATE_DB."""
 
     STATUS_KEY = "DLDD_STATUS|process_state"
-    # Retained only so reset can remove telemetry produced by older images.
+    # Reset also removes the deprecated aggregate rule row.
     RULE_STATUS_KEY = "DLDD_RULE_STATUS|active"
     RULE_STATUS_PREFIX = "DLDD_RULE_STATUS|rule|"
     RULE_DETAIL_PREFIX = "DLDD_RULE_DETAIL|rule|"
@@ -359,9 +359,7 @@ class TelemetryPublisher:
             return False
 
     def read_faults(self) -> Iterable[Mapping[str, Any]]:
-        # Startup reconciliation needs one complete view of retained faults.
-        # Let scan or row-read failures reach the service retry boundary rather
-        # than silently starting monitors from a partial snapshot.
+        # Fail the snapshot rather than reconcile partial fault state.
         keys = tuple(self.state_db.keys("FAULT_INFO|*"))
         rows = []
         for raw_key in keys:
@@ -369,6 +367,7 @@ class TelemetryPublisher:
             raw = decode_db_hash(self.state_db.hgetall(key))
             decoded: Dict[str, Any] = {}
             for name, value in raw.items():
+                decoded_value: Any = value
                 if name in (
                     "events",
                     "repair_actions",
@@ -377,10 +376,10 @@ class TelemetryPublisher:
                     "healthz_artifact",
                 ):
                     try:
-                        value = json.loads(value)
+                        decoded_value = json.loads(value)
                     except (TypeError, ValueError):
                         pass
-                decoded[name] = value
+                decoded[name] = decoded_value
             decoded["redis_key"] = key
             rows.append(decoded)
         return tuple(rows)

@@ -89,8 +89,7 @@ def load_extensions(identity: PlatformIdentity, dse_path: str) -> PlatformExtens
     try:
         module = importlib.import_module("sonic_platform.dldd")
     except ImportError as error:
-        # Absence is optional.  Import failures inside the vendor module are a
-        # broken platform implementation and must remain visible.
+        # Missing modules are optional; failures inside one are not.
         if error.name in ("sonic_platform", "sonic_platform.dldd"):
             return PlatformExtensions(
                 identity, dse_registry, vendor_hooks, compatibility_matcher

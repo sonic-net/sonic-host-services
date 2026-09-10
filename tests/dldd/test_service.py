@@ -9,6 +9,7 @@ from dldd.hooks import VendorHookRegistry
 from dldd.lifecycle import RulePaths
 from dldd.models import BrokenRule, ValidationIssue, ValidationResult
 from dldd.platform import PlatformExtensions, PlatformIdentity
+from dldd.preflight import validation_with_preflight_failures
 from dldd.service import DLDDService, TelemetryUnavailable
 from dldd.validation import ExactCompatibilityMatcher
 
@@ -148,16 +149,20 @@ def test_candidate_rejects_file_when_activation_preflight_rejects_one(
     )
     service = _service(tmp_path)
     monkeypatch.setattr(dldd_service, "load_rules", lambda *args: validation)
+    failure = SimpleNamespace(
+        rule_id=1000002,
+        rule_name="REJECTED",
+        rule_version="2.0.0",
+        message="unsupported source binding",
+    )
     monkeypatch.setattr(
         dldd_service,
         "preflight_activation",
         lambda *args, **kwargs: SimpleNamespace(
-            failures=(
-                SimpleNamespace(
-                    rule_id=1000002,
-                    rule_name="REJECTED",
-                    message="unsupported source binding",
-                ),
+            validation=validation_with_preflight_failures(
+                validation,
+                (failure,),
+                256,
             )
         ),
     )
@@ -167,7 +172,7 @@ def test_candidate_rejects_file_when_activation_preflight_rejects_one(
 
     assert not candidate.activatable
     assert candidate.usable_rule_count == 0
-    assert not candidate.payload.materialized_rules
+    assert not candidate.payload.validation.materialized_rules
     assert candidate.broken_rules[0]["rule_id"] == 1000002
     assert "unsupported source binding" in candidate.broken_rules[0]["reason"]
 

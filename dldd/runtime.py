@@ -1,9 +1,4 @@
-"""In-process DLDD runtime contracts.
-
-These objects are deliberately plain dataclasses.  They cross thread queues but
-are never persisted; Redis and JSON serialization happens only at the service
-boundary.
-"""
+"""In-process DLDD queue and state contracts."""
 
 from __future__ import annotations
 
@@ -235,10 +230,7 @@ class MonitorExecutionPlan:
             self.validated_polling_intervals(defaults)
         )
         self.polling_interval = self.polling_intervals[self.monitor_type]
-        # Work assignments are immutable for the lifetime of a plan. An
-        # inherited item's effective interval is selected from the atomic
-        # source-group defaults; updates never replace work-item objects behind
-        # other consumers.
+        # Work assignments remain immutable while polling defaults change.
         self.items_by_key = MappingProxyType(dict(self.items_by_key))
         self.templates_by_key = MappingProxyType(dict(self.templates_by_key))
         for key in self.templates_by_key:

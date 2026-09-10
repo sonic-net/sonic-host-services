@@ -8,9 +8,10 @@ import signal
 import threading
 import time
 from queue import Queue
-from typing import Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .actions import ActionExecutor, ActionRunner
+from .adapters import DataSourceAdapter
 from .artifacts import (
     DEFAULT_ARTIFACT_DIRECTORY,
     FilesystemArtifactClient,
@@ -20,6 +21,7 @@ from .config import ConfigDBProvider, DLDDConfig, load_vendor_defaults
 from .correlation import CorrelationEngine
 from .hooks import operation_hook_name
 from .lifecycle import (
+    ActivationResult,
     BrokenRuleStateStore,
     CandidateValidation,
     NoRulesAvailable,
@@ -34,7 +36,6 @@ from .preflight import (
     ActivationPreflightResult,
     build_adapter_registry,
     preflight_activation,
-    validation_with_preflight_failures,
 )
 from .runtime import make_rule_instance_id
 from .rule_schema.errors import bound_diagnostic, bound_identity
@@ -95,7 +96,7 @@ _SCHEMA_ISSUE_CODES = frozenset(
 
 
 def _ingestion_failure_reason(issues) -> str:
-    """Return the HLD category prefix plus the original rule diagnostics."""
+    """Return a stable category prefix plus the rule diagnostics."""
 
     details = "; ".join(str(issue) for issue in issues)
     searchable = " ".join(
@@ -188,9 +189,7 @@ def _bounded_broken_rule_records(result, validation_time):
         if _compact_json_size(records) <= budget:
             return tuple(records)
 
-    # A fixed reason is the final fallback and preserves every broken rule
-    # identity/count.  Identity projection above is JSON-safe, so the schema's
-    # 1024-signature bound guarantees this representation fits the reserve.
+        # Preserve every broken-rule identity when details exceed the byte cap.
     for record in records:
         record["reason"] = "validation details omitted by candidate byte cap"
     return tuple(records)
@@ -222,21 +221,21 @@ class DLDDService:
         self.state_db = state_db or SonicStateDB()
         self.stop_event = stop_event or threading.Event()
         self.config = DLDDConfig()
-        self.telemetry = None
-        self.activation = None
-        self.monitors = []
-        self.orchestrator = None
-        self.action_runner = None
-        self.async_collection_pool = None
-        self.artifact_client = None
-        self.adapters = None
-        self.evidence_queue = None
+        self.telemetry: Optional[TelemetryPublisher] = None
+        self.activation: Optional[ActivationResult] = None
+        self.monitors: List[MonitorThread] = []
+        self.orchestrator: Optional[PrimaryOrchestrator] = None
+        self.action_runner: Optional[ActionRunner] = None
+        self.async_collection_pool: Optional[AsyncCollectionPool] = None
+        self.artifact_client: Optional[HealthzArtifactClient] = None
+        self.adapters: Optional[Mapping[str, DataSourceAdapter]] = None
+        self.evidence_queue: Optional[Queue[Any]] = None
         self.state_store = BrokenRuleStateStore(self.paths.state_file)
-        self.config_thread = None
-        self._state_fingerprint = None
+        self.config_thread: Optional[threading.Thread] = None
+        self._state_fingerprint: Optional[str] = None
         self.fatal_reason = ""
-        self.startup_broken = ()
-        self._serial_cache = {}
+        self.startup_broken: Tuple[Mapping[str, Any], ...] = ()
+        self._serial_cache: Dict[Tuple[str, str], str] = {}
 
     def _load_config(self) -> DLDDConfig:
         try:
@@ -268,13 +267,7 @@ class DLDDService:
                 self.config.polling_intervals,
                 failure_message_limit=256,
             )
-            if isinstance(preflight, ActivationPreflightResult):
-                result, payload = preflight.validation, preflight
-            else:  # Compatibility with injected preflight implementations.
-                result = validation_with_preflight_failures(
-                    result, preflight.failures, 256
-                )
-                payload = result
+            result, payload = preflight.validation, preflight
         validation_time = time.time()
         broken = _bounded_broken_rule_records(result, validation_time)
         errors = _bounded_file_error_strings(result.file_errors)
@@ -310,6 +303,8 @@ class DLDDService:
     def _new_monitor(self, plan) -> MonitorThread:
         """Construct a monitor using the active shared runtime dependencies."""
 
+        if self.adapters is None or self.evidence_queue is None:
+            raise RuntimeError("monitor dependencies are unavailable")
         return MonitorThread(
             plan,
             self.adapters,
@@ -342,21 +337,20 @@ class DLDDService:
 
     def start(self) -> None:
         self.config = self._load_config()
-        self.telemetry = TelemetryPublisher(
+        telemetry = TelemetryPublisher(
             self.state_db, self.config, serial_resolver=self._component_serial
         )
+        self.telemetry = telemetry
         manager = RuleGenerationManager(
             self.paths,
             self._validate_candidate,
             self.extensions.identity.generation_identity,
         )
         try:
-            self.activation = manager.activate()
+            activation = manager.activate()
+            self.activation = activation
         except NoRulesAvailable:
-            # An image may intentionally enable the feature before its platform
-            # supplies any rules.  With no candidate bytes to validate there is
-            # no broken generation to report or retry; exit successfully and let
-            # the normal watcher restart DLDD when a rules file arrives.
+            # The watcher restarts DLDD when the first rules file arrives.
             LOGGER.info("no DLDD rules source is present; stopping cleanly")
             self.stop_event.set()
             return
@@ -365,15 +359,15 @@ class DLDDService:
             self._fail_start(str(error))
             return
 
-        payload = self.activation.payload
+        payload = activation.payload
         if isinstance(payload, ActivationPreflightResult):
             validation = payload.validation
-            bundle = payload.plan_for_generation(self.activation.checksum)
+            bundle = payload.plan_for_generation(activation.checksum)
         else:
             validation = payload
             bundle = build_plans(
                 validation.materialized_rules,
-                self.activation.checksum,
+                activation.checksum,
                 self.config.polling_intervals,
             )
         adapters = self._adapters()
@@ -381,7 +375,7 @@ class DLDDService:
             self._fail_start("zero usable monitor work items after activation")
             return
 
-        evidence_queue = Queue(maxsize=4096)
+        evidence_queue: Queue[Any] = Queue(maxsize=4096)
         try:
             artifact_client = self._create_artifact_client()
         except Exception as error:
@@ -405,32 +399,33 @@ class DLDDService:
             self.async_collection_pool = AsyncCollectionPool()
         self.artifact_client = artifact_client
         correlation = CorrelationEngine(bundle.signatures)
-        self.orchestrator = PrimaryOrchestrator(
+        orchestrator = PrimaryOrchestrator(
             evidence_queue,
             bundle.monitor_plans,
             bundle.work_items,
             correlation,
-            self.telemetry,
+            telemetry,
             self.config,
-            self.activation.checksum,
+            activation.checksum,
             action_runner=self.action_runner,
             artifact_client=artifact_client,
             local_action_default_timeout=validation.ruleset.local_action_default_timeout,
             source_lifecycle_probe=self._source_is_in_expected_maintenance,
         )
-        self.orchestrator.broken_rules.update(
+        self.orchestrator = orchestrator
+        orchestrator.broken_rules.update(
             {
                 item.get("correlation_key", "ingestion:{}".format(index)): item
                 for index, item in enumerate(
-                    tuple(self.activation.broken_rules)
+                    tuple(activation.broken_rules)
                 )
             }
         )
         persisted = self.state_store.load(
-            self.activation.checksum, allow_crash_recovery=True
+            activation.checksum, allow_crash_recovery=True
         )
         if persisted.get("recovery_error"):
-            self.orchestrator.service_diagnostics.append(
+            orchestrator.service_diagnostics.append(
                 {
                     "reason": "broken_rule_state_not_restored",
                     "error": persisted["recovery_error"],
@@ -440,29 +435,33 @@ class DLDDService:
         for record in persisted.get("broken_rules", ()):
             key = record.get("correlation_key")
             if key in bundle.work_items and record.get("state") == "BROKEN":
-                self.orchestrator.restore_broken_work(key, record)
+                orchestrator.restore_broken_work(key, record)
         if not self._reconcile_existing_faults_at_startup():
             return
         for plan in bundle.monitor_plans.values():
             monitor = self._new_monitor(plan)
             monitor.start()
             self.monitors.append(monitor)
-        self.config_thread = threading.Thread(
+        config_thread = threading.Thread(
             target=self._listen_for_config,
             name="dldd-config",
             daemon=True,
         )
-        self.config_thread.start()
+        self.config_thread = config_thread
+        config_thread.start()
         self._persist_state_if_changed(force=True)
 
     def _reconcile_existing_faults_at_startup(self) -> bool:
         """Build fault state from one complete STATE_DB snapshot before polling."""
 
+        orchestrator = self.orchestrator
+        if orchestrator is None:
+            raise RuntimeError("orchestrator is unavailable")
         attempt = 0
         while True:
             attempt += 1
             try:
-                self.orchestrator.reconcile_existing_faults()
+                orchestrator.reconcile_existing_faults()
                 return True
             except Exception as error:
                 LOGGER.error(
@@ -547,9 +546,7 @@ class DLDDService:
             self.telemetry.config = updated
         if self.orchestrator is not None:
             self.orchestrator.queue_config_update(updated)
-        # Monitor supervision may replace a stopped thread concurrently.  A
-        # stable snapshot prevents list compaction from skipping another plan;
-        # replacements reuse the same plan-owned update queue.
+        # Iterate a stable snapshot while supervision may replace monitors.
         intervals = updated.polling_intervals
         for monitor in tuple(self.monitors):
             monitor.update_polling_intervals(intervals)
@@ -654,8 +651,8 @@ class DLDDService:
                 activation_result=self.activation.validation_result,
             )
         broken = tuple(self.activation.broken_rules)
-        source = ()
-        work_items = {}
+        source: Tuple[Mapping[str, Any], ...] = ()
+        work_items: Dict[str, Any] = {}
         state = "OK"
         active_fault_count = 0
         inflight_count = 0

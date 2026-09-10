@@ -62,7 +62,7 @@ def _canonical_binding_value(value):
     if isinstance(value, Mapping):
         return {
             str(key): _canonical_binding_value(value[key])
-            for key in sorted(value, key=lambda item: str(item))
+            for key in sorted(value, key=str)
         }
     if isinstance(value, (list, tuple)):
         return [_canonical_binding_value(item) for item in value]
@@ -77,9 +77,7 @@ def _canonical_binding_value(value):
                 getattr(value, "__qualname__", type(value).__qualname__),
             )
         }
-    # Source bindings should normally be declarative primitives.  Retaining a
-    # stable type marker is safer than using repr(), which commonly embeds a
-    # process-specific memory address.
+    # Avoid repr() identities that can include memory addresses.
     return {"object_type": "{}.{}".format(type(value).__module__, type(value).__qualname__)}
 
 
@@ -208,9 +206,7 @@ def work_items_for_dse_expansion(template, expansion_result):
             )
         )
 
-        # Common predicates are evaluated in the same component scope as the
-        # expanded DSE event at runtime.  End-to-end qualification must also
-        # exercise those concrete per-instance work items.
+        # Clone common predicates into each expanded component scope.
         for common in template.common_items:
             common_key = make_correlation_key(
                 common.rule_id,
@@ -273,7 +269,9 @@ def build_plans(
         if not resolved_instances and not has_runtime_dse:
             resolved_instances = {metadata.component}
 
-        items_by_instance = {instance: {} for instance in resolved_instances}
+        items_by_instance: Dict[str, Dict[int, list[str]]] = {
+            instance: {} for instance in resolved_instances
+        }
         for materialized_event in materialized.events:
             event = materialized_event.event
             dse_context = materialized_event.dse_context

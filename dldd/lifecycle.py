@@ -144,9 +144,7 @@ class RuleGenerationManager:
     def activate(self) -> ActivationResult:
         with self.locked():
             manifest = load_json_object(self.paths.manifest)
-            # Drop fields written by the retired automatic-rollback design.
-            # Existing devices shed the stale operator-facing metadata on the
-            # next activation attempt instead of carrying it indefinitely.
+            # Remove obsolete rollback metadata during the next activation.
             for key in ("previous_active_checksum", "previous_active_generation_path"):
                 manifest.pop(key, None)
             for attempt in manifest.get("activation_attempts", []):
@@ -185,11 +183,9 @@ class RuleGenerationManager:
                     continue
                 checksum = ""
                 attempt = None
+                archive_failure = True
                 try:
-                    archive_failure = True
-                    # Hash, validate, archive, and promote one immutable local
-                    # snapshot.  In particular, never validate the mutable
-                    # inbox and then copy different bytes into the active file.
+                    # Validate and promote the same immutable snapshot.
                     checksum = sha256_file(staged)
                     if source == "inbox":
                         accepted_checksum = load_json_object(
@@ -391,16 +387,14 @@ class RuleGenerationManager:
 
     def _record_attempt(
         self,
-        manifest: Mapping[str, Any],
+        manifest: dict[str, Any],
         source: str,
         checksum: str,
         validation: Optional[CandidateValidation] = None,
         failure_reason: str = "",
-    ) -> Mapping[str, Any]:
+    ) -> dict[str, Any]:
         """Append one validation or pre-validation activation attempt."""
 
-        if not isinstance(manifest, dict):
-            return {}
         file_valid = validation.file_valid if validation else False
         usable_rule_count = validation.usable_rule_count if validation else 0
         broken_rule_count = len(validation.broken_rules) if validation else 0
@@ -437,16 +431,18 @@ class RuleGenerationManager:
         return attempt
 
     def _append_attempt(
-        self, manifest: Mapping[str, Any], attempt: Mapping[str, Any]
+        self, manifest: dict[str, Any], attempt: Mapping[str, Any]
     ) -> None:
-        if not isinstance(manifest, dict):
-            return
         history = manifest.get("activation_attempts", [])
         if not isinstance(history, list):
             history = []
-        history = [dict(item) for item in history if isinstance(item, Mapping)]
-        history.append(attempt)
-        manifest["activation_attempts"] = history[-self.MAX_ACTIVATION_ATTEMPTS :]
+        normalized_history: List[Mapping[str, Any]] = [
+            dict(item) for item in history if isinstance(item, Mapping)
+        ]
+        normalized_history.append(attempt)
+        manifest["activation_attempts"] = normalized_history[
+            -self.MAX_ACTIVATION_ATTEMPTS :
+        ]
         manifest["last_attempt"] = attempt
 
     def _promote(self, source_path: str, checksum: str) -> str:
@@ -559,7 +555,7 @@ class BrokenRuleStateStore:
                 "active_rules_checksum": active_checksum,
                 "broken_rules": rules,
                 "service_broken_count": len(
-                    set(rule.get("rule_id", rule.get("rule")) for rule in rules)
+                    {rule.get("rule_id", rule.get("rule")) for rule in rules}
                 ),
                 "clean_shutdown": clean_shutdown,
                 "updated_at": floor_timestamp(time.time()),

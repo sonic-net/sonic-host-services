@@ -8,9 +8,10 @@ import json
 import logging
 import math
 import os
-from typing import Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from pydantic import ValidationError
+from typing_extensions import TypeGuard
 
 try:
     import yaml
@@ -106,8 +107,11 @@ class RulesParseError(ValueError):
         self.line = line
 
 
+_UniqueKeySafeLoader: Any = None
 if yaml is not None:
-    class _UniqueKeySafeLoader(yaml.SafeLoader):
+    _yaml = yaml
+
+    class _UniqueKeySafeLoaderImpl(yaml.SafeLoader):
         """SafeLoader variant that rejects ambiguous duplicate keys."""
 
         def construct_mapping(self, node, deep=False):
@@ -119,7 +123,7 @@ if yaml is not None:
                 except TypeError:
                     duplicate = False
                 if duplicate:
-                    raise yaml.constructor.ConstructorError(
+                    raise _yaml.constructor.ConstructorError(
                         "while constructing a mapping",
                         node.start_mark,
                         "found duplicate key {!r}".format(key),
@@ -130,8 +134,8 @@ if yaml is not None:
                 except TypeError:
                     pass
             return super().construct_mapping(node, deep=deep)
-else:  # pragma: no cover - SONiC images provide PyYAML
-    _UniqueKeySafeLoader = None
+
+    _UniqueKeySafeLoader = _UniqueKeySafeLoaderImpl
 
 
 def _bounded_text(value):
@@ -193,7 +197,9 @@ def _enforce_scalar_limits(value):
 
 
 def _enforce_document_limits(document):
-    stack = [(document, 0, frozenset())]
+    stack: List[Tuple[Any, int, frozenset[int]]] = [
+        (document, 0, frozenset())
+    ]
     nodes = 0
     while stack:
         value, depth, ancestors = stack.pop()
@@ -235,11 +241,14 @@ def _enforce_document_limits(document):
 
 
 def _check_yaml_alias_limit(text):
+    yaml_module = yaml
+    if yaml_module is None:
+        return
     aliases = 0
     try:
-        events = yaml.parse(text, Loader=_UniqueKeySafeLoader)
+        events = yaml_module.parse(text, Loader=_UniqueKeySafeLoader)
         for event in events:
-            if isinstance(event, yaml.events.AliasEvent):
+            if isinstance(event, yaml_module.events.AliasEvent):
                 aliases += 1
                 if aliases > MAX_YAML_ALIASES:
                     mark = getattr(event, "start_mark", None)
@@ -250,31 +259,34 @@ def _check_yaml_alias_limit(text):
     except RulesParseError:
         raise
     except Exception:
-        # The authoritative loader below will produce the parse diagnostic.
+        # The document loader reports the parse diagnostic.
         return
 
 
 def _build_source_lines(root_node):
     """Map validator JSONPath-like paths to one-based YAML/JSON node lines."""
 
-    lines = {}
+    yaml_module = yaml
+    if yaml_module is None:
+        return {}
+    lines: Dict[str, int] = {}
 
     def visit(node, path):
         if node is None:
             return
         lines.setdefault(path, node.start_mark.line + 1)
-        if isinstance(node, yaml.nodes.MappingNode):
+        if isinstance(node, yaml_module.nodes.MappingNode):
             for key_node, value_node in node.value:
                 key = str(getattr(key_node, "value", ""))
                 if (
-                    isinstance(key_node, yaml.nodes.ScalarNode)
+                    isinstance(key_node, yaml_module.nodes.ScalarNode)
                     and key_node.tag != "tag:yaml.org,2002:str"
                 ):
-                    key = yaml.safe_load(key_node.value)
+                    key = yaml_module.safe_load(key_node.value)
                 child_path = append_path_component(path, key)
                 lines[child_path] = key_node.start_mark.line + 1
                 visit(value_node, child_path)
-        elif isinstance(node, yaml.nodes.SequenceNode):
+        elif isinstance(node, yaml_module.nodes.SequenceNode):
             for index, item_node in enumerate(node.value):
                 visit(
                     item_node,
@@ -302,11 +314,11 @@ def source_line_for_path(source_lines, path):
     return source_lines.get("$")
 
 
-def _is_int(value):
+def _is_int(value) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _is_rule_id(value):
+def _is_rule_id(value) -> TypeGuard[int]:
     return _is_int(value) and 1_000_000 <= value <= 9_999_999
 
 
@@ -315,14 +327,9 @@ def _issue(issues, code, message, path):
 
 
 def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
-    """Perform only the checks needed to select trusted model code.
+    """Validate the fields needed to select an installed schema model."""
 
-    Pydantic owns the document and signature structure.  This small gate exists
-    before model dispatch because an untrusted document cannot select anything
-    except an exact, installed contract version.
-    """
-
-    issues = []
+    issues: List[ContractIssue] = []
     if not isinstance(document, Mapping):
         _issue(issues, "invalid_top_level", "rules document must be an object", "$")
         return issues
@@ -342,9 +349,9 @@ def _file_gate(document, supported_versions=SUPPORTED_SCHEMA_VERSIONS):
 def _duplicate_rule_identity_issues(signatures):
     """Enforce document-wide identity uniqueness after envelope validation."""
 
-    issues = []
-    identities = {}
-    names = {}
+    issues: List[ContractIssue] = []
+    identities: Dict[int, int] = {}
+    names: Dict[str, int] = {}
     for index, wrapper in enumerate(signatures):
         signature = wrapper.get("signature")
         metadata = signature.get("metadata")
@@ -420,7 +427,7 @@ def _truncation_issue(path):
 def _limit_file_issues(raw):
     marker = _truncation_issue("$")
     marker_size = _raw_issue_size(marker)
-    selected = []
+    selected: List[ContractIssue] = []
     used_bytes = 0
     for issue in raw:
         bounded = _bounded_issue(issue)
@@ -468,7 +475,7 @@ def _file_failure(schema_version, raw_issues, source_lines, document=None):
         if isinstance(document, Mapping)
         else ()
     )
-    grouped = {}
+    grouped: Dict[int, List[ContractIssue]] = {}
     for issue in raw_issues:
         prefix = "$.signatures["
         if not issue.path.startswith(prefix):
@@ -592,13 +599,7 @@ def _materialize_operation(operation, registry, dse_context, *, query=False):
 
 
 def materialize_signature(signature, context=None):
-    """Resolve a validated signature into monitor inputs and DSE handles.
-
-    This function deliberately performs no hardware probing.  It validates
-    direct bindings and resolves DSE function references to callable handles.
-    Runtime DSE expansion, collection, and evaluator reads remain owned by the
-    monitor thread.
-    """
+    """Resolve monitor inputs and DSE handles without reading hardware."""
 
     context = context or ValidationContext()
     registry = context.dse_registry
@@ -620,6 +621,7 @@ def materialize_signature(signature, context=None):
         dse_context = _context_for(signature, context, event.id)
         dse_source_handle = None
         dse_source_reference = None
+        sources: Tuple[ResolvedSource, ...]
         if event.type == "dse" or (
             event.type == "platform_api" and isinstance(event.path, str)
         ):
@@ -753,12 +755,7 @@ def validate_document(
     source_lines=None,
     contract_registry=None,
 ):
-    """Validate a parsed document with its exact Pydantic contract.
-
-    Schema validation is atomic: one malformed signature rejects the file.
-    Runtime collection/evaluation errors remain rule-local after activation.
-    Generated JSON Schema files are deliberately not read by this path.
-    """
+    """Validate a document atomically and materialize each valid signature."""
 
     context = context or ValidationContext()
     source_lines = source_lines or {}
@@ -780,6 +777,8 @@ def validate_document(
     if file_issues:
         return _file_failure(version, file_issues, source_lines)
 
+    if not isinstance(version, str):
+        raise RuntimeError("validated schema version is unavailable")
     contract = registry.require_exact(version)
     canonical_version = contract.version
     try:
@@ -918,8 +917,7 @@ def _parse_document_with_lines(source):
         _enforce_document_limits(document)
         if yaml is None:
             return document, {"$": 1}
-        # JSON is a YAML subset.  Compose it once solely to retain exact node
-        # marks while json.loads remains authoritative for JSON scalar types.
+        # Compose JSON as YAML only to retain exact source lines.
         try:
             node = yaml.compose(text, Loader=_UniqueKeySafeLoader)
             return document, _build_source_lines(node)
@@ -952,7 +950,7 @@ def _parse_document_with_lines(source):
 def load_document(source):
     """Safely parse YAML/JSON into primitive Python containers."""
 
-    document, unused_source_lines = _parse_document_with_lines(source)
+    document, _ = _parse_document_with_lines(source)
     return document
 
 
@@ -996,5 +994,4 @@ def load_rules(
     )
 
 
-# Explicit alias used by the activation pipeline.
 validate_rules = validate_document

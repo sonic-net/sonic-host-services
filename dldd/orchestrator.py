@@ -198,7 +198,7 @@ class PrimaryOrchestrator:
                 source["grace_deadline"] = (
                     source["since"] + latest.source_unavailable_grace_period
                 )
-        for _identity, record in self.faults.items():
+        for record in self.faults.values():
             if record.status == "INACTIVE":
                 record.inactive_deadline = (
                     self.wall_clock()
@@ -261,10 +261,7 @@ class PrimaryOrchestrator:
             )
         added_identities = set()
         for item in event.added_items:
-            # Runtime DSE children, including cloned direct predicates, are
-            # owned by the monitor which expanded them.  Their source type
-            # still selects the collection adapter, but is not a routing key
-            # for primary-to-monitor control commands.
+            # Expanded children inherit their template monitor owner.
             self._register_plan_owner(item.correlation_key, plan)
             self.work_items[item.correlation_key] = item
             self.correlation.register_work_item(
@@ -368,10 +365,7 @@ class PrimaryOrchestrator:
         ):
             return False
 
-        # Monitor children remain registered while any key is collecting,
-        # queued, held, or still owned by another template.  Waiting for the
-        # complete expanded identity to disappear prevents a partial removal
-        # from clearing a live fault.
+        # Retire only after every key for the expanded identity is gone.
         removed_keys = frozenset(event.removed_keys)
         if any(
             key not in removed_keys
@@ -393,10 +387,7 @@ class PrimaryOrchestrator:
             and item.dse_binding is None
         )
         if static_keys:
-            # The component still has independently materialized direct work.
-            # Clear only the removed DSE event history and promptly re-evaluate
-            # the remaining expression instead of forcing the whole component
-            # inactive (for example, a DSE OR direct-Redis rule).
+            # Re-evaluate any direct work that remains after DSE removal.
             self.pending_dynamic_faults.pop(identity, None)
             self._dse_retirement_candidates.discard(identity)
             if record is not None and record.status == "ACTIVE":
@@ -807,9 +798,7 @@ class PrimaryOrchestrator:
             "source": event.source_id,
             "state": "UNAVAILABLE",
             "reason": result.error,
-            # Grace is a failure-counting policy, not proof of planned
-            # maintenance.  Only an explicit lifecycle integration may mark
-            # a source outage graceful.
+            # Only the source-lifecycle hook marks an outage graceful.
             "graceful": False,
             "since": first_failure,
             "grace_deadline": first_failure + self.config.source_unavailable_grace_period,
@@ -937,10 +926,7 @@ class PrimaryOrchestrator:
             action_deadline=self.clock() + max_timeout + 30,
         )
         self.pending[identity] = pending
-        # The signature is already correlated active even though its own
-        # publication gate is still closed.  Include it in arbitration so a
-        # lower-severity signature cannot temporarily claim the singular
-        # component/symptom FAULT_INFO row while remediation is in progress.
+        # Reserve fault ownership while local remediation runs.
         self.arbiter.update(decision)
         self._record_candidate(decision, pending)
         for key in execution.work_keys:
@@ -1320,8 +1306,7 @@ class PrimaryOrchestrator:
                 and dynamic_signature.metadata.symptom == record.symptom
             )
             if record.status != "ACTIVE":
-                # Retained inactive rows own occurrence history even if a new
-                # generation replaces the rule that originally produced them.
+                # Retained inactive rows preserve occurrence history.
                 record.inactive_deadline = (
                     record.last_detection_time
                     + self.config.inactive_fault_retention_period
@@ -1331,18 +1316,11 @@ class PrimaryOrchestrator:
                     (record.component_name, record.symptom)
                 ] = record.rule_id
                 if pending_dynamic:
-                    # A current-generation dynamic component may have vanished
-                    # while DLDD was stopped.  Keep the retained history row,
-                    # but let the first successful current inventory either
-                    # confirm the instance or refresh the row with the explicit
-                    # DSE-removal reason and normal inactive TTL.
+                    # Let the first inventory resolve retained dynamic history.
                     self._dse_retirement_candidates.add(identity)
                 continue
             if pending_dynamic:
-                # Runtime-expanded instances do not exist when startup fault
-                # reconciliation first runs. Preserve current-generation fault
-                # ownership until discovery recreates the matching execution;
-                # retiring it here would create a false clear on every restart.
+                # Preserve dynamic fault ownership until inventory completes.
                 self.faults[identity] = record
                 self.published_by_key[
                     (record.component_name, record.symptom)
@@ -1433,8 +1411,7 @@ class PrimaryOrchestrator:
                     stale_source=uncertain,
                 )
             elif active:
-                # A recheck that confirms the same state must not rewrite the
-                # state-transition timestamp.
+                # Preserve the timestamp when recheck does not change state.
                 self.arbiter.update(effective)
                 self.next_active_recheck[identity] = (
                     self.clock() + self.config.active_fault_recheck_interval
@@ -1522,9 +1499,7 @@ class PrimaryOrchestrator:
         elif existing.status == "INACTIVE" and status == "ACTIVE":
             existing.occurrences += 1
             existing.origin_time = now
-        # A stale record can become active again under a newly selected rules
-        # generation. Refresh all rule-owned metadata so the new active fault
-        # does not retain the previous checksum or stale-source description.
+        # Refresh rule-owned metadata whenever a record is reused.
         existing.rule_name = metadata.name
         existing.rule_version = metadata.version
         existing.schema_version = execution.signature.schema_version
@@ -1615,8 +1590,7 @@ class PrimaryOrchestrator:
                     alternate.remote_action_time_window = alternate_remote.time_window
                     self._publish_fault_record(alternate)
                     return
-            # The retained inactive row remains the owner of the Redis key so
-            # a later competing signature can inherit occurrence history.
+            # Retain Redis-key ownership with inactive occurrence history.
             self.published_by_key[fault_key] = metadata.id
 
         self._publish_fault_record(existing)
@@ -1664,9 +1638,7 @@ class PrimaryOrchestrator:
             (record.component_name, record.symptom)
         )
         if owner is not None and owner != record.rule_id:
-            # Suppressed signatures retain internal/action/artifact state but
-            # must never overwrite the one component/symptom Redis row owned
-            # by the arbiter winner.
+            # Only the arbiter winner may publish the shared fault row.
             self.dirty_faults.discard(identity)
             return True
         if refresh_remote_window:
@@ -1801,9 +1773,7 @@ class PrimaryOrchestrator:
         item = self.work_items[key]
         plan = self._plan_by_work_key.get(key)
         if plan is None:
-            # Preserve support for externally assembled plans and focused test
-            # doubles. Production static and expanded work is registered with
-            # an explicit owner above.
+            # Fall back to source routing when no explicit plan owner exists.
             monitor_type = monitor_type_for_source(item.source_type)
             plan = self.plans[monitor_type]
         plan.control_queue.put(

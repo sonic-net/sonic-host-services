@@ -10,7 +10,7 @@ from collections import deque
 from dataclasses import dataclass
 from itertools import count
 from queue import Empty, Full, PriorityQueue, Queue
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Deque, Dict, Mapping, Optional, Set, Tuple
 
 from .adapters import DataSourceAdapter
 from .bounded_calls import start_daemon_workers
@@ -83,7 +83,7 @@ class AsyncCollectionPool:
         max_pending = max(0, int(max_pending))
         recheck_reserve = min(max(0, int(recheck_reserve)), max_pending)
         self._clock = monotonic_clock
-        self._jobs = PriorityQueue()
+        self._jobs: PriorityQueue[Tuple[Any, ...]] = PriorityQueue()
         self._sequence = count()
         self._total_slots = threading.BoundedSemaphore(
             max_workers + max_pending
@@ -188,8 +188,9 @@ class AsyncCollectionPool:
 
     def _worker(self) -> None:
         while True:
-            unused_priority, unused_sequence, job = self._jobs.get()
+            _, _, job = self._jobs.get()
             execution_started_at = None
+            normal_slot = False
             try:
                 if job is None:
                     return
@@ -258,7 +259,7 @@ class MonitorThread(threading.Thread):
     def __init__(
         self,
         plan: MonitorExecutionPlan,
-        adapters: Dict[str, DataSourceAdapter],
+        adapters: Mapping[str, DataSourceAdapter],
         evidence_queue: Queue,
         fault_evidence_ack_timeout: float = 120.0,
         source_recovery_samples: int = 1,
@@ -279,21 +280,21 @@ class MonitorThread(threading.Thread):
         self.wall_clock = wall_clock
         self._sequence = 0
         self._next_poll = self.clock()
-        self._async_completions = Queue()
-        self._async_jobs = {}
-        self._dse_templates_by_child = {}
-        self.diagnostics = deque(maxlen=32)
-        if any(
+        self._async_completions: Queue[AsyncCollectionCompletion] = Queue()
+        self._async_jobs: Dict[str, Tuple[Any, ...]] = {}
+        self._dse_templates_by_child: Dict[str, Set[str]] = {}
+        self.diagnostics: Deque[Dict[str, Any]] = deque(maxlen=32)
+        async_work = any(
             item.async_collection
             for item in self.plan.items_by_key.values()
         ) or any(
             template.item.async_collection
             for template in self.plan.templates_by_key.values()
-        ):
-            if self.async_collection_pool is None:
-                raise ValueError(
-                    "async collection work requires a shared collection pool"
-                )
+        )
+        if async_work and self.async_collection_pool is None:
+            raise ValueError(
+                "async collection work requires a shared collection pool"
+            )
         for state in self.plan.state_by_key.values():
             if state.state == MonitorWorkState.COLLECTING:
                 self._transition(state, MonitorWorkState.READY)
@@ -340,8 +341,7 @@ class MonitorThread(threading.Thread):
                 continue
             state = self.plan.state_by_key[key]
             if state.next_sample_due is not None:
-                # A shorter default takes effect promptly. A longer default
-                # does not postpone work that was already scheduled sooner.
+                # Do not postpone work already scheduled sooner.
                 interval = intervals[monitor_type_for_source(item.source_type)]
                 state.next_sample_due = min(state.next_sample_due, now + interval)
         self._refresh_next_poll(now)
@@ -386,11 +386,11 @@ class MonitorThread(threading.Thread):
             due_times.append(
                 now if state.next_sample_due is None else state.next_sample_due
             )
-        for state in self.plan.expansion_state_by_key.values():
+        for expansion_state in self.plan.expansion_state_by_key.values():
             due_times.append(
                 now
-                if state.next_expansion_due is None
-                else state.next_expansion_due
+                if expansion_state.next_expansion_due is None
+                else expansion_state.next_expansion_due
             )
         self._next_poll = (
             min(due_times)
@@ -557,9 +557,7 @@ class MonitorThread(threading.Thread):
             if not (owners - {template_id}):
                 removed.append(key)
 
-        # The first successful scan and every inventory change are primary-
-        # thread evidence. This also lets an empty first scan retire a stale
-        # persisted dynamic instance without invoking vendor code elsewhere.
+        # Publish the first successful inventory, including an empty one.
         if added or removed or changed:
             event = DSEExpansionEvent(
                 monitor_id=self.plan.monitor_id,
@@ -574,9 +572,7 @@ class MonitorThread(threading.Thread):
                 observed_at=self.wall_clock(),
             )
             try:
-                # Registration is queued before children can be sampled. FIFO
-                # ordering then guarantees the primary correlation table sees
-                # the expansion before any evidence from those children.
+                # Register children before their first sample reaches primary.
                 self.evidence_queue.put_nowait(event)
             except Full:
                 state.last_error = "primary evidence queue is full"
@@ -606,9 +602,7 @@ class MonitorThread(threading.Thread):
         state.binding_fingerprint = fingerprint
         state.last_expansion_timestamp = self.wall_clock()
         state.last_error = ""
-        # A missing child can remain primary-owned briefly.  Do not classify
-        # that inventory as stable and back off for five minutes while the
-        # child is still waiting to be retired.
+        # Pending retirements keep inventory on the fast scan interval.
         state.unchanged_scans = (
             0 if changed or deferred_removal else state.unchanged_scans + 1
         )
@@ -659,6 +653,7 @@ class MonitorThread(threading.Thread):
             ):
                 continue
             item = items[key]
+            next_sample_due: Optional[float] = None
             if not recheck:
                 attempt_time = key_now
                 if (
@@ -667,9 +662,7 @@ class MonitorThread(threading.Thread):
                     and attempt_time < state.next_sample_due
                 ):
                     continue
-                # Schedule from this key's attempt, not from the cycle start or
-                # prior deadline.  This coalesces missed intervals without
-                # shortening later keys when an earlier adapter is slow.
+                # Schedule each key from its own collection attempt.
                 interval = (
                     item.sampling_interval
                     if item.sampling_interval_is_explicit
@@ -677,13 +670,16 @@ class MonitorThread(threading.Thread):
                         monitor_type_for_source(item.source_type)
                     ]
                 )
+                next_sample_due = attempt_time + interval
             if item.async_collection:
-                if self._submit_async_collection(key, state, item):
-                    if not recheck:
-                        state.next_sample_due = attempt_time + interval
+                if (
+                    self._submit_async_collection(key, state, item)
+                    and next_sample_due is not None
+                ):
+                    state.next_sample_due = next_sample_due
                 continue
-            if not recheck:
-                state.next_sample_due = attempt_time + interval
+            if next_sample_due is not None:
+                state.next_sample_due = next_sample_due
             state.last_attempt_timestamp = self.wall_clock()
             adapter = self.adapters[item.source_type]
             result = self._collect_result(adapter, item)
@@ -695,7 +691,10 @@ class MonitorThread(threading.Thread):
         previous_state = state.state
         adapter = self.adapters[item.source_type]
         token = uuid.uuid4().hex
-        submitted = self.async_collection_pool.submit(
+        pool = self.async_collection_pool
+        if pool is None:
+            raise RuntimeError("async collection pool is unavailable")
+        submitted = pool.submit(
             token,
             lambda: self._collect_result(adapter, item),
             self._async_completions,
@@ -880,17 +879,14 @@ class MonitorThread(threading.Thread):
         try:
             self.evidence_queue.put_nowait(event)
         except Full:
-            # No transition entered the FIFO.  Restore the prior eligibility
-            # so a clear, source recovery, or explicit recheck is retried and
-            # cannot be silently lost when the bounded queue is saturated.
+            # Restore eligibility when the primary queue is full.
             LOGGER.error("fault evidence queue is full; releasing %s", item.correlation_key)
             self._transition(state, previous_work_state)
             state.ack_deadline = None
             if not from_recheck:
-                state.next_sample_due = self.clock()
-                self._next_poll = min(
-                    self._next_poll, state.next_sample_due
-                )
+                retry_at = self.clock()
+                state.next_sample_due = retry_at
+                self._next_poll = min(self._next_poll, retry_at)
             return False
         state.last_evidence_sequence = self._sequence
         state.last_enqueue_timestamp = enqueued_at

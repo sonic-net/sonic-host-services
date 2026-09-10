@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 from .adapters import require_adapter
 from .correlation import CorrelationEngine
@@ -38,12 +38,7 @@ def _event_result(item, state, *, stage="execution", **details) -> Mapping:
 
 
 def qualify_e2e(bundle, adapters, invalid_rule_ids=()) -> E2EQualificationResult:
-    """Run one complete, non-remediating monitoring pass.
-
-    This deliberately uses the live adapter ``collect()`` and correlation
-    implementations.  It does not start monitor/orchestrator threads, publish
-    telemetry or faults, execute actions, or modify the supplied plan.
-    """
+    """Run one live collection/correlation pass without actions or publication."""
 
     invalid_rule_ids = frozenset(invalid_rule_ids)
     correlation = CorrelationEngine(bundle.signatures)
@@ -52,16 +47,20 @@ def qualify_e2e(bundle, adapters, invalid_rule_ids=()) -> E2EQualificationResult
         for item in bundle.work_items.values()
         if item.rule_id not in invalid_rule_ids
     }
-    event_results = []
-    rule_errors = {}
-    rule_info = {}
-    decisions = {}
+    event_results: List[Mapping[str, Any]] = []
+    rule_errors: Dict[Tuple[int, Any], str] = {}
+    rule_info: Dict[Tuple[int, Any], str] = {}
+    decisions: Dict[Tuple[int, Any], Any] = {}
     for template in bundle.templates.values():
         base = template.item
         if base.rule_id in invalid_rule_ids:
             continue
         try:
-            expansion = require_adapter(adapters, "dse").expand(template)
+            dse_adapter = require_adapter(adapters, "dse")
+            expand = getattr(dse_adapter, "expand", None)
+            if not callable(expand):
+                raise TypeError("dse adapter does not support expansion")
+            expansion = expand(template)
             expanded = work_items_for_dse_expansion(template, expansion)
         except Exception as error:
             reason = str(error)
@@ -112,9 +111,7 @@ def qualify_e2e(bundle, adapters, invalid_rule_ids=()) -> E2EQualificationResult
             correlation.register_work_item(
                 template.signature, item, "e2e-qualification"
             )
-            # More than one DSE template may clone the same common predicate
-            # into the same component scope.  Runtime identity is the
-            # correlation key, so qualify it once as well.
+            # Qualify shared predicates once per runtime correlation key.
             work_items.setdefault(item.correlation_key, item)
 
     sequence = 0
@@ -175,7 +172,7 @@ def qualify_e2e(bundle, adapters, invalid_rule_ids=()) -> E2EQualificationResult
             continue
         decisions[identity] = decision
 
-    rule_results = []
+    rule_results: List[Mapping[str, Any]] = []
     for identity in sorted(
         rule_info, key=lambda item: (item[0], "" if item[1] is None else item[1])
     ):

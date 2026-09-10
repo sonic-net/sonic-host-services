@@ -76,7 +76,7 @@ def evaluate(specification: Mapping[str, Any], actual: Any) -> bool:
                     "DSE evaluation requires an operator or resolved comparator"
                 )
             return bool(comparator(actual))
-        if op not in COMPARATORS:
+        if not isinstance(op, str) or op not in COMPARATORS:
             label = "DSE" if evaluator_type == "dse" else "comparison"
             raise EvaluationContractError("unsupported {} operator: {}".format(label, op))
         left, right = _coerce_pair(actual, expected)

@@ -32,8 +32,7 @@ class RuleContract:
     document_model: type[BaseModel]
     to_domain: Callable[..., Any]
 
-    # Explicit aliases make call sites self-documenting while retaining the
-    # concise names used by the HLD and generated-schema tool.
+    # Explicit aliases keep registry call sites self-documenting.
     @property
     def envelope_adapter(self) -> TypeAdapter:
         return self.envelope

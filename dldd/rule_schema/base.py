@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 
 from pydantic import (
     BaseModel,
@@ -49,9 +49,7 @@ JsonInteger = Annotated[StrictInt, Field(ge=INT64_MIN, le=UINT64_MAX)]
 
 
 def _strict_float(value):
-    # Pydantic's StrictFloat intentionally accepts integers.  The rules wire
-    # contract does not: accepting a large integer through this branch both
-    # bypasses integer bounds and silently loses precision.
+    # StrictFloat accepts integers, but the wire contract does not.
     if type(value) is not float:
         raise PydanticCustomError("float_type", "value must be a float")
     return value
@@ -61,10 +59,7 @@ FiniteFloat = Annotated[
     StrictFloat,
     BeforeValidator(_strict_float),
     Field(allow_inf_nan=False),
-    # JSON Schema treats 50 and 50.0 as the same mathematical integer, so it
-    # cannot publish Pydantic's Python int/float distinction without rejecting
-    # valid integral-valued floats.  Keep the permissive number shape and make
-    # the authoritative runtime-only distinction explicit for tooling.
+    # JSON Schema cannot distinguish a Python int from an integral float.
     WithJsonSchema(
         {
             "type": "number",
@@ -83,9 +78,7 @@ FiniteFloat = Annotated[
 FiniteNumber = Union[JsonInteger, FiniteFloat]
 
 
-# A named recursive alias keeps both Pydantic's core schema and generated JSON
-# Schema compact.  Strict scalar types prevent bool/int and bytes/string
-# coercion in vendor-owned payloads.
+# Named recursion keeps the generated schema compact.
 JsonValue = TypeAliasType(
     "JsonValue",
     Union[
@@ -112,14 +105,14 @@ NonNullJsonValue = TypeAliasType(
 )
 
 
-def omitted_non_null_field():
+def omitted_non_null_field() -> Any:
     """Describe an omissible wire field for which explicit null is invalid.
 
     A default factory keeps the field out of JSON Schema's ``required`` list
     without publishing ``null`` as an accepted type.  Validation is skipped
     only for the internal omitted value; an explicitly supplied ``None`` still
     goes through the declared non-null annotation and fails.
-    ``model_fields_set`` remains the authoritative presence record.
+    ``model_fields_set`` records whether the field was supplied.
     """
 
     return Field(default_factory=lambda: None, validate_default=False)

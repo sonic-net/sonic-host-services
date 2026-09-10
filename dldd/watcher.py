@@ -6,7 +6,7 @@ import fcntl
 import os
 import subprocess
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .filesystem import atomic_write_json, load_json_object
 from .lifecycle import sha256_file
@@ -22,7 +22,7 @@ class RulesWatcher:
         lock_path: str,
         state_path: str,
         settle_time: int = 30,
-        restart: Callable[[], Any] = None,
+        restart: Optional[Callable[[], Any]] = None,
         clock=time.time,
     ) -> None:
         self.inbox_path = inbox_path
@@ -62,8 +62,7 @@ class RulesWatcher:
         if checksum == state.get("last_restart_checksum"):
             return False
 
-        # Serialize bookkeeping only.  The lock is explicitly released before
-        # systemctl so startup can acquire the same activation lock.
+        # Release the activation lock before invoking systemctl.
         os.makedirs(os.path.dirname(self.lock_path), mode=0o755, exist_ok=True)
         with open(self.lock_path, "a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)

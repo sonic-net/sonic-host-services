@@ -80,7 +80,7 @@ class ControlledHashSource(object):
 
 
 class ControlledDSEHook(DSEHook):
-    """Authoritative two-instance DSE with live value/comparator callbacks."""
+    """Two-instance DSE with live value and comparator callbacks."""
 
     def __init__(self):
         self._values = {"DSE_SENSOR0": "5", "DSE_SENSOR1": "6"}

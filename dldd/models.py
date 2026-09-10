@@ -242,12 +242,7 @@ class Operation(object):
         return payload
 
     def with_resolution(self, resolution) -> "Operation":
-        """Return an immutable operation bound to one trusted DSE result.
-
-        Resolution metadata intentionally overlays rule-provided extension
-        options because the installed vendor implementation owns the runtime
-        binding.  The original operation remains unchanged.
-        """
+        """Return a copy with the vendor executor and resolution metadata."""
 
         options = dict(self.options)
         options.update(dict(resolution.vendor_data))
@@ -396,7 +391,7 @@ class ValidationResult(object):
     materialized_rules: Tuple[MaterializedRule, ...] = ()
     file_errors: Tuple[ValidationIssue, ...] = ()
     broken_rules: Tuple[BrokenRule, ...] = ()
-    source_lines: Mapping[str, int] = field(default_factory=frozen_mapping)
+    source_lines: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, "materialized_rules", tuple(self.materialized_rules))

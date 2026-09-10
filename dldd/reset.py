@@ -33,8 +33,8 @@ def _clear_artifacts(directory: str) -> int:
         return 0
     for name in names:
         if not (
-            name.startswith("dldd-") and name.endswith((".tar.gz", ".json"))
-            or name.startswith(".dldd-") and name.endswith(".tar.gz")
+            (name.startswith("dldd-") and name.endswith((".tar.gz", ".json")))
+            or (name.startswith(".dldd-") and name.endswith(".tar.gz"))
         ):
             continue
         path = os.path.join(directory, name)
