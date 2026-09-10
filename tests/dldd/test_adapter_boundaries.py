@@ -113,7 +113,8 @@ def test_data_source_collection_and_failure_contract():
 def test_dse_adapter_comparator_binding_and_expansion_contract():
     reference = parse_reference("sensor:get_threshold()")
     observed = []
-    comparator = lambda actual: actual == 7
+    def comparator(actual):
+        return actual == 7
     handle = DSEEvaluationHandle(
         reference,
         lambda invocation: (

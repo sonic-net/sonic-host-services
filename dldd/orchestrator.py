@@ -9,7 +9,7 @@ from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from queue import Empty, Queue
-from typing import Any, Dict, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, Mapping, Optional, Set, Tuple, Union
 
 from .actions import ActionRunner, ActionSequenceResult
 from .artifacts import HealthzArtifactClient
@@ -134,7 +134,7 @@ class PrimaryOrchestrator:
         self.faults: Dict[Tuple[int, str], FaultRecord] = {}
         self.published_by_key: Dict[Tuple[str, str], int] = {}
         self.broken_rules: Dict[str, Mapping[str, Any]] = {}
-        self.source_status: Dict[str, Mapping[str, Any]] = {}
+        self.source_status: Dict[str, Dict[str, Any]] = {}
         self._source_unavailable_since: Dict[str, float] = {}
         self._source_failure_keys: Dict[str, Set[str]] = {}
         self._suspended_sources: Dict[str, Set[str]] = {}
@@ -148,8 +148,8 @@ class PrimaryOrchestrator:
         self.dirty_faults: Set[Tuple[int, str]] = set()
         self._primary_processing_failures: Dict[str, int] = {}
         self._next_fault_publish_retry = 0.0
-        self._config_updates = Queue()
-        self.service_diagnostics = deque(maxlen=64)
+        self._config_updates: Queue[DLDDConfig] = Queue()
+        self.service_diagnostics: deque[Dict[str, Any]] = deque(maxlen=64)
 
     def _register_plan_owner(
         self, key: str, plan: MonitorExecutionPlan
@@ -198,7 +198,7 @@ class PrimaryOrchestrator:
                 source["grace_deadline"] = (
                     source["since"] + latest.source_unavailable_grace_period
                 )
-        for identity, record in self.faults.items():
+        for _identity, record in self.faults.items():
             if record.status == "INACTIVE":
                 record.inactive_deadline = (
                     self.wall_clock()
@@ -507,7 +507,13 @@ class PrimaryOrchestrator:
     def process_event(self, event: FaultEvidenceEvent) -> None:
         result_type = event.result.result
         identity = (event.signature_id, event.component_name)
-        owned = self.reconciliation.get(identity)
+        quarantine_reason = ""
+        pending_reason = ""
+        hold_deadline: Optional[float] = None
+        complete: Any = None
+        owned: Optional[Union[Reconciliation, PendingFault]] = (
+            self.reconciliation.get(identity)
+        )
         if owned is not None:
             quarantine_reason = "reconciliation_evidence_quarantined"
             pending_reason = "bootstrap_reconciliation_pending"
@@ -571,8 +577,8 @@ class PrimaryOrchestrator:
                 return
             if self.action_runner is None:
                 completed_at = self.wall_clock()
-                future = Future()
-                future.dldd_worker_id = ""
+                future: Future[ActionSequenceResult] = Future()
+                future.dldd_worker_id = ""  # type: ignore[attr-defined]
                 future.set_result(
                     ActionSequenceResult(
                         "",
@@ -905,7 +911,10 @@ class PrimaryOrchestrator:
         local = execution.signature.actions.repair_actions.local_actions
         actions = tuple(item.as_runtime_payload() for item in local.action_list)
         if future is None:
-            future = self.action_runner.submit(
+            runner = self.action_runner
+            if runner is None:
+                raise RuntimeError("action runner unavailable")
+            future = runner.submit(
                 execution.signature.metadata.name,
                 actions,
                 self.local_action_default_timeout,
@@ -1107,17 +1116,19 @@ class PrimaryOrchestrator:
                     (),
                     action_error,
                 )
-            if action_deadline_expired:
+            if action_deadline_expired and pending.action_result is not None:
                 self.service_diagnostics.append(
                     {
                         "reason": "local_action_deadline_expired",
                         "rule_id": identity[0],
                         "component": identity[1],
-                        "observed_at": now_wall,
+                        "observed_at": pending.action_result.completed_at,
                     }
                 )
             if action_finished:
-                pending.artifact = self._request_artifact(pending.execution)
+                pending.artifact = self._request_artifact(
+                    pending.execution, pending.action_result
+                )
                 wait_period = (
                     pending.execution.signature.actions.repair_actions.local_actions.wait_period
                 )
@@ -1358,6 +1369,8 @@ class PrimaryOrchestrator:
                 continue
             self.faults[identity] = record
             self.published_by_key[(record.component_name, record.symptom)] = record.rule_id
+            if execution is None:
+                continue
             self._start_reconciliation(execution, "bootstrap_fault_reconciliation")
 
     def _start_reconciliation(
@@ -1684,25 +1697,37 @@ class PrimaryOrchestrator:
                 continue
             self._publish_fault_record(record, refresh_remote_window=True)
 
-    def _request_artifact(self, execution: SignatureExecution):
+    def _request_artifact(
+        self,
+        execution: SignatureExecution,
+        action_result: Optional[ActionSequenceResult] = None,
+    ):
         collection = execution.signature.actions.log_collection
         if collection is None or self.artifact_client is None:
             return None
         try:
             requested_at = self.wall_clock()
+            metadata = {
+                "rule": execution.signature.metadata.name,
+                "rule_id": execution.signature.metadata.id,
+                "timestamp": requested_at,
+                "component_info": {
+                    "component": execution.signature.metadata.component,
+                    "name": execution.component_name,
+                },
+                "symptom": execution.signature.metadata.symptom,
+            }
+            if action_result is not None:
+                outputs = tuple(
+                    output
+                    for index, action in enumerate(action_result.actions)
+                    for output in (action.as_artifact_payload(index),)
+                    if output is not None
+                )
+                if outputs:
+                    metadata["action_outputs"] = outputs
             request = self.artifact_client.request(
-                floor_timestamp_fields(
-                    {
-                        "rule": execution.signature.metadata.name,
-                        "rule_id": execution.signature.metadata.id,
-                        "timestamp": requested_at,
-                        "component_info": {
-                            "component": execution.signature.metadata.component,
-                            "name": execution.component_name,
-                        },
-                        "symptom": execution.signature.metadata.symptom,
-                    }
-                ),
+                floor_timestamp_fields(metadata),
                 collection.logs,
                 tuple(item.as_runtime_payload() for item in collection.queries),
             )

@@ -293,7 +293,8 @@ def test_platform_extension_factory_result_import_and_absence_contracts(
     dse_registry = DSERegistry()
     hooks = VendorHookRegistry()
     matcher = PermissiveMatcher()
-    artifact_factory = lambda **kwargs: kwargs
+    def artifact_factory(**kwargs):
+        return kwargs
     calls = []
 
     module = SimpleNamespace(

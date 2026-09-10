@@ -124,6 +124,10 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 
 - Local actions execute sequentially and stop after the first failure or
   timeout.  Artifact collection and post-action recheck still occur.
+- CLI action stdout/stderr and optional DSE/vendor `ActionOutput` values are
+  bounded in the action worker and included under `actions/NNN/` when the rule
+  requests an artifact. They are deliberately omitted from routine fault
+  telemetry, and return content is never interpreted as remediation success.
 - Action and artifact work use bounded daemon-worker queues.  Built-in calls
   honor declared timeouts; a non-cooperative vendor call can exhaust its
   bounded lane but cannot hold the DLDD process open during systemd restart.
@@ -149,6 +153,9 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   sidecar manifests or startup lifecycle reconciliation.
 - Each archive carries structured request metadata including the request
   timestamp, rule identity, symptom, and full component type/name context.
+- Completed action output uses `actions/NNN/metadata.json` and the present
+  `stdout.txt`, `stderr.txt`, and `result.txt` entries. Existing actions that
+  return `None` remain valid and add no output entry.
 - Artifact log inputs are regular files opened without following symlinks.
   Directories are never recursively archived, and both logical input bytes and
   the completed archive are checked against the configured bound.

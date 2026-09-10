@@ -20,7 +20,6 @@ from dldd.runtime import (
     EvaluationResult,
     EvaluationResultType,
     FaultEvidenceEvent,
-    FaultRecord,
     MonitorWorkState,
     RuleRuntimeStatus,
 )

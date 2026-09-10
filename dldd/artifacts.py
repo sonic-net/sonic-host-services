@@ -84,10 +84,10 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         self.max_artifacts = max(1, max_artifacts)
         self.max_artifact_bytes = max(1024, max_artifact_bytes)
         max_workers = max(1, int(max_workers))
-        self._jobs = Queue(maxsize=self.max_artifacts)
+        self._jobs: Queue = Queue(maxsize=self.max_artifacts)
         self._query_gate = BoundedCallGate(max_workers, "dldd-artifact-query")
         self._store_lock = threading.RLock()
-        self._active = set()
+        self._active: set[str] = set()
         self._closed = False
         os.makedirs(self.directory, mode=0o750, exist_ok=True)
         with self._store_lock:
@@ -137,6 +137,7 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                 self._jobs.task_done()
 
     def _collect(self, artifact_id, metadata, logs, queries) -> None:
+        action_outputs = tuple(metadata.pop("action_outputs", ()))
         archive_path = os.path.join(self.directory, artifact_id)
         descriptor, staged = tempfile.mkstemp(
             prefix=".{}-".format(artifact_id[:-7]),
@@ -156,6 +157,48 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                     ).encode(),
                     0,
                 )
+                for index, output in enumerate(action_outputs):
+                    action_index = int(output.get("index", index))
+                    prefix = "actions/{:03d}".format(action_index)
+                    summary = {
+                        key: value
+                        for key, value in output.items()
+                        if key not in ("stdout", "stderr", "result")
+                        and value not in (None, "", [], ())
+                    }
+                    entries = (
+                        (
+                            "metadata.json",
+                            json.dumps(summary, sort_keys=True, indent=2).encode(),
+                        ),
+                        (
+                            "stdout.txt",
+                            str(output.get("stdout", "")).encode(
+                                "utf-8", "replace"
+                            ),
+                        ),
+                        (
+                            "stderr.txt",
+                            str(output.get("stderr", "")).encode(
+                                "utf-8", "replace"
+                            ),
+                        ),
+                        (
+                            "result.txt",
+                            str(output.get("result", "")).encode(
+                                "utf-8", "replace"
+                            ),
+                        ),
+                    )
+                    for name, data in entries:
+                        if not data or bytes_added + len(data) > self.max_artifact_bytes:
+                            continue
+                        bytes_added = self._add_bytes(
+                            archive,
+                            "{}/{}".format(prefix, name),
+                            data,
+                            bytes_added,
+                        )
                 for path in self._resolve_logs(logs):
                     bytes_added += self._add_log_file(
                         archive,
@@ -244,18 +287,18 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         )
         try:
             return result.result(timeout=timeout)
-        except TimeoutError:
+        except TimeoutError as error:
             result.cancel()
             raise RuntimeError(
                 "artifact query timed out after {} seconds".format(timeout)
-            )
+            ) from error
 
     def shutdown(self, wait: bool = True) -> None:
         with self._store_lock:
             should_signal = not self._closed
             self._closed = True
         if should_signal:
-            for unused in self._workers:
+            for _unused in self._workers:
                 try:
                     self._jobs.put(None) if wait else self._jobs.put_nowait(None)
                 except Full:

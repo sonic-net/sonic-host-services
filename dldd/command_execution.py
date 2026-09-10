@@ -23,6 +23,8 @@ class ShellFreeResult:
     returncode: int
     stdout: bytes
     stderr: bytes
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
     def stdout_text(self, encoding="utf-8", errors="replace") -> str:
         return self.stdout.decode(encoding, errors)
@@ -59,10 +61,15 @@ def run_shell_free(
         stderr=subprocess.PIPE,
         timeout=timeout,
     )
+    stdout = _bounded_bytes(completed.stdout, max_output_bytes + 1)
+    stderr = _bounded_bytes(completed.stderr, max_output_bytes + 1)
     return ShellFreeResult(
-        command, int(completed.returncode),
-        _bounded_bytes(completed.stdout, max_output_bytes),
-        _bounded_bytes(completed.stderr, max_output_bytes),
+        command,
+        int(completed.returncode),
+        stdout[:max_output_bytes],
+        stderr[:max_output_bytes],
+        len(stdout) > max_output_bytes,
+        len(stderr) > max_output_bytes,
     )
 
 

@@ -822,7 +822,22 @@ def test_local_action_recheck_and_artifact_lifecycle():
     )
     execution = next(iter(bundle.signatures.values()))
 
-    request = orchestrator._request_artifact(execution)
+    action_result = ActionSequenceResult(
+        "worker-1",
+        "COMPLETED",
+        100.0,
+        101.0,
+        (
+            ActionResult(
+                "dse",
+                "COMPLETED",
+                100.0,
+                101.0,
+                stdout="action output",
+            ),
+        ),
+    )
+    request = orchestrator._request_artifact(execution, action_result)
 
     assert request == {
         "artifact_id": "dldd-test.tar.gz",
@@ -834,6 +849,9 @@ def test_local_action_recheck_and_artifact_lifecycle():
         "component": "PSU",
         "name": execution.component_name,
     }
+    assert artifact_client.metadata["action_outputs"][0]["stdout"] == (
+        "action output"
+    )
 
     # Ordinary evidence cannot race the mandatory post-action recheck.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")

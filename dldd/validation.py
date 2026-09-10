@@ -31,12 +31,10 @@ from .models import (
     Evaluation,
     MaterializedEvent,
     MaterializedRule,
-    Operation,
     ResolvedSource,
     RuleSet,
     ValidationIssue,
     ValidationResult,
-    ValueConfig,
 )
 from .rule_schema import (
     ContractIssue,
@@ -114,7 +112,7 @@ if yaml is not None:
 
         def construct_mapping(self, node, deep=False):
             keys = set()
-            for key_node, unused_value_node in node.value:
+            for key_node, _unused_value_node in node.value:
                 key = self.construct_object(key_node, deep=False)
                 try:
                     duplicate = key in keys
@@ -477,7 +475,7 @@ def _file_failure(schema_version, raw_issues, source_lines, document=None):
             continue
         try:
             index = int(issue.path[len(prefix) :].split("]", 1)[0])
-            raw = signatures[index]
+            _ = signatures[index]
         except (ValueError, IndexError, TypeError):
             continue
         grouped.setdefault(index, []).append(issue)

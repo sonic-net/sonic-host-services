@@ -243,7 +243,7 @@ class AsyncCollectionPool:
         with self._state_lock:
             if not self._closed:
                 self._closed = True
-                for unused_worker in self._workers:
+                for _unused_worker in self._workers:
                     self._jobs.put_nowait(
                         (2, next(self._sequence), None)
                     )

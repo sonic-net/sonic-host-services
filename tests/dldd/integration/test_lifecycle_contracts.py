@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .conftest import FAULT_KEY, integration_rule_document
+from .conftest import integration_rule_document
 
 
 pytestmark = pytest.mark.dldd_integration

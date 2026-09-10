@@ -270,7 +270,7 @@ class DSEHook(object, metaclass=ABCMeta):
     """Interface implemented by trusted platform/vendor packages."""
 
     @abstractmethod
-    def resolve_source(self, reference, context):
+    def resolve_source(self, reference, context) -> DSESourceHandle:
         """Return configured sources without sampling or executing them.
 
         Resolution runs during activation validation.  Implementations must
@@ -279,17 +279,17 @@ class DSEHook(object, metaclass=ABCMeta):
         """
 
     @abstractmethod
-    def resolve_evaluation(self, reference, context):
+    def resolve_evaluation(self, reference, context) -> DSEEvaluationHandle:
         """Return a configured evaluator without sampling source values."""
 
-    def resolve_action(self, command, context):
+    def resolve_action(self, command, context) -> ResolvedCommand:
         """Resolve an action contract without executing the action."""
 
         raise DSEUnresolvedError(
             "DSE action {} is not exposed".format(_operation_label(command))
         )
 
-    def resolve_query(self, command, context):
+    def resolve_query(self, command, context) -> ResolvedCommand:
         """Resolve a query contract without executing the query."""
 
         raise DSEUnresolvedError(

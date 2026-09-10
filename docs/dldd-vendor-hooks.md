@@ -53,7 +53,12 @@ commands. Vendor hooks must validate and allow-list opaque commands rather than
 treating them as Python or shell expressions. Wildcard source results must
 include a canonical component instance. `ResolvedCommand.executor` is a trusted
 callable invoked with the immutable materialized operation mapping only after
-the rules generation passes validation.
+the rules generation passes validation. An action executor may optionally
+return `dldd.actions.ActionOutput(stdout=..., stderr=..., result=...)`; an
+ordinary non-`None` return is captured as a generic result. DLDD bounds this
+diagnostic content and places it under `actions/NNN/` only when the rule defines
+`log_collection`. It is not copied into routine fault telemetry and does not
+indicate whether remediation succeeded; the rule recheck remains authoritative.
 
 `ResolvedSource.path` and `vendor_data` should use stable declarative values.
 DLDD includes the instance, concrete path, and vendor data in the source

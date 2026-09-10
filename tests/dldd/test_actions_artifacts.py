@@ -5,9 +5,10 @@ import tarfile
 import threading
 import time
 
-from dldd.actions import ActionExecutor, ActionRunner
+from dldd.actions import ActionExecutor, ActionOutput, ActionRunner
 from dldd.artifacts import FilesystemArtifactClient
 from dldd.hooks import VendorHook, VendorHookRegistry
+from dldd.models import Operation
 
 
 class SequenceExecutor(ActionExecutor):
@@ -66,6 +67,83 @@ def test_action_runner_reports_timeout_without_waiting_for_vendor_return():
     finally:
         release.set()
         runner.shutdown()
+
+
+def test_dse_and_cli_action_outputs_are_bounded_and_archived(tmp_path, monkeypatch):
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv, 7, stdout=b"cli-output", stderr=b"cli-warning"
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    dse_action = Operation(
+        type="dse",
+        command="test:repair()",
+        timeout=1,
+        executor=lambda _unused: ActionOutput(
+            stdout="dse-stdout",
+            stderr="dse-stderr",
+            result={"changed": True},
+        ),
+    ).as_runtime_payload()
+    cli_action = {
+        "type": "cli",
+        "argv": ["diagnostic"],
+        "timeout": 1,
+        "max_output_bytes": 4,
+    }
+    runner = ActionRunner(ActionExecutor(), max_workers=1)
+    try:
+        result = runner.submit(
+            "RULE", (dse_action, cli_action), None
+        ).result(timeout=1)
+    finally:
+        runner.shutdown()
+
+    assert result.state == "EXECUTION_ERROR"
+    assert result.actions[0].as_payload() == {
+        "type": "dse",
+        "status": "COMPLETED",
+        "started_at": int(result.actions[0].started_at),
+        "completed_at": int(result.actions[0].completed_at),
+    }
+    assert result.actions[1].returncode == 7
+    assert result.actions[1].stdout == "cli-"
+    assert result.actions[1].stderr == "cli-"
+    assert result.actions[1].truncated == ("stdout", "stderr")
+
+    client = FilesystemArtifactClient(directory=str(tmp_path / "artifacts"))
+    try:
+        reference = client.request(
+            {
+                "rule": "TEST",
+                "action_outputs": tuple(
+                    action.as_artifact_payload(index)
+                    for index, action in enumerate(result.actions)
+                ),
+            },
+            (),
+            (),
+        )
+        deadline = time.time() + 2
+        while not Path(reference.location).exists() and time.time() < deadline:
+            time.sleep(0.01)
+
+        with tarfile.open(reference.location, "r:gz") as archive:
+            assert archive.extractfile("actions/000/stdout.txt").read() == b"dse-stdout"
+            assert archive.extractfile("actions/000/stderr.txt").read() == b"dse-stderr"
+            assert archive.extractfile("actions/000/result.txt").read() == (
+                b'{"changed": true}'
+            )
+            assert archive.extractfile("actions/001/stdout.txt").read() == b"cli-"
+            assert archive.extractfile("actions/001/stderr.txt").read() == b"cli-"
+            cli_metadata = json.load(
+                archive.extractfile("actions/001/metadata.json")
+            )
+            assert cli_metadata["returncode"] == 7
+            assert cli_metadata["truncated"] == ["stdout", "stderr"]
+    finally:
+        client.shutdown()
 
 
 def test_artifact_request_is_immediate_and_final_file_is_atomic(tmp_path):
