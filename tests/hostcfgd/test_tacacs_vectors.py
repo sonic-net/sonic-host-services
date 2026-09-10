@@ -222,10 +222,72 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                         "login": "local"
                     },
                     "authorization": {
-                        "login": "local" 
+                        "login": "local"
                     },
                     "accounting": {
-                        "login": "disable" 
+                        "login": "disable"
+                    }
+                },
+                "TACPLUS": {
+                    "global": {
+                            "auth_type": "chap",
+                            "timeout": 5,
+                            "passkey": "dellsonic",
+                            "src_intf": "Ethernet0"
+                    }
+                },
+                "TACPLUS_SERVER": {
+                    "192.168.1.1" : {
+                            "priority": 5,
+                            "tcp_port": 50,
+                            "timeout": 10,
+                            "auth_type": "chap",
+                            "passkey": "dellsonic",
+                            "vrf": "default"
+                    },
+                    "192.168.1.2" : {
+                            "priority": 2,
+                            "tcp_port": 51,
+                            "timeout": 15,
+                            "auth_type": "pap",
+                            "passkey": "dellsonic1",
+                            "vrf": "mgmt"
+                    }
+                },
+            },
+            "config_db_local_tacacs": {
+                "DEVICE_METADATA": {
+                    "localhost": {
+                        "hostname": "tacacs",
+                    }
+                },
+                "FEATURE": {
+                    "dhcp_relay": {
+                        "auto_restart": "enabled",
+                        "has_global_scope": "True",
+                        "has_per_asic_scope": "False",
+                        "delayed": "False",
+                        "high_mem_alert": "disabled",
+                        "set_owner": "kube",
+                        "state": "enabled"
+                    },
+                },
+                "KDUMP": {
+                    "config": {
+                        "enabled": "false",
+                        "num_dumps": "3",
+                        "memory": "0M-2G:256M,2G-4G:320M,4G-8G:384M,8G-16G:448M,16G-32G:768M,32G-:1G"
+                        }
+                },
+                "AAA": {
+                    "authentication": {
+                        "login": "local,tacacs+"
+                    },
+                    "authorization": {
+                        "login": "local"
+                    },
+                    "accounting": {
+                        "login": "local"
                     }
                 },
                 "TACPLUS": {

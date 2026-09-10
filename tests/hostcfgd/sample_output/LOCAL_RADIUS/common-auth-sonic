@@ -12,7 +12,13 @@
 # Include faillock configuration if present (managed by userd)
 auth	substack	common-auth-faillock
 
-auth	[success=2 default=ignore]	pam_unix.so nullok try_first_pass
+auth	[success=done new_authtok_reqd=done default=ignore auth_err=die maxtries=die]	pam_unix.so nullok try_first_pass
+# For the RADIUS servers, on success jump to the cacheing the MPL(Privilege)
+auth	[success=2 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.1_1645.conf privilege_level protocol=pap retry=1 nas_ip_address=10.10.10.10 debug try_first_pass require_message_authenticator 
+auth	[success=1 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.2_1645.conf privilege_level protocol=chap retry=2 nas_ip_address=10.10.10.10 debug try_first_pass require_message_authenticator 
+auth	requisite	pam_deny.so
+# Cache MPL(Privilege)
+auth	[success=2 default=ignore]	pam_exec.so /usr/sbin/cache_radius
 
 #
 # Record failed login attempts for faillock (managed by userd)

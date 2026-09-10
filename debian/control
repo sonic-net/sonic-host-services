@@ -7,5 +7,8 @@ Standards-Version: 1.0.0
 
 Package: sonic-host-services-rs
 Architecture: any
-Depends: ${shlibs:Depends}
-Description: Process and Docker statistics daemon in Rust
+Depends: ${shlibs:Depends}, ${misc:Depends}, sonic-host-services-data, libpam-modules-bin
+Description: SONiC host services in Rust
+ Contains Rust implementations of SONiC host services:
+ - procdockerstatsd-rs: Process and Docker statistics daemon
+ - userd: User management daemon

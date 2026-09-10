@@ -18,6 +18,7 @@ override_dh_installsystemd:
 	dh_installsystemd --no-start --name=featured
 	dh_installsystemd --no-start --name=aaastatsd
 	dh_installsystemd --no-start --name=procdockerstatsd
+	dh_installsystemd --no-start --name=userd
 	dh_installsystemd --no-start --name=determine-reboot-cause
 	dh_installsystemd --no-start --name=process-reboot-cause
 	dh_installsystemd --no-start --name=gnoi-shutdown
