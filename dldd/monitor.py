@@ -541,6 +541,7 @@ class MonitorThread(threading.Thread):
 
         relinquished = []
         removed = []
+        deferred_removal = False
         for key in tuple(state.child_keys - set(desired)):
             child_state = self.plan.state_by_key.get(key)
             if child_state is None or child_state.state not in (
@@ -549,6 +550,7 @@ class MonitorThread(threading.Thread):
                 MonitorWorkState.SUSPENDED,
                 MonitorWorkState.BROKEN,
             ):
+                deferred_removal = True
                 continue
             relinquished.append(key)
             owners = self._dse_templates_by_child.get(key, set())
@@ -604,7 +606,12 @@ class MonitorThread(threading.Thread):
         state.binding_fingerprint = fingerprint
         state.last_expansion_timestamp = self.wall_clock()
         state.last_error = ""
-        state.unchanged_scans = 0 if changed else state.unchanged_scans + 1
+        # A missing child can remain primary-owned briefly.  Do not classify
+        # that inventory as stable and back off for five minutes while the
+        # child is still waiting to be retired.
+        state.unchanged_scans = (
+            0 if changed or deferred_removal else state.unchanged_scans + 1
+        )
         interval = (
             DSE_EXPANSION_STABLE_INTERVAL
             if state.unchanged_scans >= DSE_EXPANSION_STABLE_SCANS
@@ -803,8 +810,23 @@ class MonitorThread(threading.Thread):
             EvaluationResultType.COLLECTION_ERROR,
         ):
             state.source_status = SourceAvailability.UNAVAILABLE
+            self._refresh_dse_inventory_after_source_failure(item)
         if not self._enqueue(item, state, result, from_recheck):
             state.source_status = previous_source
+
+    def _refresh_dse_inventory_after_source_failure(self, item) -> None:
+        """Promptly confirm whether a failed dynamic child still exists."""
+
+        if item.dse_binding is None:
+            return
+        now = self.clock()
+        for template_id in self._dse_templates_by_child.get(
+            item.correlation_key, ()
+        ):
+            self.plan.expansion_state_by_key[
+                template_id
+            ].next_expansion_due = now
+        self._next_poll = min(self._next_poll, now)
 
     def _enqueue(
         self,

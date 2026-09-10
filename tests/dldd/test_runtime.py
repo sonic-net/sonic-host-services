@@ -1861,6 +1861,8 @@ def test_dse_removal_waits_for_primary_owned_child(
     assert deferred.present_instances == ()
     assert deferred.removed_keys == ()
     assert child_key in monitor.plan.expanded_items_by_key
+    assert expansion_state.unchanged_scans == 0
+    assert expansion_state.next_expansion_due == 6.0
 
     monitor.plan.state_by_key[child_key].state = MonitorWorkState.READY
     monitor._expand_template(
@@ -1868,6 +1870,44 @@ def test_dse_removal_waits_for_primary_owned_child(
     )
     removed = evidence.get_nowait()
     assert removed.removed_keys == (child_key,)
+    assert child_key not in monitor.plan.expanded_items_by_key
+
+
+def test_dse_source_failure_makes_inventory_refresh_due_immediately():
+    hook = RuntimeDSEHook()
+    bundle = _runtime_dse_bundle(hook)
+    clock = _Clock()
+    evidence = Queue()
+    monitor = MonitorThread(
+        bundle.monitor_plans["common"],
+        adapter_map(),
+        evidence,
+        clock=clock,
+    )
+
+    monitor.run_once()
+    registration = evidence.get_nowait()
+    child_key = registration.added_items[0].correlation_key
+    expansion_state = next(iter(monitor.plan.expansion_state_by_key.values()))
+
+    hook.values.clear()
+    hook.thresholds.clear()
+    clock.value = 1.0
+    monitor.poll_once()
+
+    failure = evidence.get_nowait()
+    assert failure.result.result == EvaluationResultType.COLLECTION_ERROR
+    assert expansion_state.next_expansion_due == 1.0
+
+    # Model the primary thread releasing the localized failure.  The next
+    # monitor cycle refreshes inventory before another child sample and drops
+    # the instance instead of accumulating failures against vanished hardware.
+    monitor.plan.state_by_key[child_key].state = MonitorWorkState.DEGRADED
+    clock.value = 1.1
+    monitor.run_once()
+
+    removal = evidence.get_nowait()
+    assert removal.removed_keys == (child_key,)
     assert child_key not in monitor.plan.expanded_items_by_key
 
 
