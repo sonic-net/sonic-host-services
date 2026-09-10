@@ -17,7 +17,7 @@ import uuid
 from concurrent.futures import TimeoutError
 from dataclasses import dataclass
 from queue import Full, Queue
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
 from .bounded_calls import BoundedCallGate, start_daemon_workers
 from .command_execution import DEFAULT_MAX_OUTPUT_BYTES, run_checked_shell_free
@@ -156,13 +156,12 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                     ).encode(),
                     0,
                 )
-                for pattern in logs:
-                    for path in sorted(glob.glob(pattern)):
-                        bytes_added += self._add_log_file(
-                            archive,
-                            path,
-                            self.max_artifact_bytes - bytes_added,
-                        )
+                for path in self._resolve_logs(logs):
+                    bytes_added += self._add_log_file(
+                        archive,
+                        path,
+                        self.max_artifact_bytes - bytes_added,
+                    )
                 for index, query in enumerate(queries):
                     output = self._run_bounded_query(query)
                     data = output if isinstance(output, bytes) else str(output).encode(
@@ -195,6 +194,15 @@ class FilesystemArtifactClient(HealthzArtifactClient):
         return bytes_added + len(data)
 
     @staticmethod
+    def _resolve_logs(patterns: Iterable[str]) -> Tuple[str, ...]:
+        paths = (
+            os.path.abspath(path)
+            for pattern in patterns
+            for path in sorted(glob.glob(pattern))
+        )
+        return tuple(dict.fromkeys(paths))
+
+    @staticmethod
     def _add_log_file(archive, path: str, remaining: int) -> int:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
@@ -214,7 +222,9 @@ class FilesystemArtifactClient(HealthzArtifactClient):
                 or file_stat.st_size > remaining
             ):
                 return 0
-            info = tarfile.TarInfo(os.path.join("logs", os.path.basename(path)))
+            info = tarfile.TarInfo(
+                os.path.join("logs", path.lstrip(os.path.sep))
+            )
             info.size = file_stat.st_size
             info.mtime = int(file_stat.st_mtime)
             info.mode = stat.S_IMODE(file_stat.st_mode)

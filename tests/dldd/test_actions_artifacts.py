@@ -71,6 +71,9 @@ def test_action_runner_reports_timeout_without_waiting_for_vendor_return():
 def test_artifact_request_is_immediate_and_final_file_is_atomic(tmp_path):
     log = tmp_path / "service.log"
     log.write_text("bounded log", encoding="utf-8")
+    other_log = tmp_path / "nested" / "service.log"
+    other_log.parent.mkdir()
+    other_log.write_text("same basename", encoding="utf-8")
     started = threading.Event()
     release = threading.Event()
 
@@ -87,7 +90,9 @@ def test_artifact_request_is_immediate_and_final_file_is_atomic(tmp_path):
     )
     try:
         reference = client.request(
-            {"rule": "TEST"}, (str(log),), ({"type": "vendor"},)
+            {"rule": "TEST"},
+            (str(log), str(tmp_path / "*.log"), str(other_log)),
+            ({"type": "vendor"},),
         )
         assert started.wait(1)
         assert reference.artifact_id.startswith("dldd-")
@@ -101,11 +106,15 @@ def test_artifact_request_is_immediate_and_final_file_is_atomic(tmp_path):
             time.sleep(0.01)
 
         with tarfile.open(reference.location, "r:gz") as archive:
+            log_member = "logs/{}".format(str(log).lstrip("/"))
+            other_member = "logs/{}".format(str(other_log).lstrip("/"))
             assert json.load(archive.extractfile("metadata.json")) == {
                 "rule": "TEST"
             }
             assert archive.extractfile("queries/000.txt").read() == b"diagnostic output"
-            assert "logs/service.log" in archive.getnames()
+            assert archive.getnames().count(log_member) == 1
+            assert archive.extractfile(log_member).read() == b"bounded log"
+            assert archive.extractfile(other_member).read() == b"same basename"
     finally:
         release.set()
         client.shutdown()
