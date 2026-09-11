@@ -3,6 +3,7 @@ import importlib.util
 import filecmp
 import shutil
 import os
+import socket
 import sys
 import subprocess
 import re
@@ -456,3 +457,96 @@ class TestHostcfgdSSHServerListenAddresses(SshServerCheckConfigMixin, TestCase):
             after = f.read()
         self.assertEqual(before, after)
         self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_TMP))
+
+    def test_listen_addresses_empty_list_rejected(self):
+        """ An explicitly empty listen_addresses list logs a warning and is
+            rejected (YANG allows it syntactically; the application layer
+            treats it as unusable since it would mean "listen nowhere"),
+            leaving the active sshd_config unchanged. """
+        config_dir = output_path + "/listen_addresses_empty"
+        shutil.rmtree(config_dir, ignore_errors=True)
+        ssh_server = self._make_ssh_server(config_dir)
+        with open(hostcfgd.SSH_CONFG, 'rb') as f:
+            before = f.read()
+
+        with mock.patch("hostcfgd.syslog.syslog") as mock_syslog:
+            result = ssh_server.handle_listen_addresses_set([])
+
+        self.assertFalse(result)
+        with open(hostcfgd.SSH_CONFG, 'rb') as f:
+            after = f.read()
+        self.assertEqual(before, after)
+        self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_TMP))
+        self.assertTrue(any(
+            "at least one address is required" in call.args[-1]
+            for call in mock_syslog.call_args_list))
+
+    def test_listen_addresses_wildcard_mixed_with_assigned_address(self):
+        """ A wildcard address (0.0.0.0/::) mixed with a specific assigned
+            address is exempt from the "must be currently assigned" check
+            (it means "all interfaces"), logs a warning noting it is
+            equivalent to the default, and the update is still accepted. """
+        config_dir = output_path + "/listen_addresses_wildcard_mixed"
+        shutil.rmtree(config_dir, ignore_errors=True)
+        ssh_server = self._make_ssh_server(config_dir)
+
+        with mock.patch("hostcfgd.syslog.syslog") as mock_syslog:
+            ssh_server.policies_update('POLICIES', {"listen_addresses": ["0.0.0.0", "10.0.0.1"]})
+
+        lines = self._listen_address_lines(hostcfgd.SSH_CONFG)
+        self.assertEqual(set(lines), {"ListenAddress 0.0.0.0", "ListenAddress 10.0.0.1"})
+        self.assertTrue(any(
+            "equivalent to default" in call.args[-1]
+            for call in mock_syslog.call_args_list))
+
+
+class TestGetDutIpAddresses(TestCase):
+    """ Direct unit tests for get_dut_ip_addresses() (ADO 29390131),
+        exercising the real psutil.net_if_addrs() parsing logic rather
+        than the mocked version used by TestHostcfgdSSHServerListenAddresses. """
+
+    def _make_snic(self, family, address):
+        snic = mock.Mock()
+        snic.family = family
+        snic.address = address
+        return snic
+
+    def test_returns_ipv4_and_ipv6_addresses(self):
+        addrs = {
+            "eth0": [self._make_snic(socket.AF_INET, "10.0.0.1")],
+            "lo": [
+                self._make_snic(socket.AF_INET, "127.0.0.1"),
+                self._make_snic(socket.AF_INET6, "::1"),
+            ],
+        }
+        with mock.patch("hostcfgd.psutil.net_if_addrs", return_value=addrs):
+            result = hostcfgd.get_dut_ip_addresses()
+        self.assertEqual(result, {"10.0.0.1", "127.0.0.1", "::1"})
+
+    def test_ignores_non_ip_families(self):
+        addrs = {
+            "eth0": [
+                self._make_snic(socket.AF_INET, "10.0.0.1"),
+                self._make_snic(socket.AF_PACKET, "00:11:22:33:44:55"),
+            ],
+        }
+        with mock.patch("hostcfgd.psutil.net_if_addrs", return_value=addrs):
+            result = hostcfgd.get_dut_ip_addresses()
+        self.assertEqual(result, {"10.0.0.1"})
+
+    def test_strips_ipv6_zone_id(self):
+        addrs = {"eth0": [self._make_snic(socket.AF_INET6, "fe80::1%eth0")]}
+        with mock.patch("hostcfgd.psutil.net_if_addrs", return_value=addrs):
+            result = hostcfgd.get_dut_ip_addresses()
+        self.assertEqual(result, {"fe80::1"})
+
+    def test_skips_unparsable_address(self):
+        addrs = {
+            "eth0": [
+                self._make_snic(socket.AF_INET, "not-an-ip"),
+                self._make_snic(socket.AF_INET, "10.0.0.1"),
+            ],
+        }
+        with mock.patch("hostcfgd.psutil.net_if_addrs", return_value=addrs):
+            result = hostcfgd.get_dut_ip_addresses()
+        self.assertEqual(result, {"10.0.0.1"})
