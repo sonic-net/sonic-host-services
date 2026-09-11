@@ -1138,6 +1138,9 @@ class SshServer(object):
 
     def handle_listen_addresses_set(self, values_list):
         if len(values_list) == 0:
+            # YANG intentionally allows an empty leaf-list (no min-elements);
+            # the application layer is the one that rejects it as unusable.
+            syslog.syslog(syslog.LOG_WARNING, "Ssh listen_addresses is empty - at least one address is required")
             return False
 
         # Duplicate addresses are rejected outright (rather than silently
