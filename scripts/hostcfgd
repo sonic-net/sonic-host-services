@@ -1163,6 +1163,7 @@ class SshServer(object):
         assigned_addresses = get_dut_ip_addresses()
         for addr in canonical_addresses:
             if addr in SSH_DEFAULT_LISTEN_ADDRESSES:
+                syslog.syslog(syslog.LOG_WARNING, "Ssh listen_addresses includes wildcard {} - equivalent to default (all interfaces)".format(addr))
                 continue
             if addr not in assigned_addresses:
                 syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is not currently assigned to any interface on this device".format(addr))
