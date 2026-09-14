@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import re
 import threading
 import time
 import docker
@@ -27,6 +29,10 @@ EXECUTE_COLD_REBOOT_COMMAND = "sudo reboot"
 EXECUTE_HALT_REBOOT_COMMAND = "sudo reboot -p"
 EXECUTE_WARM_REBOOT_COMMAND = "sudo warm-reboot"
 
+BMC_REQUEST_TAG_RE = r"\[bmc-req:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]"
+REBOOT_CAUSE_DIR = "/host/reboot-cause"
+REBOOT_CAUSE_FILE = os.path.join(REBOOT_CAUSE_DIR, "reboot-cause.txt")
+REBOOT_CAUSE_GRACEFUL_SHUTDOWN_FROM_BMC = "graceful shutdown from BMC"
 
 class RebootStatus(Enum):
     STATUS_UNKNOWN = 0
@@ -37,6 +43,20 @@ class RebootStatus(Enum):
 logger = logging.getLogger(__name__)
 
 
+def write_graceful_shutdown_reboot_cause():
+    """Atomically persist the graceful BMC shutdown cause before power is cut."""
+    temporary_path = REBOOT_CAUSE_FILE + ".tmp"
+    with open(temporary_path, "w") as cause_file:
+        cause_file.write(REBOOT_CAUSE_GRACEFUL_SHUTDOWN_FROM_BMC)
+        cause_file.flush()
+        os.fsync(cause_file.fileno())
+
+    os.replace(temporary_path, REBOOT_CAUSE_FILE)
+    directory_fd = os.open(REBOOT_CAUSE_DIR, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def get_dpu_halt_services_timeout():
@@ -248,6 +268,17 @@ class Reboot(host_service.HostModule):
                     raise
 
             def publish_halt_success():
+                if (strict_checks and isinstance(self.active_request_message, str) and
+                        len(re.findall(BMC_REQUEST_TAG_RE, self.active_request_message)) == 1):
+                    try:
+                        write_graceful_shutdown_reboot_cause()
+                    except OSError as e:
+                        self.populate_reboot_status_flag(
+                            False, int(time.time()), "Failed to write reboot cause",
+                            reboot_method, RebootStatus.STATUS_FAILURE
+                        )
+                        logger.error("%s: Failed to write reboot cause: %s", MOD_NAME, e)
+                        return
 
                 self.populate_reboot_status_flag(
                     False, 0, "Halt reboot completed", reboot_method,

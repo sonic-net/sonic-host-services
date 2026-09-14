@@ -771,10 +771,159 @@ class TestReboot(object):
                 RebootStatus.STATUS_SUCCESS
             )
 
+    def test_write_graceful_shutdown_reboot_cause_is_durable(self, tmp_path):
+        reboot_cause_file = tmp_path / "reboot-cause.txt"
+        reboot_cause_file.write_text("old cause")
+        events = []
+        real_fsync = os.fsync
+        real_replace = os.replace
 
+        def record_fsync(fd):
+            events.append("fsync")
+            return real_fsync(fd)
 
+        def record_replace(source, destination):
+            events.append("replace")
+            return real_replace(source, destination)
 
+        with (
+            mock.patch("reboot.REBOOT_CAUSE_DIR", str(tmp_path)),
+            mock.patch("reboot.REBOOT_CAUSE_FILE", str(reboot_cause_file)),
+            mock.patch("reboot.os.fsync", side_effect=record_fsync),
+            mock.patch(
+                "reboot.os.replace", side_effect=record_replace
+            ) as mock_replace,
+            mock.patch("reboot.os.open", wraps=os.open) as mock_open_directory,
+        ):
+            write_graceful_shutdown_reboot_cause()
 
+        assert (
+            reboot_cause_file.read_text() ==
+            REBOOT_CAUSE_GRACEFUL_SHUTDOWN_FROM_BMC
+        )
+        assert not (tmp_path / "reboot-cause.txt.tmp").exists()
+        assert events == ["fsync", "replace", "fsync"]
+        mock_replace.assert_called_once_with(
+            str(reboot_cause_file) + ".tmp", str(reboot_cause_file)
+        )
+        mock_open_directory.assert_called_once_with(str(tmp_path), os.O_RDONLY)
+
+    def test_graceful_shutdown_reboot_cause_contract_literals(self):
+        assert REBOOT_CAUSE_FILE == "/host/reboot-cause/reboot-cause.txt"
+        assert (
+            REBOOT_CAUSE_GRACEFUL_SHUTDOWN_FROM_BMC ==
+            "graceful shutdown from BMC"
+        )
+
+    def test_execute_reboot_tagged_halt_writes_cause_before_success(self):
+        events = []
+        self.reboot_module.active_request_message = (
+            "BMC pre-shutdown request "
+            "[bmc-req:12345678-1234-4234-8234-123456789abc]"
+        )
+
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("time.monotonic", side_effect=[0, 0]),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False),
+            mock.patch("reboot.Reboot.is_container_running", return_value=False),
+            mock.patch(
+                "reboot.write_graceful_shutdown_reboot_cause",
+                side_effect=lambda: events.append("write")
+            ) as mock_write,
+            mock.patch(
+                "reboot.Reboot.populate_reboot_status_flag",
+                side_effect=lambda *args: events.append(("status", args[-1]))
+            ) as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=60),
+        ):
+            self.reboot_module.execute_reboot(
+                REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=True
+            )
+
+        mock_write.assert_called_once_with()
+        mock_populate.assert_called_once_with(
+            False, 0, "Halt reboot completed", REBOOT_METHOD_HALT_BOOT_ENUM,
+            RebootStatus.STATUS_SUCCESS
+        )
+        assert events == ["write", ("status", RebootStatus.STATUS_SUCCESS)]
+
+    def test_execute_reboot_cause_write_failure_forfeits_success(self):
+        self.reboot_module.active_request_message = (
+            "BMC pre-shutdown request "
+            "[bmc-req:12345678-1234-4234-8234-123456789abc]"
+        )
+
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("time.monotonic", side_effect=[0, 0]),
+            mock.patch("time.time", return_value=TIME),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False),
+            mock.patch("reboot.Reboot.is_container_running", return_value=False),
+            mock.patch(
+                "reboot.write_graceful_shutdown_reboot_cause",
+                side_effect=OSError("disk error")
+            ),
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=60),
+        ):
+            self.reboot_module.execute_reboot(
+                REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=True
+            )
+
+        mock_populate.assert_called_once_with(
+            False, TIME, "Failed to write reboot cause", REBOOT_METHOD_HALT_BOOT_ENUM,
+            RebootStatus.STATUS_FAILURE
+        )
+
+    @pytest.mark.parametrize(
+        "request_message,is_switch_host,expected_strict_checks",
+        [
+            ("untagged request", True, True),
+            (
+                "[bmc-req:12345678-1234-4234-8234-123456789abc] "
+                "[bmc-req:abcdefab-cdef-4abc-8def-abcdefabcdef]",
+                True,
+                True,
+            ),
+            (
+                "BMC pre-shutdown request [bmc-req:12345678-1234-4234-8234-123456789abc]",
+                False,
+                False,
+            ),
+            (None, True, True),
+        ],
+        ids=[
+            "untagged", "multiple-tags", "non-switch-host", "non-string-message",
+        ],
+    )
+    def test_execute_reboot_unqualified_halt_preserves_existing_cause(
+            self, request_message, is_switch_host, expected_strict_checks):
+        self.reboot_module.active_request_message = request_message
+
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch(
+                "reboot.device_info.is_switch_host", return_value=is_switch_host
+            ),
+            mock.patch("time.monotonic", side_effect=[0, 0]),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False),
+            mock.patch("reboot.Reboot.is_container_running", return_value=False),
+            mock.patch("reboot.write_graceful_shutdown_reboot_cause") as mock_write,
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=60),
+        ):
+            strict_checks = is_strict_halt_check_enabled()
+            self.reboot_module.execute_reboot(
+                REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=strict_checks
+            )
+
+        assert strict_checks is expected_strict_checks
+        mock_write.assert_not_called()
+        mock_populate.assert_called_once_with(
+            False, 0, "Halt reboot completed", REBOOT_METHOD_HALT_BOOT_ENUM,
+            RebootStatus.STATUS_SUCCESS
+        )
 
     def test_execute_reboot_dpu_halt_keeps_status_contract(self):
         request_message = "DPU reboot request"
@@ -807,6 +956,7 @@ class TestReboot(object):
             mock.patch("time.monotonic", side_effect=[0, 0]),
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=False),
             mock.patch("reboot.Reboot.is_container_running", return_value=False),
+            mock.patch("reboot.write_graceful_shutdown_reboot_cause") as mock_write,
         ):
             strict_checks = is_strict_halt_check_enabled()
             self.reboot_module.execute_reboot(
@@ -819,6 +969,7 @@ class TestReboot(object):
         mock_is_dpu.assert_called_once_with()
         mock_platform_data.assert_called_once_with()
         assert resolved_timeouts == [dpu_halt_timeout]
+        mock_write.assert_not_called()
         assert response_data["active"] is False
         assert response_data["reason"] == "Halt reboot completed | {}".format(request_message)
         assert response_data["status"] == {
