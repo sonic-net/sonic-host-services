@@ -90,6 +90,48 @@ class TestReboot(object):
                 "message": ""
             }
 
+    @pytest.mark.parametrize(
+        "result_string,status",
+        [
+            ("Halt reboot completed", RebootStatus.STATUS_SUCCESS),
+            ("Halt reboot did not complete", RebootStatus.STATUS_FAILURE),
+            ("Halt completion check could not be answered", RebootStatus.STATUS_FAILURE),
+            ("Failed to execute reboot command", RebootStatus.STATUS_FAILURE),
+            ("Reboot command failed to execute", RebootStatus.STATUS_FAILURE),
+            ("Failed to write reboot cause", RebootStatus.STATUS_FAILURE),
+        ],
+    )
+    def test_terminal_status_appends_original_request_message(self, result_string, status):
+        request_message = "BMC pre-shutdown request [bmc-req:12345678-1234-4234-8234-123456789abc]"
+        self.reboot_module.populate_reboot_status_flag(
+            True, TIME, request_message, REBOOT_METHOD_HALT_BOOT_ENUM, RebootStatus.STATUS_UNKNOWN
+        )
+        self.reboot_module.populate_reboot_status_flag(
+            False, TIME, result_string, REBOOT_METHOD_HALT_BOOT_ENUM, status
+        )
+
+        _, response = self.reboot_module.get_reboot_status()
+        response_data = json.loads(response)
+
+        assert response_data["reason"] == "{} | {}".format(result_string, request_message)
+        assert response_data["status"] == {"status": status.value, "message": ""}
+        assert set(response_data) == {"active", "when", "reason", "count", "method", "status"}
+
+    def test_terminal_status_without_request_message_keeps_bare_reason(self):
+        self.reboot_module.populate_reboot_status_flag(
+            True, TIME, "", REBOOT_METHOD_COLD_BOOT_ENUM, RebootStatus.STATUS_UNKNOWN
+        )
+        self.reboot_module.populate_reboot_status_flag(
+            False, TIME, "Failed to execute reboot command", REBOOT_METHOD_COLD_BOOT_ENUM,
+            RebootStatus.STATUS_FAILURE
+        )
+
+        _, response = self.reboot_module.get_reboot_status()
+        response_data = json.loads(response)
+
+        assert response_data["reason"] == "Failed to execute reboot command"
+        assert response_data["status"]["message"] == ""
+
     def test_get_dpu_halt_services_timeout_value(self):
         mock_data = {"dpu_halt_services_timeout": 120}
 
@@ -372,6 +414,7 @@ class TestReboot(object):
             result = self.reboot_module.issue_reboot([VALID_REBOOT_REQUEST_COLD])
             assert result[0] == 0
             assert result[1] == "Successfully issued reboot"
+            assert self.reboot_module.active_request_message == "test reboot request reason"
             mock_thread.assert_called_once_with(
                 target=self.reboot_module.execute_reboot,
                 args=(REBOOT_METHOD_COLD_BOOT_ENUM,),

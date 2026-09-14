@@ -72,6 +72,7 @@ class Reboot(host_service.HostModule):
         self.lock = threading.Lock()
         # reboot_status_flag is used to keep track of reboot status on host
         self.reboot_status_flag = {}
+        self.active_request_message = ""
 
         # reboot count
         self.reboot_count = 0
@@ -83,6 +84,10 @@ class Reboot(host_service.HostModule):
     def populate_reboot_status_flag(self, active = False, when = 0, reason = "", method = "", status = RebootStatus.STATUS_UNKNOWN):
         """Populates the reboot_status_flag with given input params"""
         self.lock.acquire()
+        if active:
+            self.active_request_message = reason
+        elif reason and self.active_request_message:
+            reason = "{} | {}".format(reason, self.active_request_message)
         self.reboot_status_flag["active"] = active
         self.reboot_status_flag["when"] = when
         self.reboot_status_flag["reason"] = reason
