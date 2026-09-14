@@ -33,7 +33,7 @@ REBOOT_METHOD_COLD_BOOT_ENUM = 1
 REBOOT_METHOD_HALT_BOOT_ENUM = 3
 REBOOT_METHOD_WARM_BOOT_ENUM = 4
 
-HALT_TIMEOUT = 60
+EXPECTED_HALT_TIMEOUT = 60
 
 TEST_TIMESTAMP = 1618942253.831912040
 
@@ -62,6 +62,9 @@ class TestReboot(object):
     def setup_class(cls):
         with mock.patch("reboot.super") as mock_host_module:
             cls.reboot_module = Reboot(MOD_NAME)
+
+    def setup_method(self):
+        self.reboot_module.active_request_message = ""
 
     def test_populate_reboot_status_flag(self):
         with mock.patch("time.time", return_value=1617811205.25):
@@ -136,39 +139,299 @@ class TestReboot(object):
         mock_data = {"dpu_halt_services_timeout": 120}
 
         with (
-            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
-            mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
-            mock.patch("host_modules.reboot.json.load", return_value=mock_data),
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+                return_value=mock_data,
+            ) as mock_platform_data,
+            mock.patch("builtins.open") as mock_open,
         ):
             assert host_reboot.get_dpu_halt_services_timeout() == 120
+            mock_platform_data.assert_called_once_with()
+            mock_open.assert_not_called()
 
     def test_get_dpu_halt_services_timeout_none(self):
         mock_data = {"dpu_halt_services_timeout": None}
 
-        with (
-            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
-            mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(mock_data))),
-            mock.patch("host_modules.reboot.json.load", return_value=mock_data),
+        with mock.patch(
+            "host_modules.reboot.device_info.get_platform_json_data",
+            return_value=mock_data,
         ):
-            assert host_reboot.get_dpu_halt_services_timeout() == HALT_TIMEOUT
+            assert host_reboot.get_dpu_halt_services_timeout() == EXPECTED_HALT_TIMEOUT
+
+    def test_get_dpu_halt_services_timeout_general_exception(self, caplog):
+        with mock.patch(
+            "host_modules.reboot.device_info.get_platform_json_data",
+            side_effect=RuntimeError("unexpected reader failure"),
+        ), caplog.at_level(logging.INFO):
+            assert host_reboot.get_dpu_halt_services_timeout() == EXPECTED_HALT_TIMEOUT
+        assert any("unexpected reader failure" in record.message for record in caplog.records)
+
+    def test_get_dpu_halt_services_timeout_unavailable_is_logged(self, caplog):
+        with mock.patch(
+            "host_modules.reboot.device_info.get_platform_json_data",
+            return_value=None,
+        ), caplog.at_level(logging.INFO):
+            assert (
+                host_reboot.get_dpu_halt_services_timeout() ==
+                EXPECTED_HALT_TIMEOUT
+            )
+
+        assert any(
+            "platform.json data is unavailable or not a dictionary" in record.message
+            for record in caplog.records
+        )
 
     @pytest.mark.parametrize(
-        "side_effect",
+        "platform_data,expected",
         [
-            OSError(),
-            ValueError(),
-            TypeError(),
-            AttributeError(),
-            json.JSONDecodeError("Expecting value", "doc", 0),
+            ({"switch_host_halt_services_timeout": 90}, 90),
+            ({"switch_host_halt_services_timeout": True}, EXPECTED_HALT_TIMEOUT),
+            ({"switch_host_halt_services_timeout": 1.5}, EXPECTED_HALT_TIMEOUT),
+            ({"switch_host_halt_services_timeout": "90"}, EXPECTED_HALT_TIMEOUT),
+            ({"switch_host_halt_services_timeout": None}, EXPECTED_HALT_TIMEOUT),
+            ({"switch_host_halt_services_timeout": 0}, EXPECTED_HALT_TIMEOUT),
+            ({"switch_host_halt_services_timeout": -1}, EXPECTED_HALT_TIMEOUT),
+            ({}, EXPECTED_HALT_TIMEOUT),
+        ],
+        ids=[
+            "positive-integer",
+            "boolean",
+            "float",
+            "numeric-string",
+            "null",
+            "zero",
+            "negative",
+            "missing",
         ],
     )
-    def test_get_dpu_halt_services_timeout_exceptions(self, side_effect):
+    def test_switch_host_halt_services_timeout_requires_positive_integer(
+            self, platform_data, expected):
         with (
-            mock.patch("host_modules.reboot.device_info.get_path_to_platform_dir", return_value="/tmp/platform"),
-            mock.patch("builtins.open", mock.mock_open(read_data="{}")),
-            mock.patch("host_modules.reboot.json.load", side_effect=side_effect),
+            mock.patch(
+                "host_modules.reboot.device_info.is_switch_host",
+                return_value=True,
+            ),
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+                return_value=platform_data,
+            ),
         ):
-            assert host_reboot.get_dpu_halt_services_timeout() == HALT_TIMEOUT
+            assert host_reboot.get_halt_services_timeout() == expected
+
+    @pytest.mark.parametrize(
+        "is_switch_host,is_smartswitch,is_dpu,platform_data,expected",
+        [
+            (True, True, True, {"switch_host_halt_services_timeout": 90,
+                                "dpu_halt_services_timeout": 120}, 90),
+            (True, False, False, {"dpu_halt_services_timeout": 120}, EXPECTED_HALT_TIMEOUT),
+            (True, False, False, {"switch_host_halt_services_timeout": 0,
+                                  "dpu_halt_services_timeout": 120}, EXPECTED_HALT_TIMEOUT),
+            (True, False, False, {"switch_host_halt_services_timeout": "invalid",
+                                  "dpu_halt_services_timeout": 120}, EXPECTED_HALT_TIMEOUT),
+            (False, True, False, {"switch_host_halt_services_timeout": 90,
+                                  "dpu_halt_services_timeout": 180}, 180),
+            (False, True, False, {"switch_host_halt_services_timeout": 90}, EXPECTED_HALT_TIMEOUT),
+            (False, True, False, {"switch_host_halt_services_timeout": 90,
+                                  "dpu_halt_services_timeout": "invalid"}, EXPECTED_HALT_TIMEOUT),
+            (False, True, False, {"switch_host_halt_services_timeout": 90,
+                                  "dpu_halt_services_timeout": 0}, EXPECTED_HALT_TIMEOUT),
+            (False, False, True, {"switch_host_halt_services_timeout": 90,
+                                  "dpu_halt_services_timeout": 120}, 120),
+            (False, False, True, {"switch_host_halt_services_timeout": 90}, EXPECTED_HALT_TIMEOUT),
+            (False, False, True, {"switch_host_halt_services_timeout": 90,
+                                  "dpu_halt_services_timeout": "invalid"}, EXPECTED_HALT_TIMEOUT),
+            (False, False, True, {"switch_host_halt_services_timeout": 90,
+                                  "dpu_halt_services_timeout": 0}, EXPECTED_HALT_TIMEOUT),
+            (False, False, False, {"switch_host_halt_services_timeout": 90,
+                                   "dpu_halt_services_timeout": 120}, EXPECTED_HALT_TIMEOUT),
+        ],
+        ids=[
+            "switch-host-selects-switch-key",
+            "switch-host-does-not-fall-through",
+            "switch-host-zero-does-not-fall-through",
+            "switch-host-invalid-does-not-fall-through",
+            "smartswitch-npu-preserves-configured-value",
+            "smartswitch-npu-does-not-fall-through",
+            "smartswitch-npu-invalid-does-not-fall-through",
+            "smartswitch-npu-zero-does-not-fall-through",
+            "dpu-selects-dpu-key",
+            "dpu-does-not-fall-through",
+            "dpu-invalid-does-not-fall-through",
+            "dpu-zero-does-not-fall-through",
+            "other-identity-uses-default",
+        ],
+    )
+    def test_get_halt_services_timeout_by_identity(
+            self, is_switch_host, is_smartswitch, is_dpu,
+            platform_data, expected):
+        with (
+            mock.patch(
+                "host_modules.reboot.device_info.is_switch_host",
+                return_value=is_switch_host,
+            ) as mock_is_switch_host,
+            mock.patch(
+                "host_modules.reboot.device_info.is_smartswitch",
+                return_value=is_smartswitch,
+            ) as mock_is_smartswitch,
+            mock.patch(
+                "host_modules.reboot.device_info.is_dpu",
+                return_value=is_dpu,
+            ) as mock_is_dpu,
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+                return_value=platform_data,
+            ) as mock_platform_data,
+            mock.patch("builtins.open") as mock_open,
+        ):
+            assert host_reboot.get_halt_services_timeout() == expected
+            mock_open.assert_not_called()
+
+        mock_is_switch_host.assert_called_once_with()
+        if is_switch_host:
+            mock_is_smartswitch.assert_not_called()
+            mock_is_dpu.assert_not_called()
+            mock_platform_data.assert_called_once_with()
+        elif is_smartswitch:
+            mock_is_smartswitch.assert_called_once_with()
+            mock_is_dpu.assert_not_called()
+            mock_platform_data.assert_called_once_with()
+        elif is_dpu:
+            mock_is_smartswitch.assert_called_once_with()
+            mock_is_dpu.assert_called_once_with()
+            mock_platform_data.assert_called_once_with()
+        else:
+            mock_is_smartswitch.assert_called_once_with()
+            mock_is_dpu.assert_called_once_with()
+            mock_platform_data.assert_not_called()
+
+    def test_get_halt_services_timeout_matches_legacy_dpu_value(self):
+        platform_data = {"dpu_halt_services_timeout": 120}
+        with (
+            mock.patch("host_modules.reboot.device_info.is_switch_host", return_value=False),
+            mock.patch("host_modules.reboot.device_info.is_smartswitch", return_value=False),
+            mock.patch("host_modules.reboot.device_info.is_dpu", return_value=True),
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+                return_value=platform_data,
+            ),
+        ):
+            assert host_reboot.get_halt_services_timeout() == 120
+
+    def test_get_halt_services_timeout_keeps_legacy_invalid_dpu_log(self, caplog):
+        platform_data = {"dpu_halt_services_timeout": "invalid"}
+        with (
+            mock.patch("host_modules.reboot.device_info.is_switch_host", return_value=False),
+            mock.patch("host_modules.reboot.device_info.is_smartswitch", return_value=False),
+            mock.patch("host_modules.reboot.device_info.is_dpu", return_value=True),
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+                return_value=platform_data,
+            ),
+            caplog.at_level(logging.INFO),
+        ):
+            assert host_reboot.get_halt_services_timeout() == EXPECTED_HALT_TIMEOUT
+
+        assert any(
+            "Failed to read dpu_halt_services_timeout from platform.json" in record.message
+            for record in caplog.records
+        )
+
+    def test_get_halt_services_timeout_unreadable_uses_default(self, caplog):
+        with (
+            mock.patch("host_modules.reboot.device_info.is_switch_host", return_value=True),
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+                return_value=None,
+            ),
+            caplog.at_level(logging.INFO),
+        ):
+            assert host_reboot.get_halt_services_timeout() == EXPECTED_HALT_TIMEOUT
+
+        assert any(
+            "platform.json data is unavailable or not a dictionary" in record.message
+            for record in caplog.records
+        )
+
+    def test_get_halt_services_timeout_identity_exception_uses_default(self, caplog):
+        with mock.patch(
+            "host_modules.reboot.device_info.is_switch_host",
+            side_effect=RuntimeError("unexpected identity failure"),
+        ), mock.patch(
+            "host_modules.reboot.device_info.get_platform_json_data"
+        ) as mock_platform_data, caplog.at_level(logging.INFO):
+            assert host_reboot.get_halt_services_timeout() == EXPECTED_HALT_TIMEOUT
+
+        mock_platform_data.assert_not_called()
+        assert any(
+            "Failed to resolve halt services timeout: unexpected identity failure" in
+            record.message for record in caplog.records
+        )
+
+    def test_get_halt_services_timeout_unknown_identity_skips_platform_data(
+            self, caplog):
+        with (
+            mock.patch("host_modules.reboot.device_info.is_switch_host", return_value=False),
+            mock.patch("host_modules.reboot.device_info.is_smartswitch", return_value=False),
+            mock.patch("host_modules.reboot.device_info.is_dpu", return_value=False),
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+                return_value=None,
+            ) as mock_platform_data,
+            caplog.at_level(logging.INFO),
+        ):
+            assert (
+                host_reboot.get_halt_services_timeout() ==
+                EXPECTED_HALT_TIMEOUT
+            )
+
+        mock_platform_data.assert_not_called()
+        assert not any(
+            "platform.json data is unavailable or not a dictionary" in record.message
+            for record in caplog.records
+        )
+
+    def test_switch_host_timeout_reader_does_not_resolve_identity(self):
+        with (
+            mock.patch.object(host_reboot.device_info, "is_switch_host") as identity,
+            mock.patch.object(host_reboot.device_info, "get_platform_json_data",
+                              return_value={"switch_host_halt_services_timeout": 90}),
+        ):
+            assert host_reboot.get_switch_host_halt_services_timeout() == 90
+        identity.assert_not_called()
+
+    def test_switch_host_timeout_reader_logs_loader_error(self, caplog):
+        with (
+            mock.patch.object(host_reboot.device_info, "get_platform_json_data",
+                              side_effect=RuntimeError("reader failed")),
+            caplog.at_level(logging.INFO),
+        ):
+            assert host_reboot.get_switch_host_halt_services_timeout() == EXPECTED_HALT_TIMEOUT
+        assert "reader failed" in caplog.text
+
+    @pytest.mark.parametrize("is_switch_host", [True, False])
+    def test_strict_halt_checks_follow_switch_host_identity(self, is_switch_host):
+        with (
+            mock.patch(
+                "host_modules.reboot.device_info.is_switch_host",
+                return_value=is_switch_host,
+            ) as mock_is_switch_host,
+            mock.patch(
+                "host_modules.reboot.device_info.get_platform_json_data",
+            ) as mock_platform_data,
+        ):
+            assert host_reboot.is_strict_halt_check_enabled() is is_switch_host
+
+        mock_is_switch_host.assert_called_once_with()
+        mock_platform_data.assert_not_called()
+
+    def test_strict_halt_checks_fall_back_on_unreadable_identity(self, caplog):
+        with mock.patch(
+            "host_modules.reboot.device_info.is_switch_host",
+            side_effect=RuntimeError("unexpected identity failure"),
+        ), caplog.at_level(logging.INFO):
+            assert host_reboot.is_strict_halt_check_enabled() is False
+
+        assert any("unexpected identity failure" in record.message for record in caplog.records)
 
     def test_validate_reboot_request_success_cold_boot_enum_method(self):
         reboot_request = {"method": REBOOT_METHOD_COLD_BOOT_ENUM, "reason": "test reboot request reason"}
@@ -336,21 +599,11 @@ class TestReboot(object):
     def test_get_dpu_halt_services_timeout_key_absent(self):
         mock_data = {}
 
-        with (
-            mock.patch(
-                "reboot.device_info.get_path_to_platform_dir",
-                return_value="/usr/share/sonic/device/test_platform"
-            ),
-            mock.patch(
-                "builtins.open",
-                mock.mock_open(read_data=json.dumps(mock_data))
-            ),
-            mock.patch(
-                "reboot.json.load",
-                return_value=mock_data
-            ),
+        with mock.patch(
+            "reboot.device_info.get_platform_json_data",
+            return_value=mock_data,
         ):
-            assert get_dpu_halt_services_timeout() == HALT_TIMEOUT
+            assert get_dpu_halt_services_timeout() == EXPECTED_HALT_TIMEOUT
 
     def test_execute_reboot_success_halt(self):
         with (
@@ -359,7 +612,7 @@ class TestReboot(object):
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=False) as mock_is_halt_command_running,
             mock.patch("reboot.Reboot.is_container_running", return_value=False) as mock_is_container_running,
             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
-            mock.patch("reboot.get_dpu_halt_services_timeout", return_value=60),
+            mock.patch("reboot.get_halt_services_timeout", return_value=60),
         ):
             mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
             self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM)
@@ -369,16 +622,15 @@ class TestReboot(object):
             mock_populate_reboot_status_flag.assert_called_once_with(False, 0, 'Halt reboot completed', 3, RebootStatus.STATUS_SUCCESS)
 
     def test_execute_reboot_fail_halt_timeout(self, caplog):
-        """Halt reboot times out with pmon still running and records a failure timestamp."""
         with (
             mock.patch("reboot._run_command") as mock_run_command,
             mock.patch("time.sleep") as mock_sleep,
             mock.patch("time.time", return_value=TIME),
-            mock.patch("reboot.time.monotonic", side_effect=[0, 0, 61]),
+            mock.patch("reboot.time.monotonic", side_effect=[0, 0, 5]),
             mock.patch("reboot.Reboot.is_halt_command_running", return_value=True) as mock_is_halt_command_running,
             mock.patch("reboot.Reboot.is_container_running", return_value=True) as mock_is_container_running,
             mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate_reboot_status_flag,
-            mock.patch("reboot.get_dpu_halt_services_timeout", return_value=60),
+            mock.patch("reboot.get_halt_services_timeout", return_value=5),
             caplog.at_level(logging.ERROR),
         ):
             mock_run_command.return_value = (0, ["stdout: execute halt reboot"], ["stderror: execute halt reboot"])
@@ -388,6 +640,191 @@ class TestReboot(object):
             mock_is_halt_command_running.assert_called()
             assert any("HALT reboot failed: Services are still running" in record.message for record in caplog.records)
             mock_populate_reboot_status_flag.assert_called_once_with(False, TIME, 'Halt reboot did not complete', 3, RebootStatus.STATUS_FAILURE)
+
+    def test_execute_reboot_strict_transient_check_error_then_success(self):
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("time.sleep") as mock_sleep,
+            mock.patch("time.monotonic", side_effect=[0, 0, 1]),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False) as mock_halt_running,
+            mock.patch(
+                "reboot.Reboot.is_container_running",
+                side_effect=[Exception("transient"), False]
+            ) as mock_pmon_running,
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=5),
+        ):
+            self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=True)
+
+            mock_sleep.assert_called_once_with(5)
+            assert mock_halt_running.call_count == 2
+            assert mock_pmon_running.call_count == 2
+            mock_populate.assert_called_once_with(
+                False, 0, "Halt reboot completed", REBOOT_METHOD_HALT_BOOT_ENUM,
+                RebootStatus.STATUS_SUCCESS
+            )
+
+    def test_execute_reboot_strict_happy_path(self):
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("time.monotonic", side_effect=[0, 0]),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False) as mock_halt_running,
+            mock.patch("reboot.Reboot.is_container_running", return_value=False) as mock_pmon_running,
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=60),
+        ):
+            self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=True)
+
+            mock_halt_running.assert_called_once_with(strict_checks=True)
+            mock_pmon_running.assert_called_once_with("pmon", strict_checks=True)
+            mock_populate.assert_called_once_with(
+                False, 0, "Halt reboot completed", REBOOT_METHOD_HALT_BOOT_ENUM,
+                RebootStatus.STATUS_SUCCESS
+            )
+
+    def test_execute_reboot_strict_docker_error_is_unanswerable(self, caplog):
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("reboot.psutil.process_iter", return_value=[]),
+            mock.patch("reboot.docker.from_env", side_effect=Exception("Docker error")) as mock_docker,
+            mock.patch("time.sleep") as mock_sleep,
+            mock.patch("time.monotonic", side_effect=[0, 0, 5]),
+            mock.patch("time.time", return_value=TIME),
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=5),
+            caplog.at_level(logging.ERROR),
+        ):
+            self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=True)
+
+            assert mock_docker.call_count == 2
+            mock_sleep.assert_called_once_with(5)
+            mock_populate.assert_called_once_with(
+                False, TIME, "Halt completion check could not be answered",
+                REBOOT_METHOD_HALT_BOOT_ENUM, RebootStatus.STATUS_FAILURE
+            )
+
+    def test_execute_reboot_strict_psutil_error_is_unanswerable(self, caplog):
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("reboot.psutil.process_iter", side_effect=Exception("psutil error")) as mock_processes,
+            mock.patch("reboot.docker.from_env") as mock_docker,
+            mock.patch("time.sleep") as mock_sleep,
+            mock.patch("time.monotonic", side_effect=[0, 0, 5]),
+            mock.patch("time.time", return_value=TIME),
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=5),
+            caplog.at_level(logging.ERROR),
+        ):
+            self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=True)
+
+            assert mock_processes.call_count == 2
+            mock_docker.assert_not_called()
+            mock_sleep.assert_called_once_with(5)
+            mock_populate.assert_called_once_with(
+                False, TIME, "Halt completion check could not be answered",
+                REBOOT_METHOD_HALT_BOOT_ENUM, RebootStatus.STATUS_FAILURE
+            )
+
+    def test_execute_reboot_strict_answered_timeout_keeps_existing_failure(self):
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("time.sleep") as mock_sleep,
+            mock.patch("time.monotonic", side_effect=[0, 0, 5]),
+            mock.patch("time.time", return_value=TIME),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=True) as mock_halt_running,
+            mock.patch("reboot.Reboot.is_container_running", return_value=True) as mock_pmon_running,
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=5),
+        ):
+            self.reboot_module.execute_reboot(REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=True)
+
+            assert mock_halt_running.call_count == 2
+            assert mock_pmon_running.call_count == 2
+            mock_sleep.assert_called_once_with(5)
+            mock_populate.assert_called_once_with(
+                False, TIME, "Halt reboot did not complete", REBOOT_METHOD_HALT_BOOT_ENUM,
+                RebootStatus.STATUS_FAILURE
+            )
+
+    def test_execute_reboot_dpu_errors_keep_legacy_success(self):
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("reboot.device_info.is_switch_host", return_value=False),
+            mock.patch(
+                "reboot.device_info.get_platform_json_data"
+            ) as mock_platform_data,
+            mock.patch("reboot.psutil.process_iter", side_effect=Exception("psutil error")),
+            mock.patch("reboot.docker.from_env", side_effect=Exception("Docker error")),
+            mock.patch("time.monotonic", side_effect=[0, 0]),
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=60),
+        ):
+            strict_checks = is_strict_halt_check_enabled()
+            self.reboot_module.execute_reboot(
+                REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=strict_checks
+            )
+
+            assert strict_checks is False
+            mock_platform_data.assert_not_called()
+            mock_populate.assert_called_once_with(
+                False, 0, "Halt reboot completed", REBOOT_METHOD_HALT_BOOT_ENUM,
+                RebootStatus.STATUS_SUCCESS
+            )
+
+
+
+
+
+
+    def test_execute_reboot_dpu_halt_keeps_status_contract(self):
+        request_message = "DPU reboot request"
+        dpu_halt_timeout = 120
+        resolve_halt_timeout = get_halt_services_timeout
+        resolved_timeouts = []
+
+        def capture_halt_timeout():
+            timeout = resolve_halt_timeout()
+            resolved_timeouts.append(timeout)
+            return timeout
+
+        self.reboot_module.populate_reboot_status_flag(
+            True, TIME, request_message, REBOOT_METHOD_HALT_BOOT_ENUM,
+            RebootStatus.STATUS_UNKNOWN
+        )
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("reboot.device_info.is_switch_host", return_value=False),
+            mock.patch("reboot.device_info.is_smartswitch", return_value=False),
+            mock.patch("reboot.device_info.is_dpu", return_value=True) as mock_is_dpu,
+            mock.patch(
+                "reboot.device_info.get_platform_json_data",
+                return_value={"dpu_halt_services_timeout": dpu_halt_timeout},
+            ) as mock_platform_data,
+            mock.patch(
+                "reboot.get_halt_services_timeout",
+                side_effect=capture_halt_timeout,
+            ),
+            mock.patch("time.monotonic", side_effect=[0, 0]),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False),
+            mock.patch("reboot.Reboot.is_container_running", return_value=False),
+        ):
+            strict_checks = is_strict_halt_check_enabled()
+            self.reboot_module.execute_reboot(
+                REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=strict_checks
+            )
+
+        _, response = self.reboot_module.get_reboot_status()
+        response_data = json.loads(response)
+        assert strict_checks is False
+        mock_is_dpu.assert_called_once_with()
+        mock_platform_data.assert_called_once_with()
+        assert resolved_timeouts == [dpu_halt_timeout]
+        assert response_data["active"] is False
+        assert response_data["reason"] == "Halt reboot completed | {}".format(request_message)
+        assert response_data["status"] == {
+            "status": RebootStatus.STATUS_SUCCESS.value,
+            "message": "",
+        }
 
     def test_execute_reboot_fail_issue_reboot_command_warm(self, caplog):
         """WARM reboot command returning non-zero logs the error and records a failure timestamp."""
@@ -440,18 +877,21 @@ class TestReboot(object):
             )
             mock_thread.return_value.start.assert_called_once_with()
 
-    def test_issue_reboot_success_halt(self):
+    @pytest.mark.parametrize("strict_checks", [True, False])
+    def test_issue_reboot_success_halt(self, strict_checks):
         with (
             mock.patch("threading.Thread") as mock_thread,
             mock.patch("reboot.Reboot.validate_reboot_request", return_value=(0, "")),
+            mock.patch("reboot.is_strict_halt_check_enabled", return_value=strict_checks) as mock_strict_gate,
         ):
             self.reboot_module.populate_reboot_status_flag()
             result = self.reboot_module.issue_reboot([VALID_REBOOT_REQUEST_HALT])
             assert result[0] == 0
             assert result[1] == "Successfully issued reboot"
+            mock_strict_gate.assert_called_once_with()
             mock_thread.assert_called_once_with(
                 target=self.reboot_module.execute_reboot,
-                args=(REBOOT_METHOD_HALT_BOOT_ENUM,),
+                args=(REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks),
             )
             mock_thread.return_value.start.assert_called_once_with()
 

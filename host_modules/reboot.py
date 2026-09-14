@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import threading
 import time
 import docker
@@ -28,6 +27,7 @@ EXECUTE_COLD_REBOOT_COMMAND = "sudo reboot"
 EXECUTE_HALT_REBOOT_COMMAND = "sudo reboot -p"
 EXECUTE_WARM_REBOOT_COMMAND = "sudo warm-reboot"
 
+
 class RebootStatus(Enum):
     STATUS_UNKNOWN = 0
     STATUS_SUCCESS = 1
@@ -37,16 +37,18 @@ class RebootStatus(Enum):
 logger = logging.getLogger(__name__)
 
 
+
+
 def get_dpu_halt_services_timeout():
     """Read dpu_halt_services_timeout from platform.json.
        Fall back to HALT_TIMEOUT if missing/null/invalid/unreadable.
     """
     try:
-        platform_json_path = os.path.join(
-            device_info.get_path_to_platform_dir(), "platform.json"
-        )
-        with open(platform_json_path, "r") as f:
-            data = json.load(f)
+        data = device_info.get_platform_json_data()
+        if not isinstance(data, dict):
+            raise ValueError(
+                "platform.json data is unavailable or not a dictionary"
+            )
 
         timeout = data.get("dpu_halt_services_timeout")
         if timeout is None:
@@ -54,12 +56,62 @@ def get_dpu_halt_services_timeout():
 
         timeout = int(timeout)
         return timeout if timeout > 0 else HALT_TIMEOUT
-    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as e:
+    except Exception as e:
         logger.info(
             "%s: Failed to read dpu_halt_services_timeout from platform.json: %s. Using default %d",
             MOD_NAME, e, HALT_TIMEOUT
         )
         return HALT_TIMEOUT
+
+
+def get_switch_host_halt_services_timeout():
+    """Read the switch-host HALT timeout, or use HALT_TIMEOUT."""
+    try:
+        data = device_info.get_platform_json_data()
+        if not isinstance(data, dict):
+            raise ValueError(
+                "platform.json data is unavailable or not a dictionary"
+            )
+
+        value = data.get("switch_host_halt_services_timeout")
+        if type(value) is not int or value <= 0:
+            return HALT_TIMEOUT
+
+        return value
+    except Exception as e:
+        logger.info(
+            "%s: Failed to read switch_host_halt_services_timeout from platform.json: %s. Using default %d",
+            MOD_NAME, e, HALT_TIMEOUT
+        )
+        return HALT_TIMEOUT
+
+
+def get_halt_services_timeout():
+    """Select the HALT timeout reader by positive device identity."""
+    try:
+        if device_info.is_switch_host():
+            return get_switch_host_halt_services_timeout()
+        if device_info.is_smartswitch() or device_info.is_dpu():
+            return get_dpu_halt_services_timeout()
+    except Exception as e:
+        logger.info(
+            "%s: Failed to resolve halt services timeout: %s. Using default %d",
+            MOD_NAME, e, HALT_TIMEOUT
+        )
+
+    return HALT_TIMEOUT
+
+
+def is_strict_halt_check_enabled():
+    """Enable strict completion checks on a switch host."""
+    try:
+        return device_info.is_switch_host()
+    except Exception as e:
+        logger.info(
+            "%s: Failed to resolve switch-host identity: %s. Using non-strict checks",
+            MOD_NAME, e
+        )
+        return False
 
 
 class Reboot(host_service.HostModule):
@@ -117,7 +169,7 @@ class Reboot(host_service.HostModule):
             return 1, "Delayed reboot is not supported"
         return 0, ""
 
-    def is_container_running(self, container_name):
+    def is_container_running(self, container_name, strict_checks=False):
         """Check if a given container is running using the Docker SDK."""
         try:
             client = docker.from_env()
@@ -129,9 +181,11 @@ class Reboot(host_service.HostModule):
             return False
         except Exception as e:
             logger.error("%s: Error checking container status for %s: [%s]", MOD_NAME, container_name, str(e))
+            if strict_checks:
+                raise
             return False
 
-    def is_halt_command_running(self):
+    def is_halt_command_running(self, strict_checks=False):
         """Check if the halt command is running"""
         try:
             for process in psutil.process_iter(['cmdline']):
@@ -140,9 +194,11 @@ class Reboot(host_service.HostModule):
             return False
         except Exception as e:
             logger.error("%s: Error checking if halt command is running: [%s]", MOD_NAME, str(e))
+            if strict_checks:
+                raise
             return False
 
-    def execute_reboot(self, reboot_method):
+    def execute_reboot(self, reboot_method, strict_checks=False):
         """Executes reboot command based on the reboot_method initialised 
            and reset reboot_status_flag when reboot fails."""
 
@@ -176,24 +232,47 @@ class Reboot(host_service.HostModule):
         if reboot_method in REBOOT_METHOD_HALT_BOOT_VALUES:
             # Periodically check every 5 seconds until PMON container is stopped or timeout occurs
             logger.info("%s: Waiting until services are halted or timeout occurs", MOD_NAME)
-            timeout = get_dpu_halt_services_timeout()
+            timeout = get_halt_services_timeout()
             start_time = time.monotonic()
 
+            def halt_is_complete():
+                try:
+                    if strict_checks:
+                        halt_running = self.is_halt_command_running(strict_checks=True)
+                        pmon_running = self.is_container_running("pmon", strict_checks=True)
+                        return not halt_running and not pmon_running
+                    return not self.is_halt_command_running() and not self.is_container_running("pmon")
+                except Exception:
+                    if strict_checks:
+                        return None
+                    raise
+
+            def publish_halt_success():
+
+                self.populate_reboot_status_flag(
+                    False, 0, "Halt reboot completed", reboot_method,
+                    RebootStatus.STATUS_SUCCESS
+                )
+
             while time.monotonic() - start_time < timeout:
-                if not self.is_halt_command_running() and not self.is_container_running("pmon"):
+                if halt_is_complete():
                     logger.info("%s: Halting the services is completed on the device", MOD_NAME)
-                    self.populate_reboot_status_flag(False, 0, "Halt reboot completed", reboot_method, RebootStatus.STATUS_SUCCESS)
+                    publish_halt_success()
                     return
                 time.sleep(5)
 
             # Check if PMON container is still running after timeout
-            if self.is_halt_command_running() or self.is_container_running("pmon"):
+            completed = halt_is_complete()
+            if completed is None:
+                self.populate_reboot_status_flag(False, int(time.time()), "Halt completion check could not be answered", reboot_method, RebootStatus.STATUS_FAILURE)
+                logger.error("%s: HALT reboot failed: Completion check could not be answered", MOD_NAME)
+            elif not completed:
                 #Halt reboot has failed, as pmon is still running.
                 self.populate_reboot_status_flag(False, int(time.time()), "Halt reboot did not complete", reboot_method, RebootStatus.STATUS_FAILURE)
                 logger.error("%s: HALT reboot failed: Services are still running", MOD_NAME)
             else:
-                self.populate_reboot_status_flag(False, 0, "Halt reboot completed", reboot_method, RebootStatus.STATUS_SUCCESS)
                 logger.info("%s: Halting the services is completed on the device", MOD_NAME)
+                publish_halt_success()
             return
         else:
             time.sleep(REBOOT_TIMEOUT)
@@ -241,7 +320,10 @@ class Reboot(host_service.HostModule):
 
         # Issue reboot in a new thread and reset the reboot_status_flag if the reboot fails
         try:
-            t = threading.Thread(target=self.execute_reboot, args=(reboot_request["method"],))
+            thread_args = (reboot_request["method"],)
+            if reboot_request["method"] in REBOOT_METHOD_HALT_BOOT_VALUES:
+                thread_args = (reboot_request["method"], is_strict_halt_check_enabled())
+            t = threading.Thread(target=self.execute_reboot, args=thread_args)
             t.start()
         except RuntimeError as error:
             return 1, "Failed to start thread to execute reboot with error: " + str(error)
