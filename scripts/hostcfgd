@@ -1067,7 +1067,26 @@ class SshServer(object):
         self.policies = {}
         # Tracks whether listen_addresses is currently applied, so its
         # removal (leaving the field absent) can restore the wildcards.
-        self.listen_addresses_configured = False
+        # Initialized from the on-disk sshd_config (rather than always
+        # False) so a hostcfgd restart doesn't lose track of a
+        # previously-applied restriction and leave stale ListenAddress
+        # lines in place until an unrelated policy write occurs.
+        self.listen_addresses_configured = self.is_listen_addresses_configured()
+
+    def is_listen_addresses_configured(self):
+        # A non-wildcard "ListenAddress" line in the live sshd_config means
+        # listen_addresses is currently restricting sshd.
+        if not os.path.exists(SSH_CONFG):
+            return False
+        try:
+            with open(SSH_CONFG, 'r') as f:
+                for line in f:
+                    match = re.match(r'^ListenAddress\s+(\S+)\s*$', line)
+                    if match and match.group(1) not in SSH_DEFAULT_LISTEN_ADDRESSES:
+                        return True
+        except OSError:
+            syslog.syslog(syslog.LOG_ERR, "Failed to read {} to determine listen_addresses state".format(SSH_CONFG))
+        return False
 
     def load(self, policies_conf):
         if 'POLICIES' in policies_conf:
@@ -1101,6 +1120,29 @@ class SshServer(object):
 
         if modify_conf:
             self.modify_conf_file()
+
+    # Return where ListenAddress directives should be inserted, computed
+    # *before* any existing ListenAddress/#ListenAddress lines are deleted:
+    # ('before', N) - insert with sed 'i' before line N. N is the first
+    # existing ListenAddress/#ListenAddress line if one exists (preserving
+    # today's insertion point regardless of whether such lines are
+    # consecutive or interleaved with other directives), otherwise the
+    # first "Match" line, since directives inside a Match block only apply
+    # to matching connections rather than globally.
+    # ('after', N) - no ListenAddress line and no Match block exist, so
+    # append with sed 'a' after line N, the last line of the file.
+    # get_line_num_of_pattern()'s fallback (last line seen) isn't a
+    # meaningful insertion point on its own, so it's not relied on here.
+    def get_listen_address_insert_line(self, file_path):
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines):
+            if re.match(r'^(#)?ListenAddress\b', line):
+                return 'before', i + 1  # sed line numbers are 1-based
+        for i, line in enumerate(lines):
+            if re.match(r'^Match\b', line):
+                return 'before', i + 1
+        return 'after', len(lines)
 
     # return first line apperience of pattern - else return number of lines in the file
     def get_line_num_of_pattern(self, pattern, file_path, find_commented=False):
@@ -1172,22 +1214,28 @@ class SshServer(object):
                 syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is not currently assigned to any interface on this device".format(addr))
                 return False
 
-        listen_line_num = self.get_line_num_of_pattern("ListenAddress", SSH_CONFG_TMP, True)
+        # Compute the insertion anchor before deleting the existing
+        # ListenAddress/#ListenAddress lines, since that's what determines
+        # today's (and any historical) position; see
+        # get_listen_address_insert_line for the fallback when none exist.
+        mode, line_num = self.get_listen_address_insert_line(SSH_CONFG_TMP)
+        sed_cmd = 'i' if mode == 'before' else 'a'
         modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
 
         for addr in canonical_addresses:
             # add listen address in original line
-            modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(listen_line_num)} i ListenAddress {addr}'])
+            modify_single_file_inplace(SSH_CONFG_TMP, [f'{line_num} {sed_cmd} ListenAddress {addr}'])
         return True
 
     def restore_default_listen_addresses(self):
         # Restore the IPv4/IPv6 wildcard listeners once listen_addresses is
         # removed (either alone or via deleting the whole POLICIES row).
-        listen_line_num = self.get_line_num_of_pattern("ListenAddress", SSH_CONFG_TMP, True)
+        mode, line_num = self.get_listen_address_insert_line(SSH_CONFG_TMP)
+        sed_cmd = 'i' if mode == 'before' else 'a'
         modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
 
         for addr in SSH_DEFAULT_LISTEN_ADDRESSES:
-            modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(listen_line_num)} i ListenAddress {addr}'])
+            modify_single_file_inplace(SSH_CONFG_TMP, [f'{line_num} {sed_cmd} ListenAddress {addr}'])
 
     def set_policies(self, ssh_policies):
         # Ssh server flow
@@ -1252,7 +1300,18 @@ class SshServer(object):
                 run_cmd(['systemctl', 'restart', 'ssh'],
                         log_err=True, raise_exception=True)
             except Exception:
-                syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
+                # `sshd -T` only validates syntax - it doesn't bind any
+                # addresses - so a listen_addresses value that was
+                # assigned at validation time but got removed before this
+                # reload (e.g. an interface/IP flap) will pass `sshd -T`
+                # and only surface here as a restart failure. Call that
+                # out explicitly so operators aren't left chasing a
+                # generic error.
+                if 'listen_addresses' in ssh_policies:
+                    syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - ssh restart failed; if listen_addresses was just changed, "
+                                                   "verify each address is still assigned to an interface on this device")
+                else:
+                    syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
         else:
             syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file - sshd -T returned {ssh_verify_res.returncode} with error {ssh_verify_res.stderr.decode()}')
             os.remove(SSH_CONFG_TMP)
