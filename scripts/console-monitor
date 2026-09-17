@@ -99,7 +99,7 @@ DEFAULT_BAUD = 9600
 
 # Console logrotate defaults
 LOGROTATE_DIR = "/etc/logrotate.d"
-LOGROTATE_CONF_PREFIX = "console-"
+LOGROTATE_CONF_PREFIX = "console-monitor-logging-"
 DEFAULT_LOG_FILE_TEMPLATE = "/var/log/console-{}.log"
 # NOTE: Keep these defaults aligned with src/sonic-utilities/config/console.py
 # (DEFAULT_LOGROTATE_SIZE / DEFAULT_LOGROTATE_COUNT).
@@ -501,7 +501,7 @@ def calculate_filter_timeout(baud: int, multiplier: int = 3) -> float:
 
 
 def logrotate_conf_path(link_id: str) -> str:
-    """Return the logrotate config file path for a console line."""
+    """Return the logrotate config path: /etc/logrotate.d/console-monitor-logging-<line>."""
     return os.path.join(LOGROTATE_DIR, f"{LOGROTATE_CONF_PREFIX}{link_id}")
 
 
@@ -743,7 +743,7 @@ class ProxyService:
                 try:
                     self.log_fd = os.open(
                         self.log_file_path,
-                        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                        os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
                         0o640,
                     )
                     log.info(f"[{self.link_id}] Console logging enabled: {self.log_file_path}")
@@ -1117,10 +1117,14 @@ class DCEService:
             log.error(f"DCE: Failed to get configs: {e}")
         return configs
 
+    @staticmethod
+    def _config_changed_keys(old_config: dict, new_config: dict) -> set:
+        """Return keys whose values differ between two cached port config dicts."""
+        keys = set(old_config) | set(new_config)
+        return {key for key in keys if old_config.get(key) != new_config.get(key)}
+
     def _sync(self) -> None:
         """Sync services with CONFIG_DB"""
-        self._sync_logrotate_configs()
-
         # Check if feature is enabled
         if not self._check_feature_enabled():
             if self.active_links:
@@ -1129,6 +1133,7 @@ class DCEService:
                     self._stop_link(link_id)
                 self.active_links.clear()
                 self._config_cache.clear()
+            self._sync_logrotate_configs()
             return
 
         # Get configuration
@@ -1148,20 +1153,25 @@ class DCEService:
                 self.active_links.add(link_id)
                 self._config_cache[link_id] = redis_configs[link_id]
 
-        # Restart links with changed configuration (e.g., baud rate, logging)
+        # Restart links with changed configuration (e.g., baud rate, logging).
+        # Skip restart if logrotate_size/logrotate_count alone changed.
+        _LOGROTATE_CONFIG_KEYS = frozenset({"logrotate_size", "logrotate_count"})
         for link_id in redis_ids & current_ids:
             new_config = redis_configs[link_id]
             old_config = self._config_cache.get(link_id, {})
-            if new_config != old_config:
-                log.info(f"DCE: [{link_id}] Config changed: {old_config} -> {new_config}")
-                if (old_config.get("logging_enabled") != new_config.get("logging_enabled") or
-                        old_config.get("log_file") != new_config.get("log_file") or
-                        old_config.get("logrotate_size") != new_config.get("logrotate_size") or
-                        old_config.get("logrotate_count") != new_config.get("logrotate_count")):
-                    log.warning(f"DCE: [{link_id}] Logging config changed, proxy will restart")
-                self._restart_link(link_id)
+            if new_config == old_config:
+                continue
+            changed_keys = self._config_changed_keys(old_config, new_config)
+            if changed_keys <= _LOGROTATE_CONFIG_KEYS:
                 self._config_cache[link_id] = new_config
+                continue
+            log.info(f"DCE: [{link_id}] Config changed: {old_config} -> {new_config}")
+            if ("logging_enabled" in changed_keys or "log_file" in changed_keys):
+                log.warning(f"DCE: [{link_id}] Logging config changed, proxy will restart")
+            self._restart_link(link_id)
+            self._config_cache[link_id] = new_config
 
+        self._sync_logrotate_configs()
         log.info(f"DCE: Sync complete, {len(self.active_links)} links active")
 
     def _get_logging_configs(self) -> Dict[str, dict]:
@@ -1185,7 +1195,10 @@ class DCEService:
         """Create or remove logrotate configs for configured console log files."""
         desired_links = set()
         try:
-            logging_configs = self._get_logging_configs()
+            if self._check_feature_enabled():
+                logging_configs = self._get_logging_configs()
+            else:
+                logging_configs = {}
             desired_links = set(logging_configs.keys())
 
             for link_id, cfg in logging_configs.items():
@@ -1204,8 +1217,7 @@ class DCEService:
 
             # Reconcile against configs actually present on disk, not just the
             # in-memory set, so stale files left by a previous DCE run are cleaned up.
-            # This glob-based reconciliation assumes console-monitor owns every
-            # LOGROTATE_CONF_PREFIX file under LOGROTATE_DIR.
+            # Files matching console-monitor-logging-* are managed here.
             existing_links = set()
             pattern = os.path.join(LOGROTATE_DIR, f"{LOGROTATE_CONF_PREFIX}*")
             for conf_path in glob.glob(pattern):

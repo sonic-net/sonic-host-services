@@ -256,7 +256,7 @@ class TestDCEService(TestCase):
                 service.config_db = MockConfigDb()
                 service._sync_logrotate_configs()
 
-                conf_path = os.path.join(tmpdir, "console-1")
+                conf_path = os.path.join(tmpdir, "console-monitor-logging-1")
                 self.assertTrue(os.path.exists(conf_path))
                 with open(conf_path, 'r') as conf_file:
                     content = conf_file.read()
@@ -264,7 +264,30 @@ class TestDCEService(TestCase):
                 self.assertIn("size 10M", content)
                 self.assertIn("rotate 5", content)
                 self.assertIn("copytruncate", content)
-                self.assertFalse(os.path.exists(os.path.join(tmpdir, "console-2")))
+                self.assertFalse(os.path.exists(os.path.join(tmpdir, "console-monitor-logging-2")))
+
+    def test_sync_logrotate_configs_skips_create_when_feature_disabled(self):
+        """When console_mgmt is off, remove logrotate confs and do not create new ones."""
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "no"}},
+            "CONSOLE_PORT": {
+                "1": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console1.log",
+                },
+            },
+        })
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
+                stale_conf = os.path.join(tmpdir, "console-monitor-logging-1")
+                with open(stale_conf, 'w') as conf_file:
+                    conf_file.write("stale")
+
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                service._sync_logrotate_configs()
+
+                self.assertFalse(os.path.exists(stale_conf))
     
     def test_dce_sync_starts_services_when_enabled(self):
         """Test _sync starts pty-bridge and proxy services for each configured port when feature is enabled."""
@@ -2614,7 +2637,7 @@ class TestLogrotateConfig(TestCase):
         with mock.patch.object(console_monitor, 'LOGROTATE_DIR', '/etc/logrotate.d'):
             self.assertEqual(
                 console_monitor.logrotate_conf_path("1"),
-                "/etc/logrotate.d/console-1",
+                "/etc/logrotate.d/console-monitor-logging-1",
             )
 
     def test_default_log_file(self):
@@ -2735,8 +2758,45 @@ class TestConsoleLoggingCoverage(TestCase):
 
                 mock_restart.assert_called_once_with("1")
 
+    @parameterized.expand([
+        ("logrotate_size_only", {"logrotate_size": "20M"}, "20M", "10"),
+        ("logrotate_count_only", {"logrotate_count": "5"}, "10M", "5"),
+        ("logrotate_size_and_count", {"logrotate_size": "20M", "logrotate_count": "5"}, "20M", "5"),
+    ])
+    def test_sync_logrotate_only_change_does_not_restart_link(
+            self, _case_name, port_updates, expected_size, expected_count):
+        """Changing only logrotate_size and/or logrotate_count must not call _restart_link."""
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "1": {
+                    "baud_rate": "9600",
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console-1.log",
+                    "logrotate_size": "10M",
+                    "logrotate_count": "10",
+                },
+            },
+        })
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        service.active_links = {"1"}
+        service._config_cache = service._get_all_configs()
+
+        MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"].update(port_updates)
+
+        with mock.patch.object(service, '_sync_logrotate_configs'):
+            with mock.patch.object(service, '_restart_link', return_value=True) as mock_restart:
+                service._sync()
+
+                mock_restart.assert_not_called()
+                self.assertEqual(service._config_cache["1"]["logrotate_size"], expected_size)
+                self.assertEqual(service._config_cache["1"]["logrotate_count"], expected_count)
+                self.assertEqual(service._config_cache["1"]["baud"], 9600)
+
     def test_sync_logrotate_uses_default_log_file(self):
         MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
             "CONSOLE_PORT": {
                 "0": {
                     "logging_enabled": "yes",
@@ -2750,7 +2810,7 @@ class TestConsoleLoggingCoverage(TestCase):
                 service.config_db = MockConfigDb()
                 service._sync_logrotate_configs()
 
-                conf_path = os.path.join(tmpdir, "console-0")
+                conf_path = os.path.join(tmpdir, "console-monitor-logging-0")
                 with open(conf_path, 'r') as conf_file:
                     content = conf_file.read()
 
@@ -2758,6 +2818,7 @@ class TestConsoleLoggingCoverage(TestCase):
 
     def test_sync_logrotate_removes_config_when_logging_disabled(self):
         MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
             "CONSOLE_PORT": {
                 "0": {
                     "logging_enabled": "yes",
@@ -2773,7 +2834,7 @@ class TestConsoleLoggingCoverage(TestCase):
                     service.config_db = MockConfigDb()
                     service._sync_logrotate_configs()
 
-                    conf_path = os.path.join(tmpdir, "console-0")
+                    conf_path = os.path.join(tmpdir, "console-monitor-logging-0")
                     self.assertTrue(os.path.exists(conf_path))
                     self.assertEqual(service._logrotate_links, {"0"})
 
@@ -2786,6 +2847,7 @@ class TestConsoleLoggingCoverage(TestCase):
     def test_sync_logrotate_removes_stale_config_after_restart(self):
         """Test stale logrotate files are removed even when _logrotate_links is empty."""
         MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
             "CONSOLE_PORT": {
                 "0": {
                     "logging_enabled": "no",
@@ -2795,7 +2857,7 @@ class TestConsoleLoggingCoverage(TestCase):
         })
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            stale_conf_path = os.path.join(tmpdir, "console-0")
+            stale_conf_path = os.path.join(tmpdir, "console-monitor-logging-0")
             with open(stale_conf_path, 'w') as conf_file:
                 conf_file.write("stale config")
 
@@ -2812,6 +2874,7 @@ class TestConsoleLoggingCoverage(TestCase):
 
     def test_sync_logrotate_write_failure(self):
         MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
             "CONSOLE_PORT": {
                 "0": {
                     "logging_enabled": "yes",
@@ -2854,8 +2917,11 @@ class TestConsoleLoggingCoverage(TestCase):
         proxy.logging_enabled = True
         proxy.log_file_path = "/var/log/console1.log"
 
+        captured_log_flags = []
+
         def open_side_effect(path, flags, *args, **kwargs):
             if path == proxy.log_file_path:
+                captured_log_flags.append(flags)
                 raise OSError("permission denied")
             if path == proxy.device_path:
                 return 12
@@ -2871,6 +2937,8 @@ class TestConsoleLoggingCoverage(TestCase):
                     self.assertTrue(result)
                     self.assertEqual(proxy.log_fd, -1)
                     mock_error.assert_called_once()
+                    self.assertEqual(len(captured_log_flags), 1)
+                    self.assertTrue(captured_log_flags[0] & os.O_NOFOLLOW)
 
 
 class TestCalculateFilterTimeout(TestCase):
