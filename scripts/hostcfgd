@@ -1214,27 +1214,24 @@ class SshServer(object):
                 syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is not currently assigned to any interface on this device".format(addr))
                 return False
 
-        # Compute the insertion anchor before deleting the existing
-        # ListenAddress/#ListenAddress lines, since that's what determines
-        # today's (and any historical) position; see
-        # get_listen_address_insert_line for the fallback when none exist.
-        mode, line_num = self.get_listen_address_insert_line(SSH_CONFG_TMP)
-        sed_cmd = 'i' if mode == 'before' else 'a'
-        modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
-
-        for addr in canonical_addresses:
-            # add listen address in original line
-            modify_single_file_inplace(SSH_CONFG_TMP, [f'{line_num} {sed_cmd} ListenAddress {addr}'])
+        self._replace_listen_addresses(canonical_addresses)
         return True
 
     def restore_default_listen_addresses(self):
         # Restore the IPv4/IPv6 wildcard listeners once listen_addresses is
         # removed (either alone or via deleting the whole POLICIES row).
+        self._replace_listen_addresses(SSH_DEFAULT_LISTEN_ADDRESSES)
+
+    def _replace_listen_addresses(self, addresses):
+        # Shared by handle_listen_addresses_set and
+        # restore_default_listen_addresses: drop all existing
+        # ListenAddress/#ListenAddress lines and re-insert one per given
+        # address at the anchor computed before the deletion.
         mode, line_num = self.get_listen_address_insert_line(SSH_CONFG_TMP)
         sed_cmd = 'i' if mode == 'before' else 'a'
         modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
 
-        for addr in SSH_DEFAULT_LISTEN_ADDRESSES:
+        for addr in addresses:
             modify_single_file_inplace(SSH_CONFG_TMP, [f'{line_num} {sed_cmd} ListenAddress {addr}'])
 
     def set_policies(self, ssh_policies):
@@ -1250,6 +1247,13 @@ class SshServer(object):
                 continue
 
             if key == 'listen_addresses':
+                if len(value) == 0:
+                    # YANG allows an empty leaf-list; ignore this field only
+                    # (don't abort unrelated policy changes) and keep the
+                    # previous listen_addresses state untouched.
+                    syslog.syslog(syslog.LOG_WARNING,
+                                  "Ssh listen_addresses is empty - ignoring, keeping previous configuration")
+                    continue
                 if not self.handle_listen_addresses_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong listen_addresses configuration")
                     if os.path.exists(SSH_CONFG_TMP):

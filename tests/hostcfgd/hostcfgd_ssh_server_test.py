@@ -481,6 +481,29 @@ class TestHostcfgdSSHServerListenAddresses(SshServerCheckConfigMixin, TestCase):
             "at least one address is required" in call.args[-1]
             for call in mock_syslog.call_args_list))
 
+    def test_listen_addresses_empty_in_batch_does_not_abort_other_policies(self):
+        """ An empty listen_addresses bundled with other policy changes in
+            the same update logs a warning, keeps the previous
+            listen_addresses lines untouched, but still applies the other
+            policies (rather than aborting the whole update). """
+        config_dir = output_path + "/listen_addresses_empty_in_batch"
+        shutil.rmtree(config_dir, ignore_errors=True)
+        ssh_server = self._make_ssh_server(config_dir)
+
+        ssh_server.policies_update('POLICIES', {"listen_addresses": ["10.0.0.1"]})
+        before_listen = self._listen_address_lines(hostcfgd.SSH_CONFG)
+
+        with mock.patch("hostcfgd.syslog.syslog") as mock_syslog:
+            ssh_server.policies_update('POLICIES', {"listen_addresses": [], "ports": "22"})
+
+        self.assertEqual(self._listen_address_lines(hostcfgd.SSH_CONFG), before_listen)
+        with open(hostcfgd.SSH_CONFG) as f:
+            self.assertIn("Port 22", f.read())
+        self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_TMP))
+        self.assertTrue(any(
+            "listen_addresses is empty" in call.args[-1]
+            for call in mock_syslog.call_args_list))
+
     def test_listen_addresses_wildcard_mixed_with_assigned_address(self):
         """ A wildcard address (0.0.0.0/::) mixed with a specific assigned
             address is exempt from the "must be currently assigned" check
