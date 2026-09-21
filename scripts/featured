@@ -33,8 +33,13 @@ def run_cmd(cmd, log_err=True, raise_exception=False):
                       .format(result.stdout, result.stderr))
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
-                  .format(err.cmd, err.returncode, err.output))
+            error_cmd = getattr(err, 'cmd', cmd)
+            return_code = getattr(err, 'returncode', None)
+            stdout = getattr(err, 'stdout', getattr(err, 'output', None))
+            stderr = getattr(err, 'stderr', None)
+            error_message = (f"{error_cmd} - failed: return code - {return_code}, "
+                             f"stdout:\n{stdout}, stderr:\n{stderr}, error: {err}")
+            syslog.syslog(syslog.LOG_ERR, error_message)
         if raise_exception:
             raise
 
@@ -217,13 +222,21 @@ class FeatureHandler(object):
 
         # Enable/disable the container service if the feature state was changed from its previous state.
         if self._cached_config[feature_name].state != feature.state:
-            if self.update_feature_state(feature):
-                self.sync_feature_scope(feature)
-                # Resync namespaces on (re-)registration.
-                self.resync_feature_state(feature)
-                self._cached_config[feature_name] = feature
-            else:
-                self.resync_feature_state(self._cached_config[feature_name])
+            self.apply_feature_state(feature)
+
+    def apply_feature_state(self, feature):
+        """Apply a requested state and cache it only when the update succeeds."""
+        cached_feature = self._cached_config[feature.name]
+        if self.update_feature_state(feature):
+            self.sync_feature_scope(feature)
+            # Resync namespaces on (re-)registration.
+            self.resync_feature_state(feature)
+            # Replace the entire Feature, updating state, delayed and scope fields
+            # together after update_feature_state() returns True.
+            self._cached_config[feature.name] = feature
+        elif cached_feature.state is not None:
+            # A newly registered feature has no previous state to resync.
+            self.resync_feature_state(cached_feature)
 
     def sync_state_field(self, feature_table):
         """
@@ -236,7 +249,9 @@ class FeatureHandler(object):
         Phase 1: Write all systemd config files, followed by daemon-reload.
         Phase 2: Start/stop all feature services (no daemon-reloads required).
         """
-        # Phase 1: Write all systemd configs and cache features
+        # Phase 1: Write all systemd configs, keeping requested states separate
+        # from the cache until they have been applied successfully.
+        features = []
         syslog.syslog(syslog.LOG_INFO, "Writing systemd configs")
         for feature_name in feature_table.keys():
             if not feature_name:
@@ -248,22 +263,24 @@ class FeatureHandler(object):
             device_config.update(self._device_running_config)
             feature = Feature(feature_name, feature_table[feature_name], device_config)
 
-            self._cached_config.setdefault(feature_name, feature)
+            # Keep the full requested configuration for Phase 2. A new cache entry
+            # starts with state=None so a failed apply cannot suppress a later retry;
+            # setdefault preserves any existing cached configuration.
+            features.append(feature)
+            cached_feature = self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
             self.update_systemd_config(feature, reload=False)
+            # Record the auto-restart value already written to the config file;
+            # the batch daemon-reload still follows. This avoids rewriting it on
+            # a state retry. The other fields are replaced in apply_feature_state().
+            cached_feature.auto_restart = feature.auto_restart
 
         # Perform daemon-reload after all configs are written
         self.reload_systemd_config()
 
         # Phase 2: Start/stop services without daemon-reloads
         syslog.syslog(syslog.LOG_INFO, "Restarting services")
-        for feature_name in feature_table.keys():
-            if not feature_name:
-                syslog.syslog(syslog.LOG_WARNING, "Feature is None")
-                continue
-            feature = self._cached_config[feature_name]
-            self.update_feature_state(feature)
-            self.sync_feature_scope(feature)
-            self.resync_feature_state(feature)
+        for feature in features:
+            self.apply_feature_state(feature)
             self.sync_feature_delay_state(feature)
 
     def update_feature_state(self, feature):
@@ -426,8 +443,6 @@ class FeatureHandler(object):
         # On multi-ASIC device, creates systemd configuration file for each feature instance
         # residing in difference namespace.
         for feature_name in feature_names:
-            syslog.syslog(syslog.LOG_INFO, "Updating feature '{}' systemd config file related to auto-restart ..."
-                          .format(feature_name))
             feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
             feature_systemd_config_file_path = os.path.join(feature_systemd_config_dir_path, 'auto_restart.conf')
 
@@ -436,8 +451,9 @@ class FeatureHandler(object):
             with open(feature_systemd_config_file_path, 'w') as feature_systemd_config_file_handler:
                 feature_systemd_config_file_handler.write(feature_systemd_config)
 
-            syslog.syslog(syslog.LOG_INFO, "Feature '{}' systemd config file related to auto-restart is updated!"
-                          .format(feature_name))
+            update_message = (f"Updated auto-restart config for {feature_name}.service: "
+                              f"auto_restart={feature_config.auto_restart} -> Restart={restart_field_str}")
+            syslog.syslog(syslog.LOG_INFO, update_message)
 
         if reload:
             self.reload_systemd_config()

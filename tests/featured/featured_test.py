@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import time
 import copy
@@ -35,6 +36,39 @@ swsscommon.RestartWaiter = MockRestartWaiter
 
 def syslog_side_effect(pri, msg): 
     print(f"{pri}: {msg}")
+
+
+class TestRunCmd(TestCase):
+    """Tests for command failure logging."""
+
+    @mock.patch("featured.syslog.syslog")
+    def test_nonzero_exit_logs_stdout_and_stderr(self, mock_syslog):
+        cmd = ["systemctl", "stop", "teamd.service"]
+        command_error = subprocess.CalledProcessError(returncode=1, cmd=cmd, output="", stderr="stop failed")
+
+        with mock.patch("featured.subprocess.run", side_effect=command_error):
+            featured.run_cmd(cmd)
+
+        log_message = mock_syslog.call_args.args[1]
+        assert str(cmd) in log_message
+        assert "return code - 1" in log_message
+        assert "stdout:\n" in log_message
+        assert "stderr:\nstop failed" in log_message
+
+    @mock.patch("featured.syslog.syslog")
+    def test_unexpected_error_logging_preserves_original_exception(self, mock_syslog):
+        cmd = ["missing-systemctl", "stop", "teamd.service"]
+        command_error = FileNotFoundError(2, "No such file or directory", cmd[0])
+
+        with mock.patch("featured.subprocess.run", side_effect=command_error):
+            with self.assertRaises(FileNotFoundError) as raised_error:
+                featured.run_cmd(cmd, raise_exception=True)
+
+        assert raised_error.exception is command_error
+        log_message = mock_syslog.call_args.args[1]
+        assert str(cmd) in log_message
+        assert str(command_error) in log_message
+
 
 class TestFeatureHandler(TestCase):
     """Test methods of `FeatureHandler` class.
@@ -412,6 +446,123 @@ class TestFeatureHandler(TestCase):
         assert last_config_idx < reload_idx, "All config writes must complete before daemon-reload"
         assert all(idx > reload_idx for idx in state_indices), "All service starts must happen after daemon-reload"
 
+    @parameterized.expand([
+        ('initialization_new', True, None),
+        ('handler_new', False, None),
+        ('initialization_existing', True, 'disabled'),
+        ('handler_existing', False, 'disabled'),
+    ])
+    def test_failed_state_update_can_be_retried(self, name, initialize, previous_state):
+        feature_cfg = {
+            'state': "{{ 'enabled' }}" if previous_state is None else 'enabled',
+            'auto_restart': 'enabled',
+        }
+        mock_db = mock.MagicMock()
+        mock_db.get_entry.return_value = feature_cfg.copy()
+        feature_handler = featured.FeatureHandler(mock_db, mock.Mock(), {}, False)
+        if previous_state is not None:
+            feature_handler._cached_config['swss'] = featured.Feature(
+                'swss', {'state': previous_state})
+
+        with mock.patch.object(feature_handler, 'update_systemd_config') as systemd, \
+             mock.patch.object(feature_handler, 'reload_systemd_config'), \
+             mock.patch.object(feature_handler, 'update_feature_state', side_effect=[False, True]) as update, \
+             mock.patch.object(feature_handler, 'sync_feature_scope') as scope, \
+             mock.patch.object(feature_handler, 'sync_feature_delay_state') as delay:
+            if initialize:
+                feature_handler.sync_state_field({'swss': feature_cfg})
+            else:
+                feature_handler.handler('swss', 'SET', feature_cfg)
+
+            assert feature_handler._cached_config['swss'].state == previous_state
+            assert feature_handler._cached_config['swss'].auto_restart == 'enabled'
+            scope.assert_not_called()
+            expected_delay_calls = 1 if initialize else 0
+            assert delay.call_count == expected_delay_calls
+            # A first failure must not replace a template with the uncached state None.
+            mock_db.mod_entry.assert_not_called()
+
+            feature_handler.handler('swss', 'SET', feature_cfg)
+
+            assert update.call_count == 2
+            assert feature_handler._cached_config['swss'].state == 'enabled'
+            scope.assert_called_once()
+            assert delay.call_count == expected_delay_calls
+            # The written auto-restart configuration does not need to be reloaded on retry.
+            systemd.assert_called_once()
+
+            feature_handler.handler('swss', 'SET', feature_cfg)
+            assert update.call_count == 2
+
+    def test_handler_does_not_recreate_deleted_entry(self):
+        mock_db = mock.MagicMock()
+        feature_handler = featured.FeatureHandler(mock_db, mock.Mock(), {}, False)
+        # The entry disappeared after its SET notification was queued.
+        mock_db.get_entry.return_value = None
+        with mock.patch.object(feature_handler, 'update_systemd_config'), \
+             mock.patch.object(feature_handler, 'update_feature_state', return_value=True), \
+             mock.patch.object(feature_handler, 'sync_feature_scope'):
+            feature_handler.handler('swss', 'SET', {'state': 'enabled'})
+
+        mock_db.mod_entry.assert_not_called()
+
+    @parameterized.expand([
+        ('initialization_start', True, 'enabled'),
+        ('initialization_stop', True, 'disabled'),
+        ('handler_start', False, 'enabled'),
+        ('handler_stop', False, 'disabled'),
+    ])
+    def test_systemctl_failure_preserves_state_for_retry(self, name, initialize, state):
+        feature_cfg = {
+            'state': "{{ '" + state + "' }}",
+            'auto_restart': 'enabled',
+            'delayed': 'False',
+        }
+        db_entry = feature_cfg.copy()
+        mock_db = mock.MagicMock()
+        mock_db.get_entry.side_effect = lambda table, key: db_entry.copy()
+        mock_db.mod_entry.side_effect = lambda table, key, fields: db_entry.update(fields)
+        state_table = mock.Mock()
+        feature_handler = featured.FeatureHandler(mock_db, state_table, {}, False)
+        feature_handler.is_multi_npu = False
+        action = 'start' if state == 'enabled' else 'stop'
+        attempts = []
+
+        def run_systemctl(cmd, **kwargs):
+            if cmd[2] == action:
+                attempts.append(cmd)
+                if len(attempts) == 1:
+                    raise subprocess.CalledProcessError(1, cmd, stderr='job failed')
+            return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+        with mock.patch.object(feature_handler, 'update_systemd_config'), \
+             mock.patch.object(feature_handler, 'reload_systemd_config'), \
+             mock.patch.object(feature_handler, 'get_multiasic_feature_instances',
+                               return_value=(['swss'], ['service'])), \
+             mock.patch.object(feature_handler, 'get_systemd_unit_state',
+                               return_value='generated' if state == 'enabled' else 'enabled'), \
+             mock.patch.object(feature_handler, 'wait_for_service_stable', return_value='active'), \
+             mock.patch('featured.subprocess.run', side_effect=run_systemctl):
+            if initialize:
+                feature_handler.sync_state_field({'swss': feature_cfg})
+            else:
+                feature_handler.handler('swss', 'SET', feature_cfg)
+
+            assert len(attempts) == 1
+            assert feature_handler._cached_config['swss'].state is None
+            assert db_entry == feature_cfg
+            state_table.set.assert_called_with('swss', [('state', 'failed')])
+
+            feature_handler.handler('swss', 'SET', feature_cfg)
+
+            assert len(attempts) == 2
+            assert feature_handler._cached_config['swss'].state == state
+            assert db_entry['state'] == state
+            state_table.set.assert_called_with('swss', [('state', state)])
+
+            feature_handler.handler('swss', 'SET', db_entry.copy())
+            assert len(attempts) == 2
+
     def test_update_systemd_config_reload_parameter(self):
         """Verify update_systemd_config only triggers daemon-reload when reload=True (default)."""
         mock_db = mock.MagicMock()
@@ -428,6 +579,34 @@ class TestFeatureHandler(TestCase):
 
             feature_handler.update_systemd_config(feature)
             mock_reload.assert_called_once()
+
+    def test_update_systemd_config_logs_requested_and_written_restart(self):
+        """Verify the log shows how auto_restart maps to the written systemd value."""
+        test_cases = [
+            ('teamd', 'FixedSwitch', 'enabled', 'always'),
+            ('syncd', 'SpineRouter', 'enabled', 'no'),
+        ]
+
+        for feature_name, device_type, auto_restart, written_restart in test_cases:
+            with self.subTest(feature_name=feature_name, device_type=device_type):
+                device_config = {'DEVICE_METADATA': {'localhost': {'type': device_type}}}
+                feature_handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(),
+                                                          device_config, False)
+                feature = featured.Feature(feature_name, {
+                    'state': 'enabled',
+                    'auto_restart': auto_restart,
+                })
+                expected_log = (f"Updated auto-restart config for {feature_name}.service: "
+                                f"auto_restart={auto_restart} -> Restart={written_restart}")
+
+                with mock.patch.object(feature_handler, 'get_multiasic_feature_instances',
+                                       return_value=([feature_name], ['service'])), \
+                     mock.patch('featured.os.path.exists', return_value=True), \
+                     mock.patch('builtins.open', mock.mock_open()), \
+                     mock.patch('featured.syslog.syslog') as mock_syslog:
+                    feature_handler.update_systemd_config(feature, reload=False)
+
+                mock_syslog.assert_any_call(featured.syslog.LOG_INFO, expected_log)
 
     def test_sync_state_field_empty_table(self):
         """With no features, daemon-reload still fires and no services are started."""
