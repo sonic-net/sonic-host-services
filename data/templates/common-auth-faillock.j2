@@ -1,0 +1,26 @@
+# PAM faillock authentication configuration managed by userd
+# Do not edit manually - changes will be overwritten
+#
+# This file is included via substack from common-auth-sonic
+#
+# Role-based faillock policy:
+# - Only applies to managed users (members of local_mgd group)
+# - Administrator role (sudo group): deny={{ administrator_deny }}
+# - Operator role (not in sudo group): deny={{ operator_deny }}
+
+{% if faillock_enabled %}
+# Skip all faillock for non-managed users (not in local_mgd group)
+# If user is NOT in local_mgd, skip the next 4 lines (all faillock logic)
+auth	[success=4 default=ignore]	pam_succeed_if.so user notingroup local_mgd quiet
+
+# For managed users, check if administrator (in sudo group)
+# If user IS in sudo, skip 2 lines to administrator faillock
+auth	[success=2 default=ignore]	pam_succeed_if.so user ingroup sudo quiet
+
+# OPERATOR path: apply operator faillock policy, then skip admin faillock
+auth	required	pam_faillock.so preauth deny={{ operator_deny }}
+auth	[default=1]	pam_permit.so
+
+# ADMINISTRATOR path: apply administrator faillock policy
+auth	required	pam_faillock.so preauth deny={{ administrator_deny }}
+{% endif %}

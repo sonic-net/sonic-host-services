@@ -11,6 +11,7 @@ from unittest import TestCase, mock
 from sonic_py_common.general import getstatusoutput_noshell
 from tests.hostcfgd.test_tacacs_vectors import HOSTCFGD_TEST_TACACS_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_restart_waiter import MockRestartWaiter
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
@@ -32,6 +33,7 @@ sys.modules['hostcfgd'] = hostcfgd
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+swsscommon.RestartWaiter = MockRestartWaiter
 
 class TestHostcfgdTACACS(TestCase):
     """
@@ -129,6 +131,9 @@ class TestHostcfgdTACACS(TestCase):
         self.check_config(test_name, test_data, "config_db_local_and_tacacs")
         # test disable accounting
         self.check_config(test_name, test_data, "config_db_disable_accounting")
+        # test local,tacacs+ authentication (if config exists)
+        if "config_db_local_tacacs" in test_data:
+            self.check_config(test_name, test_data, "config_db_local_tacacs")
 
     @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
     def test_hostcfgd_sshd_not_empty(self, test_name, test_data):

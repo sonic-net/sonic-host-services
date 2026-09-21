@@ -9,9 +9,15 @@
 #
 # here are the per-package modules (the "Primary" block)
 
-auth    [success=2 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
-auth    [success=1 default=ignore]      pam_unix.so nullok try_first_pass
+# Include faillock configuration if present (managed by userd)
+auth	substack	common-auth-faillock
+
+auth    [success=3 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
+auth    [success=2 default=ignore]      pam_unix.so nullok try_first_pass
 #
+# Record failed login attempts for faillock (managed by userd)
+auth	substack	common-auth-faillock-authfail
+
 # here's the fallback if no module succeeds
 auth    requisite                       pam_deny.so
 # prime the stack with a positive return value if there isn't one already;
