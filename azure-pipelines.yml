@@ -87,7 +87,7 @@ stages:
     - script: |
         pip3 install ".[testing]"
         pip3 uninstall --yes sonic-host-services
-        pytest
+        python3 -m pytest
       displayName: 'Test Python 3'
 
     - task: PublishTestResults@2

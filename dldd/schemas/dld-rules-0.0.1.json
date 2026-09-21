@@ -281,7 +281,7 @@
           "items": {
             "$ref": "#/$defs/EventWrapperV001"
           },
-          "maxItems": 1000,
+          "maxItems": 999,
           "minItems": 1,
           "title": "Events",
           "type": "array"
