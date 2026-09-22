@@ -92,7 +92,7 @@ HOSTCFGD_TEST_RADIUS_VECTOR = [
                         "passkey": "pass1",
                         "skip_msg_auth": "true",
                     },
-                    "invalid-address": {
+                    "invalid_host": {
                         "auth_type": "pap",
                         "passkey": "invalid1",
                     },

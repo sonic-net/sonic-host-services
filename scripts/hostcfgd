@@ -98,12 +98,40 @@ RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
 
 
+def _radius_host_valid(host):
+    if not isinstance(host, str) or not host or any(ord(char) < 33 or ord(char) == 127 for char in host):
+        return False
+
+    try:
+        if '%' in host:
+            address, scope = host.split('%', 1)
+            if '%' in scope or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', scope):
+                return False
+            ipaddress.IPv6Address(address)
+        else:
+            ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        if '%' in host:
+            return False
+
+    hostname = host[:-1] if host.endswith('.') else host
+    if not hostname or len(hostname) > 253:
+        return False
+    label_pattern = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?')
+    return all(label_pattern.fullmatch(label) for label in hostname.split('.'))
+
+
 def radius_server_entry_valid(server):
     try:
-        ipaddress.ip_address(server['ip'])
+        if not _radius_host_valid(server['ip']):
+            raise ValueError('invalid host')
+        if not isinstance(server['auth_port'], str) or not re.fullmatch(r'[0-9]+', server['auth_port']):
+            raise ValueError('invalid auth_port')
         auth_port = int(server['auth_port'])
         if not 1 <= auth_port <= 65535:
             raise ValueError('auth_port out of range')
+        server['auth_port'] = str(auth_port)
         return True
     except (KeyError, ValueError) as error:
         syslog.syslog(
