@@ -279,16 +279,17 @@ class TestDCEService(TestCase):
         })
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
-                stale_conf = os.path.join(tmpdir, "console-monitor-logging-1")
-                with open(stale_conf, 'w') as conf_file:
-                    conf_file.write("stale")
+                with mock.patch.object(console_monitor.os, 'remove', posix.remove):
+                    stale_conf = os.path.join(tmpdir, "console-monitor-logging-1")
+                    with open(stale_conf, 'w') as conf_file:
+                        conf_file.write("stale")
 
-                service = console_monitor.DCEService()
-                service.config_db = MockConfigDb()
-                service._sync_logrotate_configs()
+                    service = console_monitor.DCEService()
+                    service.config_db = MockConfigDb()
+                    service._sync_logrotate_configs()
 
-                self.assertFalse(os.path.exists(stale_conf))
-    
+                    self.assertFalse(os.path.exists(stale_conf))
+
     def test_dce_sync_starts_services_when_enabled(self):
         """Test _sync starts pty-bridge and proxy services for each configured port when feature is enabled."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
@@ -2646,7 +2647,6 @@ class TestLogrotateConfig(TestCase):
             "/var/log/console-0.log",
         )
 
-
 class TestConsoleLoggingCoverage(TestCase):
     """Tests for console logging configuration and runtime paths."""
 
@@ -2939,7 +2939,6 @@ class TestConsoleLoggingCoverage(TestCase):
                     mock_error.assert_called_once()
                     self.assertEqual(len(captured_log_flags), 1)
                     self.assertTrue(captured_log_flags[0] & os.O_NOFOLLOW)
-
 
 class TestCalculateFilterTimeout(TestCase):
     """Tests for calculate_filter_timeout function."""
