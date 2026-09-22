@@ -1247,7 +1247,9 @@ class SshServer(object):
                 continue
 
             if key == 'listen_addresses':
-                if len(value) == 0:
+                # raw_to_typed() splits an empty stored leaf-list ("") into
+                # [''], not []; treat both as empty.
+                if value in ([], ['']):
                     # YANG allows an empty leaf-list; ignore this field only
                     # (don't abort unrelated policy changes) and keep the
                     # previous listen_addresses state untouched.
