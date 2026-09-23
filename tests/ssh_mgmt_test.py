@@ -253,10 +253,10 @@ class TestSshMgmt(object):
             with mock.patch("ssh_mgmt.os.path.exists", mock.MagicMock(return_value=True)):
                 with mock.patch("ssh_mgmt.os.makedirs"):
                     with mock.patch("ssh_mgmt.shutil"):
-                        os.remove = mock_remove
-                        result = self.ssh_mgmt_module.create_checkpoint([])
-                        assert result[0] == 0
-                        assert result[1] == "Successfully created checkpoint"
+                        with mock.patch("ssh_mgmt.os.remove", side_effect=mock_remove):
+                            result = self.ssh_mgmt_module.create_checkpoint([])
+                            assert result[0] == 0
+                            assert result[1] == "Successfully created checkpoint"
 
     def test_restore_checkpoint(self):
         # Restore checkpoint fails when checkpoint does not exist.
