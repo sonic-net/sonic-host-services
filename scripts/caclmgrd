@@ -143,6 +143,12 @@ class ControlPlaneAclManager(logger.Logger):
     VxlanAllowed = False
     VxlanSrcIP = ""
     RedfishAllowed = False
+
+    # Upper bound on duplicate masquerade rules removed in one pass.
+    REDFISH_EGRESS_NAT_MAX_DUPLICATES = 8
+
+    # Interface whose forwarding the redfish egress path depends on.
+    MGMT_INTERFACE = "eth0"
     DhcpServerSyslogAllowed = False
     # a map from dpu name to port
     dashHaPortMap = {}
@@ -237,6 +243,77 @@ class ControlPlaneAclManager(logger.Logger):
         ipv6_address_cmd2 = ['cut', '-d', '/', '-f1']
         ipv6_address_cmd3 = ['head', '-1']
         return self.run_commands_pipe(ipv6_address_cmd0, ipv6_address_cmd1, ipv6_address_cmd2, ipv6_address_cmd3)
+
+    def get_bridge_subnet(self):
+        """IPv4 subnet of the docker bridge, e.g. 240.127.1.0/24, or "" when unreadable."""
+        addr_cmd0 = ['ip', '-4', '-o', 'addr', 'show', 'docker0']
+        addr_cmd1 = ['awk', '{print $4}']
+        addr_cmd2 = ['head', '-1']
+        address = self.run_commands_pipe(addr_cmd0, addr_cmd1, addr_cmd2)
+        if not address:
+            return ""
+        try:
+            return str(ipaddress.ip_interface(address).network)
+        except ValueError:
+            return ""
+
+    def redfish_egress_nat_rule(self, bridge_subnet):
+        return ['-s', bridge_subnet, '!', '-o', 'docker0', '-j', 'MASQUERADE',
+                '-m', 'comment', '--comment', 'redfish_egress']
+
+    def redfish_egress_nat_present(self, rule):
+        """Whether the masquerade is already in the host nat table.
+
+        No namespace prefix: the rule matches the docker bridge subnet, which
+        only exists in the host namespace, so this is deliberately host only.
+        Checked with a direct call rather than run_commands because a non-zero
+        exit here is the answer, not an error to log.
+        """
+        return subprocess.call(['iptables', '-t', 'nat', '-C', 'POSTROUTING'] + rule,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+    def set_mgmt_interface_forwarding(self, enable):
+        """Allow replies to container-originated connections back off eth0.
+
+        Linux consults the ingress interface's flag, and SONiC ships the
+        management interface with forwarding off, so without this the
+        subscriber's reply arrives on eth0 and is never passed to the bridge.
+        Paired with the nat and FORWARD rules because none of the three is
+        useful alone; sonic-dpu-mgmt-traffic.sh keeps the same three together
+        for DPU management traffic.
+        """
+        value = "1" if enable else "0"
+        self.run_commands([['sysctl', '-w',
+                            'net.ipv4.conf.{}.forwarding={}'.format(
+                                self.MGMT_INTERFACE, value)]])
+
+    def program_redfish_egress_nat(self, add):
+        """Source NAT for connections bmcweb originates from the bridge network.
+
+        dockerd runs with --iptables=false, so the masquerade docker would
+        normally install is absent and event deliveries leave the management
+        interface with an unroutable bridge-subnet source. nat is not part of
+        the periodic ruleset walk, so it is programmed here on feature
+        transitions and at startup. The rule is checked before every change:
+        an add happens only when the rule is absent, and removal repeats while
+        it is present, so neither a caclmgrd restart nor an earlier duplicate
+        can leave the table wrong.
+        """
+        bridge_subnet = self.get_bridge_subnet()
+        if not bridge_subnet:
+            self.log_error("Cannot read the docker bridge subnet; redfish egress nat not programmed")
+            return
+        rule = self.redfish_egress_nat_rule(bridge_subnet)
+        if add:
+            if not self.redfish_egress_nat_present(rule):
+                self.run_commands([['iptables', '-t', 'nat', '-A', 'POSTROUTING'] + rule])
+        else:
+            # Bounded so a delete that never takes effect cannot spin forever;
+            # duplicates beyond this are left for the next transition.
+            for _ in range(self.REDFISH_EGRESS_NAT_MAX_DUPLICATES):
+                if not self.redfish_egress_nat_present(rule):
+                    break
+                self.run_commands([['iptables', '-t', 'nat', '-D', 'POSTROUTING'] + rule])
 
     def log_output(self, cmd, exitcodes, stdout):
         if any(exitcodes):
@@ -709,6 +786,14 @@ class ControlPlaneAclManager(logger.Logger):
                 if allowed:
                     iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'INPUT', '-i', 'docker0', '-p', 'tcp', '--dport', '2514', '-j', 'ACCEPT', '-m', 'comment', '--comment', feature + '_syslog'])
 
+            # redfish event delivery: bmcweb originates connections from the
+            # bridge network to subscribers on the management network. FORWARD
+            # is flushed and rebuilt by this walk, so the scoped pair is
+            # re-emitted here: bridge-out, and established replies back in.
+            if self.RedfishAllowed:
+                iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'FORWARD', '-i', 'docker0', '!', '-o', 'docker0', '-j', 'ACCEPT', '-m', 'comment', '--comment', 'redfish_egress'])
+                iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'FORWARD', '-o', 'docker0', '-m', 'conntrack', '--ctstate', 'RELATED,ESTABLISHED', '-j', 'ACCEPT', '-m', 'comment', '--comment', 'redfish_egress'])
+
 
         if self.bfdAllowed:
             iptables_cmds += self.get_bfd_iptable_commands(namespace)
@@ -972,6 +1057,17 @@ class ControlPlaneAclManager(logger.Logger):
                 iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'FORWARD', '-j', 'DROP'])
                 iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['ip6tables', '-A', 'FORWARD', '-j', 'DROP'])
 
+        # The redfish egress path needs forwarding enabled on the management
+        # interface so replies can reach the bridge, which by itself would let
+        # the host forward anything else arriving there too. Close that: the
+        # replies matched the established rule above, so everything still
+        # reaching here off the management interface is dropped, leaving the
+        # interface behaving as it does with forwarding disabled. Appended last
+        # so every accept rule above, including the multi-asic ones, precedes
+        # it.
+        if namespace == DEFAULT_NAMESPACE and self.RedfishAllowed:
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + ['iptables', '-A', 'FORWARD', '-i', self.MGMT_INTERFACE, '-j', 'DROP', '-m', 'comment', '--comment', 'redfish_egress'])
+
         return iptables_cmds, service_to_source_ip_map
 
     def update_control_plane_acls(self, namespace, config_db_connector):
@@ -988,6 +1084,15 @@ class ControlPlaneAclManager(logger.Logger):
         self.run_commands(iptables_cmds)
 
         self.update_control_plane_nat_acls(namespace, service_to_source_ip_map, config_db_connector)
+
+        # The FORWARD pair above is rebuilt by every walk, but the masquerade
+        # lives in nat, which this walk does not touch. Reconcile it here so a
+        # flush of the nat table cannot leave redfish event delivery broken
+        # until the next feature transition. The check makes this a no-op when
+        # the rule is already in place.
+        if namespace == DEFAULT_NAMESPACE and self.RedfishAllowed:
+            self.program_redfish_egress_nat(True)
+            self.set_mgmt_interface_forwarding(True)
 
     def update_control_plane_nat_acls(self, namespace, service_to_source_ip_map, config_db_connector):
         """
@@ -1132,10 +1237,14 @@ class ControlPlaneAclManager(logger.Logger):
 
     def allow_redfish(self):
         self.RedfishAllowed = True
+        self.program_redfish_egress_nat(True)
+        self.set_mgmt_interface_forwarding(True)
         self.log_info("Enabled REDFISH control plane ACL handling")
 
     def block_redfish(self):
         self.RedfishAllowed = False
+        self.program_redfish_egress_nat(False)
+        self.set_mgmt_interface_forwarding(False)
         self.log_info("Disabled REDFISH control plane ACL handling")
 
     def handle_feature_state_events(self, subscribe_feature_table, namespace, ctrl_plane_acl_notification):
@@ -1223,6 +1332,14 @@ class ControlPlaneAclManager(logger.Logger):
             self.log_error("Must be root to run this daemon")
             print("Error: Must be root to run this daemon")
             sys.exit(1)
+
+        # Program the redfish egress nat when the feature was already enabled
+        # at startup. Done here rather than in __init__ so constructing the
+        # manager stays free of subprocess calls; the unit tests construct it
+        # under a fake filesystem that cannot host real pipe descriptors.
+        if self.RedfishAllowed:
+            self.program_redfish_egress_nat(True)
+            self.set_mgmt_interface_forwarding(True)
 
         # Initlaize Global config that loads all database*.json
         if device_info.is_multi_npu():
