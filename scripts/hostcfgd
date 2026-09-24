@@ -911,6 +911,17 @@ class PasswHardening(object):
         if data == {}:
             self.passw_policies = {}
         else:
+            if key == 'POLICIES':
+                data = data.copy()
+                for field in ('len_min', 'history_cnt'):
+                    if field in data:
+                        value = str(data[field])
+                        if not re.fullmatch(r'[0-9]+', value, re.ASCII) or len(value) > 10:
+                            syslog.syslog(syslog.LOG_ERR,
+                                          'PASSW_HARDENING: invalid {} value; ignoring policy update'
+                                          .format(field))
+                            return
+                        data[field] = str(int(value))
             if 'reject_user_passw_match' in data:
                 data['reject_user_passw_match'] = is_true(data['reject_user_passw_match'])
             if 'lower_class' in data:

@@ -66,6 +66,40 @@ class TestHostcfgdPASSWH(TestCase):
                 break
         return days_num
 
+    def test_passw_policy_numeric_fields(self):
+        policy = hostcfgd.PasswHardening()
+        original = {'state': 'enabled', 'len_min': '08', 'history_cnt': '10'}
+        policy.passw_policies_update('POLICIES', original, modify_conf=False)
+
+        self.assertEqual(policy.passw_policies['len_min'], '8')
+        self.assertEqual(policy.passw_policies['history_cnt'], '10')
+        self.assertEqual(original['len_min'], '08')
+
+        for field, value in (('len_min', 'eight'),
+                             ('history_cnt', '10.5'),
+                             ('len_min', '1' * 20)):
+            with self.subTest(field=field, value=value):
+                invalid = {'state': 'enabled', field: value}
+                policy.passw_policies_update('POLICIES', invalid, modify_conf=False)
+                self.assertEqual(policy.passw_policies['len_min'], '8')
+                self.assertEqual(policy.passw_policies['history_cnt'], '10')
+                self.assertEqual(invalid[field], value)
+
+    def test_passw_template_renders_numeric_fields(self):
+        env = hostcfgd.jinja2.Environment(
+            loader=hostcfgd.jinja2.FileSystemLoader('/'), trim_blocks=True)
+        template = env.get_template(os.path.join(templates_path,
+                                                 'common-password.j2'))
+        policies = {
+            'state': 'enabled', 'len_min': '08', 'history_cnt': '010',
+            'reject_user_passw_match': False, 'lower_class': False,
+            'upper_class': False, 'digits_class': False,
+            'special_class': False,
+        }
+        rendered = template.render(debug=False, passw_policies=policies)
+        self.assertIn('minlen=8', rendered)
+        self.assertIn('remember=10', rendered)
+
     """
         Check different config
     """
