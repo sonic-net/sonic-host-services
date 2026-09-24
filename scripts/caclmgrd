@@ -83,6 +83,17 @@ class ControlPlaneAclManager(logger.Logger):
     LOOPBACK_TABLE = "LOOPBACK_INTERFACE"
     VLAN_INTF_TABLE = "VLAN_INTERFACE"
 
+    # Interface tables the "block_ip2me" rules are derived from. caclmgrd both reads
+    # these when rendering rules and subscribes to them in run(), so keep the two uses
+    # tied to one list: a table that is read but not subscribed leaves stale ip2me
+    # DROP rules behind when an interface address is removed.
+    IP2ME_INTERFACE_TABLE_NAME_LIST = [
+        "LOOPBACK_INTERFACE",
+        "VLAN_INTERFACE",
+        "PORTCHANNEL_INTERFACE",
+        "INTERFACE"
+    ]
+
     ACL_TABLE_TYPE_CTRLPLANE = "CTRLPLANE"
 
     BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
@@ -306,17 +317,10 @@ class ControlPlaneAclManager(logger.Logger):
                 self.feature_present[k] = True
 
     def generate_block_ip2me_traffic_iptables_commands(self, namespace, config_db_connector):
-        INTERFACE_TABLE_NAME_LIST = [
-            "LOOPBACK_INTERFACE",
-            "VLAN_INTERFACE",
-            "PORTCHANNEL_INTERFACE",
-            "INTERFACE"
-        ]
-
         block_ip2me_cmds = []
 
         # Add iptables rules to drop all packets destined for peer-to-peer interface IP addresses
-        for iface_table_name in INTERFACE_TABLE_NAME_LIST:
+        for iface_table_name in self.IP2ME_INTERFACE_TABLE_NAME_LIST:
             iface_table = config_db_connector.get_table(iface_table_name)
             if iface_table:
                 for key, _ in iface_table.items():
@@ -1271,6 +1275,14 @@ class ControlPlaneAclManager(logger.Logger):
         sel.addSelectable(subscribe_feature_table)
         # Map of Namespace <--> susbcriber table's object
         config_db_subscriber_table_map = {}
+        # Map of Namespace <--> subscriber objects for the interface tables. Kept separate
+        # from config_db_subscriber_table_map because that map's handler splits every key on
+        # the table separator and treats it as an ACL rule. An interface key that carries an
+        # address ("Ethernet0|10.0.0.1/31") contains the separator, so it would resolve to a
+        # non-existent ACL table and be discarded without notifying - i.e. exactly the keys
+        # the ip2me rules depend on would be dropped, while address-less keys ("Ethernet0")
+        # would notify. Its own loop keeps the notification unconditional.
+        intf_db_subscriber_table_map = {}
 
         # Loop through all asic namespaces (if present) and host namespace (DEFAULT_NAMESPACE)
         for namespace in list(self.config_db_map.keys()):
@@ -1289,6 +1301,15 @@ class ControlPlaneAclManager(logger.Logger):
             config_db_subscriber_table_map[namespace] = []
             config_db_subscriber_table_map[namespace].append(subscribe_acl_table)
             config_db_subscriber_table_map[namespace].append(subscribe_acl_rule_table)
+
+            # Subscribe to the interface tables the "block_ip2me" rules are derived from.
+            # Without these, an interface address removal never triggers a re-render and the
+            # ip2me DROP rule for the removed address survives in iptables indefinitely.
+            intf_db_subscriber_table_map[namespace] = []
+            for iface_table_name in self.IP2ME_INTERFACE_TABLE_NAME_LIST:
+                subscribe_iface_table = swsscommon.SubscriberStateTable(acl_db_connector, iface_table_name)
+                sel.addSelectable(subscribe_iface_table)
+                intf_db_subscriber_table_map[namespace].append(subscribe_iface_table)
 
         # Get the ACL rule table seprator
         acl_rule_table_seprator = subscribe_acl_rule_table.getTableNameSeparator()
@@ -1393,6 +1414,18 @@ class ControlPlaneAclManager(logger.Logger):
                         acl_table = key.split(acl_rule_table_seprator)[0]
                         if self.config_db_map[namespace].get_table(self.ACL_TABLE)[acl_table]["type"] == self.ACL_TABLE_TYPE_CTRLPLANE:
                             ctrl_plane_acl_notification.add(namespace)
+
+            # Pop data of the interface table subscribers of this namespace. Any add/remove of
+            # an interface IP changes the set of "block_ip2me" rules, so every event here needs
+            # a control plane ACL re-render. check_and_update_control_plane_acls() coalesces a
+            # burst of these into a single rebuild.
+            for table in intf_db_subscriber_table_map[namespace]:
+                while True:
+                    (key, op, fvp) = table.pop()
+                    # Pop of table that does not have data so break
+                    if not key:
+                        break
+                    ctrl_plane_acl_notification.add(namespace)
 
             # Update the Control Plane ACL of the namespace that got config db acl table event
             for namespace in ctrl_plane_acl_notification:
