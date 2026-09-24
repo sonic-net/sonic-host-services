@@ -100,6 +100,14 @@ RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
 
+
+def aaa_server_fields_safe(server):
+    """Return whether string fields can be rendered as single config values."""
+    return all(not isinstance(value, str) or
+               re.search(r'[\r\n\x00]', value) is None
+               for value in server.values())
+
+
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
 OPENSSL_FIPS_CONFIG_FILE = '/etc/fips/fips_enable'
@@ -670,10 +678,11 @@ class AaaCfg(object):
         ldap_global = self.ldap_global_default.copy()
         ldap_global.update(self.ldap_global)
 
-        if 'src_ip' in tacplus_global:
-            src_ip = tacplus_global['src_ip']
-        else:
-            src_ip = None
+        if 'src_ip' in tacplus_global and not aaa_server_fields_safe(
+                {'src_ip': tacplus_global['src_ip']}):
+            syslog.syslog(syslog.LOG_ERR, "TACPLUS: invalid source address; ignoring")
+            tacplus_global.pop('src_ip')
+        src_ip = tacplus_global.get('src_ip')
 
         servers_conf = []
         if self.tacplus_servers:
@@ -681,6 +690,9 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
+                if not aaa_server_fields_safe(server):
+                    syslog.syslog(syslog.LOG_ERR, "TACPLUS_SERVER: invalid field; ignoring entry")
+                    continue
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -719,6 +731,9 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
                         del server['src_ip']
 
+                if not aaa_server_fields_safe(server):
+                    syslog.syslog(syslog.LOG_ERR, "RADIUS_SERVER: invalid field; ignoring entry")
+                    continue
                 radsrvs_conf.append(server)
             radsrvs_conf = sorted(radsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -729,6 +744,9 @@ class AaaCfg(object):
                 server = ldap_global.copy()
                 server['ip'] = addr
                 server.update(self.ldap_servers[addr])
+                if not aaa_server_fields_safe(server):
+                    syslog.syslog(syslog.LOG_ERR, "LDAP_SERVER: invalid field; ignoring entry")
+                    continue
                 ldapsrvs_conf.append(server)
             ldapsrvs_conf = sorted(ldapsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 

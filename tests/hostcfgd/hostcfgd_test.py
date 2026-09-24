@@ -31,6 +31,20 @@ hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 
 
+class TestAaaServerFields(TestCase):
+    def test_valid_values(self):
+        self.assertTrue(hostcfgd.aaa_server_fields_safe({
+            'ip': '192.0.2.1', 'bind_dn': 'cn=User Name,dc=example',
+            'priority': 1,
+        }))
+
+    @parameterized.expand([(10,), (13,), (0,)])
+    def test_invalid_values(self, codepoint):
+        self.assertFalse(hostcfgd.aaa_server_fields_safe({
+            'field': 'line' + chr(codepoint) + 'break',
+        }))
+
+
 class TesNtpCfgd(TestCase):
     """
         Test hostcfd daemon - NtpCfgd
