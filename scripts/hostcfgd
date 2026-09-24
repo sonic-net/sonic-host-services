@@ -8,6 +8,7 @@ import subprocess
 import syslog
 import signal
 import re
+import socket
 import jinja2
 import psutil
 import time
@@ -114,6 +115,13 @@ def _radius_host_valid(host):
     except ValueError:
         if '%' in host:
             return False
+
+    # Reject non-canonical IPv4 forms before applying DNS hostname syntax.
+    try:
+        socket.inet_aton(host)
+        return False
+    except OSError:
+        pass
 
     hostname = host[:-1] if host.endswith('.') else host
     if not hostname or len(hostname) > 253:
