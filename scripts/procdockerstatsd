@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta
 
 from sonic_py_common import daemon_base
@@ -228,14 +229,19 @@ class ProcDockerStats(daemon_base.DaemonBase):
             sys.exit(1)
 
         while True:
-            self.update_dockerstats_command()
-            datetimeobj = datetime.utcnow()
-            # Adding key to store latest update time.
-            self.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
-            self.update_processstats_command()
-            self.update_state_db('PROCESS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
-            self.update_fipsstats_command()
-            self.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+            try:
+                self.update_dockerstats_command()
+                datetimeobj = datetime.utcnow()
+                # Adding key to store latest update time.
+                self.update_state_db('DOCKER_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+                self.update_processstats_command()
+                self.update_state_db('PROCESS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+                self.update_fipsstats_command()
+                self.update_state_db('FIPS_STATS|LastUpdateTime', 'lastupdate', str(datetimeobj))
+            except (FileNotFoundError, psutil.Error) as e:
+                self.log_info("procdockerstatsd: transient process error: {}".format(str(e)))
+            except Exception as e:
+                self.log_warning("procdockerstatsd update failed: %s Traceback: %s" % (str(e), traceback.format_exc()))
 
             # Data need to be updated every 2 mins. hence adding delay of 120 seconds
             time.sleep(120)
