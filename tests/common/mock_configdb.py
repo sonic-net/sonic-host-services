@@ -160,6 +160,14 @@ class MockDBConnector():
             return None
         return self.data[key][field]
 
+    def keys(self, key):
+        return list(self.data.keys())
+
+    def hgetall(self, key):
+        if key not in self.data:
+            return None
+        return self.data[key]
+
     def hset(self, key, field, value):
         if key not in self.data:
             self.data[key] = {}

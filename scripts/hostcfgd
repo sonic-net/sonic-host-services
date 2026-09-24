@@ -141,7 +141,7 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
             raise
 
 def run_cmd_output(cmd, log_err=True, raise_exception=False):
-    output = ''
+    output = b''
     try:
         output = subprocess.check_output(cmd)
     except Exception as err:
@@ -1576,16 +1576,20 @@ class DeviceMetaCfg(object):
 
             containers = self.get_container_names()
             for container in containers:
-                localtime_target_path = run_cmd_output(['docker', 'exec', container, 'readlink', '/etc/localtime'])
-                current_timezone = "/".join(localtime_target_path.decode().strip().split("/")[4:])
-                if current_timezone != new_tz:
-                    syslog.syslog(syslog.LOG_INFO, f'DeviceMetaCfg: Changing timezone of {container} to {new_tz}')
-                    run_cmd(['docker', 'exec', container, 'ln', '-sf',
-                             f'/usr/share/zoneinfo/{new_tz}', '/etc/localtime'])
-                    run_cmd(['docker', 'exec', container, 'supervisorctl',
-                             'restart', 'rsyslogd'])
-                else:
-                    syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: No change in timezone for {container}')
+                try:
+                    localtime_target_path = run_cmd_output(['docker', 'exec', container, 'readlink', '/etc/localtime'])
+                    print(localtime_target_path)
+                    current_timezone = "/".join(localtime_target_path.decode().strip().split("/")[4:])
+                    if current_timezone != new_tz:
+                        syslog.syslog(syslog.LOG_INFO, f'DeviceMetaCfg: Changing timezone of {container} to {new_tz}')
+                        run_cmd(['docker', 'exec', container, 'ln', '-sf',
+                                 f'/usr/share/zoneinfo/{new_tz}', '/etc/localtime'])
+                        run_cmd(['docker', 'exec', container, 'supervisorctl',
+                                 'restart', 'rsyslogd'])
+                    else:
+                        syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: No change in timezone for {container}')
+                except Exception as e:
+                    syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Failed to change timezone of {container} to {new_tz}: {e}')
 
             system_timezone_realpath = os.path.realpath(ETC_LOCALTIME)
             new_timezone_realpath = os.path.realpath(f'{ZONEINFO_DIR}/{new_tz}')
