@@ -2,11 +2,14 @@
 
 import ast
 import os
+import re
 import sys
 import subprocess
 import syslog
 import signal
 import jinja2
+import jinja2.nodes
+import jinja2.sandbox
 import time
 from sonic_py_common import device_info
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table, SonicDBConfig
@@ -52,6 +55,75 @@ def signal_handler(sig, frame):
         syslog.syslog(syslog.LOG_INFO, "FeatureDaemon: invalid signal - ignoring..")
 
 
+_FEATURE_TEMPLATE_NAMES = frozenset(('DEVICE_METADATA', 'DEVICE_RUNTIME_METADATA'))
+_FEATURE_TEMPLATE_TESTS_NO_ARG = frozenset(('defined', 'undefined'))
+_FEATURE_TEMPLATE_TESTS_ONE_ARG = frozenset(('in',))
+_FEATURE_TEMPLATE_COMPARE_OPS = frozenset(('eq', 'ne', 'in', 'notin'))
+_FEATURE_TEMPLATE_CONST_TYPES = (str, int, float, bool, type(None))
+
+
+def _validate_feature_template_ast(node):
+    """Allow only the template expressions used by FEATURE configuration."""
+    j = jinja2.nodes
+
+    if isinstance(node, j.Template):
+        for child in node.body:
+            _validate_feature_template_ast(child)
+    elif isinstance(node, j.Output):
+        for child in node.nodes:
+            _validate_feature_template_ast(child)
+    elif isinstance(node, j.TemplateData):
+        pass
+    elif isinstance(node, j.If):
+        _validate_feature_template_ast(node.test)
+        for child in node.body:
+            _validate_feature_template_ast(child)
+        for child in node.elif_:
+            _validate_feature_template_ast(child)
+        for child in node.else_:
+            _validate_feature_template_ast(child)
+    elif isinstance(node, (j.And, j.Or)):
+        _validate_feature_template_ast(node.left)
+        _validate_feature_template_ast(node.right)
+    elif isinstance(node, j.Not):
+        _validate_feature_template_ast(node.node)
+    elif isinstance(node, j.Compare):
+        _validate_feature_template_ast(node.expr)
+        for op in node.ops:
+            if op.op not in _FEATURE_TEMPLATE_COMPARE_OPS:
+                raise ValueError("Unsupported comparison in FEATURE template")
+            _validate_feature_template_ast(op.expr)
+    elif isinstance(node, j.Test):
+        if node.kwargs or node.dyn_args or node.dyn_kwargs:
+            raise ValueError("Unsupported test in FEATURE template")
+        if node.name in _FEATURE_TEMPLATE_TESTS_NO_ARG:
+            if node.args:
+                raise ValueError("Unsupported test in FEATURE template")
+        elif node.name in _FEATURE_TEMPLATE_TESTS_ONE_ARG:
+            if len(node.args) != 1:
+                raise ValueError("Unsupported test in FEATURE template")
+            _validate_feature_template_ast(node.args[0])
+        else:
+            raise ValueError("Unsupported test in FEATURE template")
+        _validate_feature_template_ast(node.node)
+    elif isinstance(node, j.Getitem):
+        if node.ctx != 'load':
+            raise ValueError("Unsupported item access in FEATURE template")
+        _validate_feature_template_ast(node.node)
+        _validate_feature_template_ast(node.arg)
+    elif isinstance(node, j.List):
+        for item in node.items:
+            _validate_feature_template_ast(item)
+    elif isinstance(node, j.Const):
+        if not isinstance(node.value, _FEATURE_TEMPLATE_CONST_TYPES):
+            raise ValueError("Unsupported constant in FEATURE template")
+    elif isinstance(node, j.Name):
+        if node.name not in _FEATURE_TEMPLATE_NAMES or node.ctx != 'load':
+            raise ValueError("Unsupported name in FEATURE template")
+    else:
+        raise ValueError("Unsupported construct in FEATURE template")
+
+
 def safe_eval(val, default_value=False):
     """ Safely evaluate the expression, without raising an exception """
     try:
@@ -63,6 +135,8 @@ def safe_eval(val, default_value=False):
 
 class Feature(object):
     """ Represents a feature configuration from CONFIG_DB data. """
+
+    NAME_PATTERN = re.compile(r'[A-Za-z0-9_-]{1,32}')
 
     def __init__(self, feature_name, feature_cfg, device_config=None):
         """ Initialize Feature object based on CONFIG_DB data.
@@ -76,6 +150,9 @@ class Feature(object):
             err_str = "Invalid obsolete field 'has_timer' in FEATURE table. Please update configuration schema version"
             syslog.syslog(syslog.LOG_ERR, err_str)
             raise ValueError(err_str)
+
+        if not isinstance(feature_name, str) or not self.NAME_PATTERN.fullmatch(feature_name):
+            raise ValueError('Invalid FEATURE name')
 
         self.name = feature_name
         self.state = self._get_feature_table_key_render_value(feature_cfg.get('state'), device_config or {}, ['enabled', 'disabled', 'always_enabled', 'always_disabled'])
@@ -99,7 +176,14 @@ class Feature(object):
         if configuration is None:
             return None
 
-        template = jinja2.Template(configuration)
+        env = jinja2.sandbox.ImmutableSandboxedEnvironment()
+        try:
+            parsed = env.parse(configuration)
+            _validate_feature_template_ast(parsed)
+        except jinja2.TemplateSyntaxError as err:
+            raise ValueError('Invalid FEATURE template syntax: {}'.format(err))
+
+        template = env.from_string(parsed)
         target_value = template.render(device_config)
 
         # YANG mandates boolean values are "true" and "false" but this code otherwise expects

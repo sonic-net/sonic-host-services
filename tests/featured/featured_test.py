@@ -1124,3 +1124,42 @@ class TestEnableFeatureGeneratedUnit(TestCase):
         assert not any("enable" in cmd for cmd in cmds)
         assert ["sudo", "systemctl", "start", "bgp@0.service"] in cmds
         assert ["sudo", "systemctl", "start", "bgp@1.service"] in cmds
+
+
+class TestFeatureTemplateValidation(TestCase):
+    DEVICE_CONFIG = {
+        'DEVICE_METADATA': {'localhost': {'type': 'LeafRouter'}},
+        'DEVICE_RUNTIME_METADATA': {'ETHERNET_PORTS_PRESENT': True},
+    }
+
+    @parameterized.expand([('swss',), ('dhcp_relay',), ('feature-name',)])
+    def test_valid_feature_names(self, name):
+        self.assertEqual(featured.Feature(name, {'state': 'enabled'}).name, name)
+
+    @parameterized.expand([('feature name',), ('feature.name',), ('a' * 33,), (None,)])
+    def test_invalid_feature_names(self, name):
+        with self.assertRaises(ValueError):
+            featured.Feature(name, {'state': 'enabled'})
+
+    @parameterized.expand([
+        ('enabled', 'enabled'),
+        ('{% if DEVICE_METADATA["localhost"]["type"] == "LeafRouter" %}enabled{% else %}disabled{% endif %}', 'enabled'),
+        ('{% if DEVICE_RUNTIME_METADATA is defined and DEVICE_RUNTIME_METADATA["ETHERNET_PORTS_PRESENT"] %}enabled{% else %}disabled{% endif %}', 'enabled'),
+    ])
+    def test_allowed_templates(self, configuration, expected):
+        feature = featured.Feature('swss', {'state': 'enabled'})
+        self.assertEqual(feature._get_feature_table_key_render_value(
+            configuration, self.DEVICE_CONFIG, ['enabled', 'disabled']), expected)
+
+    @parameterized.expand([
+        ('{% for item in [1] %}enabled{% endfor %}',),
+        ('{{ "enabled" | upper }}',),
+        ('{% set value = "enabled" %}{{ value }}',),
+        ('{{ DEVICE_METADATA.keys }}',),
+        ('{{ OTHER_METADATA["state"] }}',),
+    ])
+    def test_unsupported_templates(self, configuration):
+        feature = featured.Feature('swss', {'state': 'enabled'})
+        with self.assertRaises(ValueError):
+            feature._get_feature_table_key_render_value(
+                configuration, self.DEVICE_CONFIG, ['enabled', 'disabled'])
