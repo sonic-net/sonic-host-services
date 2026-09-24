@@ -17,6 +17,7 @@ import logging
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 
 from host_modules import host_service
@@ -43,6 +44,76 @@ DEBUG_INFO_FLAG = "debug_info"
 DEFAULT_HOSTNAME = "switch"
 
 logger = logging.getLogger(__name__)
+
+
+def _delete_legacy_artifact(artifact_id):
+  """Delete one regular artifact beneath ARTIFACT_DIR without following links."""
+  if not isinstance(artifact_id, str) or not artifact_id:
+    raise ValueError("artifact ID must be a non-empty string")
+  if "\x00" in artifact_id:
+    raise ValueError("artifact ID contains a NUL byte")
+  if not os.path.isabs(artifact_id):
+    raise ValueError("artifact ID must be an absolute path")
+  if ".." in artifact_id.split(os.sep):
+    raise ValueError("artifact ID must not contain parent traversal")
+
+  root = os.path.normpath(ARTIFACT_DIR)
+  candidate = os.path.normpath(artifact_id)
+  try:
+    contained = os.path.commonpath((root, candidate)) == root
+  except ValueError:
+    contained = False
+  if not contained or candidate == root:
+    raise ValueError("artifact is outside the allowed directory")
+
+  relative = os.path.relpath(candidate, root)
+  parts = relative.split(os.sep)
+  directory_flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC |
+                     os.O_NOFOLLOW)
+  file_flags = (getattr(os, "O_PATH", os.O_RDONLY) | os.O_CLOEXEC |
+                os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
+  descriptors = []
+  try:
+    parent_fd = os.open(root, directory_flags)
+    descriptors.append(parent_fd)
+
+    for part in parts[:-1]:
+      entry = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+      if stat.S_ISLNK(entry.st_mode):
+        raise ValueError("artifact path must not contain symbolic links")
+      if not stat.S_ISDIR(entry.st_mode):
+        raise ValueError("artifact path contains a non-directory component")
+      child_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+      descriptors.append(child_fd)
+      opened_directory = os.fstat(child_fd)
+      if ((entry.st_dev, entry.st_ino) !=
+          (opened_directory.st_dev, opened_directory.st_ino)):
+        raise OSError("artifact path changed while acknowledgement was in progress")
+      parent_fd = child_fd
+
+    name = parts[-1]
+    entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISLNK(entry.st_mode):
+      raise ValueError("artifact path must not contain symbolic links")
+    if not stat.S_ISREG(entry.st_mode):
+      raise ValueError("artifact is not a regular file")
+
+    artifact_fd = os.open(name, file_flags, dir_fd=parent_fd)
+    descriptors.append(artifact_fd)
+    opened = os.fstat(artifact_fd)
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode):
+      raise ValueError("artifact is not a regular file")
+    identity = (entry.st_dev, entry.st_ino)
+    if (opened.st_dev, opened.st_ino) != identity or \
+       (current.st_dev, current.st_ino) != identity:
+      raise OSError("artifact changed while acknowledgement was in progress")
+
+    os.unlink(name, dir_fd=parent_fd)
+  finally:
+    for descriptor in reversed(descriptors):
+      os.close(descriptor)
+
 
 class DebugArtifactCollector(host_service.HostModule):
   """DBus endpoint that collects debug artifacts."""
@@ -384,13 +455,15 @@ class DebugArtifactCollector(host_service.HostModule):
   @host_service.method(
       host_service.bus_name(MOD_NAME), in_signature="as", out_signature="is")
   def ack(self, options):
-    # The artifact name in container has a different prefix. Convert it to the
-    # host.
     if isinstance(options, str):
-        options = [options]
-    artifact = ARTIFACT_DIR + options[0].removeprefix(ARTIFACT_DIR)
+      options = [options]
+    if not options or not options[0]:
+      return 1, "Invalid artifact path: artifact ID is missing"
+    artifact = options[0]
     try:
-      os.remove(artifact)
+      _delete_legacy_artifact(artifact)
+    except ValueError as error:
+      return 1, "Invalid artifact path: " + str(error)
     except FileNotFoundError:
       return 1, "Artifact file not found: " + str(artifact)
     except PermissionError:
