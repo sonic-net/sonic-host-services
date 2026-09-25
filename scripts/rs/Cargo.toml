@@ -1,0 +1,26 @@
+[package]
+name = "telemetry_rs"
+version = "1.0.0"
+edition = "2021"
+description = "Daemon to export its cpu usage via OTEL"
+license = "MIT"
+
+[dependencies]
+opentelemetry = { version = "0.21", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.21", features = ["metrics", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.14", features = ["tonic", "metrics"] }
+sysinfo = "0.30"
+tokio = { version = "1", features = ["full"] }
+
+# config + errors
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[lib]
+name = "otel_lib_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "telemetry_rs"
+path = "src/main.rs"
