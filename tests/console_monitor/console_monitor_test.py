@@ -214,10 +214,12 @@ class TestDCEService(TestCase):
         # Verify port 1 config (new format only has baud)
         self.assertIn("1", configs)
         self.assertEqual(configs["1"]["baud"], 9600)
+        self.assertEqual(configs["1"]["flow_control"], "0")
         
         # Verify port 2 config
         self.assertIn("2", configs)
         self.assertEqual(configs["2"]["baud"], 115200)
+        self.assertEqual(configs["2"]["flow_control"], "1")
         
         # Verify port 3 config
         self.assertIn("3", configs)
@@ -365,6 +367,8 @@ class TestProxyMirrorHooks(TestCase):
         with mock.patch.object(console_monitor.os, "read", return_value=b"show\n"), \
                 mock.patch.object(console_monitor.os, "write", return_value=5):
             service._on_ptm_read()
+            service.mirror_manager.submit.assert_not_called()
+            service._flush_serial_tx()
 
         service.mirror_manager.submit.assert_called_once_with("tx", b"show\n")
 
@@ -1034,6 +1038,36 @@ class TestUtilityFunctions(TestCase):
             os.close(master)
             os.close(slave)
     
+    def test_configure_serial_enables_hardware_flow_control(self):
+        """Test configure_serial sets CRTSCTS when flow control is enabled."""
+        master, slave = os.openpty()
+
+        try:
+            console_monitor.configure_serial(master, 9600, True)
+
+            attrs = termios.tcgetattr(master)
+            self.assertTrue(attrs[2] & termios.CRTSCTS)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_configure_serial_clears_stale_hardware_flow_control(self):
+        """Test configure_serial clears CRTSCTS left over from a previous owner."""
+        master, slave = os.openpty()
+
+        try:
+            attrs = termios.tcgetattr(master)
+            attrs[2] |= termios.CRTSCTS
+            termios.tcsetattr(master, termios.TCSANOW, attrs)
+
+            console_monitor.configure_serial(master, 9600, False)
+
+            attrs = termios.tcgetattr(master)
+            self.assertFalse(attrs[2] & termios.CRTSCTS)
+        finally:
+            os.close(master)
+            os.close(slave)
+
     def test_configure_pty(self):
         """Test configure_pty sets raw mode and disables echo."""
         master, slave = os.openpty()
@@ -1489,6 +1523,31 @@ class TestDCEServiceExtended(TestCase):
             self.assertGreater(MockSubprocess.get_stopped_count(), 0)
             self.assertGreater(MockSubprocess.get_started_count(), 0)
     
+    def test_dce_sync_restarts_link_on_flow_control_change(self):
+        """Test _sync restarts services when flow control changes."""
+        initial_config = copy.deepcopy(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        MockConfigDb.set_config_db(initial_config)
+
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        service.active_links = set()
+        service._config_cache = {}
+
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
+            service._sync()
+
+            self.assertEqual(service._config_cache["1"]["flow_control"], "0")
+
+            MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"]["flow_control"] = "1"
+
+            MockSubprocess.reset()
+
+            service._sync()
+
+            self.assertEqual(service._config_cache["1"]["flow_control"], "1")
+            self.assertGreater(MockSubprocess.get_stopped_count(), 0)
+            self.assertGreater(MockSubprocess.get_started_count(), 0)
+
     def test_dce_stop_stops_all_links(self):
         """Test stop() stops all active links."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
@@ -2007,6 +2066,30 @@ class TestProxyServicePhases(TestCase):
             self.assertTrue(result)
             self.assertEqual(proxy.baud, 115200)
     
+    def test_proxy_wait_for_config_reads_flow_control(self):
+        """Test _wait_for_config picks up flow_control from CONFIG_DB."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+
+        mock_config_db = mock.Mock()
+        mock_config_db.get_entry.return_value = {"baud_rate": "9600", "flow_control": "1"}
+
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db):
+            self.assertTrue(proxy._wait_for_config())
+            self.assertTrue(proxy.flow_control)
+
+    def test_proxy_wait_for_config_flow_control_defaults_disabled(self):
+        """Test flow_control stays disabled when the field is absent."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+
+        mock_config_db = mock.Mock()
+        mock_config_db.get_entry.return_value = {"baud_rate": "9600"}
+
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db):
+            self.assertTrue(proxy._wait_for_config())
+            self.assertFalse(proxy.flow_control)
+
     def test_proxy_wait_for_config_stops_when_not_running(self):
         """Test _wait_for_config returns False when stopped."""
         proxy = console_monitor.ProxyService(link_id="1")
@@ -2084,6 +2167,26 @@ class TestProxyServicePhases(TestCase):
         self.assertTrue(result)
         self.assertIsNotNone(proxy.filter)
     
+    @mock.patch.object(console_monitor, 'MirrorControlServer')
+    @mock.patch.object(console_monitor, 'MirrorManager')
+    @mock.patch.object(console_monitor, 'set_nonblocking')
+    @mock.patch('os.open', return_value=12)
+    @mock.patch('os.pipe', return_value=(10, 11))
+    @mock.patch.object(console_monitor, 'Table')
+    @mock.patch.object(console_monitor, 'DBConnector')
+    @mock.patch.object(console_monitor, 'configure_serial')
+    def test_proxy_initialize_applies_flow_control(self, mock_configure_serial, *_):
+        """Test _initialize hands the configured flow control to the UART."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.device_path = "/dev/test"
+        proxy.ptm_path = "/dev/test-PTM"
+        proxy.baud = 115200
+        proxy.flow_control = True
+
+        self.assertTrue(proxy._initialize())
+
+        mock_configure_serial.assert_called_once_with(12, 115200, True)
+
     def test_proxy_initialize_failure(self):
         """Test _initialize returns False on error."""
         proxy = console_monitor.ProxyService(link_id="1")
@@ -2158,17 +2261,28 @@ class TestProxyServicePhases(TestCase):
             proxy._on_serial_read()
     
     def test_proxy_on_ptm_read(self):
-        """Test _on_ptm_read forwards data to serial."""
+        """Test _on_ptm_read queues PTM data; _flush_serial_tx writes it."""
         proxy = console_monitor.ProxyService(link_id="1")
         proxy.running = True
         proxy.ptm_fd = 10
         proxy.ser_fd = 11
-        
+
+        # os.write receives the live pending buffer, so copy it at call time.
+        writes = []
+
+        def record_write(fd, data):
+            writes.append((fd, bytes(data)))
+            return len(data)
+
         with mock.patch('os.read', return_value=b"user input"):
-            with mock.patch('os.write') as mock_write:
+            with mock.patch('os.write', side_effect=record_write):
                 proxy._on_ptm_read()
-                
-                mock_write.assert_called_once_with(11, b"user input")
+                self.assertEqual(writes, [])
+                self.assertEqual(bytes(proxy._serial_tx_pending), b"user input")
+
+                proxy._flush_serial_tx()
+                self.assertEqual(writes, [(11, b"user input")])
+                self.assertEqual(bytes(proxy._serial_tx_pending), b"")
     
     def test_proxy_on_ptm_read_handles_blocking_error(self):
         """Test _on_ptm_read handles BlockingIOError gracefully."""
