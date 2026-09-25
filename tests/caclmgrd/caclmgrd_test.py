@@ -90,7 +90,8 @@ class TestCaclmgrd(TestCase):
         mock_kill.return_value = None
         mock_state_db_connector = MagicMock()
         mock_config_db_connector = MagicMock()
-        mock_swsscommon.DBConnector.side_effect = [mock_state_db_connector, mock_config_db_connector, mock_state_db_connector]
+        mock_app_db_connector = MagicMock()
+        mock_swsscommon.DBConnector.side_effect = [mock_state_db_connector, mock_config_db_connector, mock_app_db_connector, mock_state_db_connector]
         mock_swsscommon.Select.OBJECT = 1
         mock_swsscommon.Select.return_value.select.return_value = (
             mock_swsscommon.Select.OBJECT,
@@ -152,6 +153,7 @@ class TestCaclmgrd(TestCase):
         manager.removeSelectable = MagicMock()
         manager.update_control_plane_acls = MagicMock()
         manager.allow_bfd_protocol = MagicMock()
+        manager.update_vxlan_dstport = MagicMock()
         manager.allow_vxlan_port = MagicMock()
         manager.block_vxlan_port = MagicMock()
         manager.update_dhcp_acl_for_mark_change = MagicMock()
@@ -166,6 +168,7 @@ class TestCaclmgrd(TestCase):
         # Asserting the method calls
         manager.update_control_plane_acls.assert_called()
         manager.allow_bfd_protocol.assert_called()
+        manager.update_vxlan_dstport.assert_not_called()
         manager.allow_vxlan_port.assert_not_called()
         manager.block_vxlan_port.assert_not_called()
         manager.update_dhcp_acl_for_mark_change.assert_called()
@@ -196,7 +199,8 @@ class TestCaclmgrd(TestCase):
         )
         mock_state_db_connector = MagicMock()
         mock_config_db_connector = MagicMock()
-        mock_swsscommon.DBConnector.side_effect = [mock_state_db_connector, mock_config_db_connector, mock_state_db_connector]
+        mock_app_db_connector = MagicMock()
+        mock_swsscommon.DBConnector.side_effect = [mock_state_db_connector, mock_config_db_connector, mock_app_db_connector, mock_state_db_connector]
         mock_swsscommon.Select.OBJECT = 1
         mock_swsscommon.Select.return_value.select.return_value = (
             mock_swsscommon.Select.OBJECT,

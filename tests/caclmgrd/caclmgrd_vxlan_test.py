@@ -46,6 +46,11 @@ class TestCaclmgrdVxlan(TestCase):
                 mocked_subprocess.call.return_value = call_rc
 
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+                app_db_connector = MagicMock()
+                app_db_connector.hget.return_value = test_data["vxlan_port"]
+                caclmgrd_daemon.update_vxlan_dstport(app_db_connector)
+                app_db_connector.hget.assert_called_once_with("SWITCH_TABLE:switch", "vxlan_port")
+                assert caclmgrd_daemon.VxlanDstPort == test_data["vxlan_port"]
                 ret = caclmgrd_daemon.allow_vxlan_port('', [])
                 assert ret == False
                 caclmgrd_daemon.block_vxlan_port('')
@@ -55,6 +60,8 @@ class TestCaclmgrdVxlan(TestCase):
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
                 caclmgrd_daemon.block_vxlan_port('')
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_del_subprocess_calls"], any_order=True)
+                assert caclmgrd_daemon.VxlanDstPort == "4789"
+                caclmgrd_daemon.update_vxlan_dstport(app_db_connector)
                 caclmgrd_daemon.allow_vxlan_port('', data)
                 mocked_subprocess.Popen.reset_mock()
                 caclmgrd_daemon.num_changes[''] = 1
