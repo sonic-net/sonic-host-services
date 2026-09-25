@@ -473,7 +473,7 @@ def set_nonblocking(fd: int) -> None:
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
-def configure_serial(fd: int, baud: int) -> None:
+def configure_serial(fd: int, baud: int, flow_control: bool = False) -> None:
     """Configure serial port parameters"""
     attrs = termios.tcgetattr(fd)
     attrs[0] &= ~(termios.IGNBRK | termios.BRKINT | termios.PARMRK |
@@ -482,6 +482,12 @@ def configure_serial(fd: int, baud: int) -> None:
     attrs[1] &= ~termios.OPOST
     attrs[2] &= ~(termios.CSIZE | termios.PARENB)
     attrs[2] |= (termios.CS8 | termios.CREAD | termios.CLOCAL)
+    # Set CRTSCTS either way: the kernel keeps termios across opens, so relying
+    # on the driver default would inherit whatever the previous owner left.
+    if flow_control:
+        attrs[2] |= termios.CRTSCTS
+    else:
+        attrs[2] &= ~termios.CRTSCTS
     attrs[3] &= ~(termios.ECHO | termios.ECHONL | termios.ICANON |
                   termios.ISIG | termios.IEXTEN)
     attrs[6][termios.VMIN] = 0
@@ -668,6 +674,7 @@ class ProxyService:
 
         # Configuration (obtained in wait phases)
         self.baud: int = DEFAULT_BAUD
+        self.flow_control: bool = False
         self.device_path: str = ""
         self.ptm_path: str = ""
         self.logging_enabled: bool = False
@@ -685,6 +692,10 @@ class ProxyService:
         self.filter: Optional[FrameFilter] = None
         self._ptm_tx_pending = bytearray()
         self._ptm_write_failed = False
+        # Bytes already consumed from PTM but not yet accepted by the UART.
+        # Keep at most one PTM read pending so UART backpressure propagates
+        # through socat/PTY to picocom and SSH.
+        self._serial_tx_pending = bytearray()
 
         # State tracking
         self._current_oper_state: Optional[str] = None
@@ -758,7 +769,9 @@ class ProxyService:
                 self.baud = int(entry.get('baud_rate', DEFAULT_BAUD))
                 self.logging_enabled = entry.get('logging_enabled', 'no') == 'yes'
                 self.log_file_path = entry.get('log_file') or default_log_file(self.link_id)
+                self.flow_control = entry.get('flow_control', '0') == '1'
                 log.info(f"[{self.link_id}] Config loaded: baud={self.baud}, "
+                         f"flow_control={'enabled' if self.flow_control else 'disabled'}, "
                          f"logging={'enabled' if self.logging_enabled else 'disabled'}, "
                          f"log_file={self.log_file_path}")
                 log.debug(f"[{self.link_id}] Full CONSOLE_PORT entry: {entry}")
@@ -810,7 +823,7 @@ class ProxyService:
 
             # Open serial port
             self.ser_fd = os.open(self.device_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-            configure_serial(self.ser_fd, self.baud)
+            configure_serial(self.ser_fd, self.baud, self.flow_control)
 
             # Open PTM
             self.ptm_fd = os.open(self.ptm_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
@@ -871,13 +884,24 @@ class ProxyService:
                     else:
                         select_timeout = 0
 
-                read_fds = [self.ptm_fd, self._wake_r]
+                # Stop reading a side while bytes for the other side are pending,
+                # so a full UART or PTM backpressures its sender instead of
+                # growing the queue.
+                read_fds = [self._wake_r]
                 if not self._ptm_tx_pending:
                     read_fds.append(self.ser_fd)
-                write_fds = [self.ptm_fd] if self._ptm_tx_pending else []
+                if not self._serial_tx_pending:
+                    read_fds.append(self.ptm_fd)
+                write_fds = []
+                if self._ptm_tx_pending:
+                    write_fds.append(self.ptm_fd)
+                if self._serial_tx_pending:
+                    write_fds.append(self.ser_fd)
+
                 readable, writable, _ = select.select(
                     read_fds,
-                    write_fds, [],
+                    write_fds,
+                    [],
                     select_timeout
                 )
 
@@ -900,6 +924,8 @@ class ProxyService:
 
                 if self.ptm_fd in writable:
                     self._flush_ptm_tx()
+                if self.ser_fd in writable:
+                    self._flush_serial_tx()
 
                 # Check heartbeat timeout
                 self._check_heartbeat_timeout()
@@ -990,17 +1016,28 @@ class ProxyService:
             pass
 
     def _on_ptm_read(self) -> None:
-        """PTM data read callback"""
-        if not self.running:
+        """Move one PTM chunk into the pending UART queue."""
+        if not self.running or self._serial_tx_pending:
             return
         try:
             data = os.read(self.ptm_fd, 4096)
             if data:
-                written = os.write(self.ser_fd, data)
-                if written and self.mirror_manager:
-                    self.mirror_manager.submit("tx", data[:written])
+                self._serial_tx_pending.extend(data)
         except (BlockingIOError, OSError):
             pass
+
+    def _flush_serial_tx(self) -> None:
+        """Write pending PTM data without losing partial/EAGAIN writes."""
+        if not self.running or not self._serial_tx_pending:
+            return
+        try:
+            written = os.write(self.ser_fd, self._serial_tx_pending)
+        except BlockingIOError:
+            return
+        if written > 0:
+            if self.mirror_manager:
+                self.mirror_manager.submit("tx", bytes(self._serial_tx_pending[:written]))
+            del self._serial_tx_pending[:written]
 
     def _on_frame_received(self, frame: Frame) -> None:
         """Frame received callback"""
@@ -1296,6 +1333,7 @@ class DCEService:
                     "log_file": entry.get("log_file") or default_log_file(key_str),
                     "logrotate_size": entry.get("logrotate_size", DEFAULT_LOGROTATE_SIZE),
                     "logrotate_count": str(entry.get("logrotate_count", DEFAULT_LOGROTATE_COUNT)),
+                    "flow_control": entry.get("flow_control", "0"),
                 }
         except Exception as e:
             log.error(f"DCE: Failed to get configs: {e}")
