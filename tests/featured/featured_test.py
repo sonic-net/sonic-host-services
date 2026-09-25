@@ -87,7 +87,7 @@ class TestFeatureHandler(TestCase):
 
                 with open(feature_systemd_config_file_path) as systemd_config_file:
                     status = systemd_config_file.read().strip()
-                    if device_type == 'SpineRouter' and is_dependent_feature:
+                    if device_type in ['SpineRouter', 'UpperSpineRouter', 'FabricSpineRouter'] and is_dependent_feature:
                         assert status == '[Service]\nRestart=no'
                     else:
                         assert status == '[Service]\nRestart={}'.format(truth_table[auto_restart_status])
