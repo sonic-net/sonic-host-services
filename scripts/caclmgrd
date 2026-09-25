@@ -142,6 +142,7 @@ class ControlPlaneAclManager(logger.Logger):
     bfdAllowed = False
     VxlanAllowed = False
     VxlanSrcIP = ""
+    VxlanDstPort = "4789"
     RedfishAllowed = False
     DhcpServerSyslogAllowed = False
     # a map from dpu name to port
@@ -1077,6 +1078,9 @@ class ControlPlaneAclManager(logger.Logger):
         if iptables_cmds:
             self.run_commands(iptables_cmds)
 
+    def update_vxlan_dstport(self, app_db_connector):
+        self.VxlanDstPort = app_db_connector.hget("SWITCH_TABLE:switch", "vxlan_port")
+        self.log_info(f"Updated cached vxlan dst port to {self.VxlanDstPort}")
 
     def get_vxlan_port_iptable_commands(self, namespace, data):
         iptables_cmds = []
@@ -1093,10 +1097,10 @@ class ControlPlaneAclManager(logger.Logger):
         ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
         if isinstance(ip_addr, ipaddress.IPv6Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
+                    self.exclude_mgmt_port(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', self.VxlanDstPort, '-j', 'ACCEPT']))
         elif isinstance(ip_addr, ipaddress.IPv4Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
+                    self.exclude_mgmt_port(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', self.VxlanDstPort, '-j', 'ACCEPT']))
 
         return iptables_cmds
 
@@ -1119,15 +1123,16 @@ class ControlPlaneAclManager(logger.Logger):
         ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
         if isinstance(ip_addr, ipaddress.IPv6Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
+                    self.exclude_mgmt_port(['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', self.VxlanDstPort, '-j', 'ACCEPT']))
         elif isinstance(ip_addr, ipaddress.IPv4Address):
             iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
+                    self.exclude_mgmt_port(['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', self.VxlanDstPort, '-j', 'ACCEPT']))
 
         self.run_commands(iptables_cmds)
         self.VxlanAllowed = False
         self.log_info("Disabled vxlan port for source ip " + self.VxlanSrcIP)
         self.VxlanSrcIP = ""
+        self.VxlanDstPort = "4789"
         return True
 
     def allow_redfish(self):
@@ -1243,6 +1248,7 @@ class ControlPlaneAclManager(logger.Logger):
         # set up state_db connector
         state_db_connector = swsscommon.DBConnector("STATE_DB", 0)
         config_db_connector = swsscommon.DBConnector("CONFIG_DB", 0)
+        app_db_connector = swsscommon.DBConnector("APPL_DB", 0)
 
         if self.DualToR:
             self.log_info("Dual ToR mode")
@@ -1363,6 +1369,7 @@ class ControlPlaneAclManager(logger.Logger):
                     if not key:
                         break
                     if op == 'SET' and not self.VxlanAllowed:
+                        self.update_vxlan_dstport(app_db_connector)
                         self.allow_vxlan_port(namespace, fvs)
                     elif op == 'DEL' and self.VxlanAllowed:
                         self.block_vxlan_port(namespace)
