@@ -62,6 +62,8 @@ class FakeStateDB(StateDB):
     def __init__(self, values=None):
         self.values = {} if values is None else values
         self.ttls = {}
+        self.streams = {}
+        self._stream_sequence = 0
         self.delete_calls = 0
         self.read_error = None
         self.write_error = None
@@ -116,6 +118,28 @@ class FakeStateDB(StateDB):
             self._check_write()
             for field in fields:
                 self.values.get(key, {}).pop(field, None)
+
+    def replace_fault(self, key, values, ttl_seconds, transition):
+        from dldd.telemetry import TelemetryPublisher
+
+        with self._lock:
+            self._check_read()
+            self._check_write()
+            previous_status = self.values.get(key, {}).get("status")
+            self.values[key] = {
+                name: _redis_value(value) for name, value in values.items()
+            }
+            if ttl_seconds is None:
+                self.ttls.pop(key, None)
+            else:
+                self.ttls[key] = ttl_seconds
+            if previous_status != self.values[key]["status"]:
+                stream = self.streams.setdefault(
+                    TelemetryPublisher.FAULT_TRANSITIONS_STREAM, []
+                )
+                self._stream_sequence += 1
+                stream.append((f"{self._stream_sequence}-0", dict(transition)))
+                del stream[:-TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN]
 
     def delete(self, key):
         with self._lock:

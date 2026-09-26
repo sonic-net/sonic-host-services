@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import logging
+import time
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 from .config import DLDDConfig
@@ -12,10 +13,69 @@ from .ownership import DLDD_FAULT_PRODUCER
 from .rule_schema.errors import bound_diagnostic
 from .runtime import FaultRecord
 from .sonic_hash import SonicHashReader, decode_db_hash, decode_db_text
-from .timestamps import floor_timestamp_fields
+from .timestamps import floor_timestamp, floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+_REPLACE_FAULT_SCRIPT = """
+local fault_type = redis.call('TYPE', KEYS[1]).ok
+local stream_type = redis.call('TYPE', KEYS[2]).ok
+if fault_type ~= 'none' and fault_type ~= 'hash' then
+    return redis.error_reply('FAULT_INFO key is not a hash')
+end
+if stream_type ~= 'none' and stream_type ~= 'stream' then
+    return redis.error_reply('DLDD_FAULT_TRANSITIONS key is not a stream')
+end
+
+local status = ARGV[1]
+local ttl = tonumber(ARGV[2])
+local maxlen = tonumber(ARGV[3])
+local hash_count = tonumber(ARGV[4])
+local index = 5
+local hash_args = {}
+local wanted = {}
+for _ = 1, hash_count do
+    local field = ARGV[index]
+    hash_args[#hash_args + 1] = field
+    hash_args[#hash_args + 1] = ARGV[index + 1]
+    wanted[field] = true
+    index = index + 2
+end
+local transition_count = tonumber(ARGV[index])
+index = index + 1
+local transition_args = {KEYS[2], 'MAXLEN', '=', maxlen, '*'}
+for _ = 1, transition_count do
+    transition_args[#transition_args + 1] = ARGV[index]
+    transition_args[#transition_args + 1] = ARGV[index + 1]
+    index = index + 2
+end
+
+local changed = redis.call('HGET', KEYS[1], 'status') ~= status
+local old_fields = redis.call('HKEYS', KEYS[1])
+local stale = {}
+for _, field in ipairs(old_fields) do
+    if not wanted[field] then
+        stale[#stale + 1] = field
+    end
+end
+-- XADD runs first: an unsupported command or an invalid stream cannot
+-- publish a new FAULT_INFO status without its source transition.
+if changed then
+    redis.call('XADD', unpack(transition_args))
+end
+redis.call('HSET', KEYS[1], unpack(hash_args))
+if #stale > 0 then
+    redis.call('HDEL', KEYS[1], unpack(stale))
+end
+if ttl < 0 then
+    redis.call('PERSIST', KEYS[1])
+else
+    redis.call('EXPIRE', KEYS[1], ttl)
+end
+return changed and 1 or 0
+"""
 
 
 def _json_safe(value: Any) -> Any:
@@ -97,6 +157,17 @@ class StateDB:
         else:
             self.expire(key, ttl_seconds)
 
+    def replace_fault(
+        self,
+        key: str,
+        values: Mapping[str, Any],
+        ttl_seconds: Optional[int],
+        transition: Mapping[str, str],
+    ) -> None:
+        """Compare, append a change, and replace the row atomically."""
+
+        raise NotImplementedError
+
     def delete(self, key: str) -> None:
         """Delete one key."""
 
@@ -112,6 +183,11 @@ class StateDB:
         """Return one hash with text field names and values."""
 
         raise NotImplementedError
+
+    def fault_exists(self, key: str) -> bool:
+        """Check whether the published fault row is still retained."""
+
+        return bool(self.hgetall(key))
 
     def keys(self, pattern: str) -> Iterable[str]:
         """Return text keys matching a database pattern."""
@@ -184,6 +260,41 @@ class SonicStateDB(StateDB):
     def replace_hash(
         self, key: str, values: Mapping[str, Any], ttl_seconds: Optional[int]
     ) -> None:
+        self._replace_hash(key, values, ttl_seconds)
+
+    def replace_fault(
+        self,
+        key: str,
+        values: Mapping[str, Any],
+        ttl_seconds: Optional[int],
+        transition: Mapping[str, str],
+    ) -> None:
+        mapping = _redis_mapping(values)
+        arguments = [
+            mapping["status"],
+            -1 if ttl_seconds is None else ttl_seconds,
+            TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN,
+            len(mapping),
+        ]
+        for name, value in mapping.items():
+            arguments.extend((name, value))
+        arguments.append(len(transition))
+        for name, value in transition.items():
+            arguments.extend((name, value))
+        self._db().eval(
+            _REPLACE_FAULT_SCRIPT,
+            2,
+            key,
+            TelemetryPublisher.FAULT_TRANSITIONS_STREAM,
+            *arguments,
+        )
+
+    def _replace_hash(
+        self,
+        key: str,
+        values: Mapping[str, Any],
+        ttl_seconds: Optional[int],
+    ) -> None:
         client = self._db()
         mapping = _redis_mapping(values)
         existing = client.hkeys(key)
@@ -212,6 +323,9 @@ class SonicStateDB(StateDB):
             return self._hash_reader.read("STATE_DB", key)
         return decode_db_hash(self._db().hgetall(key))
 
+    def fault_exists(self, key: str) -> bool:
+        return bool(self._db().exists(key))
+
     def keys(self, pattern: str) -> Iterable[str]:
         if self._hash_reader is not None:
             return self._hash_reader.keys("STATE_DB", pattern)
@@ -229,6 +343,9 @@ class TelemetryPublisher:
     RULE_STATUS_PREFIX = "DLDD_RULE_STATUS|rule|"
     RULE_DETAIL_PREFIX = "DLDD_RULE_DETAIL|rule|"
     STATUS_TTL = 120
+    FAULT_TRANSITIONS_STREAM = "DLDD_FAULT_TRANSITIONS"
+    # Exact MAXLEN bounds the stream even if the consumer is unavailable.
+    FAULT_TRANSITIONS_MAXLEN = 10000
 
     def __init__(
         self,
@@ -288,6 +405,7 @@ class TelemetryPublisher:
         serial_number: Optional[str] = None,
         remote_action_time_window: int = 0,
         local_action_details: Optional[Mapping[str, Any]] = None,
+        observation_time: Optional[float] = None,
     ) -> bool:
         if serial_number is None:
             serial_number = fault.serial_number
@@ -343,6 +461,11 @@ class TelemetryPublisher:
         }
         if fault.healthz_artifact is not None:
             payload["healthz_artifact"] = dict(fault.healthz_artifact)
+        if fault.status == "INACTIVE" and fault.inactive_deadline is not None:
+            payload["inactive_since"] = (
+                fault.inactive_deadline
+                - self.config.inactive_fault_retention_period
+            )
         if fault.stale_source:
             payload["source_stale"] = True
         payload = _json_safe(floor_timestamp_fields(payload))
@@ -352,7 +475,32 @@ class TelemetryPublisher:
                 if fault.status == "ACTIVE"
                 else self.config.inactive_fault_retention_period
             )
-            self.state_db.replace_hash(fault.redis_key, payload, ttl)
+            observed_at = observation_time
+            if observed_at is None:
+                if fault.status == "ACTIVE":
+                    observed_at = fault.last_detection_time
+                elif fault.inactive_deadline is not None:
+                    observed_at = (
+                        fault.inactive_deadline
+                        - self.config.inactive_fault_retention_period
+                    )
+                else:
+                    observed_at = time.time()
+            transition = {
+                "producer": DLDD_FAULT_PRODUCER,
+                "fault_key": fault.redis_key,
+                "component": fault.component_name,
+                "component_type": fault.component_type,
+                "symptom": fault.symptom,
+                "status": fault.status,
+                "occurrence": str(fault.occurrences),
+                "observed_at": str(floor_timestamp(observed_at)),
+            }
+            if fault.healthz_artifact is not None:
+                artifact_id = fault.healthz_artifact.get("artifact_id")
+                if artifact_id:
+                    transition["artifact_id"] = str(artifact_id)
+            self.state_db.replace_fault(fault.redis_key, payload, ttl, transition)
             return True
         except Exception as error:
             LOGGER.error("unable to publish %s: %s", fault.redis_key, error)
