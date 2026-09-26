@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from collections import deque
@@ -66,6 +67,7 @@ class PendingFault:
     recheck_failed: bool = False
     recheck_deadline: Optional[float] = None
     recheck_attempts: int = 0
+    last_confirmed_at: Optional[float] = None
 
 
 @dataclass
@@ -78,6 +80,7 @@ class Reconciliation:
     hold_deadline: float = 0.0
     recheck_deadline: float = 0.0
     recheck_attempts: int = 1
+    last_confirmed_at: Optional[float] = None
 
 
 class PrimaryOrchestrator:
@@ -420,7 +423,6 @@ class PrimaryOrchestrator:
         )
         record.status = "INACTIVE"
         record.reason = reason
-        record.last_detection_time = event.observed_at
         record.inactive_deadline = (
             event.observed_at + self.config.inactive_fault_retention_period
         )
@@ -447,9 +449,9 @@ class PrimaryOrchestrator:
                     refresh_remote_window=True,
                 )
             else:
-                self._publish_fault_record(record)
+                self._publish_fault_record(record, observation_time=event.observed_at)
         elif owner == rule_id:
-            self._publish_fault_record(record)
+            self._publish_fault_record(record, observation_time=event.observed_at)
 
         return True
 
@@ -564,6 +566,7 @@ class PrimaryOrchestrator:
                 and existing.action_suppressed
             ):
                 self.arbiter.update(decision)
+                self._confirm_asserted_fault(identity, event.event_timestamp)
                 self._resume(event, "local action already executed for active lifetime")
                 return
             if self.action_runner is None:
@@ -592,6 +595,8 @@ class PrimaryOrchestrator:
                 else None
             )
             self._publish_decision(decision, artifact=artifact)
+        elif decision.active and event.result.result == EvaluationResultType.MATCH:
+            self._confirm_asserted_fault(identity, event.event_timestamp)
         self._resume(event, "evidence processed")
 
     def _hold_owned_evidence(
@@ -645,6 +650,11 @@ class PrimaryOrchestrator:
         state.outstanding_rechecks.discard(event.correlation_key)
         if decision is not None:
             state.last_decision = decision
+            if decisive and decision.active and result_type == EvaluationResultType.MATCH:
+                state.last_confirmed_at = max(
+                    state.last_confirmed_at or event.event_timestamp,
+                    event.event_timestamp,
+                )
         if not decisive:
             state.recheck_failed = True
         event_hold_deadline = hold_deadline
@@ -924,6 +934,7 @@ class PrimaryOrchestrator:
             future=future,
             hold_deadline=self.clock() + hold_budget,
             action_deadline=self.clock() + max_timeout + 30,
+            last_confirmed_at=decision.event.event_timestamp,
         )
         self.pending[identity] = pending
         # Reserve fault ownership while local remediation runs.
@@ -969,6 +980,8 @@ class PrimaryOrchestrator:
             occurrences=occurrences,
             events=decision.event_snapshots,
         )
+        if previous is not None:
+            record.origin_time = previous.origin_time
         record.local_action_state = "RUNNING"
         record.local_action_details = details
         record.action_suppressed = True
@@ -1257,6 +1270,12 @@ class PrimaryOrchestrator:
             self.uncertain_faults.add(identity)
         else:
             self.uncertain_faults.discard(identity)
+        confirmed_at = pending.last_confirmed_at
+        observation_time = (
+            confirmed_at
+            if active and decision.event.result.result != EvaluationResultType.MATCH
+            else None
+        )
         self._publish_decision(
             final_decision,
             local_action_state=action_state,
@@ -1265,6 +1284,9 @@ class PrimaryOrchestrator:
             artifact=pending.artifact,
             action_suppressed=True,
             stale_source=uncertain,
+            observation_time=observation_time,
+            episode_started_at=pending.first_decision.event.event_timestamp,
+            confirmed_at=confirmed_at,
         )
         for key in pending.execution.work_keys:
             self._release_key(key, "post_action_lifecycle_complete")
@@ -1307,9 +1329,18 @@ class PrimaryOrchestrator:
             )
             if record.status != "ACTIVE":
                 # Retained inactive rows preserve occurrence history.
+                try:
+                    inactive_since = float(
+                        payload.get("inactive_since", record.last_detection_time)
+                    )
+                    if not math.isfinite(inactive_since):
+                        raise ValueError("non-finite inactive_since")
+                except (TypeError, ValueError):
+                    # Rows from older producers used last_detection_time as
+                    # their clear/deadline clock and lack inactive_since.
+                    inactive_since = record.last_detection_time
                 record.inactive_deadline = (
-                    record.last_detection_time
-                    + self.config.inactive_fault_retention_period
+                    inactive_since + self.config.inactive_fault_retention_period
                 )
                 self.faults[identity] = record
                 self.published_by_key[
@@ -1331,9 +1362,9 @@ class PrimaryOrchestrator:
             if not current:
                 record.status = "INACTIVE"
                 record.repair_actions = ()
-                record.last_detection_time = self.wall_clock()
+                cleared_at = self.wall_clock()
                 record.inactive_deadline = (
-                    record.last_detection_time
+                    cleared_at
                     + self.config.inactive_fault_retention_period
                 )
                 record.reason = bound_diagnostic(
@@ -1343,7 +1374,7 @@ class PrimaryOrchestrator:
                 self.published_by_key[
                     (record.component_name, record.symptom)
                 ] = record.rule_id
-                self._publish_fault_record(record)
+                self._publish_fault_record(record, observation_time=cleared_at)
                 continue
             self.faults[identity] = record
             self.published_by_key[(record.component_name, record.symptom)] = record.rule_id
@@ -1401,6 +1432,11 @@ class PrimaryOrchestrator:
                 decision.event,
             )
             if state_changed:
+                if reconciliation.last_confirmed_at is not None:
+                    record.last_detection_time = max(
+                        record.last_detection_time,
+                        reconciliation.last_confirmed_at,
+                    )
                 self._publish_decision(
                     effective,
                     local_action_state=record.local_action_state,
@@ -1411,8 +1447,11 @@ class PrimaryOrchestrator:
                     stale_source=uncertain,
                 )
             elif active:
-                # Preserve the timestamp when recheck does not change state.
                 self.arbiter.update(effective)
+                if reconciliation.last_confirmed_at is not None:
+                    self._confirm_asserted_fault(
+                        identity, reconciliation.last_confirmed_at
+                    )
                 self.next_active_recheck[identity] = (
                     self.clock() + self.config.active_fault_recheck_interval
                 )
@@ -1481,14 +1520,21 @@ class PrimaryOrchestrator:
         artifact=None,
         action_suppressed: bool = False,
         stale_source: bool = False,
+        observation_time: Optional[float] = None,
+        episode_started_at: Optional[float] = None,
+        confirmed_at: Optional[float] = None,
     ) -> None:
         execution = decision.execution
         metadata = execution.signature.metadata
         identity = (metadata.id, execution.component_name)
         existing = self.faults.get(identity)
-        now = decision.event.event_timestamp
+        now = (
+            observation_time
+            if observation_time is not None
+            else decision.event.event_timestamp
+        )
         status = "ACTIVE" if decision.active else "INACTIVE"
-        state_changed = existing is None or existing.status != status
+        prior_status = existing.status if existing is not None else None
         if existing is None:
             existing = self._new_fault_record(
                 execution,
@@ -1496,9 +1542,30 @@ class PrimaryOrchestrator:
                 observed_at=now,
             )
             self.faults[identity] = existing
-        elif existing.status == "INACTIVE" and status == "ACTIVE":
-            existing.occurrences += 1
-            existing.origin_time = now
+        elif prior_status == "CANDIDATE" or (
+            prior_status == "INACTIVE" and status == "ACTIVE"
+        ):
+            try:
+                retained = self.telemetry.state_db.fault_exists(existing.redis_key)
+            except Exception as error:
+                LOGGER.warning(
+                    "unable to check retained fault %s: %s",
+                    existing.redis_key,
+                    error,
+                )
+                retained = True
+            if not retained:
+                # An expired INACTIVE row starts a fresh retained fault even
+                # when this process still holds the old in-memory record.
+                existing.origin_time = (
+                    episode_started_at
+                    if episode_started_at is not None
+                    else now
+                )
+                existing.occurrences = 1
+                existing.healthz_artifact = None
+            elif prior_status == "INACTIVE" and status == "ACTIVE":
+                existing.occurrences += 1
         # Refresh rule-owned metadata whenever a record is reused.
         existing.rule_name = metadata.name
         existing.rule_version = metadata.version
@@ -1523,8 +1590,14 @@ class PrimaryOrchestrator:
             if status == "INACTIVE"
             else None
         )
-        if state_changed:
-            existing.last_detection_time = now
+        if status == "ACTIVE":
+            confirmation = confirmed_at
+            if confirmation is None and decision.event.result.result == EvaluationResultType.MATCH:
+                confirmation = now
+            if confirmation is not None:
+                existing.last_detection_time = max(
+                    existing.last_detection_time, confirmation
+                )
         if decision.event_snapshots:
             existing.events = decision.event_snapshots
         if not preserve_action_history:
@@ -1563,8 +1636,20 @@ class PrimaryOrchestrator:
             previous_rule = self.published_by_key.get(fault_key)
             if previous_rule is not None and previous_rule != metadata.id:
                 previous = self.faults.get((previous_rule, execution.component_name))
-                if previous is not None:
+                try:
+                    retained_previous = self.telemetry.state_db.fault_exists(
+                        existing.redis_key
+                    )
+                except Exception as error:
+                    LOGGER.warning(
+                        "unable to check retained fault %s: %s",
+                        existing.redis_key,
+                        error,
+                    )
+                    retained_previous = True
+                if previous is not None and retained_previous:
                     if previous.status == "INACTIVE":
+                        existing.origin_time = previous.origin_time
                         existing.occurrences = previous.occurrences + 1
                     else:
                         existing.origin_time = previous.origin_time
@@ -1573,7 +1658,20 @@ class PrimaryOrchestrator:
         elif status == "INACTIVE":
             published_rule = self.published_by_key.get(fault_key)
             if published_rule is not None and published_rule != metadata.id:
-                return
+                try:
+                    retained_owner = self.telemetry.state_db.fault_exists(
+                        existing.redis_key
+                    )
+                except Exception as error:
+                    LOGGER.warning(
+                        "unable to check retained fault %s: %s",
+                        existing.redis_key,
+                        error,
+                    )
+                    retained_owner = True
+                if retained_owner:
+                    return
+                self.published_by_key.pop(fault_key, None)
             if winner is not None:
                 winner_id = winner.signature.metadata.id
                 alternate = self.faults.get((winner_id, execution.component_name))
@@ -1588,12 +1686,27 @@ class PrimaryOrchestrator:
                         "action_suppressed": alternate.action_suppressed,
                     }
                     alternate.remote_action_time_window = alternate_remote.time_window
-                    self._publish_fault_record(alternate)
+                    self._publish_fault_record(alternate, observation_time=now)
                     return
             # Retain Redis-key ownership with inactive occurrence history.
             self.published_by_key[fault_key] = metadata.id
 
-        self._publish_fault_record(existing)
+        self._publish_fault_record(existing, observation_time=now)
+
+    def _confirm_asserted_fault(
+        self, identity: Tuple[int, str], observed_at: float
+    ) -> None:
+        """Record a new positive sample without creating a status event."""
+
+        record = self.faults.get(identity)
+        if (
+            record is None
+            or record.status != "ACTIVE"
+            or observed_at <= record.last_detection_time
+        ):
+            return
+        record.last_detection_time = observed_at
+        self._publish_fault_record(record, observation_time=observed_at)
 
     def _refresh_fault_source_staleness(self) -> None:
         failed_keys = self._failed_correlation_keys()
@@ -1632,6 +1745,7 @@ class PrimaryOrchestrator:
         record: FaultRecord,
         *,
         refresh_remote_window: bool = False,
+        observation_time: Optional[float] = None,
     ) -> bool:
         identity = (record.rule_id, record.component_name)
         owner = self.published_by_key.get(
@@ -1650,6 +1764,7 @@ class PrimaryOrchestrator:
         published = self.telemetry.publish_fault(
             record,
             remote_action_time_window=record.remote_action_time_window,
+            observation_time=observation_time,
         )
         if published:
             self.dirty_faults.discard(identity)

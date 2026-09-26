@@ -462,7 +462,8 @@ def test_dse_retirement_ownership_lifecycle():
     assert payload["reason"] == (
         "DSE discovery no longer reports instance 'DYNAMIC0'"
     )
-    assert payload["last_detection_time"] == "1234"
+    assert payload["last_detection_time"] == "11"
+    assert payload["inactive_since"] == "1234.9"
     assert json.loads(payload["repair_actions"]) == []
     assert database.ttls[record.redis_key] == 42
     assert record.inactive_deadline == 1276.9
@@ -794,7 +795,13 @@ def test_local_action_recheck_and_artifact_lifecycle():
     assert action_state["started_at"] == 100.0
     assert action_state["completed_at"] == 101.0
     assert database.values[fault_key]["origin_time"] == "101"
-    assert database.values[fault_key]["last_detection_time"] == "102"
+    assert database.values[fault_key]["last_detection_time"] == "101"
+    assert database.values[fault_key]["inactive_since"] == "102.0"
+    stream = database.streams["DLDD_FAULT_TRANSITIONS"]
+    assert len(stream) == 1
+    assert stream[0][1]["status"] == "INACTIVE"
+    assert stream[0][1]["observed_at"] == "102"
+    assert stream[0][1]["artifact_id"] == "dldd-test.tar.gz"
     assert json.loads(database.values[fault_key]["events"])[0]["value_read"] == 51.5
     assert (
         json.loads(database.values[fault_key]["healthz_artifact"])["artifact_id"]
@@ -1053,7 +1060,7 @@ def test_vendor_lifecycle_hook_suspends_and_resumes_expected_source_outage():
     assert orchestrator.source_status[item.source_id]["state"] == "UNAVAILABLE"
 
 
-def test_republishing_same_active_state_does_not_change_last_detection_time():
+def test_confirmed_active_sample_advances_detection_without_new_transition():
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -1079,7 +1086,9 @@ def test_republishing_same_active_state_does_not_change_last_detection_time():
     orchestrator._publish_decision(repeated)
 
     record = orchestrator.faults[(item.rule_id, item.component_name)]
-    assert record.last_detection_time == 101.0
+    assert record.last_detection_time == 102.0
+    assert database.values[record.redis_key]["last_detection_time"] == "102"
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
 
 
 def test_action_runner_failure_and_deadline_still_recheck():
@@ -1297,6 +1306,24 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     assert database.values[key]["reason"] == (
         "stale rule/source after DLDD restart"
     )
+    assert database.values[key]["origin_time"] == "10"
+    assert database.values[key]["last_detection_time"] == "11"
+    assert database.values[key]["inactive_since"] == "100.0"
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+
+    restarted = PrimaryOrchestrator(
+        Queue(),
+        bundle.monitor_plans,
+        bundle.work_items,
+        CorrelationEngine(bundle.signatures),
+        TelemetryPublisher(database, DLDDConfig()),
+        DLDDConfig(),
+        "sha256:new",
+    )
+    restarted.reconcile_existing_faults()
+    retained = restarted.faults[(item.rule_id, item.component_name)]
+    assert retained.inactive_deadline == 3700.0
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
 
     decision = orchestrator.correlation.consume(
         evidence(item, EvaluationResultType.MATCH, 1)
@@ -1307,6 +1334,11 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     assert database.values[key]["active_rules_checksum"] == "sha256:new"
     assert database.values[key]["schema_version"] == item.schema_version
     assert database.values[key]["reason"] == ""
+    assert database.values[key]["origin_time"] == "10"
+    assert database.values[key]["last_detection_time"] == "101"
+    assert [entry[1]["status"] for entry in database.streams["DLDD_FAULT_TRANSITIONS"]] == [
+        "INACTIVE", "ACTIVE",
+    ]
 
     # Normal periodic confirmation is operational work, not a diagnostic.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")

@@ -583,6 +583,7 @@ def test_fault_lifetime_suppression_failure_and_occurrence_projection():
 
     orchestrator, bundle, item, database, _ = runtime_fixture()
     _, record = active_record(orchestrator, item, action_suppressed=True)
+    orchestrator.telemetry.publish_fault(record)
 
     orchestrator.process_event(event(item, EvaluationResultType.MATCH))
 
@@ -591,7 +592,8 @@ def test_fault_lifetime_suppression_failure_and_occurrence_projection():
     assert "already executed" in command.reason
     assert not orchestrator.pending
     assert record.status == "ACTIVE"
-    assert not database.values
+    assert database.values[record.redis_key]["last_detection_time"] == "101"
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
 
     # Primary processing and release failures remain localized to the work key.
     orchestrator, _, item, _, _ = runtime_fixture()
@@ -626,9 +628,10 @@ def test_fault_lifetime_suppression_failure_and_occurrence_projection():
 
     # Reactivating retained history creates a candidate and increments lifetime.
     orchestrator, _, item, _, _ = runtime_fixture()
-    identity, _ = active_record(
+    identity, retained = active_record(
         orchestrator, item, status="INACTIVE", occurrences=4
     )
+    orchestrator.telemetry.publish_fault(retained)
 
     orchestrator.process_event(event(item, EvaluationResultType.MATCH))
 
@@ -710,6 +713,73 @@ def test_action_failure_reconciliation_retry_and_nondecisive_recheck():
     fault = database.values["FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"]
     assert fault["status"] == "ACTIVE"
     assert fault["source_stale"] == "true"
+
+
+@pytest.mark.parametrize(
+    "result_type",
+    (EvaluationResultType.SOURCE_UNAVAILABLE, EvaluationResultType.EVALUATION_ERROR),
+)
+def test_nonconfirming_action_recheck_preserves_positive_sample_time(result_type):
+    orchestrator, bundle, item, database, clock = runtime_fixture()
+    orchestrator.action_runner = FailedActionRunner()
+    orchestrator.process_event(event(item, EvaluationResultType.MATCH, sequence=1))
+    queue = bundle.monitor_plans["redis"].control_queue
+    queue.get_nowait()
+    orchestrator.tick()
+    clock[0] = 61
+    orchestrator.tick()
+    queue.get_nowait()
+
+    orchestrator.process_event(
+        event(
+            item,
+            result_type,
+            sequence=2,
+            from_recheck=True,
+            runtime_status=runtime_status(item),
+        )
+    )
+
+    row = database.values["FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"]
+    assert row["status"] == "ACTIVE"
+    assert row["origin_time"] == "101"
+    assert row["last_detection_time"] == "101"
+    assert database.streams["DLDD_FAULT_TRANSITIONS"][0][1]["observed_at"] == "101"
+
+
+def test_later_positive_recheck_precedes_nonconfirming_final_recheck():
+    orchestrator, bundle, item, database, clock = runtime_fixture()
+    orchestrator.action_runner = FailedActionRunner()
+    orchestrator.process_event(event(item, EvaluationResultType.MATCH, sequence=1))
+    queue = bundle.monitor_plans["redis"].control_queue
+    queue.get_nowait()
+    orchestrator.tick()
+    clock[0] = 61
+    orchestrator.tick()
+    queue.get_nowait()
+
+    pending = orchestrator.pending[(item.rule_id, item.component_name)]
+    pending.outstanding_rechecks.add("other-recheck")
+    orchestrator.process_event(
+        event(item, EvaluationResultType.MATCH, sequence=2, from_recheck=True)
+    )
+    assert pending.last_confirmed_at == 102
+    pending.outstanding_rechecks.remove("other-recheck")
+    pending.outstanding_rechecks.add(item.correlation_key)
+    orchestrator.process_event(
+        event(
+            item,
+            EvaluationResultType.SOURCE_UNAVAILABLE,
+            sequence=3,
+            from_recheck=True,
+            runtime_status=runtime_status(item),
+        )
+    )
+
+    row = database.values["FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"]
+    assert row["origin_time"] == "101"
+    assert row["last_detection_time"] == "102"
+    assert database.streams["DLDD_FAULT_TRANSITIONS"][0][1]["observed_at"] == "102"
 
 
 def test_retained_fault_reconciliation_and_staleness_lifecycle():
@@ -983,7 +1053,8 @@ def test_dse_retirement_waits_then_retains_inactive_history():
     assert identity not in orchestrator._dse_retirement_candidates
     assert payload["status"] == "INACTIVE"
     assert "DSE discovery" in payload["reason"]
-    assert payload["last_detection_time"] == "1234"
+    assert payload["last_detection_time"] == "11"
+    assert payload["inactive_since"] == "1234.9"
     assert database.ttls[record.redis_key] == 42
     assert database.delete_calls == 0
 
@@ -1139,6 +1210,7 @@ def test_fault_arbiter_promotion_suppression_and_clear_lifecycle():
     assert high_record.origin_time == 17
     assert high_record.occurrences == 3
     assert database.values[high_record.redis_key]["rule_id"] == str(high.rule_id)
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
 
     # Promotion also inherits occurrence history from an inactive loser.
     orchestrator, high, low, _ = competing_rules_fixture()
@@ -1169,6 +1241,106 @@ def test_fault_arbiter_promotion_suppression_and_clear_lifecycle():
     orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=4))
     assert database.values[fault_key]["rule_id"] == str(low.rule_id)
     assert database.values[fault_key]["status"] == "ACTIVE"
+
+
+def test_primary_evidence_transition_and_detection_timestamps():
+    orchestrator, high, _, database = competing_rules_fixture()
+    key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
+
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=1))
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=2))
+    assert database.values[key]["origin_time"] == "101"
+    assert database.values[key]["last_detection_time"] == "102"
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+
+    orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=3))
+    assert database.values[key]["last_detection_time"] == "102"
+    assert database.values[key]["inactive_since"] == "103.0"
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 2
+
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=4))
+    assert database.values[key]["origin_time"] == "101"
+    assert database.values[key]["last_detection_time"] == "104"
+    assert database.values[key]["occurrences"] == "2"
+    assert [row[1]["status"] for row in database.streams["DLDD_FAULT_TRANSITIONS"]] == [
+        "ACTIVE", "INACTIVE", "ACTIVE",
+    ]
+
+
+def test_recurrence_after_inactive_row_expiry_starts_new_fault_history():
+    orchestrator, high, _, database = competing_rules_fixture()
+    key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=1))
+    record = orchestrator.faults[(high.rule_id, high.component_name)]
+    record.healthz_artifact = {"artifact_id": "old.tar.gz"}
+    orchestrator._publish_fault_record(record)
+    orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=2))
+    assert database.values[key]["origin_time"] == "101"
+    assert database.values[key]["occurrences"] == "1"
+    assert "healthz_artifact" in database.values[key]
+
+    database.delete(key)  # Redis TTL expiry, not a fault-clear transition.
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=3))
+
+    row = database.values[key]
+    assert row["status"] == "ACTIVE"
+    assert row["origin_time"] == "103"
+    assert row["last_detection_time"] == "103"
+    assert row["occurrences"] == "1"
+    assert "healthz_artifact" not in row
+    assert [entry[1]["status"] for entry in database.streams["DLDD_FAULT_TRANSITIONS"]] == [
+        "ACTIVE", "INACTIVE", "ACTIVE",
+    ]
+    assert "artifact_id" not in database.streams["DLDD_FAULT_TRANSITIONS"][-1][1]
+
+
+def test_expired_previous_rule_does_not_supply_new_winner_history():
+    orchestrator, high, low, database = competing_rules_fixture()
+    key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
+    orchestrator.process_event(event(low, EvaluationResultType.MATCH, sequence=1))
+    orchestrator.process_event(event(low, EvaluationResultType.NO_MATCH, sequence=2))
+    low_record = orchestrator.faults[(low.rule_id, low.component_name)]
+    low_record.origin_time = 17
+    low_record.occurrences = 4
+    orchestrator._publish_fault_record(low_record)
+    database.delete(key)
+
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=3))
+
+    row = database.values[key]
+    assert row["rule_id"] == str(high.rule_id)
+    assert row["status"] == "ACTIVE"
+    assert row["origin_time"] == "103"
+    assert row["occurrences"] == "1"
+    assert database.streams["DLDD_FAULT_TRANSITIONS"][-1][1]["status"] == "ACTIVE"
+
+
+def test_inactive_only_recovery_claims_expired_previous_rule_row():
+    orchestrator, bundle, item, database, clock = runtime_fixture()
+    key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
+    owner_key = (item.component_name, item.symptom)
+    orchestrator.published_by_key[owner_key] = item.rule_id + 1
+    database.hset(key, {"producer": "dldd", "status": "INACTIVE"})
+    database.delete(key)
+    orchestrator.action_runner = FailedActionRunner()
+    orchestrator.process_event(event(item, EvaluationResultType.MATCH, sequence=1))
+    queue = bundle.monitor_plans["redis"].control_queue
+    queue.get_nowait()
+    orchestrator.tick()
+    clock[0] = 61
+    orchestrator.tick()
+    queue.get_nowait()
+    orchestrator.process_event(
+        event(item, EvaluationResultType.NO_MATCH, sequence=2, from_recheck=True)
+    )
+
+    row = database.values[key]
+    assert row["status"] == "INACTIVE"
+    assert row["origin_time"] == "101"
+    assert row["last_detection_time"] == "101"
+    assert row["occurrences"] == "1"
+    assert orchestrator.published_by_key[owner_key] == item.rule_id
+    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
 
 
 def test_owned_recheck_source_recovery_and_runtime_status_lifecycle():
