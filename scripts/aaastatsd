@@ -12,6 +12,19 @@ from watchdog.events import FileSystemEventHandler
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_PAM_AUTH_CONF_STATS_DIR = "/etc/pam_radius_auth.d/statistics/"
 
+
+def radius_stats_file_path(server):
+    """Return the stats path for a server key, or None for an invalid key."""
+    stats_dir = os.path.realpath(RADIUS_PAM_AUTH_CONF_STATS_DIR)
+    stats_file = os.path.realpath(os.path.join(stats_dir, server))
+
+    if os.path.dirname(stats_file) != stats_dir:
+        syslog.syslog(syslog.LOG_ERR,
+                      'RADIUS statistics: refusing invalid server entry')
+        return None
+
+    return stats_file
+
 class RadiusCountersDbMon (threading.Thread):
     def __init__(self, ID, name, radiusStatsInstance):
         threading.Thread.__init__(self)
@@ -145,7 +158,10 @@ class RadiusStatistics:
 
     def create_file(self, addr):
         # print( "RadiusStatistics.create_file({})".format(addr))
-        stats_file = RADIUS_PAM_AUTH_CONF_STATS_DIR + addr
+        stats_file = radius_stats_file_path(addr)
+        if stats_file is None:
+            return
+
         if self.radius_global['statistics'] == 'False':
             if os.path.exists(stats_file):
                 os.unlink(stats_file)
@@ -157,7 +173,10 @@ class RadiusStatistics:
     def handle_clear(self):
         # print( "RadiusStatistics.handle_clear()")
         for filename in os.listdir(RADIUS_PAM_AUTH_CONF_STATS_DIR):
-            stats_file = RADIUS_PAM_AUTH_CONF_STATS_DIR + filename
+            stats_file = radius_stats_file_path(filename)
+            if stats_file is None:
+                continue
+
             open(stats_file, 'w').close()
 
     def handle_update(self, srv):
@@ -165,7 +184,10 @@ class RadiusStatistics:
         if self.radius_global['statistics'] == 'False':
             return
 
-        stats_file = RADIUS_PAM_AUTH_CONF_STATS_DIR + srv
+        stats_file = radius_stats_file_path(srv)
+        if stats_file is None:
+            return
+
         entry = None
         if os.path.exists(stats_file):
             with open(stats_file, 'r') as f:
@@ -219,4 +241,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
