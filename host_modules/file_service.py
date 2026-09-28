@@ -17,7 +17,7 @@ HTTP_PROTOCOL_SCHEMES = {
     "HTTPS": "https",
 }
 
-# (connect, read) timeouts in seconds, so a download cannot hang the daemon forever.
+# Connect and per-read inactivity timeouts in seconds; this is not a total deadline.
 HTTP_TIMEOUT = (10, 60)
 
 import os
@@ -51,14 +51,14 @@ def normalize_host(host):
 
 def validate_http_url(remote_path, hostname, protocol):
     """
-    Check that remote_path is an HTTP(S) URL addressed to hostname.
+    Check that the HTTP(S) URL matches the declared peer and protocol.
 
-    The HTTP(S) branch of download() fetches remote_path directly, so without this
-    check the caller-supplied hostname is ignored and remote_path alone decides which
-    host the daemon contacts. That lets a caller aim the daemon at hosts it can reach
-    but the caller cannot, and hands the supplied credentials to whatever host the URL
-    names. Requiring the URL host to match hostname restores the same relationship the
-    SFTP and SCP branches already have, where hostname is the peer being contacted.
+    The caller controls remote_path, hostname, and protocol, so these checks enforce
+    consistency rather than destination authorization. The HTTP(S) branch uses the
+    complete URL while SFTP and SCP use hostname as the peer and remote_path as a path.
+    Requiring the URL scheme and parsed host to match the separately declared values
+    avoids ambiguous routing and sending credentials to a host different from the
+    declared peer.
 
     Args:
         remote_path (str): The URL supplied by the caller.
@@ -203,8 +203,8 @@ class FileService(host_service.HostModule):
                 # Only send credentials when the caller actually supplied them.
                 auth = (username, password) if username else None
 
-                # Redirects are not followed: a permitted host could otherwise bounce
-                # the request to one the caller is not allowed to name directly.
+                # Redirects are not followed because they can select a destination
+                # different from the one validated above.
                 session = create_http_session()
                 try:
                     response = session.get(

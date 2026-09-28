@@ -486,6 +486,52 @@ class TestFileService(object):
         mock_response.close.assert_called_once_with()
         MockSessionFactory.return_value.close.assert_called_once_with()
 
+    @pytest.mark.parametrize("use_symlink", [False, True])
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("host_modules.file_service.create_http_session")
+    def test_download_http_exclusive_create_preserves_raced_path(self, MockSessionFactory, MockInit, MockBusName, MockSystemBus, tmp_path, use_symlink):
+        """A path created after the existence check must never be overwritten."""
+        tmp_path.chmod(0o777)
+        local_path = tmp_path / "download.tar"
+        sentinel = tmp_path / "sentinel"
+        sentinel.write_bytes(b"sentinel-data")
+
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status.return_value = None
+        mock_response.iter_content.return_value = [b"download-data"]
+
+        def create_raced_path(*args, **kwargs):
+            if use_symlink:
+                local_path.symlink_to(sentinel)
+            else:
+                local_path.write_bytes(b"raced-file-data")
+            return mock_response
+
+        MockSessionFactory.return_value.get.side_effect = create_raced_path
+
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="example.com",
+            username="user",
+            password="password",
+            remote_path="http://example.com/file.tar",
+            local_path=str(local_path),
+            protocol="HTTP",
+        )
+
+        assert ret == file_service.EXIT_FAILURE
+        assert "exists" in msg.lower()
+        if use_symlink:
+            assert local_path.is_symlink()
+            assert sentinel.read_bytes() == b"sentinel-data"
+        else:
+            assert local_path.read_bytes() == b"raced-file-data"
+        mock_response.close.assert_called_once_with()
+        MockSessionFactory.return_value.close.assert_called_once_with()
+
     def test_validate_http_url_returns_none_when_acceptable(self):
         """The helper reports problems as strings and success as None."""
         assert file_service.validate_http_url(
