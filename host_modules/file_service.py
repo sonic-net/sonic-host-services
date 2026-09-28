@@ -6,10 +6,103 @@ import requests
 import scp
 import stat
 
+from urllib.parse import urlparse
+
 MOD_NAME = 'file'
 EXIT_FAILURE = 1
 
+# Protocol name -> the single URL scheme that protocol is allowed to use.
+HTTP_PROTOCOL_SCHEMES = {
+    "HTTP": "http",
+    "HTTPS": "https",
+}
+
+# (connect, read) timeouts in seconds, so a download cannot hang the daemon forever.
+HTTP_TIMEOUT = (10, 60)
+
 import os
+
+
+def normalize_host(host):
+    """
+    Normalize a host so that equivalent spellings compare equal.
+
+    Lowercases, strips IPv6 brackets, and drops the root label, so that
+    "EXAMPLE.COM.", "example.com" and "[::1]"/"::1" are treated as written.
+    """
+    if not host:
+        return ""
+    host = host.strip().lower()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if host.endswith("."):
+        host = host[:-1]
+    return host
+
+
+def validate_http_url(remote_path, hostname, protocol):
+    """
+    Check that remote_path is an HTTP(S) URL addressed to hostname.
+
+    The HTTP(S) branch of download() fetches remote_path directly, so without this
+    check the caller-supplied hostname is ignored and remote_path alone decides which
+    host the daemon contacts. That lets a caller aim the daemon at hosts it can reach
+    but the caller cannot, and hands the supplied credentials to whatever host the URL
+    names. Requiring the URL host to match hostname restores the same relationship the
+    SFTP and SCP branches already have, where hostname is the peer being contacted.
+
+    Args:
+        remote_path (str): The URL supplied by the caller.
+        hostname (str): The host the caller declared it wanted to reach.
+        protocol (str): Normalized protocol name, "HTTP" or "HTTPS".
+
+    Returns:
+        str: An error message, or None when remote_path is acceptable.
+    """
+    if not remote_path or not isinstance(remote_path, str):
+        return "A URL must be supplied as remote_path for {} downloads".format(protocol)
+
+    expected_scheme = HTTP_PROTOCOL_SCHEMES.get(protocol)
+    if expected_scheme is None:
+        return "Unsupported protocol: {}".format(protocol)
+
+    try:
+        url = urlparse(remote_path)
+    except ValueError as e:
+        return "Malformed URL in remote_path: {}".format(e)
+
+    if url.scheme.lower() != expected_scheme:
+        return (
+            "URL scheme '{}' does not match protocol {}; expected a {}:// URL".format(
+                url.scheme, protocol, expected_scheme
+            )
+        )
+
+    try:
+        url_host = url.hostname
+    except ValueError as e:
+        return "Malformed host in remote_path: {}".format(e)
+
+    if not url_host:
+        return "URL in remote_path has no host: {}".format(remote_path)
+
+    # Credentials belong in the username/password arguments, not in the URL. A URL of
+    # the form http://trusted@attacker/ reads as "trusted" but resolves to "attacker".
+    if url.username is not None or url.password is not None:
+        return "URL in remote_path must not contain embedded credentials"
+
+    declared_host = normalize_host(hostname)
+    if not declared_host:
+        return "A hostname must be supplied for {} downloads".format(protocol)
+
+    if normalize_host(url_host) != declared_host:
+        return (
+            "URL host '{}' does not match the requested hostname '{}'".format(
+                url_host, hostname
+            )
+        )
+
+    return None
 
 class FileService(host_service.HostModule):
     """
@@ -94,7 +187,28 @@ class FileService(host_service.HostModule):
                     return 1, str(e)
 
             elif protocol in ["HTTP", "HTTPS"]:
-                response = requests.get(remote_path, auth=(username, password), stream=True)
+                error = validate_http_url(remote_path, hostname, protocol)
+                if error:
+                    return EXIT_FAILURE, error
+
+                # Only send credentials when the caller actually supplied them.
+                auth = (username, password) if username else None
+
+                # Redirects are not followed: a permitted host could otherwise bounce
+                # the request to one the caller is not allowed to name directly.
+                response = requests.get(
+                    remote_path,
+                    auth=auth,
+                    stream=True,
+                    timeout=HTTP_TIMEOUT,
+                    allow_redirects=False,
+                )
+                if response.is_redirect or response.is_permanent_redirect:
+                    return EXIT_FAILURE, (
+                        "Refusing to follow redirect from {} to {}".format(
+                            remote_path, response.headers.get("Location", "an unknown location")
+                        )
+                    )
                 response.raise_for_status()
                 with open(local_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
