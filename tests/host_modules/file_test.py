@@ -261,6 +261,14 @@ class TestFileService(object):
             ("", "http://example.com/file.txt", "HTTP", "empty hostname"),
             ("example.com", "http://evil.example.com/x", "HTTP", "subdomain is a different host"),
             ("example.com", "http://example.com.evil.com/x", "HTTP", "suffix confusion"),
+            # urllib.parse sees example.com as the host in these forms, while
+            # Requests canonicalizes toward 127.0.0.1. They must be rejected as
+            # embedded userinfo before an HTTP session is created.
+            ("example.com", r"http://127.0.0.1\@example.com/x", "HTTP", "backslash parser differential"),
+            ("example.com", r"http://127.0.0.1\\@example.com/x", "HTTP", "double backslash parser differential"),
+            ("example.com", r"http://127.0.0.1:8080\@example.com/x", "HTTP", "backslash with port"),
+            ("example.com", r"http://127.0.0.1\%5c@example.com/x", "HTTP", "raw and encoded backslashes"),
+            ("example.com", r"http://[::1]\@example.com/x", "HTTP", "IPv6 backslash parser differential"),
         ]
 
         for hostname, remote_path, protocol, reason in cases:
@@ -303,6 +311,9 @@ class TestFileService(object):
             ("example.com", "https://example.com/file.txt", "HTTPS"),
             ("10.0.0.5", "http://10.0.0.5/file.txt", "HTTP"),
             ("[::1]", "http://[::1]/file.txt", "HTTP"),
+            # A backslash in the path is not an authority ambiguity; Requests
+            # percent-encodes it while preserving the validated destination.
+            ("example.com", r"http://example.com/a\b", "HTTP"),
         ]
 
         for hostname, remote_path, protocol in cases:
