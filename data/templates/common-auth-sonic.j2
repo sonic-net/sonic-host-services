@@ -22,11 +22,20 @@ auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not
 auth	[success=1 default=ignore]	pam_tacplus.so server={{ last_server.ip }}:{{ last_server.tcp_port }} secret={{ last_server.passkey }} login={{ last_server.auth_type }} timeout={{ last_server.timeout }} {% if last_server.vrf %} vrf={{ last_server.vrf }} {% endif %} {{ 'source_ip=%s' % src_ip if src_ip }} try_first_pass
 
 {% endif %}
-{% elif auth['login'] == 'tacacs+' or auth['login'] == 'tacacs+,local' %}
+{% elif auth['login'] == 'tacacs+' %}
+# root user can only be authenticated locally. Jump to local.
+auth	[success={{ (servers | count) + 1 }} default=ignore]	pam_succeed_if.so user = root
 {% for server in servers %}
 auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_tacplus.so server={{ server.ip }}:{{ server.tcp_port }} secret={{ server.passkey }} login={{ server.auth_type }} timeout={{ server.timeout }} {%if server.vrf %} vrf={{ server.vrf }} {% endif %} {{ 'source_ip=%s' % src_ip if src_ip }} try_first_pass
 {% endfor %}
-auth	[success=1 default=ignore]	pam_unix.so nullok try_first_pass
+auth	requisite	pam_deny.so
+auth	[success=1 default=ignore]	pam_unix.so try_first_pass
+
+{% elif auth['login'] == 'tacacs+,local' %}
+{% for server in servers %}
+auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_tacplus.so server={{ server.ip }}:{{ server.tcp_port }} secret={{ server.passkey }} login={{ server.auth_type }} timeout={{ server.timeout }} {%if server.vrf %} vrf={{ server.vrf }} {% endif %} {{ 'source_ip=%s' % src_ip if src_ip }} try_first_pass
+{% endfor %}
+auth	[success=1 default=ignore]	pam_unix.so try_first_pass
 
 {% elif auth['login'] == 'local,radius' %}
 auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so nullok try_first_pass
@@ -89,4 +98,3 @@ auth    requisite                       pam_deny.so
 # since the modules above will each just jump around
 auth    required                        pam_permit.so
 # and here are more per-package modules (the "Additional" block)
-
