@@ -136,8 +136,7 @@ class TestFileService(object):
         mock_response = mock.Mock()
         mock_response.iter_content.return_value = [b"chunk1", b"chunk2"]
         mock_response.raise_for_status.return_value = None
-        mock_response.is_redirect = False
-        mock_response.is_permanent_redirect = False
+        mock_response.status_code = 200
         MockRequestsGet.return_value = mock_response
 
         file_service_stub = file_service.FileService(file_service.MOD_NAME)
@@ -272,8 +271,7 @@ class TestFileService(object):
             mock_response = mock.Mock()
             mock_response.iter_content.return_value = [b"data"]
             mock_response.raise_for_status.return_value = None
-            mock_response.is_redirect = False
-            mock_response.is_permanent_redirect = False
+            mock_response.status_code = 200
             MockRequestsGet.return_value = mock_response
 
             with mock.patch("builtins.open", mock.mock_open()):
@@ -295,36 +293,52 @@ class TestFileService(object):
     @mock.patch("requests.get")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
-    def test_download_http_does_not_follow_redirects(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
-        """An approved host must not be able to bounce the request to another host."""
+    def test_download_http_rejects_every_3xx(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+        """No 3xx may be treated as a download, with or without a Location header.
+
+        requests.Response.is_redirect only covers 301/302/303/307/308 and only when a
+        Location header is present, and raise_for_status() ignores 3xx entirely, so a
+        300 or 304 would otherwise be written out as a successful (often empty) file.
+        """
         mock_exists.return_value = False
         mock_dir_stat = mock.Mock()
         mock_dir_stat.st_mode = 0o40777  # World writable
         mock_stat.return_value = mock_dir_stat
 
-        mock_response = mock.Mock()
-        mock_response.is_redirect = True
-        mock_response.is_permanent_redirect = False
-        mock_response.headers = {"Location": "http://169.254.169.254/latest/meta-data/"}
-        MockRequestsGet.return_value = mock_response
-
         file_service_stub = file_service.FileService(file_service.MOD_NAME)
-        with mock.patch("builtins.open", mock.mock_open()) as mock_file:
-            ret, msg = file_service_stub.download(
-                hostname="example.com",
-                username="user",
-                password="password",
-                remote_path="http://example.com/file.txt",
-                local_path="/local/path/file.txt",
-                protocol="HTTP",
-            )
 
-        assert ret == file_service.EXIT_FAILURE
-        assert "redirect" in msg.lower()
-        assert "169.254.169.254" in msg
-        # requests must have been told not to follow it, and nothing may be written.
-        assert MockRequestsGet.call_args.kwargs["allow_redirects"] is False
-        mock_file.assert_not_called()
+        for status in (300, 301, 302, 303, 304, 305, 306, 307, 308, 399):
+            for with_location in (True, False):
+                MockRequestsGet.reset_mock()
+                mock_response = mock.Mock()
+                mock_response.status_code = status
+                mock_response.headers = (
+                    {"Location": "http://169.254.169.254/latest/meta-data/"}
+                    if with_location else {}
+                )
+                mock_response.raise_for_status.return_value = None
+                mock_response.iter_content.return_value = [b"should-never-be-written"]
+                MockRequestsGet.return_value = mock_response
+
+                with mock.patch("builtins.open", mock.mock_open()) as mock_file:
+                    ret, msg = file_service_stub.download(
+                        hostname="example.com",
+                        username="user",
+                        password="password",
+                        remote_path="http://example.com/file.txt",
+                        local_path="/local/path/file.txt",
+                        protocol="HTTP",
+                    )
+
+                label = "{} (Location={})".format(status, with_location)
+                assert ret == file_service.EXIT_FAILURE, "{} was accepted".format(label)
+                assert str(status) in msg, "error should name the status: {}".format(label)
+                # Nothing may be written for any 3xx.
+                mock_file.assert_not_called()
+                if with_location:
+                    assert "169.254.169.254" in msg, label
+                # requests must have been told not to follow it in the first place.
+                assert MockRequestsGet.call_args.kwargs["allow_redirects"] is False
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
@@ -342,8 +356,7 @@ class TestFileService(object):
         mock_response = mock.Mock()
         mock_response.iter_content.return_value = [b"data"]
         mock_response.raise_for_status.return_value = None
-        mock_response.is_redirect = False
-        mock_response.is_permanent_redirect = False
+        mock_response.status_code = 200
         MockRequestsGet.return_value = mock_response
 
         file_service_stub = file_service.FileService(file_service.MOD_NAME)

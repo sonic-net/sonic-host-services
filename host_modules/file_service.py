@@ -203,10 +203,17 @@ class FileService(host_service.HostModule):
                     timeout=HTTP_TIMEOUT,
                     allow_redirects=False,
                 )
-                if response.is_redirect or response.is_permanent_redirect:
+                # Reject the whole 3xx range by status code rather than relying on
+                # Response.is_redirect, which only covers 301/302/303/307/308 and only
+                # when a Location header is present. A 300 or 304 would otherwise pass
+                # raise_for_status() and be written out as a successful download.
+                if 300 <= response.status_code < 400:
+                    location = response.headers.get("Location")
                     return EXIT_FAILURE, (
-                        "Refusing to follow redirect from {} to {}".format(
-                            remote_path, response.headers.get("Location", "an unknown location")
+                        "Refusing redirect response {} from {}{}".format(
+                            response.status_code,
+                            remote_path,
+                            " to {}".format(location) if location else "",
                         )
                     )
                 response.raise_for_status()
