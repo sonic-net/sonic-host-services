@@ -1,4 +1,4 @@
-"""Durable DLDD Healthz metadata and STATE_DB projection on the host.
+"""Durable Healthz metadata and STATE_DB projection on the host.
 
 The background worker is the only Redis consumer.  D-Bus methods read the
 SQLite catalog and never wait for a fault sample or diagnostic collection.
@@ -17,16 +17,18 @@ import time
 from urllib.parse import quote, unquote
 
 from host_modules import host_service
+from host_modules.healthz_artifacts import (
+    ARTIFACT_DIRECTORY, ARTIFACT_NAME, MAX_REQUEST_BYTES, HealthzArtifacts,
+)
 from host_modules.healthz_catalog import HealthzCatalog
 
 LOGGER = logging.getLogger(__name__)
 MOD_NAME = "healthz"
-TRANSITION_STREAM = "DLDD_FAULT_TRANSITIONS"
+TRANSITION_STREAM = "HEALTHZ_TRANSITIONS"
 HEALTH_PREFIX = "COMPONENT_HEALTH_INFO|"
-FAULT_PREFIX = "FAULT_INFO|"
 ENTITY_PREFIX = "PHYSICAL_ENTITY_INFO|"
-ARTIFACT_DIRECTORY = "/var/lib/sonic/dldd/artifacts"
-_ARTIFACT_NAME = re.compile(r"^dldd-[0-9a-f]{32}\.tar\.gz$")
+LEGACY_ARTIFACT_DIRECTORY = "/var/lib/sonic/dldd/artifacts"
+_LEGACY_ARTIFACT_NAME = re.compile(r"^dldd-[0-9a-f]{32}\.tar\.gz$")
 _POLL_SECONDS = 1
 _RECONCILE_SECONDS = 30
 _MAX_REQUEST_BYTES = 4096
@@ -85,25 +87,6 @@ class ParentRelations:
         with self._lock:
             self._parents = dict(parents)
 
-    def descendants(self, component, candidates):
-        with self._lock:
-            parents = dict(self._parents)
-        found = []
-        for candidate in candidates:
-            if candidate == component:
-                continue
-            current = candidate
-            seen = {current}
-            while current in parents:
-                current = parents[current]
-                if current == component:
-                    found.append(candidate)
-                    break
-                if current in seen:
-                    break
-                seen.add(current)
-        return found
-
     def children(self, component):
         with self._lock:
             return sorted(
@@ -113,7 +96,7 @@ class ParentRelations:
 
 
 class HealthzWorker:
-    """Consume bounded DLDD transitions and reconcile current fault rows."""
+    """Consume generic transitions and project component health."""
 
     def __init__(self, catalog, state_db=None, relations=None,
                  reconcile_seconds=_RECONCILE_SECONDS):
@@ -153,7 +136,7 @@ class HealthzWorker:
                 self._stop.wait(_POLL_SECONDS)
 
     def poll_once(self, block_ms=None):
-        """One bounded replay, reconciliation, and projection pass."""
+        """One bounded replay, parent refresh, and projection pass."""
 
         client = self.state_db.client()
         self._check_redis_run_id(client)
@@ -176,16 +159,10 @@ class HealthzWorker:
         if block_ms is not None:
             kwargs["block"] = block_ms
         batches = client.xread({TRANSITION_STREAM: checkpoint or "0-0"}, **kwargs)
-        consumed = 0
         for _, entries in batches:
             for stream_id, raw in entries:
-                consumed += 1
                 transition = {_text(name): _text(value) for name, value in raw.items()}
                 sid = _text(stream_id)
-                if transition.get("producer") != "dldd":
-                    self._report_gap("invalid transition producer", sid, sid,
-                                     resume_after_id=sid)
-                    continue
                 try:
                     consumed_new = self.catalog.apply_transition(sid, transition)
                 except (KeyError, TypeError, ValueError) as error:
@@ -195,10 +172,8 @@ class HealthzWorker:
                 if consumed_new:
                     self._pending_projection.add(transition["component"])
 
-        # A snapshot may describe a later state than a partly replayed stream.
-        # Drain the retained backlog before using it to reconcile membership.
-        if consumed < 128 and time.monotonic() >= self._next_reconcile:
-            self._reconcile(client)
+        if time.monotonic() >= self._next_reconcile:
+            self._refresh_parents(client)
             self._next_reconcile = time.monotonic() + self.reconcile_seconds
         self._project_pending(client)
 
@@ -225,7 +200,7 @@ class HealthzWorker:
         if previous is not None:
             # Redis can restart with the same stream bounds even when an
             # unconsumed tail was lost.  This is a conservative possible-gap
-            # signal; present rows still require snapshot reconciliation.
+            # signal; the source must replay its current state.
             self._last_gap = None
             self._report_gap("Redis run_id changed; possible unconsumed "
                              "transition loss", self.catalog.get_checkpoint(), None)
@@ -242,35 +217,12 @@ class HealthzWorker:
                          reason, checkpoint, first_available_id)
             self.catalog.mark_gap(reason, first_available_id,
                                   resume_after_id=resume_after_id)
+            self._pending_projection.update(
+                row["component"] for row in self.catalog.list_aggregates()
+            )
             self._last_gap = signature
 
-    def _reconcile(self, client):
-        faults = []
-        for raw_key in client.scan_iter(match=FAULT_PREFIX + "*"):
-            key = _text(raw_key)
-            row = {_text(k): _text(v) for k, v in client.hgetall(raw_key).items()}
-            if row.get("producer") != "dldd":
-                continue
-            if "healthz_artifact" in row:
-                try:
-                    row["healthz_artifact"] = json.loads(row["healthz_artifact"])
-                except (TypeError, ValueError):
-                    row.pop("healthz_artifact")
-            row["fault_key"] = key
-            faults.append(row)
-        # DLDD writes each changed row and its stream record atomically.  A
-        # transition arriving while we scan can make this snapshot newer than
-        # our catalog.  Replay that stream tail first so a snapshot observation
-        # cannot steal a new archive's event ID or duplicate its event.
-        tail = client.xrevrange(TRANSITION_STREAM, count=1)
-        checkpoint = self.catalog.get_checkpoint()
-        if tail and _stream_id(tail[0][0]) > _stream_id(checkpoint or "0-0"):
-            return
-        self.catalog.reconcile_snapshot(faults)
-        self._pending_projection.update(
-            row["component"] for row in self.catalog.list_aggregates()
-        )
-
+    def _refresh_parents(self, client):
         parents = {}
         for raw_key in client.scan_iter(match=ENTITY_PREFIX + "*"):
             key = _text(raw_key)
@@ -305,10 +257,15 @@ class Healthz(host_service.HostModule):
     """Quick JSON metadata D-Bus API for gNOI Healthz."""
 
     def __init__(self, mod_name=MOD_NAME, catalog=None, state_db=None,
-                 artifact_directory=ARTIFACT_DIRECTORY, start_worker=True):
+                 artifact_directory=ARTIFACT_DIRECTORY, start_worker=True,
+                 legacy_artifact_directory=None):
         super().__init__(mod_name)
         self.catalog = catalog or HealthzCatalog()
         self.artifact_directory = artifact_directory
+        self.artifacts = HealthzArtifacts(artifact_directory)
+        self.legacy_artifact_directory = (legacy_artifact_directory or
+            (LEGACY_ARTIFACT_DIRECTORY if artifact_directory == ARTIFACT_DIRECTORY
+             else artifact_directory))
         self.relations = ParentRelations()
         self.worker = HealthzWorker(self.catalog, state_db, self.relations)
         if start_worker:
@@ -343,13 +300,17 @@ class Healthz(host_service.HostModule):
         return event
 
     def _artifact_available(self, artifact_id):
-        if not isinstance(artifact_id, str) or not _ARTIFACT_NAME.fullmatch(artifact_id):
+        if not isinstance(artifact_id, str):
+            return False
+        if ARTIFACT_NAME.fullmatch(artifact_id):
+            return self.artifacts.status(artifact_id) == "COMPLETED"
+        if not _LEGACY_ARTIFACT_NAME.fullmatch(artifact_id):
             return False
         try:
-            directory = os.lstat(self.artifact_directory)
+            directory = os.lstat(self.legacy_artifact_directory)
             if not stat.S_ISDIR(directory.st_mode):
                 return False
-            archive = os.stat(os.path.join(self.artifact_directory, artifact_id),
+            archive = os.stat(os.path.join(self.legacy_artifact_directory, artifact_id),
                               follow_symlinks=False)
         except OSError:
             return False
@@ -420,3 +381,72 @@ class Healthz(host_service.HostModule):
         except Exception:
             LOGGER.exception("Healthz acknowledgement failed")
             return errno.EIO, "Healthz catalog update failed"
+
+    @staticmethod
+    def _artifact_request(raw):
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_REQUEST_BYTES:
+            raise ValueError("invalid Healthz artifact request")
+        request = json.loads(raw)
+        if not isinstance(request, dict):
+            raise ValueError("Healthz artifact request must be an object")
+        return request
+
+    @host_service.method(host_service.bus_name(MOD_NAME),
+                         in_signature="s", out_signature="is")
+    def reserve_artifact(self, raw):
+        try:
+            if self._artifact_request(raw):
+                raise ValueError("reserve_artifact takes no options")
+            return 0, json.dumps(self.artifacts.reserve(), separators=(",", ":"))
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            return errno.EINVAL, str(error)
+        except Exception:
+            LOGGER.exception("Healthz artifact reservation failed")
+            return errno.EIO, "Healthz artifact reservation failed"
+
+    @host_service.method(host_service.bus_name(MOD_NAME),
+                         in_signature="s", out_signature="is")
+    def submit_artifact(self, raw):
+        try:
+            request = self._artifact_request(raw)
+            result = self.artifacts.submit(request.get("artifact_id"),
+                                           request.get("paths"),
+                                           request.get("metadata"))
+            return 0, json.dumps(result, separators=(",", ":"))
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            return errno.EINVAL, str(error)
+        except FileNotFoundError as error:
+            return errno.ENOENT, str(error)
+        except Exception:
+            LOGGER.exception("Healthz artifact submission failed")
+            return errno.EIO, "Healthz artifact submission failed"
+
+    @host_service.method(host_service.bus_name(MOD_NAME),
+                         in_signature="s", out_signature="is")
+    def artifact_status(self, raw):
+        try:
+            artifact_id = self._artifact_request(raw).get("artifact_id")
+            if _LEGACY_ARTIFACT_NAME.fullmatch(artifact_id or ""):
+                state = "COMPLETED" if self._artifact_available(artifact_id) else "MISSING"
+            else:
+                state = self.artifacts.status(artifact_id)
+            return 0, json.dumps({"state": state}, separators=(",", ":"))
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            return errno.EINVAL, str(error)
+        except Exception:
+            LOGGER.exception("Healthz artifact status failed")
+            return errno.EIO, "Healthz artifact status failed"
+
+    @host_service.method(host_service.bus_name(MOD_NAME),
+                         in_signature="s", out_signature="is")
+    def fail_artifact(self, raw):
+        try:
+            artifact_id = self._artifact_request(raw).get("artifact_id")
+            self.artifacts.fail(artifact_id)
+            return 0, json.dumps({"state": self.artifacts.status(artifact_id)},
+                                 separators=(",", ":"))
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            return errno.EINVAL, str(error)
+        except Exception:
+            LOGGER.exception("Healthz artifact failure update failed")
+            return errno.EIO, "Healthz artifact failure update failed"

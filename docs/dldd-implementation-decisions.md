@@ -136,29 +136,38 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   required failed-action artifact, wait, and recheck path.
 - Log-only rules request an artifact asynchronously and publish after signature
   confirmation without inventing a local-action wait/recheck phase.
-- The initial artifact store is a bounded host filesystem integration. DLDD
-  triggers generation, returns a stable reference, and writes one final file;
-  it does not track or publish artifact lifecycle state. gNOI waits for and
-  exposes safe opaque IDs from that fixed directory. A trusted platform may replace this client through
-  `sonic_platform.dldd.create_artifact_client`; the returned
-  `HealthzArtifactClient` can bridge a vendor Healthz implementation or apply
-  platform retention/size policy without changing orchestration code.
-- Artifact identifiers are exact opaque UUID-based filenames of the form
-  `dldd-<32 lowercase hex>.tar.gz`. gNOI resolves only that generated form
-  beneath the fixed artifact directory, rejects traversal/symlinks and private
-  state manifests, and never accepts a rule-selected filesystem path. Legacy
-  absolute Healthz debug-artifact paths remain confined to `/tmp/dump`.
-- Artifact admission and final archives are bounded. Final publication uses an
-  atomic replace; interrupted staging files are disposable and there are no
-  sidecar manifests or startup lifecycle reconciliation.
+- DLDD uses the host Healthz artifact boundary. The default
+  `HostHealthzArtifactClient` reserves a stable `healthz-<32 lowercase hex>.tar.gz`
+  ID before fault publication, runs DLDD rule-specific queries and custom
+  logging, stages bounded output in private temporary files, then sends only
+  concrete absolute paths and archive-relative names through
+  `submit_artifact`. Host Healthz synchronously packages and retains the new
+  archive under `/var/lib/sonic/healthz/artifacts/`; DLDD removes its staging
+  after submission. A trusted `sonic_platform.dldd.create_artifact_client`
+  remains a compatibility factory for query/staging behavior, but new Healthz
+  archive packaging, storage, and retention belong to the host service.
+- Healthz owns archive admission and final publication: at most 128 paths,
+  64 KiB request JSON, 50 MiB input/archive, and 20 completed/pending items.
+  It publishes a mode-0600 archive through atomic no-clobber `os.link`, then
+  removes the staged file. Unfinished pending markers expire after 24 hours.
+  DLDD calls `fail_artifact` on known collection failure and
+  `artifact_status` when reconciling an unfinished reservation after restart.
+  It does not own a second archive-retention policy. Failed reservation does
+  not block fault publication; the fault has no archive ID and reports the
+  request error.
+- gNOI resolves new Healthz IDs under the host Healthz archive tree and old
+  `dldd-<32 lowercase hex>.tar.gz` IDs under `/var/lib/sonic/dldd/artifacts/`
+  for read compatibility. The contained resolver rejects traversal/symlinks;
+  legacy absolute debug-artifact paths remain confined to `/tmp/dump`.
 - Each archive carries structured request metadata including the request
   timestamp, rule identity, symptom, and full component type/name context.
 - Completed action output uses `actions/NNN/metadata.json` and the present
   `stdout.txt`, `stderr.txt`, and `result.txt` entries. Existing actions that
   return `None` remain valid and add no output entry.
-- Artifact log inputs are regular files opened without following symlinks.
-  Directories are never recursively archived, and both logical input bytes and
-  the completed archive are checked against the configured bound.
+- DLDD resolves rule log globs to concrete regular files without following
+  symlinks; the host validates submitted paths and archive names before
+  packaging. Directories are not recursively archived. Bounds apply to both
+  collected input bytes and the final archive.
 - Declared vendor/DSE query timeouts run through bounded daemon-call slots,
   matching local-action timeout containment. Queries with no declared timeout
   remain vendor-owned, as required by the schema contract.
@@ -170,6 +179,16 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 
 ## SONiC integration
 
+- DLDD owns `FAULT_INFO` scan/replay and publishes producer-neutral
+  `HEALTHZ_TRANSITIONS` records. A transition record (no `kind` field) has a stable UUID
+  `transition_id` also persisted in `FAULT_INFO`; replay reuses that ID. A
+  confirmed active sample that advances `last_detection_time` emits
+  `kind=observation` so generic Healthz can advance `last-unhealthy` without a
+  new event or count. Host Healthz consumes the generic stream and does not
+  parse DLDD fault rows. The old `DLDD_FAULT_TRANSITIONS` unconsumed tail is
+  not replayed during migration; Healthz records a conservative history gap.
+  Redis `MULTI/EXEC` still admits partial execution-time writes, a known
+  atomicity deviation requiring separate disposition.
 - `dldd.service` is a static FEATURE-managed unit.  It binds to `sonic.target`,
   requires database/config setup for startup, and has no gNMI/gNOI lifecycle
   dependency.  Runtime Redis failures degrade local publication but are handled
@@ -193,10 +212,11 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   generations, and artifacts remain outside that writable boundary.
 - gNOI File remains registered only when the gNMI deployment is write-enabled.
   Read-only deployments can still run packaged and locally provisioned rules.
-- `healthz_artifact` is deliberate non-native `FAULT_INFO` metadata. A
-  controller discovers the opaque ID through raw/native fault telemetry and
-  then calls Healthz Artifact; this implementation does not invent a standard
-  Healthz Get/List discovery contract absent from the HLD.
+- `healthz_artifact` is deliberate non-native `FAULT_INFO` metadata. Standard
+  Healthz Get/List also discover the retained event and advertise its archive
+  only when the final regular file exists; Artifact streams it by ID. A
+  retained recovery row carrying an earlier archive does not advertise that
+  archive twice.
 - `FAULT_INFO` logical updates use transactional `HSET` plus targeted `HDEL`
   and TTL changes, never `DEL` plus recreate.  Redis `expired` notifications are
   treated as deletes so inactive-retention expiry reaches ON_CHANGE clients.

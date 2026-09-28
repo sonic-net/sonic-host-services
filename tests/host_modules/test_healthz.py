@@ -101,9 +101,11 @@ class FakeRedis:
 
 def transition(component, symptom, status, observed_at, artifact_id=None):
     result = {
-        "producer": "dldd", "fault_key": f"FAULT_INFO|{component}|{symptom}",
+        "producer": "test-source", "source_key": f"{component}|{symptom}",
+        "transition_id": f"{component}-{symptom}-{status}-{observed_at}",
         "component": component, "component_type": "PSU", "symptom": symptom,
-        "status": status, "occurrence": "1", "observed_at": str(observed_at),
+        "active": {"ACTIVE": "1", "INACTIVE": "0"}.get(status, status),
+        "observed_at": str(observed_at),
     }
     if artifact_id:
         result["artifact_id"] = artifact_id
@@ -148,6 +150,16 @@ class TestHealthzWorker(unittest.TestCase):
         self.worker.poll_once()
         self.assertEqual(self.redis.rows["COMPONENT_HEALTH_INFO|PSU0"]["status"],
                          "UNHEALTHY")
+
+    def test_confirmed_observation_updates_time_without_event(self):
+        self.redis.append("1-0", **transition("PSU0", "alarm", "ACTIVE", 100))
+        self.worker.poll_once()
+        self.redis.append("2-0", kind="observation", producer="test-source",
+                          source_key="PSU0|alarm", component="PSU0", observed_at=130)
+        self.worker.poll_once()
+        self.assertEqual(len(self.catalog.list_events("PSU0", True)), 1)
+        self.assertEqual(self.redis.rows["COMPONENT_HEALTH_INFO|PSU0"]["last_unhealthy"],
+                         "130000000000")
 
     def test_trimmed_stream_gap_keeps_known_active_state(self):
         self.catalog.apply_transition("1-0", transition("PSU0", "alarm", "ACTIVE", 100))
@@ -200,38 +212,22 @@ class TestHealthzWorker(unittest.TestCase):
         self.assertEqual(self.catalog.get_redis_run_id(), "redis-after")
         self.assertEqual(attempts[0], 2)
 
-    def test_snapshot_observation_is_deduplicated_and_not_a_lost_history_claim(self):
+    def test_worker_never_scans_dldd_fault_rows(self):
         self.redis.rows["FAULT_INFO|PSU0|alarm"] = {
             "producer": "dldd", "component_name": "PSU0", "symptom": "alarm",
             "status": "ACTIVE", "occurrences": "1", "last_detection_time": "100",
         }
+        scans = []
+        self.redis.on_scan = scans.append
         self.worker.poll_once()
-        event = self.catalog.get_latest("PSU0")
-        self.assertEqual(event["status"], "UNHEALTHY")
-        self.assertEqual(event["source"], "snapshot")
-        self.assertIsNone(self.catalog.get_checkpoint())
-        self.worker._next_reconcile = 0
-        self.worker.poll_once()
-        self.assertEqual(len(self.catalog.list_events("PSU0", True)), 1)
-
-    def test_snapshot_defers_when_stream_tail_moves_during_scan(self):
-        self.redis.rows["FAULT_INFO|PSU0|alarm"] = {
-            "producer": "dldd", "component_name": "PSU0", "symptom": "alarm",
-            "status": "ACTIVE", "occurrences": "1", "last_detection_time": "100",
-        }
-        artifact = "dldd-{}.tar.gz".format("a" * 32)
-        self.redis.on_scan = lambda _pattern: self.redis.append(
-            "1-0", **transition("PSU0", "alarm", "ACTIVE", 100, artifact))
-        self.worker.poll_once()
+        self.assertEqual(scans, ["PHYSICAL_ENTITY_INFO|*"])
         self.assertIsNone(self.catalog.get_latest("PSU0"))
-        self.worker.poll_once()
-        self.assertEqual(self.catalog.get_latest("PSU0")["id"], artifact)
+        self.assertIsNone(self.catalog.get_checkpoint())
 
     def test_published_physical_entity_parent_relation_is_cached(self):
         self.redis.rows["PHYSICAL_ENTITY_INFO|PSU0"] = {"parent_name": "chassis"}
         self.worker.poll_once()
-        self.assertEqual(self.worker.relations.descendants(
-            "chassis", ["PSU0", "FAN0"]), ["PSU0"])
+        self.assertEqual(self.worker.relations.children("chassis"), ["PSU0"])
 
     def test_invalid_stream_record_is_skipped_with_gap_and_next_record_runs(self):
         invalid = transition("PSU0", "alarm", "BROKEN", 100)
@@ -261,21 +257,6 @@ class TestHealthzWorker(unittest.TestCase):
             self.worker.poll_once()
         self.assertEqual(self.catalog.get_checkpoint(), "2-0")
         self.assertEqual(self.catalog.get_latest("PSU0")["status"], "UNHEALTHY")
-
-    def test_snapshot_updates_confirmation_time_without_new_event(self):
-        self.redis.append("1-0", **transition("PSU0", "alarm", "ACTIVE", 100))
-        self.worker.poll_once()
-        events = len(self.catalog.list_events("PSU0", True))
-        self.redis.rows["FAULT_INFO|PSU0|alarm"] = {
-            "producer": "dldd", "component_name": "PSU0", "symptom": "alarm",
-            "status": "ACTIVE", "occurrences": "1", "last_detection_time": "130",
-        }
-        self.worker._next_reconcile = 0
-        self.worker.poll_once()
-        self.assertEqual(len(self.catalog.list_events("PSU0", True)), events)
-        self.assertEqual(self.redis.rows["COMPONENT_HEALTH_INFO|PSU0"]["last_unhealthy"],
-                         "130000000000")
-
 
 class TestHealthzDbus(unittest.TestCase):
     def setUp(self):
@@ -316,6 +297,33 @@ class TestHealthzDbus(unittest.TestCase):
         os.unlink(archive)
         self.assertNotIn("artifact_id", json.loads(self.endpoint.get(
             '{"component":"PSU0"}')[1]))
+
+    def test_artifact_reserve_submit_status_and_event_visibility(self):
+        code, body = self.endpoint.reserve_artifact("{}")
+        self.assertEqual(code, 0)
+        artifact_id = json.loads(body)["artifact_id"]
+        self.assertTrue(artifact_id.startswith("healthz-"))
+        self.assertEqual(json.loads(self.endpoint.artifact_status(json.dumps(
+            {"artifact_id": artifact_id}))[1])["state"], "PENDING")
+        self.catalog.apply_transition("1-0", transition("PSU0", "alarm", "ACTIVE",
+                                                        100, artifact_id))
+        self.assertNotIn("artifact_id", json.loads(self.endpoint.get(
+            '{"component":"PSU0"}')[1]))
+        source = os.path.realpath(os.path.join(self.directory.name, "log.txt"))
+        with open(source, "w") as output:
+            output.write("log data")
+        code, _ = self.endpoint.submit_artifact(json.dumps({
+            "artifact_id": artifact_id,
+            "paths": [{"path": source, "name": "logs/log.txt"}],
+        }))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(self.endpoint.get(
+            '{"component":"PSU0"}')[1])["artifact_id"], artifact_id)
+        self.assertEqual(json.loads(self.endpoint.artifact_status(json.dumps(
+            {"artifact_id": artifact_id}))[1])["state"], "COMPLETED")
+        self.assertEqual(self.endpoint.fail_artifact(json.dumps(
+            {"artifact_id": artifact_id}))[0], 0)
+        self.assertTrue(os.path.isfile(os.path.join(self.artifacts, artifact_id)))
 
     def test_get_includes_only_published_descendants(self):
         self.catalog.apply_transition("1-0", transition("chassis", "alarm", "ACTIVE", 100))

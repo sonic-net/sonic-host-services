@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import logging
+import math
 import time
+import uuid
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 from .config import DLDDConfig
@@ -17,65 +19,6 @@ from .timestamps import floor_timestamp, floor_timestamp_fields
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-_REPLACE_FAULT_SCRIPT = """
-local fault_type = redis.call('TYPE', KEYS[1]).ok
-local stream_type = redis.call('TYPE', KEYS[2]).ok
-if fault_type ~= 'none' and fault_type ~= 'hash' then
-    return redis.error_reply('FAULT_INFO key is not a hash')
-end
-if stream_type ~= 'none' and stream_type ~= 'stream' then
-    return redis.error_reply('DLDD_FAULT_TRANSITIONS key is not a stream')
-end
-
-local status = ARGV[1]
-local ttl = tonumber(ARGV[2])
-local maxlen = tonumber(ARGV[3])
-local hash_count = tonumber(ARGV[4])
-local index = 5
-local hash_args = {}
-local wanted = {}
-for _ = 1, hash_count do
-    local field = ARGV[index]
-    hash_args[#hash_args + 1] = field
-    hash_args[#hash_args + 1] = ARGV[index + 1]
-    wanted[field] = true
-    index = index + 2
-end
-local transition_count = tonumber(ARGV[index])
-index = index + 1
-local transition_args = {KEYS[2], 'MAXLEN', '=', maxlen, '*'}
-for _ = 1, transition_count do
-    transition_args[#transition_args + 1] = ARGV[index]
-    transition_args[#transition_args + 1] = ARGV[index + 1]
-    index = index + 2
-end
-
-local changed = redis.call('HGET', KEYS[1], 'status') ~= status
-local old_fields = redis.call('HKEYS', KEYS[1])
-local stale = {}
-for _, field in ipairs(old_fields) do
-    if not wanted[field] then
-        stale[#stale + 1] = field
-    end
-end
--- XADD runs first: an unsupported command or an invalid stream cannot
--- publish a new FAULT_INFO status without its source transition.
-if changed then
-    redis.call('XADD', unpack(transition_args))
-end
-redis.call('HSET', KEYS[1], unpack(hash_args))
-if #stale > 0 then
-    redis.call('HDEL', KEYS[1], unpack(stale))
-end
-if ttl < 0 then
-    redis.call('PERSIST', KEYS[1])
-else
-    redis.call('EXPIRE', KEYS[1], ttl)
-end
-return changed and 1 or 0
-"""
 
 
 def _json_safe(value: Any) -> Any:
@@ -104,6 +47,22 @@ def _redis_mapping(values: Mapping[str, Any]) -> Mapping[str, str]:
     """Encode one logical telemetry row for the Redis client boundary."""
 
     return {name: _redis_value(value) for name, value in values.items()}
+
+
+def _artifact_id(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return ""
+    return str(value.get("artifact_id") or "") if isinstance(value, Mapping) else ""
+
+
+def _later_detection(current: str, previous: Optional[str]) -> bool:
+    try:
+        return float(current) > float(previous or 0)
+    except (TypeError, ValueError):
+        return False
 
 
 class StateDB:
@@ -163,8 +122,13 @@ class StateDB:
         values: Mapping[str, Any],
         ttl_seconds: Optional[int],
         transition: Mapping[str, str],
-    ) -> None:
+    ) -> Mapping[str, str]:
         """Compare, append a change, and replace the row atomically."""
+
+        raise NotImplementedError
+
+    def append_healthz_transition(self, transition: Mapping[str, str]) -> None:
+        """Replay one persisted current transition after DLDD restarts."""
 
         raise NotImplementedError
 
@@ -260,7 +224,13 @@ class SonicStateDB(StateDB):
     def replace_hash(
         self, key: str, values: Mapping[str, Any], ttl_seconds: Optional[int]
     ) -> None:
-        self._replace_hash(key, values, ttl_seconds)
+        client = self._db()
+        existing = client.hkeys(key)
+        with client.pipeline(transaction=True) as transaction:
+            self._queue_hash(
+                transaction, key, _redis_mapping(values), existing, ttl_seconds
+            )
+            transaction.execute()
 
     def replace_fault(
         self,
@@ -268,39 +238,107 @@ class SonicStateDB(StateDB):
         values: Mapping[str, Any],
         ttl_seconds: Optional[int],
         transition: Mapping[str, str],
-    ) -> None:
-        mapping = _redis_mapping(values)
-        arguments = [
-            mapping["status"],
-            -1 if ttl_seconds is None else ttl_seconds,
-            TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN,
-            len(mapping),
-        ]
-        for name, value in mapping.items():
-            arguments.extend((name, value))
-        arguments.append(len(transition))
-        for name, value in transition.items():
-            arguments.extend((name, value))
-        self._db().eval(
-            _REPLACE_FAULT_SCRIPT,
-            2,
-            key,
+    ) -> Mapping[str, str]:
+        from redis.exceptions import WatchError
+
+        client = self._db()
+        mapping = dict(_redis_mapping(values))
+        stream = TelemetryPublisher.FAULT_TRANSITIONS_STREAM
+        for _ in range(5):
+            with client.pipeline(transaction=True) as transaction:
+                try:
+                    transaction.watch(key)
+                    previous = decode_db_hash(transaction.hgetall(key))
+                    changed = previous.get("status") != mapping["status"]
+                    migration = (
+                        not changed
+                        and not previous.get("healthz_transition_id")
+                        and transition.get("replay") == "1"
+                    )
+                    event = dict(transition)
+                    current = dict(mapping)
+                    if changed or migration:
+                        current["healthz_transition_id"] = event["transition_id"]
+                        current["healthz_transition_observed_at"] = event["observed_at"]
+                        new_artifact = _artifact_id(current.get("healthz_artifact")) if changed else ""
+                        old_artifact = _artifact_id(previous.get("healthz_artifact"))
+                        current["healthz_transition_artifact_id"] = (
+                            new_artifact if new_artifact != old_artifact else ""
+                        )
+                        if current["healthz_transition_artifact_id"]:
+                            event["artifact_id"] = current["healthz_transition_artifact_id"]
+                    else:
+                        for field in (
+                            "healthz_transition_id",
+                            "healthz_transition_observed_at",
+                            "healthz_transition_artifact_id",
+                        ):
+                            if field in previous:
+                                current[field] = previous[field]
+                            else:
+                                current.pop(field, None)
+                    observation = (
+                        not changed and not migration
+                        and current["status"] == "ACTIVE"
+                        and _later_detection(
+                            current.get("last_detection_time", ""),
+                            previous.get("last_detection_time"),
+                        )
+                    )
+                    if changed or migration or observation:
+                        transaction.watch(stream)
+                        if decode_db_text(transaction.type(stream)) not in (
+                            "none", "stream"
+                        ):
+                            raise TypeError("HEALTHZ_TRANSITIONS key is not a stream")
+                    transaction.multi()
+                    if changed or migration:
+                        transaction.xadd(
+                            stream,
+                            event,
+                            maxlen=TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN,
+                            approximate=False,
+                        )
+                    elif observation:
+                        transaction.xadd(
+                            stream,
+                            {
+                                "kind": "observation",
+                                "producer": current["producer"],
+                                "source_key": key,
+                                "component": current["component_name"],
+                                "observed_at": current["last_detection_time"],
+                            },
+                            maxlen=TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN,
+                            approximate=False,
+                        )
+                    self._queue_hash(transaction, key, current, previous, ttl_seconds)
+                    transaction.execute()
+                    return {
+                        field: current.get(field, "")
+                        for field in (
+                            "healthz_transition_id",
+                            "healthz_transition_observed_at",
+                            "healthz_transition_artifact_id",
+                        )
+                    }
+                except WatchError:
+                    continue
+        raise RuntimeError("FAULT_INFO changed during publication")
+
+    def append_healthz_transition(self, transition: Mapping[str, str]) -> None:
+        self._db().xadd(
             TelemetryPublisher.FAULT_TRANSITIONS_STREAM,
-            *arguments,
+            transition,
+            maxlen=TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN,
+            approximate=False,
         )
 
-    def _replace_hash(
-        self,
-        key: str,
-        values: Mapping[str, Any],
-        ttl_seconds: Optional[int],
-    ) -> None:
-        client = self._db()
-        mapping = _redis_mapping(values)
-        existing = client.hkeys(key)
-        existing_fields = {decode_db_text(name) for name in existing}
-        stale_fields = tuple(sorted(existing_fields - set(mapping)))
-        transaction = client.pipeline(transaction=True)
+    @staticmethod
+    def _queue_hash(transaction, key, mapping, existing, ttl_seconds):
+        stale_fields = tuple(
+            sorted({decode_db_text(name) for name in existing} - set(mapping))
+        )
         transaction.hset(key, mapping=mapping)
         if stale_fields:
             transaction.hdel(key, *stale_fields)
@@ -308,7 +346,6 @@ class SonicStateDB(StateDB):
             transaction.persist(key)
         else:
             transaction.expire(key, ttl_seconds)
-        transaction.execute()
 
     def delete(self, key: str) -> None:
         self._db().delete(key)
@@ -343,7 +380,7 @@ class TelemetryPublisher:
     RULE_STATUS_PREFIX = "DLDD_RULE_STATUS|rule|"
     RULE_DETAIL_PREFIX = "DLDD_RULE_DETAIL|rule|"
     STATUS_TTL = 120
-    FAULT_TRANSITIONS_STREAM = "DLDD_FAULT_TRANSITIONS"
+    FAULT_TRANSITIONS_STREAM = "HEALTHZ_TRANSITIONS"
     # Exact MAXLEN bounds the stream even if the consumer is unavailable.
     FAULT_TRANSITIONS_MAXLEN = 10000
 
@@ -406,6 +443,8 @@ class TelemetryPublisher:
         remote_action_time_window: int = 0,
         local_action_details: Optional[Mapping[str, Any]] = None,
         observation_time: Optional[float] = None,
+        replay: bool = False,
+        publication_time: Optional[float] = None,
     ) -> bool:
         if serial_number is None:
             serial_number = fault.serial_number
@@ -424,6 +463,23 @@ class TelemetryPublisher:
                         fault.component_name,
                         error,
                     )
+        observed_at = observation_time
+        if observed_at is None:
+            if fault.status == "ACTIVE":
+                observed_at = fault.last_detection_time
+            elif fault.inactive_deadline is not None:
+                observed_at = (
+                    fault.inactive_deadline
+                    - self.config.inactive_fault_retention_period
+                )
+            else:
+                observed_at = time.time()
+        new_transition = fault.healthz_transition_status != fault.status
+        if new_transition:
+            fault.healthz_transition_id = uuid.uuid4().hex
+            fault.healthz_transition_status = fault.status
+            fault.healthz_transition_observed_at = int(floor_timestamp(observed_at))
+            fault.healthz_transition_artifact_id = ""
         payload = {
             "producer": DLDD_FAULT_PRODUCER,
             "rule": fault.rule_name,
@@ -458,6 +514,9 @@ class TelemetryPublisher:
             "occurrences": fault.occurrences,
             "description": fault.description,
             "reason": bound_diagnostic(str(fault.reason), 512),
+            "healthz_transition_id": fault.healthz_transition_id,
+            "healthz_transition_observed_at": fault.healthz_transition_observed_at,
+            "healthz_transition_artifact_id": fault.healthz_transition_artifact_id,
         }
         if fault.healthz_artifact is not None:
             payload["healthz_artifact"] = dict(fault.healthz_artifact)
@@ -470,41 +529,84 @@ class TelemetryPublisher:
             payload["source_stale"] = True
         payload = _json_safe(floor_timestamp_fields(payload))
         try:
+            published_at = time.time() if publication_time is None else publication_time
             ttl = (
                 None
                 if fault.status == "ACTIVE"
                 else self.config.inactive_fault_retention_period
             )
-            observed_at = observation_time
-            if observed_at is None:
-                if fault.status == "ACTIVE":
-                    observed_at = fault.last_detection_time
-                elif fault.inactive_deadline is not None:
-                    observed_at = (
-                        fault.inactive_deadline
-                        - self.config.inactive_fault_retention_period
-                    )
-                else:
-                    observed_at = time.time()
+            if ttl is not None and fault.inactive_deadline is not None:
+                ttl = max(1, min(ttl, math.ceil(
+                    fault.inactive_deadline - published_at
+                )))
             transition = {
                 "producer": DLDD_FAULT_PRODUCER,
-                "fault_key": fault.redis_key,
+                "source_key": fault.redis_key,
+                "transition_id": fault.healthz_transition_id,
                 "component": fault.component_name,
                 "component_type": fault.component_type,
                 "symptom": fault.symptom,
-                "status": fault.status,
-                "occurrence": str(fault.occurrences),
-                "observed_at": str(floor_timestamp(observed_at)),
+                "active": "1" if fault.status == "ACTIVE" else "0",
+                "observed_at": str(fault.healthz_transition_observed_at),
             }
-            if fault.healthz_artifact is not None:
-                artifact_id = fault.healthz_artifact.get("artifact_id")
-                if artifact_id:
-                    transition["artifact_id"] = str(artifact_id)
-            self.state_db.replace_fault(fault.redis_key, payload, ttl, transition)
+            if replay:
+                transition["replay"] = "1"
+            if fault.status == "INACTIVE" and fault.inactive_deadline is not None:
+                transition["retain_until"] = str(math.ceil(published_at + ttl))
+            committed = self.state_db.replace_fault(
+                fault.redis_key, payload, ttl, transition
+            )
+            fault.healthz_transition_id = committed.get("healthz_transition_id", "")
+            fault.healthz_transition_observed_at = int(float(
+                committed.get("healthz_transition_observed_at") or 0
+            ))
+            fault.healthz_transition_artifact_id = committed.get(
+                "healthz_transition_artifact_id", ""
+            )
             return True
         except Exception as error:
             LOGGER.error("unable to publish %s: %s", fault.redis_key, error)
             return False
+
+    def replay_fault_transition(self, payload: Mapping[str, Any]) -> None:
+        """Re-emit only a retained row's last known transition with its ID."""
+
+        transition_id = str(payload.get("healthz_transition_id") or "")
+        if not transition_id:
+            return  # Pre-integration rows carry no recoverable event identity.
+        transition = {
+            "producer": DLDD_FAULT_PRODUCER,
+            "source_key": str(payload["redis_key"]),
+            "transition_id": transition_id,
+            "component": str(payload["component_name"]),
+            "component_type": str(payload["component_type"]),
+            "symptom": str(payload["symptom"]),
+            "active": "1" if payload["status"] == "ACTIVE" else "0",
+            "observed_at": str(payload["healthz_transition_observed_at"]),
+            "replay": "1",
+        }
+        artifact_id = str(payload.get("healthz_transition_artifact_id") or "")
+        if artifact_id:
+            transition["artifact_id"] = artifact_id
+        if payload["status"] == "INACTIVE" and payload.get("inactive_since"):
+            transition["retain_until"] = str(math.ceil(max(
+                float(payload["inactive_since"])
+                + self.config.inactive_fault_retention_period,
+                time.time() + 1,
+            )))
+        self.state_db.append_healthz_transition(transition)
+        if payload["status"] == "ACTIVE" and _later_detection(
+            str(payload.get("last_detection_time") or ""),
+            str(payload["healthz_transition_observed_at"]),
+        ):
+            self.state_db.append_healthz_transition({
+                "kind": "observation",
+                "producer": DLDD_FAULT_PRODUCER,
+                "source_key": str(payload["redis_key"]),
+                "component": str(payload["component_name"]),
+                "observed_at": str(payload["last_detection_time"]),
+                "replay": "1",
+            })
 
     def read_faults(self) -> Iterable[Mapping[str, Any]]:
         # Fail the snapshot rather than reconcile partial fault state.

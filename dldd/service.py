@@ -14,7 +14,7 @@ from .actions import ActionExecutor, ActionRunner
 from .adapters import DataSourceAdapter
 from .artifacts import (
     DEFAULT_ARTIFACT_DIRECTORY,
-    FilesystemArtifactClient,
+    HostHealthzArtifactClient,
     HealthzArtifactClient,
 )
 from .config import ConfigDBProvider, DLDDConfig, load_vendor_defaults
@@ -318,8 +318,7 @@ class DLDDService:
     def _create_artifact_client(self) -> HealthzArtifactClient:
         factory = getattr(self.extensions, "artifact_client_factory", None)
         if factory is None:
-            return FilesystemArtifactClient(
-                directory=DEFAULT_ARTIFACT_DIRECTORY,
+            return HostHealthzArtifactClient(
                 query_runner=self._run_artifact_query,
             )
         client = factory(
@@ -484,7 +483,7 @@ class DLDDService:
     def _run_artifact_query(self, query):
         executor = query.get("executor")
         if callable(executor) or query.get("type") == "cli":
-            return FilesystemArtifactClient._run_query(query)
+            return HostHealthzArtifactClient._run_query(query)
         return self.extensions.vendor_hooks.get(
             operation_hook_name(query)
         ).collect_query(query)

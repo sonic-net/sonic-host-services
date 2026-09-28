@@ -3,12 +3,12 @@ import json
 import subprocess
 import tarfile
 import threading
-import time
 
 from dldd.actions import ActionExecutor, ActionOutput, ActionRunner
-from dldd.artifacts import FilesystemArtifactClient
+from dldd.artifacts import HostHealthzArtifactClient
 from dldd.hooks import VendorHook, VendorHookRegistry
 from dldd.models import Operation
+from host_modules.healthz_artifacts import HealthzArtifacts
 
 
 class SequenceExecutor(ActionExecutor):
@@ -69,7 +69,37 @@ def test_action_runner_reports_timeout_without_waiting_for_vendor_return():
         runner.shutdown()
 
 
-def test_dse_and_cli_action_outputs_are_bounded_and_archived(tmp_path, monkeypatch):
+class RecordingHealthz:
+    def __init__(self, tmp_path):
+        self.location = str(tmp_path / "healthz-artifact.tar.gz")
+        self.submitted = []
+        self.failed = []
+        self.stage_paths = []
+
+    def __call__(self, method, request):
+        if method == "reserve_artifact":
+            return {
+                "artifact_id": "healthz-123.tar.gz",
+                "requested_at": 1234,
+                "location": self.location,
+            }
+        if method == "submit_artifact":
+            self.stage_paths = [Path(entry["path"]) for entry in request["paths"]]
+            files = {
+                entry["name"]: Path(entry["path"]).read_bytes()
+                for entry in request["paths"]
+            }
+            self.submitted.append((request["metadata"], files))
+            return {"artifact_id": request["artifact_id"], "location": self.location}
+        if method == "fail_artifact":
+            self.failed.append(request["artifact_id"])
+            return {}
+        if method == "artifact_status":
+            return {"state": "COMPLETED"}
+        raise AssertionError(method)
+
+
+def test_dse_and_cli_action_outputs_are_bounded_and_submitted(tmp_path, monkeypatch):
     def run(argv, **kwargs):
         return subprocess.CompletedProcess(
             argv, 7, stdout=b"cli-output", stderr=b"cli-warning"
@@ -112,7 +142,8 @@ def test_dse_and_cli_action_outputs_are_bounded_and_archived(tmp_path, monkeypat
     assert result.actions[1].stderr == "cli-"
     assert result.actions[1].truncated == ("stdout", "stderr")
 
-    client = FilesystemArtifactClient(directory=str(tmp_path / "artifacts"))
+    healthz = RecordingHealthz(tmp_path)
+    client = HostHealthzArtifactClient(healthz_call=healthz)
     try:
         reference = client.request(
             {
@@ -125,33 +156,34 @@ def test_dse_and_cli_action_outputs_are_bounded_and_archived(tmp_path, monkeypat
             (),
             (),
         )
-        deadline = time.time() + 2
-        while not Path(reference.location).exists() and time.time() < deadline:
-            time.sleep(0.01)
-
-        with tarfile.open(reference.location, "r:gz") as archive:
-            assert archive.extractfile("actions/000/stdout.txt").read() == b"dse-stdout"
-            assert archive.extractfile("actions/000/stderr.txt").read() == b"dse-stderr"
-            assert archive.extractfile("actions/000/result.txt").read() == (
-                b'{"changed": true}'
-            )
-            assert archive.extractfile("actions/001/stdout.txt").read() == b"cli-"
-            assert archive.extractfile("actions/001/stderr.txt").read() == b"cli-"
-            cli_metadata = json.load(
-                archive.extractfile("actions/001/metadata.json")
-            )
-            assert cli_metadata["returncode"] == 7
-            assert cli_metadata["truncated"] == ["stdout", "stderr"]
+        client._jobs.join()
+        assert reference.artifact_id == "healthz-123.tar.gz"
+        metadata, files = healthz.submitted[0]
+        assert metadata == {"rule": "TEST"}
+        assert files["actions/000/stdout.txt"] == b"dse-stdout"
+        assert files["actions/000/stderr.txt"] == b"dse-stderr"
+        assert files["actions/000/result.txt"] == b'{"changed": true}'
+        assert files["actions/001/stdout.txt"] == b"cli-"
+        assert files["actions/001/stderr.txt"] == b"cli-"
+        cli_metadata = json.loads(files["actions/001/metadata.json"])
+        assert cli_metadata["returncode"] == 7
+        assert cli_metadata["truncated"] == ["stdout", "stderr"]
+        assert all(
+            not path.exists() for path in healthz.stage_paths
+            if "dldd-healthz-" in str(path)
+        )
     finally:
         client.shutdown()
 
 
-def test_artifact_request_is_immediate_and_final_file_is_atomic(tmp_path):
+def test_artifact_id_is_immediate_and_submit_waits_for_queries(tmp_path):
     log = tmp_path / "service.log"
     log.write_text("bounded log", encoding="utf-8")
     other_log = tmp_path / "nested" / "service.log"
     other_log.parent.mkdir()
     other_log.write_text("same basename", encoding="utf-8")
+    linked_log = tmp_path / "link.log"
+    linked_log.symlink_to(log)
     started = threading.Event()
     release = threading.Event()
 
@@ -160,9 +192,10 @@ def test_artifact_request_is_immediate_and_final_file_is_atomic(tmp_path):
         release.wait(1)
         return "diagnostic output"
 
-    client = FilesystemArtifactClient(
-        directory=str(tmp_path / "artifacts"),
+    healthz = RecordingHealthz(tmp_path)
+    client = HostHealthzArtifactClient(
         query_runner=query,
+        healthz_call=healthz,
         max_workers=1,
         max_artifact_bytes=4096,
     )
@@ -173,28 +206,77 @@ def test_artifact_request_is_immediate_and_final_file_is_atomic(tmp_path):
             ({"type": "vendor"},),
         )
         assert started.wait(1)
-        assert reference.artifact_id.startswith("dldd-")
-        assert reference.location.endswith(reference.artifact_id)
-        assert not Path(reference.location).exists()
-        assert not list((tmp_path / "artifacts").glob("*.json"))
-
+        assert reference.location == healthz.location
+        assert healthz.submitted == []
         release.set()
-        deadline = time.time() + 2
-        while not Path(reference.location).exists() and time.time() < deadline:
-            time.sleep(0.01)
-
-        with tarfile.open(reference.location, "r:gz") as archive:
-            log_member = "logs/{}".format(str(log).lstrip("/"))
-            other_member = "logs/{}".format(str(other_log).lstrip("/"))
-            assert json.load(archive.extractfile("metadata.json")) == {
-                "rule": "TEST"
-            }
-            assert archive.extractfile("queries/000.txt").read() == b"diagnostic output"
-            assert archive.getnames().count(log_member) == 1
-            assert archive.extractfile(log_member).read() == b"bounded log"
-            assert archive.extractfile(other_member).read() == b"same basename"
+        client._jobs.join()
+        metadata, files = healthz.submitted[0]
+        assert metadata == {"rule": "TEST"}
+        assert files["queries/000.txt"] == b"diagnostic output"
+        assert files["logs/" + str(log).lstrip("/")] == b"bounded log"
+        assert files["logs/" + str(other_log).lstrip("/")] == b"same basename"
+        assert len([name for name in files if name.endswith("service.log")]) == 2
+        assert "logs/" + str(linked_log).lstrip("/") not in files
+        assert all(
+            not path.exists() for path in healthz.stage_paths
+            if "dldd-healthz-" in str(path)
+        )
+        assert client.artifact_status(reference.artifact_id) == "COMPLETED"
     finally:
         release.set()
+        client.shutdown()
+
+
+def test_failed_dldd_collection_releases_healthz_reservation(tmp_path):
+    def fail(_unused):
+        raise RuntimeError("vendor query failed")
+
+    healthz = RecordingHealthz(tmp_path)
+    client = HostHealthzArtifactClient(query_runner=fail, healthz_call=healthz)
+    try:
+        reference = client.request({}, (), ({"type": "vendor"},))
+        client._jobs.join()
+        assert healthz.failed == [reference.artifact_id]
+        assert healthz.submitted == []
+    finally:
+        client.shutdown()
+
+
+def test_dldd_manifest_packages_through_host_healthz(tmp_path):
+    store = HealthzArtifacts(tmp_path / "healthz", max_bytes=4096)
+    log = tmp_path / "source.log"
+    log.write_text("log data", encoding="utf-8")
+    configured_log = Path(log.resolve())
+
+    def call(method, request):
+        if method == "reserve_artifact":
+            return store.reserve()
+        if method == "submit_artifact":
+            return store.submit(request["artifact_id"], request["paths"],
+                                request["metadata"])
+        if method == "fail_artifact":
+            store.fail(request["artifact_id"])
+            return {}
+        if method == "artifact_status":
+            return {"state": store.status(request["artifact_id"])}
+        raise AssertionError(method)
+
+    client = HostHealthzArtifactClient(
+        query_runner=lambda _query: "query data", healthz_call=call,
+        max_artifact_bytes=4096,
+    )
+    try:
+        reference = client.request({"rule": "TEST"}, (str(configured_log),),
+                                   ({"type": "vendor"},))
+        client._jobs.join()
+        assert store.status(reference.artifact_id) == "COMPLETED"
+        with tarfile.open(reference.location, "r:gz") as archive:
+            assert json.load(archive.extractfile("metadata.json")) == {"rule": "TEST"}
+            assert archive.extractfile("queries/000.txt").read() == b"query data"
+            assert archive.extractfile(
+                "logs/" + str(configured_log).lstrip("/")
+            ).read() == b"log data"
+    finally:
         client.shutdown()
 
 

@@ -14,8 +14,34 @@ from tests.dldd_fakes import FakeStateDB
 
 
 class RecordingPipeline(object):
-    def __init__(self):
+    def __init__(self, client):
+        self.client = client
         self.operations = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def watch(self, *keys):
+        self.operations.append(("watch", keys))
+
+    def type(self, key):
+        self.operations.append(("type", key))
+        if key == "HEALTHZ_TRANSITIONS":
+            return self.client.stream_type
+        return self.client.fault_type
+
+    def hgetall(self, key):
+        self.operations.append(("hgetall", key))
+        return {b"status": self.client.status} if self.client.status else {}
+
+    def multi(self):
+        self.operations.append(("multi",))
+
+    def xadd(self, key, fields, maxlen, approximate):
+        self.operations.append(("xadd", key, fields, maxlen, approximate))
 
     def hset(self, key, mapping):
         self.operations.append(("hset", key, mapping))
@@ -31,15 +57,21 @@ class RecordingPipeline(object):
 
     def execute(self):
         self.operations.append(("execute",))
+        if self.client.execute_error is not None:
+            raise self.client.execute_error
 
 
 class RecordingRedisClient(object):
-    def __init__(self, fields=(), status=None, eval_error=None):
+    def __init__(
+        self, fields=(), status=None, fault_type=b"hash",
+        stream_type=b"stream", execute_error=None,
+    ):
         self.fields = fields
         self.status = status
-        self.eval_error = eval_error
-        self.eval_calls = []
-        self.transaction = RecordingPipeline()
+        self.fault_type = fault_type
+        self.stream_type = stream_type
+        self.execute_error = execute_error
+        self.transaction = RecordingPipeline(self)
         self.scan_pattern = None
         self.deleted = []
         self.direct = []
@@ -66,12 +98,6 @@ class RecordingRedisClient(object):
     def hget(self, key, field):
         assert field == "status"
         return self.status
-
-    def eval(self, script, numkeys, *arguments):
-        self.eval_calls.append((script, numkeys, arguments))
-        if self.eval_error is not None:
-            raise self.eval_error
-        return 1
 
     def pipeline(self, transaction=True):
         assert transaction
@@ -233,17 +259,20 @@ def test_fault_stream_records_only_first_publication_and_status_changes():
     assert publisher.publish_fault(record, observation_time=100.8)
     stream = database.streams[publisher.FAULT_TRANSITIONS_STREAM]
     assert len(stream) == 1
-    assert stream[0][1] == {
+    transition = stream[0][1]
+    assert transition == {
         "producer": "dldd",
-        "fault_key": record.redis_key,
+        "source_key": record.redis_key,
+        "transition_id": record.healthz_transition_id,
         "component": "PSU0",
         "component_type": "PSU",
         "symptom": "SYMPTOM_OVER_THRESHOLD",
-        "status": "ACTIVE",
-        "occurrence": "1",
+        "active": "1",
         "observed_at": "100",
         "artifact_id": "first.tar.gz",
     }
+    assert database.values[record.redis_key]["healthz_transition_id"] == transition["transition_id"]
+    assert database.values[record.redis_key]["healthz_transition_artifact_id"] == "first.tar.gz"
 
     record.reason = "metadata refresh"
     assert publisher.publish_fault(record, observation_time=101)
@@ -253,18 +282,19 @@ def test_fault_stream_records_only_first_publication_and_status_changes():
     record.inactive_deadline = 102 + publisher.config.inactive_fault_retention_period
     assert publisher.publish_fault(record, observation_time=102)
     assert len(stream) == 2
-    assert stream[-1][1]["status"] == "INACTIVE"
+    assert stream[-1][1]["active"] == "0"
     assert stream[-1][1]["observed_at"] == "102"
     # The retained row carries the prior artifact; consumers must not treat
     # it as a new archive on the recovery event.
-    assert stream[-1][1]["artifact_id"] == "first.tar.gz"
+    assert "artifact_id" not in stream[-1][1]
+    assert database.values[record.redis_key]["healthz_transition_artifact_id"] == ""
 
     record.status = "ACTIVE"
     record.occurrences += 1
     record.healthz_artifact = None
     assert publisher.publish_fault(record, observation_time=103)
     assert len(stream) == 3
-    assert stream[-1][1]["occurrence"] == "2"
+    assert stream[-1][1]["active"] == "1"
     assert "artifact_id" not in stream[-1][1]
 
 
@@ -284,15 +314,94 @@ def test_first_inactive_publication_and_failed_write_retry_stream_once():
     assert publisher.publish_fault(record, observation_time=202)
     stream = database.streams[publisher.FAULT_TRANSITIONS_STREAM]
     assert len(stream) == 1
-    assert stream[0][1]["status"] == "INACTIVE"
+    assert stream[0][1]["active"] == "0"
     assert stream[0][1]["artifact_id"] == "recovered.tar.gz"
 
-    # An expired row is a first publication again. The production Lua script
-    # makes this status comparison at the same server-side write boundary.
+    # An expired row is a first publication again. The watched Redis
+    # transaction makes the status comparison at the write boundary.
     database.delete(record.redis_key)
     assert publisher.publish_fault(record, observation_time=203)
     assert len(stream) == 2
-    assert stream[-1][1]["observed_at"] == "203"
+    assert stream[-1][1]["transition_id"] == stream[0][1]["transition_id"]
+    assert stream[-1][1]["observed_at"] == "202"
+
+
+def test_inactive_metadata_refresh_keeps_original_retention_deadline(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("dldd.telemetry.time.time", lambda: now[0])
+    config = DLDDConfig(inactive_fault_retention_period=42)
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, config)
+    record = fault("INACTIVE")
+    record.inactive_deadline = 1042.0
+
+    assert publisher.publish_fault(record, observation_time=1000)
+    assert database.ttls[record.redis_key] == 42
+    transition_id = record.healthz_transition_id
+
+    now[0] = 1015.0
+    record.healthz_artifact = {"artifact_id": "archive.tar.gz", "state": "MISSING"}
+    assert publisher.publish_fault(record)
+    assert database.ttls[record.redis_key] == 27
+    assert len(database.streams[publisher.FAULT_TRANSITIONS_STREAM]) == 1
+    assert record.healthz_transition_id == transition_id
+
+
+def test_delayed_first_inactive_publication_uses_remaining_deadline(monkeypatch):
+    monkeypatch.setattr("dldd.telemetry.time.time", lambda: 1100.0)
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(
+        database, DLDDConfig(inactive_fault_retention_period=42)
+    )
+    record = fault("INACTIVE")
+    record.inactive_deadline = 1042.0
+
+    assert publisher.publish_fault(
+        record, observation_time=1000, publication_time=1100
+    )
+    assert database.ttls[record.redis_key] == 1
+    first = database.streams[publisher.FAULT_TRANSITIONS_STREAM][0][1]
+    assert first["active"] == "0"
+    assert first["observed_at"] == "1000"
+    assert first["retain_until"] == "1101"
+    assert database.values[record.redis_key]["inactive_since"] == "1000.0"
+
+    publisher.replay_fault_transition(tuple(publisher.read_faults())[0])
+    replay = database.streams[publisher.FAULT_TRANSITIONS_STREAM][-1][1]
+    assert replay["transition_id"] == first["transition_id"]
+    assert replay["retain_until"] == "1101"
+
+
+def test_startup_replays_only_the_retained_transition_and_latest_observation():
+    database = FakeStateDB()
+    publisher = TelemetryPublisher(database, DLDDConfig())
+    record = fault()
+    record.last_detection_time = 100
+    record.healthz_artifact = {"artifact_id": "archive.tar.gz"}
+    assert publisher.publish_fault(record, observation_time=100)
+    first_id = record.healthz_transition_id
+
+    record.last_detection_time = 105
+    assert publisher.publish_fault(record, observation_time=105)
+    assert [entry[1].get("kind") for entry in database.streams[publisher.FAULT_TRANSITIONS_STREAM]] == [
+        None, "observation",
+    ]
+
+    retained = tuple(publisher.read_faults())[0]
+    database.streams[publisher.FAULT_TRANSITIONS_STREAM].clear()
+    publisher.replay_fault_transition(retained)
+    replayed = [entry[1] for entry in database.streams[publisher.FAULT_TRANSITIONS_STREAM]]
+    assert replayed[0]["transition_id"] == first_id
+    assert replayed[0]["artifact_id"] == "archive.tar.gz"
+    assert replayed[0]["replay"] == "1"
+    assert replayed[1] == {
+        "kind": "observation",
+        "producer": "dldd",
+        "source_key": record.redis_key,
+        "component": "PSU0",
+        "observed_at": "105",
+        "replay": "1",
+    }
 
 
 def test_production_state_db_hash_replacement_and_transaction_contract():
@@ -318,30 +427,51 @@ def test_production_state_db_hash_replacement_and_transaction_contract():
 
     client = RecordingRedisClient()
     database = SonicStateDB(client)
+    transition = {
+        "producer": "dldd", "transition_id": "transition-1",
+        "active": "1", "observed_at": "100",
+    }
     database.replace_fault(
         "FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None,
-        {"producer": "dldd", "status": "ACTIVE"},
+        transition,
     )
-    assert len(client.eval_calls) == 1
-    script, key_count, arguments = client.eval_calls[0]
-    assert key_count == 2
-    assert arguments == (
-        "FAULT_INFO|PSU0|SYMPTOM", "DLDD_FAULT_TRANSITIONS",
-        "ACTIVE", -1, 10000, 1, "status", "ACTIVE", 2,
-        "producer", "dldd", "status", "ACTIVE",
+    names = [operation[0] for operation in client.transaction.operations]
+    assert names == [
+        "watch", "hgetall", "watch", "type", "multi", "xadd",
+        "hset", "persist", "execute",
+    ]
+    assert client.transaction.operations[5] == (
+        "xadd", "HEALTHZ_TRANSITIONS",
+        transition, 10000, False,
     )
-    assert script.index("redis.call('XADD'") < script.index("redis.call('HSET'")
-    assert not client.transaction.operations
     assert not client.direct
 
-    client = RecordingRedisClient(eval_error=RuntimeError("WRONGTYPE stream"))
+    client = RecordingRedisClient(status=b"ACTIVE", fields=(b"status",))
+    SonicStateDB(client).replace_fault(
+        "FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None,
+        transition,
+    )
+    assert "xadd" not in [operation[0] for operation in client.transaction.operations]
+
+    client = RecordingRedisClient(stream_type=b"string")
     database = SonicStateDB(client)
-    with pytest.raises(RuntimeError, match="WRONGTYPE"):
+    with pytest.raises(TypeError, match="HEALTHZ_TRANSITIONS"):
         database.replace_fault(
             "FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None,
-            {"producer": "dldd", "status": "ACTIVE"},
+            transition,
         )
-    assert not client.transaction.operations
+    assert "execute" not in [operation[0] for operation in client.transaction.operations]
+
+    client = RecordingRedisClient(execute_error=RuntimeError("EXEC failed"))
+    with pytest.raises(RuntimeError, match="EXEC failed"):
+        SonicStateDB(client).replace_fault(
+            "FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None,
+            transition,
+        )
+    # A Redis EXEC error can still apply other queued commands; no rollback
+    # or claim that the fault row stayed unchanged follows from this failure.
+    names = [operation[0] for operation in client.transaction.operations]
+    assert names.index("xadd") < names.index("hset") < names.index("execute")
 
 
 def test_fault_scan_is_atomic_on_row_failure():

@@ -390,6 +390,7 @@ def dse_retirement_fixture(
         TelemetryPublisher(database, config),
         config,
         "sha256:test",
+        wall_clock=lambda: 1234.9,
     )
     record = FaultRecord(
         rule_id=item.rule_id,
@@ -797,9 +798,9 @@ def test_local_action_recheck_and_artifact_lifecycle():
     assert database.values[fault_key]["origin_time"] == "101"
     assert database.values[fault_key]["last_detection_time"] == "101"
     assert database.values[fault_key]["inactive_since"] == "102.0"
-    stream = database.streams["DLDD_FAULT_TRANSITIONS"]
+    stream = database.streams["HEALTHZ_TRANSITIONS"]
     assert len(stream) == 1
-    assert stream[0][1]["status"] == "INACTIVE"
+    assert stream[0][1]["active"] == "0"
     assert stream[0][1]["observed_at"] == "102"
     assert stream[0][1]["artifact_id"] == "dldd-test.tar.gz"
     assert json.loads(database.values[fault_key]["events"])[0]["value_read"] == 51.5
@@ -1088,7 +1089,9 @@ def test_confirmed_active_sample_advances_detection_without_new_transition():
     record = orchestrator.faults[(item.rule_id, item.component_name)]
     assert record.last_detection_time == 102.0
     assert database.values[record.redis_key]["last_detection_time"] == "102"
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+    assert [row[1].get("kind", "transition") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "transition", "observation",
+    ]
 
 
 def test_action_runner_failure_and_deadline_still_recheck():
@@ -1201,6 +1204,63 @@ def test_primary_processing_exception_isolated_to_work_key():
     assert orchestrator.broken_rules[item.correlation_key]["state"] == "DEGRADED"
 
 
+def test_restart_adopts_legacy_fault_and_marks_missing_artifact_without_event():
+    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+    bundle = build_plans(
+        rules.materialized_rules,
+        "sha256:test",
+        {"redis": 60, "file": 60, "common": 60},
+    )
+    item = next(iter(bundle.work_items.values()))
+    database = FakeStateDB()
+    key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
+    database.hset(key, {
+        "producer": "dldd",
+        "rule": item.rule_name,
+        "rule_id": item.rule_id,
+        "rule_version": item.rule_version,
+        "schema_version": item.schema_version,
+        "active_rules_checksum": "sha256:test",
+        "component_type": item.component_type,
+        "component_name": item.component_name,
+        "symptom": item.symptom,
+        "status": "ACTIVE",
+        "origin_time": 100,
+        "last_detection_time": 101,
+        "healthz_artifact": {"artifact_id": "old.tar.gz"},
+    })
+
+    class MissingArtifactClient:
+        def artifact_status(self, artifact_id):
+            assert artifact_id == "old.tar.gz"
+            return "MISSING"
+
+    def restarted():
+        return PrimaryOrchestrator(
+            Queue(), bundle.monitor_plans, bundle.work_items,
+            CorrelationEngine(bundle.signatures),
+            TelemetryPublisher(database, DLDDConfig()), DLDDConfig(),
+            "sha256:test", artifact_client=MissingArtifactClient(),
+        )
+
+    restarted().reconcile_existing_faults()
+    row = database.values[key]
+    transition_id = row["healthz_transition_id"]
+    assert transition_id
+    assert json.loads(row["healthz_artifact"])["state"] == "MISSING"
+    first = database.streams["HEALTHZ_TRANSITIONS"][0][1]
+    assert first["transition_id"] == transition_id
+    assert first["replay"] == "1"
+    assert "artifact_id" not in first  # Existing archive was not newly collected.
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 1
+
+    restarted().reconcile_existing_faults()
+    stream = database.streams["HEALTHZ_TRANSITIONS"]
+    assert len(stream) == 2
+    assert stream[-1][1]["transition_id"] == transition_id
+    assert "artifact_id" not in stream[-1][1]
+
+
 def test_restart_and_periodic_fault_reconciliation_lifecycle():
     """Handle foreign, malformed, stale, and healthy retained fault rows."""
 
@@ -1309,7 +1369,10 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     assert database.values[key]["origin_time"] == "10"
     assert database.values[key]["last_detection_time"] == "11"
     assert database.values[key]["inactive_since"] == "100.0"
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+    assert [row[1]["active"] for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "1", "0",
+    ]
+    assert database.streams["HEALTHZ_TRANSITIONS"][0][1]["replay"] == "1"
 
     restarted = PrimaryOrchestrator(
         Queue(),
@@ -1323,7 +1386,11 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     restarted.reconcile_existing_faults()
     retained = restarted.faults[(item.rule_id, item.component_name)]
     assert retained.inactive_deadline == 3700.0
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 3
+    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["replay"] == "1"
+    assert database.streams["HEALTHZ_TRANSITIONS"][1][1]["transition_id"] == (
+        database.streams["HEALTHZ_TRANSITIONS"][-1][1]["transition_id"]
+    )
 
     decision = orchestrator.correlation.consume(
         evidence(item, EvaluationResultType.MATCH, 1)
@@ -1336,8 +1403,8 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     assert database.values[key]["reason"] == ""
     assert database.values[key]["origin_time"] == "10"
     assert database.values[key]["last_detection_time"] == "101"
-    assert [entry[1]["status"] for entry in database.streams["DLDD_FAULT_TRANSITIONS"]] == [
-        "INACTIVE", "ACTIVE",
+    assert [entry[1]["active"] for entry in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "1", "0", "0", "1",
     ]
 
     # Normal periodic confirmation is operational work, not a diagnostic.
