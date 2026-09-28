@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from threading import RLock
 
-from dldd.telemetry import StateDB, _redis_value
+from dldd.telemetry import StateDB, _artifact_id, _later_detection, _redis_value
 
 
 _VALID_RULE_FIXTURE = (
@@ -120,26 +120,78 @@ class FakeStateDB(StateDB):
                 self.values.get(key, {}).pop(field, None)
 
     def replace_fault(self, key, values, ttl_seconds, transition):
-        from dldd.telemetry import TelemetryPublisher
-
         with self._lock:
             self._check_read()
             self._check_write()
-            previous_status = self.values.get(key, {}).get("status")
-            self.values[key] = {
+            previous = self.values.get(key, {})
+            previous_status = previous.get("status")
+            current = {
                 name: _redis_value(value) for name, value in values.items()
             }
+            changed = previous_status != current["status"]
+            migration = (
+                not changed
+                and not previous.get("healthz_transition_id")
+                and transition.get("replay") == "1"
+            )
+            event = dict(transition)
+            if changed or migration:
+                current["healthz_transition_id"] = event["transition_id"]
+                current["healthz_transition_observed_at"] = event["observed_at"]
+                new_artifact = _artifact_id(current.get("healthz_artifact")) if changed else ""
+                old_artifact = _artifact_id(previous.get("healthz_artifact"))
+                current["healthz_transition_artifact_id"] = (
+                    new_artifact if new_artifact != old_artifact else ""
+                )
+                if current["healthz_transition_artifact_id"]:
+                    event["artifact_id"] = current["healthz_transition_artifact_id"]
+            else:
+                for field in (
+                    "healthz_transition_id",
+                    "healthz_transition_observed_at",
+                    "healthz_transition_artifact_id",
+                ):
+                    if field in previous:
+                        current[field] = previous[field]
+                    else:
+                        current.pop(field, None)
+            self.values[key] = current
             if ttl_seconds is None:
                 self.ttls.pop(key, None)
             else:
                 self.ttls[key] = ttl_seconds
-            if previous_status != self.values[key]["status"]:
-                stream = self.streams.setdefault(
-                    TelemetryPublisher.FAULT_TRANSITIONS_STREAM, []
+            if changed or migration:
+                self.append_healthz_transition(event)
+            elif current["status"] == "ACTIVE" and _later_detection(
+                current.get("last_detection_time", ""), previous.get("last_detection_time")
+            ):
+                self.append_healthz_transition({
+                    "kind": "observation",
+                    "producer": current["producer"],
+                    "source_key": key,
+                    "component": current["component_name"],
+                    "observed_at": current["last_detection_time"],
+                })
+            return {
+                field: current.get(field, "")
+                for field in (
+                    "healthz_transition_id",
+                    "healthz_transition_observed_at",
+                    "healthz_transition_artifact_id",
                 )
-                self._stream_sequence += 1
-                stream.append((f"{self._stream_sequence}-0", dict(transition)))
-                del stream[:-TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN]
+            }
+
+    def append_healthz_transition(self, transition):
+        from dldd.telemetry import TelemetryPublisher
+
+        with self._lock:
+            self._check_write()
+            stream = self.streams.setdefault(
+                TelemetryPublisher.FAULT_TRANSITIONS_STREAM, []
+            )
+            self._stream_sequence += 1
+            stream.append((f"{self._stream_sequence}-0", dict(transition)))
+            del stream[:-TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN]
 
     def delete(self, key):
         with self._lock:

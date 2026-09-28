@@ -76,16 +76,21 @@ expression.
 matching when exact strings are not appropriate. The default remains exact
 matching, and activation fails closed if the device identity cannot be read.
 
-`create_artifact_client` optionally replaces the built-in bounded filesystem
-artifact store with a vendor Healthz/storage integration. DLDD calls it using
-the stable named arguments `identity`, `artifact_directory`, and
-`query_runner`. The result must implement `HealthzArtifactClient`; an invalid
-factory or result publishes `BROKEN|FATAL` startup status rather than silently
-falling back or starting action/monitor workers. If the factory is absent, DLDD
-continues to use `FilesystemArtifactClient` under
-`/var/lib/sonic/dldd/artifacts`. Vendor clients own their configured retention
-and size policy, while `query_runner` preserves the validated built-in and
-vendor query dispatch boundary.
+`create_artifact_client` may customize DLDD's rule-query and concrete-file
+staging client. DLDD continues to pass the compatibility named arguments
+`identity`, `artifact_directory`, and `query_runner`; `artifact_directory`
+identifies the old DLDD archive path for existing factories and is not a new
+archive destination. The result must implement `HealthzArtifactClient`; an
+invalid factory or result publishes `BROKEN|FATAL` startup status rather than
+silently falling back or starting action/monitor workers. Without the factory,
+DLDD uses `HostHealthzArtifactClient`: it reserves an ID through host Healthz
+before fault publication, runs built-in/vendor queries through `query_runner`,
+stages concrete files privately, then submits absolute file paths and
+archive-relative names to host Healthz. The host packages and retains new
+archives under `/var/lib/sonic/healthz/artifacts/`; vendor clients must use
+that host boundary for new Healthz archives rather than own archive storage or
+retention. Old `/var/lib/sonic/dldd/artifacts/` files remain read-only legacy
+artifacts.
 
 The schema permits a direct `platform_api` object because the HLD leaves its
 vendor fields open.  DLDD requires that object to contain a non-empty `hook`

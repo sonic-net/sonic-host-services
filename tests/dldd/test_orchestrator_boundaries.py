@@ -232,7 +232,7 @@ def test_runtime_config_update_and_fault_republish_lifecycle():
     clock[0] = 5
     orchestrator.tick()
     assert identity not in orchestrator.dirty_faults
-    assert database.ttls[record.redis_key] == 19
+    assert database.ttls[record.redis_key] == 14
 
 
 def test_evidence_dispatch_and_localized_failure_policy():
@@ -593,7 +593,9 @@ def test_fault_lifetime_suppression_failure_and_occurrence_projection():
     assert not orchestrator.pending
     assert record.status == "ACTIVE"
     assert database.values[record.redis_key]["last_detection_time"] == "101"
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+    assert [row[1].get("kind", "transition") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "transition", "observation",
+    ]
 
     # Primary processing and release failures remain localized to the work key.
     orchestrator, _, item, _, _ = runtime_fixture()
@@ -744,7 +746,7 @@ def test_nonconfirming_action_recheck_preserves_positive_sample_time(result_type
     assert row["status"] == "ACTIVE"
     assert row["origin_time"] == "101"
     assert row["last_detection_time"] == "101"
-    assert database.streams["DLDD_FAULT_TRANSITIONS"][0][1]["observed_at"] == "101"
+    assert database.streams["HEALTHZ_TRANSITIONS"][0][1]["observed_at"] == "101"
 
 
 def test_later_positive_recheck_precedes_nonconfirming_final_recheck():
@@ -779,7 +781,7 @@ def test_later_positive_recheck_precedes_nonconfirming_final_recheck():
     row = database.values["FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"]
     assert row["origin_time"] == "101"
     assert row["last_detection_time"] == "102"
-    assert database.streams["DLDD_FAULT_TRANSITIONS"][0][1]["observed_at"] == "102"
+    assert database.streams["HEALTHZ_TRANSITIONS"][0][1]["observed_at"] == "102"
 
 
 def test_retained_fault_reconciliation_and_staleness_lifecycle():
@@ -1210,7 +1212,9 @@ def test_fault_arbiter_promotion_suppression_and_clear_lifecycle():
     assert high_record.origin_time == 17
     assert high_record.occurrences == 3
     assert database.values[high_record.redis_key]["rule_id"] == str(high.rule_id)
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+    assert [row[1].get("kind", "transition") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "transition", "observation",
+    ]
 
     # Promotion also inherits occurrence history from an inactive loser.
     orchestrator, high, low, _ = competing_rules_fixture()
@@ -1251,19 +1255,21 @@ def test_primary_evidence_transition_and_detection_timestamps():
     orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=2))
     assert database.values[key]["origin_time"] == "101"
     assert database.values[key]["last_detection_time"] == "102"
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+    assert [row[1].get("kind", "transition") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "transition", "observation",
+    ]
 
     orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=3))
     assert database.values[key]["last_detection_time"] == "102"
     assert database.values[key]["inactive_since"] == "103.0"
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 2
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 3
 
     orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=4))
     assert database.values[key]["origin_time"] == "101"
     assert database.values[key]["last_detection_time"] == "104"
     assert database.values[key]["occurrences"] == "2"
-    assert [row[1]["status"] for row in database.streams["DLDD_FAULT_TRANSITIONS"]] == [
-        "ACTIVE", "INACTIVE", "ACTIVE",
+    assert [row[1].get("active") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "1", None, "0", "1",
     ]
 
 
@@ -1288,10 +1294,10 @@ def test_recurrence_after_inactive_row_expiry_starts_new_fault_history():
     assert row["last_detection_time"] == "103"
     assert row["occurrences"] == "1"
     assert "healthz_artifact" not in row
-    assert [entry[1]["status"] for entry in database.streams["DLDD_FAULT_TRANSITIONS"]] == [
-        "ACTIVE", "INACTIVE", "ACTIVE",
+    assert [entry[1]["active"] for entry in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "1", "0", "1",
     ]
-    assert "artifact_id" not in database.streams["DLDD_FAULT_TRANSITIONS"][-1][1]
+    assert "artifact_id" not in database.streams["HEALTHZ_TRANSITIONS"][-1][1]
 
 
 def test_expired_previous_rule_does_not_supply_new_winner_history():
@@ -1312,7 +1318,7 @@ def test_expired_previous_rule_does_not_supply_new_winner_history():
     assert row["status"] == "ACTIVE"
     assert row["origin_time"] == "103"
     assert row["occurrences"] == "1"
-    assert database.streams["DLDD_FAULT_TRANSITIONS"][-1][1]["status"] == "ACTIVE"
+    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["active"] == "1"
 
 
 def test_inactive_only_recovery_claims_expired_previous_rule_row():
@@ -1340,7 +1346,7 @@ def test_inactive_only_recovery_claims_expired_previous_rule_row():
     assert row["last_detection_time"] == "101"
     assert row["occurrences"] == "1"
     assert orchestrator.published_by_key[owner_key] == item.rule_id
-    assert len(database.streams["DLDD_FAULT_TRANSITIONS"]) == 1
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 1
 
 
 def test_owned_recheck_source_recovery_and_runtime_status_lifecycle():

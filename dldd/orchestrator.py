@@ -1310,6 +1310,25 @@ class PrimaryOrchestrator:
                     }
                 )
                 continue
+            if (
+                not record.healthz_transition_id
+                and record.status in ("ACTIVE", "INACTIVE")
+            ):
+                # Adopt only the retained current state from older FAULT_INFO
+                # rows. It is labeled as a replay, not as a historical sample.
+                if record.status == "INACTIVE":
+                    record.inactive_deadline = (
+                        self._retained_inactive_since(payload, record)
+                        + self.config.inactive_fault_retention_period
+                    )
+                record.healthz_transition_status = ""
+                if not self.telemetry.publish_fault(
+                    record, replay=True, publication_time=self.wall_clock()
+                ):
+                    raise RuntimeError("unable to adopt retained FAULT_INFO transition")
+            else:
+                self.telemetry.replay_fault_transition(payload)
+            artifact_changed = self._reconcile_artifact_reference(record)
             identity = (record.rule_id, record.component_name)
             execution = self.correlation.executions.get(identity)
             dynamic_signature = self.dynamic_signatures.get(record.rule_id)
@@ -1329,18 +1348,9 @@ class PrimaryOrchestrator:
             )
             if record.status != "ACTIVE":
                 # Retained inactive rows preserve occurrence history.
-                try:
-                    inactive_since = float(
-                        payload.get("inactive_since", record.last_detection_time)
-                    )
-                    if not math.isfinite(inactive_since):
-                        raise ValueError("non-finite inactive_since")
-                except (TypeError, ValueError):
-                    # Rows from older producers used last_detection_time as
-                    # their clear/deadline clock and lack inactive_since.
-                    inactive_since = record.last_detection_time
                 record.inactive_deadline = (
-                    inactive_since + self.config.inactive_fault_retention_period
+                    self._retained_inactive_since(payload, record)
+                    + self.config.inactive_fault_retention_period
                 )
                 self.faults[identity] = record
                 self.published_by_key[
@@ -1349,6 +1359,8 @@ class PrimaryOrchestrator:
                 if pending_dynamic:
                     # Let the first inventory resolve retained dynamic history.
                     self._dse_retirement_candidates.add(identity)
+                if artifact_changed:
+                    self._publish_fault_record(record)
                 continue
             if pending_dynamic:
                 # Preserve dynamic fault ownership until inventory completes.
@@ -1358,6 +1370,8 @@ class PrimaryOrchestrator:
                 ] = record.rule_id
                 self.pending_dynamic_faults[identity] = record
                 self.uncertain_faults.add(identity)
+                if artifact_changed:
+                    self._publish_fault_record(record)
                 continue
             if not current:
                 record.status = "INACTIVE"
@@ -1378,9 +1392,42 @@ class PrimaryOrchestrator:
                 continue
             self.faults[identity] = record
             self.published_by_key[(record.component_name, record.symptom)] = record.rule_id
+            if artifact_changed:
+                self._publish_fault_record(record)
             if execution is None:
                 continue
             self._start_reconciliation(execution, "bootstrap_fault_reconciliation")
+
+    @staticmethod
+    def _retained_inactive_since(payload, record: FaultRecord) -> float:
+        try:
+            inactive_since = float(
+                payload.get("inactive_since", record.last_detection_time)
+            )
+            if math.isfinite(inactive_since):
+                return inactive_since
+        except (TypeError, ValueError):
+            pass
+        return record.last_detection_time
+
+    def _reconcile_artifact_reference(self, record: FaultRecord) -> bool:
+        artifact = record.healthz_artifact
+        if not artifact or self.artifact_client is None:
+            return False
+        artifact_id = artifact.get("artifact_id")
+        if not artifact_id:
+            return False
+        try:
+            status = self.artifact_client.artifact_status(str(artifact_id))
+        except Exception as error:
+            LOGGER.warning("unable to check Healthz artifact %s: %s", artifact_id, error)
+            return False
+        if status not in ("PENDING", "COMPLETED", "MISSING", "FAILED"):
+            return False
+        if artifact.get("state") == status:
+            return False
+        record.healthz_artifact = {**artifact, "state": status}
+        return True
 
     def _start_reconciliation(
         self, execution: SignatureExecution, reason: str
@@ -1507,6 +1554,14 @@ class PrimaryOrchestrator:
             local_action_details=dict(local),
             action_suppressed=bool(local.get("action_suppressed", False)),
             healthz_artifact=payload.get("healthz_artifact"),
+            healthz_transition_id=str(payload.get("healthz_transition_id", "")),
+            healthz_transition_status=str(payload.get("status", "ACTIVE")),
+            healthz_transition_observed_at=int(float(
+                payload.get("healthz_transition_observed_at") or 0
+            )),
+            healthz_transition_artifact_id=str(
+                payload.get("healthz_transition_artifact_id", "")
+            ),
             serial_number=str(payload.get("component_serial_number", "")),
             stale_source=bool(payload.get("source_stale", False)),
         )
@@ -1765,6 +1820,7 @@ class PrimaryOrchestrator:
             record,
             remote_action_time_window=record.remote_action_time_window,
             observation_time=observation_time,
+            publication_time=self.wall_clock(),
         )
         if published:
             self.dirty_faults.discard(identity)

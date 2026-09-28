@@ -1,28 +1,28 @@
-"""Durable, bounded Healthz event and component-state catalog.
+"""Durable Healthz events, source membership, and component assessments.
 
-The stream consumer owns transition ordering.  This catalog commits each
-transition's event, fault membership, component aggregate, and checkpoint in
-one SQLite transaction.  Snapshot reconciliation can repair observed state,
-but deliberately does not manufacture events for transitions it did not see.
+Producers send generic transitions.  The catalog never reads a producer's
+telemetry rows; it commits each transition and its stream checkpoint together.
 """
 
 from __future__ import annotations
 
-import json
 import math
+import logging
 import os
 import sqlite3
 import stat
 import threading
 import time
 import uuid
-from collections.abc import Mapping
 from contextlib import contextmanager
-from urllib.parse import quote
 
 DEFAULT_CATALOG_PATH = "/var/lib/sonic/healthz/catalog.sqlite3"
 DEFAULT_MAX_EVENTS = 4096
 MAX_CATALOG_BYTES = 32 * 1024 * 1024
+DEFAULT_SOURCE_RETAIN_SECONDS = 24 * 60 * 60
+SOURCE_PRUNE_GRACE_SECONDS = 60
+_CHECKPOINT = "healthz_checkpoint"
+LOGGER = logging.getLogger(__name__)
 
 
 def _text(value, name):
@@ -34,8 +34,7 @@ def _text(value, name):
 
 
 def _stream_parts(stream_id):
-    stream_id = _text(stream_id, "stream_id")
-    parts = stream_id.split("-")
+    parts = _text(stream_id, "stream_id").split("-")
     if len(parts) != 2 or not all(part.isdigit() for part in parts):
         raise ValueError("invalid Redis stream ID")
     return int(parts[0]), int(parts[1])
@@ -53,23 +52,12 @@ def _seconds(value):
     return math.floor(number)
 
 
-def _nanoseconds(value):
-    return _seconds(value) * 1000000000 if value not in (None, "") else None
-
-
-def _artifact_id(value):
-    if value in (None, ""):
-        return None
-    return _text(value, "artifact_id")
-
-
-def _fault_key(row, producer, component, symptom):
-    value = row.get("fault_key")
-    if value:
-        return _text(value, "fault_key")
-    return "FAULT_INFO|{}|{}".format(
-        quote(component, safe=""), quote(symptom, safe="")
-    )
+def _active(value):
+    if value in ("1", 1, True):
+        return 1
+    if value in ("0", 0, False):
+        return 0
+    raise ValueError("active must be 0 or 1")
 
 
 def _secure_existing(path, directory=False):
@@ -83,18 +71,6 @@ def _secure_existing(path, directory=False):
     mode = 0o700 if directory else 0o600
     if stat.S_IMODE(info.st_mode) != mode:
         os.chmod(path, mode, follow_symlinks=False)
-
-
-def _archive_from_snapshot(row):
-    artifact = row.get("healthz_artifact")
-    if isinstance(artifact, str):
-        try:
-            artifact = json.loads(artifact)
-        except ValueError:
-            artifact = None
-    if isinstance(artifact, Mapping):
-        return _artifact_id(artifact.get("artifact_id"))
-    return _artifact_id(row.get("artifact_id"))
 
 
 def _event(row):
@@ -126,7 +102,7 @@ def _aggregate(row):
 
 
 class HealthzCatalog:
-    """Thread-safe SQLite catalog shared by the D-Bus endpoint and worker."""
+    """Thread-safe SQLite catalog shared by the host worker and D-Bus RPCs."""
 
     def __init__(self, path=DEFAULT_CATALOG_PATH, max_events=DEFAULT_MAX_EVENTS):
         if not isinstance(max_events, int) or isinstance(max_events, bool) or max_events < 1:
@@ -141,9 +117,7 @@ class HealthzCatalog:
         _secure_existing(directory, directory=True)
         if not os.path.exists(self.path):
             try:
-                descriptor = os.open(
-                    self.path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
-                )
+                descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             except FileExistsError:
                 pass
             else:
@@ -160,88 +134,90 @@ class HealthzCatalog:
             page_size = self._db.execute("PRAGMA page_size").fetchone()[0]
             max_pages = MAX_CATALOG_BYTES // page_size
             actual_max = self._db.execute(
-                f"PRAGMA max_page_count={MAX_CATALOG_BYTES // page_size}"
+                f"PRAGMA max_page_count={max_pages}"
             ).fetchone()[0]
             if actual_max > max_pages:
                 raise RuntimeError("existing Healthz catalog exceeds the 32 MiB limit")
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=FULL")
             self._db.execute("PRAGMA busy_timeout=2000")
-            self._db.execute("PRAGMA journal_size_limit=1048576")
-            self._db.execute("PRAGMA wal_autocheckpoint=100")
-            for suffix in ("-wal", "-shm"):
-                if os.path.lexists(self.path + suffix):
-                    _secure_existing(self.path + suffix)
-            self._db.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS events (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_id TEXT NOT NULL UNIQUE,
-                    stream_id TEXT NOT NULL,
-                    component TEXT NOT NULL,
-                    component_type TEXT,
-                    symptom TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('HEALTHY', 'UNHEALTHY')),
-                    observed_at INTEGER NOT NULL,
-                    acknowledged INTEGER NOT NULL DEFAULT 0,
-                    artifact_id TEXT,
-                    source TEXT NOT NULL DEFAULT 'stream'
-                );
-                CREATE INDEX IF NOT EXISTS events_component_seq
-                    ON events(component, seq DESC);
-                CREATE TABLE IF NOT EXISTS faults (
-                    fault_key TEXT PRIMARY KEY,
-                    producer TEXT NOT NULL,
-                    component TEXT NOT NULL,
-                    symptom TEXT NOT NULL,
-                    occurrence INTEGER NOT NULL,
-                    active INTEGER NOT NULL,
-                    stream_seen INTEGER NOT NULL,
-                    artifact_id TEXT,
-                    snapshot_event_id TEXT,
-                    snapshot_observed_at INTEGER,
-                    current_event_id TEXT,
-                    seen_artifact_id TEXT,
-                    prunable INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE INDEX IF NOT EXISTS faults_component_active
-                    ON faults(component, active);
-                CREATE TABLE IF NOT EXISTS aggregates (
-                    component TEXT PRIMARY KEY,
-                    status TEXT NOT NULL CHECK(status IN ('HEALTHY', 'UNHEALTHY')),
-                    last_unhealthy INTEGER,
-                    unhealthy_count INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS artifact_claims (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    artifact_id TEXT NOT NULL UNIQUE
-                );
-                CREATE TABLE IF NOT EXISTS metadata (
-                    name TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                """
+            self._init_schema()
+
+    def _init_schema(self):
+        self._db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                stream_id TEXT NOT NULL,
+                component TEXT NOT NULL,
+                component_type TEXT,
+                symptom TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('HEALTHY', 'UNHEALTHY')),
+                observed_at INTEGER NOT NULL,
+                acknowledged INTEGER NOT NULL DEFAULT 0,
+                artifact_id TEXT,
+                source TEXT NOT NULL DEFAULT 'stream'
+            );
+            CREATE INDEX IF NOT EXISTS events_component_seq
+                ON events(component, seq DESC);
+            CREATE TABLE IF NOT EXISTS sources (
+                producer TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                component TEXT NOT NULL,
+                symptom TEXT NOT NULL,
+                active INTEGER NOT NULL,
+                last_transition_id TEXT,
+                last_artifact_id TEXT,
+                retain_until INTEGER,
+                legacy INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(producer, source_key)
+            );
+            CREATE INDEX IF NOT EXISTS sources_component_active
+                ON sources(component, active);
+            CREATE TABLE IF NOT EXISTS aggregates (
+                component TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK(status IN ('HEALTHY', 'UNHEALTHY')),
+                last_unhealthy INTEGER,
+                unhealthy_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS metadata (
+                name TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+        # Keep events and acknowledgements from the previous DLDD-specific
+        # catalog.  Its current fault membership seeds the generic source table.
+        columns = {row["name"] for row in self._db.execute("PRAGMA table_info(events)")}
+        if "source" not in columns:
+            self._db.execute(
+                "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'stream'"
             )
-            # A development image may already contain the initial catalog
-            # schema.  These additive columns keep its retained events.
-            columns = {row["name"] for row in self._db.execute("PRAGMA table_info(events)")}
-            if "source" not in columns:
+        if self._meta("sources_migrated") is None:
+            old = self._db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='faults'"
+            ).fetchone()
+            if old:
                 self._db.execute(
-                    "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'stream'"
+                    "INSERT OR IGNORE INTO sources(producer,source_key,component,"
+                    "symptom,active,last_artifact_id,legacy) "
+                    "SELECT producer,fault_key,component,symptom,active,artifact_id,1 "
+                    "FROM faults"
                 )
-            columns = {row["name"] for row in self._db.execute("PRAGMA table_info(faults)")}
-            if "snapshot_event_id" not in columns:
-                self._db.execute("ALTER TABLE faults ADD COLUMN snapshot_event_id TEXT")
-            if "snapshot_observed_at" not in columns:
-                self._db.execute("ALTER TABLE faults ADD COLUMN snapshot_observed_at INTEGER")
-            if "current_event_id" not in columns:
-                self._db.execute("ALTER TABLE faults ADD COLUMN current_event_id TEXT")
-            if "seen_artifact_id" not in columns:
-                self._db.execute("ALTER TABLE faults ADD COLUMN seen_artifact_id TEXT")
-            if "prunable" not in columns:
+            if self._meta("checkpoint") and self._meta(_CHECKPOINT) is None:
+                # The old stream may have had an unconsumed tail.  Keep its
+                # retained events but do not claim that tail was replayed.
+                reason = "legacy DLDD transition stream tail not replayed"
+                previous = self._meta("gap_reason")
+                if previous:
+                    reason += f"; prior gap: {previous}"
+                self._set_meta("gap_reason", reason[:512])
+                self._set_meta("gap_recorded_at", str(int(time.time())))
                 self._db.execute(
-                    "ALTER TABLE faults ADD COLUMN prunable INTEGER NOT NULL DEFAULT 0"
+                    "DELETE FROM metadata WHERE name='gap_first_available_id'"
                 )
+            self._set_meta("sources_migrated", "1")
 
     def close(self):
         with self._lock:
@@ -274,15 +250,13 @@ class HealthzCatalog:
 
     def get_checkpoint(self):
         with self._lock:
-            return self._meta("checkpoint")
+            return self._meta(_CHECKPOINT)
 
     def get_redis_run_id(self):
-        """Return the Redis process identity last seen by the stream worker."""
         with self._lock:
             return self._meta("redis_run_id")
 
     def set_redis_run_id(self, run_id):
-        """Persist a bounded Redis process identity across host restarts."""
         run_id = _text(run_id, "redis_run_id")
         if len(run_id) > 128:
             raise ValueError("redis_run_id is too long")
@@ -293,13 +267,13 @@ class HealthzCatalog:
         """Advance past a known stream position without making an event."""
         _stream_parts(stream_id)
         with self._transaction():
-            previous = self._meta("checkpoint")
+            previous = self._meta(_CHECKPOINT)
             if previous and _stream_parts(stream_id) < _stream_parts(previous):
                 raise ValueError("checkpoint rewind requires mark_gap")
-            self._set_meta("checkpoint", stream_id)
+            self._set_meta(_CHECKPOINT, stream_id)
 
     def mark_gap(self, reason, first_available_id=None, resume_after_id=None):
-        """Record a known stream loss; optionally reset the replay checkpoint."""
+        """Record known or possible stream loss without inventing an event."""
         reason = _text(reason, "gap reason")[:512]
         if first_available_id is not None:
             _stream_parts(first_available_id)
@@ -310,8 +284,12 @@ class HealthzCatalog:
             self._set_meta("gap_recorded_at", str(int(time.time())))
             if first_available_id is not None:
                 self._set_meta("gap_first_available_id", first_available_id)
+            else:
+                self._db.execute(
+                    "DELETE FROM metadata WHERE name='gap_first_available_id'"
+                )
             if resume_after_id is not None:
-                self._set_meta("checkpoint", resume_after_id)
+                self._set_meta(_CHECKPOINT, resume_after_id)
 
     def get_gap(self):
         with self._lock:
@@ -326,396 +304,174 @@ class HealthzCatalog:
 
     def _active_count(self, component):
         return self._db.execute(
-            "SELECT COUNT(*) AS total FROM faults WHERE component=? AND active=1",
+            "SELECT COUNT(*) AS total FROM sources WHERE component=? AND active=1",
             (component,),
         ).fetchone()["total"]
 
-    def _new_event_id(self, artifact_id):
+    def _insert_event(self, stream_id, component, component_type, symptom,
+                      status, observed_at, artifact_id, source):
         if artifact_id:
-            claimed = self._db.execute(
-                "SELECT 1 FROM artifact_claims WHERE artifact_id=?", (artifact_id,)
-            ).fetchone()
-            retained = self._db.execute(
+            prior = self._db.execute(
                 "SELECT 1 FROM events WHERE event_id=? OR artifact_id=?",
                 (artifact_id, artifact_id),
             ).fetchone()
-            if not claimed and not retained:
-                self._db.execute(
-                    "INSERT INTO artifact_claims(artifact_id) VALUES(?)",
-                    (artifact_id,),
-                )
-                return artifact_id, artifact_id
-        return f"hz-{uuid.uuid4().hex}", None
-
-    def _insert_event(self, stream_id, component, component_type, symptom,
-                      status, observed_at, artifact_id, source="stream"):
-        event_id, new_artifact_id = self._new_event_id(artifact_id)
+            claimed = self._db.execute(
+                "SELECT 1 FROM sources WHERE last_artifact_id=?",
+                (artifact_id,),
+            ).fetchone()
+            if prior or claimed:
+                LOGGER.warning("Healthz artifact ID already used: %s", artifact_id)
+                artifact_id = None
+        event_id = artifact_id or f"hz-{uuid.uuid4().hex}"
         self._db.execute(
             "INSERT INTO events(event_id,stream_id,component,component_type,"
             "symptom,status,observed_at,artifact_id,source) VALUES(?,?,?,?,?,?,?,?,?)",
             (event_id, stream_id, component, component_type, symptom,
-             status, observed_at, new_artifact_id, source),
+             status, observed_at, artifact_id, source),
         )
-        return event_id, new_artifact_id
+        return artifact_id
 
     def _prune(self):
         count = self._db.execute("SELECT COUNT(*) AS total FROM events").fetchone()["total"]
         excess = count - self.max_events
         if excess > 0:
+            # Keep a component's newest event before its older events.
             self._db.execute(
                 "DELETE FROM events WHERE seq IN ("
-                "SELECT seq FROM events ORDER BY acknowledged DESC, seq ASC LIMIT ?)" ,
+                "SELECT e.seq FROM events e ORDER BY "
+                "e.seq=(SELECT MAX(latest.seq) FROM events latest "
+                "WHERE latest.component=e.component), "
+                "e.acknowledged DESC, e.seq ASC LIMIT ?)",
                 (excess,),
             )
-        faults = self._db.execute(
-            "SELECT COUNT(*) AS total FROM faults"
-        ).fetchone()["total"]
-        excess = faults - (self.max_events * 2)
-        if excess > 0:
-            # Keep every active fault and inactive fault still represented in
-            # retained event history.  If those exceed the cap, the hard SQLite
-            # page limit fails closed instead of discarding current state.
-            self._db.execute(
-                "DELETE FROM faults WHERE rowid IN ("
-                "SELECT f.rowid FROM faults f WHERE f.active=0 AND f.prunable=1 "
-                "AND NOT EXISTS "
-                "(SELECT 1 FROM events e WHERE e.component=f.component "
-                "AND e.symptom=f.symptom) ORDER BY f.rowid LIMIT ?)",
-                (excess,),
-            )
-        # Artifact IDs remain claimed while their events or fault episodes are
-        # retained.  Older unreferenced claims are bounded separately.
-        claims = self._db.execute(
-            "SELECT COUNT(*) AS total FROM artifact_claims"
-        ).fetchone()["total"]
-        excess = claims - (self.max_events * 2)
-        if excess > 0:
-            self._db.execute(
-                "DELETE FROM artifact_claims WHERE seq IN ("
-                "SELECT a.seq FROM artifact_claims a "
-                "WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.artifact_id=a.artifact_id) "
-                "AND NOT EXISTS (SELECT 1 FROM faults f WHERE f.artifact_id=a.artifact_id) "
-                "ORDER BY a.seq LIMIT ?)",
-                (excess,),
-            )
+        # An inactive source's transition ID must survive as long as the
+        # producer retains its current row.  Allow for rounded Redis TTLs.
+        self._db.execute(
+            "DELETE FROM sources WHERE active=0 AND retain_until IS NOT NULL "
+            "AND retain_until<=?", (int(time.time()) - SOURCE_PRUNE_GRACE_SECONDS,),
+        )
 
     def apply_transition(self, stream_id, transition):
-        """Apply one ordered DLDD transition, returning False on replay."""
+        """Apply one generic transition; return False for an idempotent replay."""
         _stream_parts(stream_id)
+        if transition.get("kind") == "observation":
+            producer = _text(transition["producer"], "producer")
+            source_key = _text(transition["source_key"], "source_key")
+            component = _text(transition["component"], "component")
+            observed_at = _seconds(transition["observed_at"])
+            with self._transaction():
+                checkpoint = self._meta(_CHECKPOINT)
+                if checkpoint and _stream_parts(stream_id) <= _stream_parts(checkpoint):
+                    return False
+                updated = self._db.execute(
+                    "UPDATE aggregates SET last_unhealthy=MAX("
+                    "COALESCE(last_unhealthy,0),?) "
+                    "WHERE component=? AND status='UNHEALTHY' "
+                    "AND COALESCE(last_unhealthy,0)<? "
+                    "AND EXISTS (SELECT 1 FROM sources s WHERE s.producer=? "
+                    "AND s.source_key=? AND s.component=aggregates.component "
+                    "AND s.active=1)",
+                    (observed_at * 1000000000, component,
+                     observed_at * 1000000000, producer, source_key),
+                ).rowcount
+                self._set_meta(_CHECKPOINT, stream_id)
+                return bool(updated)
         producer = _text(transition["producer"], "producer")
+        source_key = _text(transition["source_key"], "source_key")
+        transition_id = _text(transition["transition_id"], "transition_id")
         component = _text(transition["component"], "component")
         symptom = _text(transition["symptom"], "symptom")
-        status = _text(transition["status"], "status").upper()
-        if status not in ("ACTIVE", "INACTIVE"):
-            raise ValueError("invalid fault status")
-        fault_key = _fault_key(transition, producer, component, symptom)
         component_type = transition.get("component_type") or None
         if component_type is not None:
             component_type = _text(component_type, "component_type")
-        occurrence = int(transition.get("occurrence", 1))
-        if occurrence < 1:
-            raise ValueError("invalid occurrence")
+        active = _active(transition["active"])
         observed_at = _seconds(transition["observed_at"])
-        artifact_id = _artifact_id(transition.get("artifact_id"))
+        artifact_id = transition.get("artifact_id") or None
+        if artifact_id is not None:
+            artifact_id = _text(artifact_id, "artifact_id")
+        retain_until = transition.get("retain_until")
+        if retain_until not in (None, ""):
+            retain_until = _seconds(retain_until)
+        else:
+            retain_until = None
+        if not active and retain_until is None:
+            retain_until = max(observed_at, int(time.time())) + DEFAULT_SOURCE_RETAIN_SECONDS
+        replay = _active(transition.get("replay", "0"))
 
         with self._transaction():
-            checkpoint = self._meta("checkpoint")
+            checkpoint = self._meta(_CHECKPOINT)
             if checkpoint and _stream_parts(stream_id) <= _stream_parts(checkpoint):
                 return False
-            prior_fault = self._db.execute(
-                "SELECT * FROM faults WHERE fault_key=?", (fault_key,)
+            prior = self._db.execute(
+                "SELECT * FROM sources WHERE producer=? AND source_key=?",
+                (producer, source_key),
             ).fetchone()
-            prior_aggregate = self._db.execute(
+            if prior and prior["component"] != component:
+                raise ValueError("Healthz source changed component")
+            if prior and prior["last_transition_id"] == transition_id:
+                if prior["active"] != active:
+                    raise ValueError("Healthz transition ID changed status")
+                self._set_meta(_CHECKPOINT, stream_id)
+                return False
+
+            old_count = self._active_count(component)
+            was_active = bool(prior["active"]) if prior else False
+            aggregate = self._db.execute(
                 "SELECT * FROM aggregates WHERE component=?", (component,)
             ).fetchone()
-            old_count = self._active_count(component)
-            was_active = bool(prior_fault["active"]) if prior_fault else False
-            same_occurrence = (
-                prior_fault is not None and prior_fault["occurrence"] == occurrence
+            # An existing DUT catalog predates producer transition IDs.  Its
+            # first matching DLDD replay seeds the ID without duplicating an
+            # already retained event or incrementing unhealthy-count.
+            migrated_replay = bool(
+                prior and prior["legacy"] and replay and prior["active"] == active
+                and aggregate is not None
+                and aggregate["status"] == ("UNHEALTHY" if active else "HEALTHY")
+                and (artifact_id is None or artifact_id == prior["last_artifact_id"])
             )
-            stream_seen = bool(prior_fault["stream_seen"]) if prior_fault else False
-            last_claimed_artifact = prior_fault["artifact_id"] if prior_fault else None
-            snapshot_event_id = (
-                prior_fault["snapshot_event_id"] if prior_fault else None
-            )
-            same_snapshot = bool(
-                same_occurrence and snapshot_event_id
-                and was_active == (status == "ACTIVE")
-            )
-            inserted_artifact = None
-            inserted_event_id = None
-
-            if status == "ACTIVE":
-                new_observation = not (
-                    was_active and same_occurrence
-                    and (stream_seen or same_snapshot)
+            new_count = old_count - was_active + active
+            event_status = None
+            if not migrated_replay:
+                if active:
+                    event_status = "UNHEALTHY"
+                elif new_count == 0:
+                    event_status = "HEALTHY"
+            claimed_artifact = None
+            if event_status:
+                claimed_artifact = self._insert_event(
+                    stream_id, component, component_type, symptom, event_status,
+                    observed_at, artifact_id, "replay" if replay else "stream",
                 )
-                if new_observation:
-                    inserted_event_id, inserted_artifact = self._insert_event(
-                        stream_id, component, component_type, symptom,
-                        "UNHEALTHY", observed_at, artifact_id,
-                    )
-                if old_count == 0 and (not was_active or not same_occurrence):
-                    unhealthy_count = (
-                        prior_aggregate["unhealthy_count"] if prior_aggregate else 0
-                    ) + 1
-                else:
-                    unhealthy_count = (
-                        prior_aggregate["unhealthy_count"] if prior_aggregate else 0
-                    )
-                prior_unhealthy = (
-                    prior_aggregate["last_unhealthy"] if prior_aggregate else None
-                )
-                observed_ns = observed_at * 1000000000
-                last_unhealthy = max(prior_unhealthy or 0, observed_ns)
-                self._db.execute(
-                    "INSERT INTO aggregates(component,status,last_unhealthy,unhealthy_count) "
-                    "VALUES(?,?,?,?) ON CONFLICT(component) DO UPDATE SET "
-                    "status=excluded.status,last_unhealthy=excluded.last_unhealthy,"
-                    "unhealthy_count=excluded.unhealthy_count",
-                    (component, "UNHEALTHY", last_unhealthy, unhealthy_count),
-                )
-                active = 1
-            else:
-                active = 0
-                remaining = old_count - (1 if was_active else 0)
-                explicit_recovery = was_active or not same_occurrence or not stream_seen
-                if remaining == 0:
-                    if explicit_recovery and not same_snapshot:
-                        inserted_event_id, inserted_artifact = self._insert_event(
-                            stream_id, component, component_type, symptom,
-                            "HEALTHY", observed_at, artifact_id,
-                        )
-                    self._db.execute(
-                        "INSERT INTO aggregates(component,status,last_unhealthy,unhealthy_count) "
-                        "VALUES(?,?,?,?) ON CONFLICT(component) DO UPDATE SET "
-                        "status='HEALTHY'",
-                        (component, "HEALTHY",
-                         prior_aggregate["last_unhealthy"] if prior_aggregate else None,
-                         prior_aggregate["unhealthy_count"] if prior_aggregate else 0),
-                    )
-
-            if same_snapshot and artifact_id:
-                # A delayed matching stream record can carry an archive that
-                # was not yet present in the snapshot.  Keep the snapshot
-                # event ID stable while linking the genuinely new archive.
-                event = self._db.execute(
-                    "SELECT artifact_id FROM events WHERE event_id=? "
-                    "AND component=? AND symptom=? AND status=?",
-                    (snapshot_event_id, component, symptom,
-                     "UNHEALTHY" if status == "ACTIVE" else "HEALTHY"),
-                ).fetchone()
-                claimed = self._db.execute(
-                    "SELECT 1 FROM artifact_claims WHERE artifact_id=?",
-                    (artifact_id,),
-                ).fetchone()
-                if event and event["artifact_id"] is None and not claimed:
-                    self._db.execute(
-                        "INSERT INTO artifact_claims(artifact_id) VALUES(?)",
-                        (artifact_id,),
-                    )
-                    self._db.execute(
-                        "UPDATE events SET artifact_id=? WHERE event_id=?",
-                        (artifact_id, snapshot_event_id),
-                    )
-                    inserted_artifact = artifact_id
-
             self._db.execute(
-                "INSERT INTO faults(fault_key,producer,component,symptom,occurrence,"
-                "active,stream_seen,artifact_id,snapshot_event_id,"
-                "snapshot_observed_at,current_event_id,seen_artifact_id,prunable) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(fault_key) DO UPDATE SET producer=excluded.producer,"
+                "INSERT INTO sources(producer,source_key,component,symptom,active,"
+                "last_transition_id,last_artifact_id,retain_until,legacy) "
+                "VALUES(?,?,?,?,?,?,?,?,0) ON CONFLICT(producer,source_key) DO UPDATE SET "
                 "component=excluded.component,symptom=excluded.symptom,"
-                "occurrence=excluded.occurrence,active=excluded.active,"
-                "stream_seen=excluded.stream_seen,artifact_id=excluded.artifact_id,"
-                "snapshot_event_id=excluded.snapshot_event_id,"
-                "snapshot_observed_at=excluded.snapshot_observed_at,"
-                "current_event_id=excluded.current_event_id,"
-                "seen_artifact_id=excluded.seen_artifact_id,prunable=0",
-                (fault_key, producer, component, symptom, occurrence, active, 1,
-                 inserted_artifact or last_claimed_artifact, None, None,
-                 inserted_event_id or (
-                     prior_fault["current_event_id"]
-                     if prior_fault and same_occurrence and status == (
-                         "ACTIVE" if was_active else "INACTIVE"
-                     ) else None
-                 ), artifact_id, 0),
+                "active=excluded.active,last_transition_id=excluded.last_transition_id,"
+                "last_artifact_id=excluded.last_artifact_id,"
+                "retain_until=excluded.retain_until,legacy=0",
+                (producer, source_key, component, symptom, active, transition_id,
+                 claimed_artifact or (prior["last_artifact_id"] if prior else None),
+                 retain_until),
             )
-            self._set_meta("checkpoint", stream_id)
+            count = aggregate["unhealthy_count"] if aggregate else 0
+            if active and not migrated_replay and (
+                old_count == 0 or aggregate is None
+                or aggregate["status"] != "UNHEALTHY"
+            ):
+                count += 1
+            last = aggregate["last_unhealthy"] if aggregate else None
+            if active:
+                last = max(last or 0, observed_at * 1000000000)
+            self._db.execute(
+                "INSERT INTO aggregates(component,status,last_unhealthy,unhealthy_count) "
+                "VALUES(?,?,?,?) ON CONFLICT(component) DO UPDATE SET "
+                "status=excluded.status,last_unhealthy=excluded.last_unhealthy,"
+                "unhealthy_count=excluded.unhealthy_count",
+                (component, "UNHEALTHY" if new_count else "HEALTHY", last, count),
+            )
+            self._set_meta(_CHECKPOINT, stream_id)
             self._prune()
             return True
-
-    def reconcile_snapshot(self, rows):
-        """Record current observations without inventing missing transitions.
-
-        A new explicit row can supply one current-observation event, tagged
-        ``source=snapshot``.  It does not assert when the transition happened,
-        and a subsequent matching stream record does not create another event.
-        Missing rows are ignored: they may have expired or Redis may have lost
-        data.  Snapshot reconciliation never advances the stream checkpoint.
-        """
-        normalized = []
-        for row in rows:
-            if row.get("producer") != "dldd":
-                continue
-            component = _text(row.get("component") or row.get("component_name"), "component")
-            symptom = _text(row["symptom"], "symptom")
-            status = _text(row["status"], "status").upper()
-            if status not in ("ACTIVE", "INACTIVE"):
-                raise ValueError("invalid fault status")
-            occurrence = int(row.get("occurrence", row.get("occurrences", 1)))
-            if occurrence < 1:
-                raise ValueError("invalid occurrence")
-            observed = None
-            source_observed_at = None
-            if status == "ACTIVE":
-                observed = _nanoseconds(row.get("last_detection_time"))
-                if row.get("last_detection_time") not in (None, ""):
-                    source_observed_at = _seconds(row["last_detection_time"])
-            elif row.get("inactive_since") not in (None, ""):
-                source_observed_at = _seconds(row["inactive_since"])
-            component_type = row.get("component_type") or None
-            if component_type is not None:
-                component_type = _text(component_type, "component_type")
-            normalized.append((
-                _fault_key(row, "dldd", component, symptom), component, symptom,
-                status, occurrence, observed, component_type,
-                source_observed_at, _archive_from_snapshot(row),
-            ))
-
-        with self._transaction():
-            affected = set()
-            active_observed = {}
-            inactive_candidates = {}
-            reconciliation_at = int(time.time())
-            # The caller supplies a complete FAULT_INFO snapshot.  An inactive
-            # episode absent from it may be discarded only after its retained
-            # event has also aged out; active memberships are never inferred
-            # clear from absence.
-            self._db.execute("UPDATE faults SET prunable=1 WHERE active=0")
-            for (fault_key, component, symptom, status, occurrence, observed,
-                 component_type, source_observed_at, archive_id) in normalized:
-                prior = self._db.execute(
-                    "SELECT * FROM faults WHERE fault_key=?", (fault_key,)
-                ).fetchone()
-                active = int(status == "ACTIVE")
-                changed = (
-                    prior is None or prior["active"] != active
-                    or prior["occurrence"] != occurrence
-                )
-                stream_seen = 0 if changed else prior["stream_seen"]
-                snapshot_event_id = (
-                    prior["snapshot_event_id"] if prior and not changed else None
-                )
-                snapshot_observed_at = (
-                    prior["snapshot_observed_at"] if prior and not changed else None
-                )
-                current_event_id = (
-                    prior["current_event_id"] if prior and not changed else None
-                )
-                seen_artifact_id = (
-                    prior["seen_artifact_id"] if prior and not changed else None
-                )
-                claimed_artifact = None
-                if changed and status == "ACTIVE":
-                    snapshot_observed_at = source_observed_at or reconciliation_at
-                    snapshot_event_id, claimed_artifact = self._insert_event(
-                        f"snapshot:{uuid.uuid4().hex}", component,
-                        component_type, symptom, "UNHEALTHY",
-                        snapshot_observed_at, archive_id, source="snapshot",
-                    )
-                    current_event_id = snapshot_event_id
-                    seen_artifact_id = archive_id
-                elif changed and status == "INACTIVE":
-                    inactive_candidates[component] = (
-                        fault_key, symptom, component_type,
-                        source_observed_at or reconciliation_at, archive_id,
-                    )
-                    seen_artifact_id = archive_id
-                elif archive_id and archive_id != seen_artifact_id:
-                    # A metadata-only refresh may supply a *new* archive after
-                    # the transition event was published.  Keep its event ID
-                    # stable, and attach only to that episode's current event.
-                    event = self._db.execute(
-                        "SELECT artifact_id FROM events WHERE event_id=? "
-                        "AND component=? AND symptom=? AND status=?",
-                        (current_event_id, component, symptom,
-                         "UNHEALTHY" if active else "HEALTHY"),
-                    ).fetchone()
-                    claimed = self._db.execute(
-                        "SELECT 1 FROM artifact_claims WHERE artifact_id=?",
-                        (archive_id,),
-                    ).fetchone()
-                    if event and event["artifact_id"] is None and not claimed:
-                        self._db.execute(
-                            "INSERT INTO artifact_claims(artifact_id) VALUES(?)",
-                            (archive_id,),
-                        )
-                        self._db.execute(
-                            "UPDATE events SET artifact_id=? WHERE event_id=?",
-                            (archive_id, current_event_id),
-                        )
-                        claimed_artifact = archive_id
-                    seen_artifact_id = archive_id
-                self._db.execute(
-                    "INSERT INTO faults(fault_key,producer,component,symptom,occurrence,"
-                    "active,stream_seen,artifact_id,snapshot_event_id,"
-                    "snapshot_observed_at,current_event_id,seen_artifact_id,prunable) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(fault_key) DO UPDATE SET component=excluded.component,"
-                    "symptom=excluded.symptom,occurrence=excluded.occurrence,"
-                    "active=excluded.active,stream_seen=excluded.stream_seen,"
-                    "artifact_id=excluded.artifact_id,"
-                    "snapshot_event_id=excluded.snapshot_event_id,"
-                    "snapshot_observed_at=excluded.snapshot_observed_at,"
-                    "current_event_id=excluded.current_event_id,"
-                    "seen_artifact_id=excluded.seen_artifact_id,prunable=0",
-                    (fault_key, "dldd", component, symptom, occurrence, active,
-                     stream_seen, claimed_artifact or (
-                         prior["artifact_id"] if prior else None
-                     ), snapshot_event_id, snapshot_observed_at,
-                     current_event_id, seen_artifact_id, 0),
-                )
-                affected.add(component)
-                if observed is not None:
-                    active_observed[component] = max(
-                        active_observed.get(component, 0), observed
-                    )
-            for component in affected:
-                active = self._active_count(component) > 0
-                if not active and component in inactive_candidates:
-                    (fault_key, symptom, component_type,
-                     snapshot_observed_at, archive_id) = inactive_candidates[component]
-                    snapshot_event_id, claimed_artifact = self._insert_event(
-                        f"snapshot:{uuid.uuid4().hex}", component,
-                        component_type, symptom, "HEALTHY", snapshot_observed_at,
-                        archive_id, source="snapshot",
-                    )
-                    self._db.execute(
-                        "UPDATE faults SET snapshot_event_id=?,snapshot_observed_at=?,"
-                        "current_event_id=?,artifact_id=COALESCE(?,artifact_id) "
-                        "WHERE fault_key=?",
-                        (snapshot_event_id, snapshot_observed_at,
-                         snapshot_event_id, claimed_artifact, fault_key),
-                    )
-                prior = self._db.execute(
-                    "SELECT * FROM aggregates WHERE component=?", (component,)
-                ).fetchone()
-                count = prior["unhealthy_count"] if prior else 0
-                if active and (prior is None or prior["status"] != "UNHEALTHY"):
-                    count += 1
-                last = prior["last_unhealthy"] if prior else None
-                if component in active_observed:
-                    last = max(last or 0, active_observed[component])
-                self._db.execute(
-                    "INSERT INTO aggregates(component,status,last_unhealthy,unhealthy_count) "
-                    "VALUES(?,?,?,?) ON CONFLICT(component) DO UPDATE SET "
-                    "status=excluded.status,last_unhealthy=excluded.last_unhealthy,"
-                    "unhealthy_count=excluded.unhealthy_count",
-                    (component, "UNHEALTHY" if active else "HEALTHY", last, count),
-                )
-            self._prune()
 
     def get_latest(self, component):
         component = _text(component, "component")
