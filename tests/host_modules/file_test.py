@@ -1,6 +1,7 @@
 import sys
 import os
 import pytest
+import requests
 from unittest import mock
 from host_modules import file_service
 
@@ -124,10 +125,10 @@ class TestFileService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("requests.get")
+    @mock.patch("host_modules.file_service.create_http_session")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
-    def test_download_http_success(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+    def test_download_http_success(self, mock_exists, mock_stat, MockSessionFactory, MockInit, MockBusName, MockSystemBus):
         mock_exists.return_value = False
         mock_dir_stat = mock.Mock()
         mock_dir_stat.st_mode = 0o40777  # World writable
@@ -137,7 +138,7 @@ class TestFileService(object):
         mock_response.iter_content.return_value = [b"chunk1", b"chunk2"]
         mock_response.raise_for_status.return_value = None
         mock_response.status_code = 200
-        MockRequestsGet.return_value = mock_response
+        MockSessionFactory.return_value.get.return_value = mock_response
 
         file_service_stub = file_service.FileService(file_service.MOD_NAME)
         with mock.patch("builtins.open", mock.mock_open()) as mock_file:
@@ -152,29 +153,32 @@ class TestFileService(object):
 
             assert ret == 0
             assert msg == ""
-            MockRequestsGet.assert_called_once_with(
+            MockSessionFactory.return_value.get.assert_called_once_with(
                 "http://example.com/file.txt",
                 auth=("user", "password"),
                 stream=True,
                 timeout=file_service.HTTP_TIMEOUT,
                 allow_redirects=False,
             )
+            mock_file.assert_called_once_with("/local/path/file.txt", "xb")
             mock_file().write.assert_any_call(b"chunk1")
             mock_file().write.assert_any_call(b"chunk2")
+            mock_response.close.assert_called_once_with()
+            MockSessionFactory.return_value.close.assert_called_once_with()
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("requests.get")
+    @mock.patch("host_modules.file_service.create_http_session")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
-    def test_download_http_failure(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+    def test_download_http_failure(self, mock_exists, mock_stat, MockSessionFactory, MockInit, MockBusName, MockSystemBus):
         mock_exists.return_value = False
         mock_dir_stat = mock.Mock()
         mock_dir_stat.st_mode = 0o40777  # World writable
         mock_stat.return_value = mock_dir_stat
 
-        MockRequestsGet.side_effect = Exception("HTTP error")
+        MockSessionFactory.return_value.get.side_effect = Exception("HTTP error")
 
         file_service_stub = file_service.FileService(file_service.MOD_NAME)
         ret, msg = file_service_stub.download(
@@ -188,14 +192,49 @@ class TestFileService(object):
 
         assert ret == 1
         assert "HTTP error" in msg
+        MockSessionFactory.return_value.close.assert_called_once_with()
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("requests.get")
+    @mock.patch("host_modules.file_service.create_http_session")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
-    def test_download_http_rejects_untrusted_urls(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+    def test_download_http_status_failure_closes_resources(self, mock_exists, mock_stat, MockSessionFactory, MockInit, MockBusName, MockSystemBus):
+        mock_exists.return_value = False
+        mock_dir_stat = mock.Mock()
+        mock_dir_stat.st_mode = 0o40777
+        mock_stat.return_value = mock_dir_stat
+
+        mock_response = mock.Mock()
+        mock_response.status_code = 401
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("401 Unauthorized")
+        MockSessionFactory.return_value.get.return_value = mock_response
+
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        with mock.patch("builtins.open", mock.mock_open()) as mock_file:
+            ret, msg = file_service_stub.download(
+                hostname="example.com",
+                username="user",
+                password="password",
+                remote_path="http://example.com/file.txt",
+                local_path="/local/path/file.txt",
+                protocol="HTTP",
+            )
+
+        assert ret == file_service.EXIT_FAILURE
+        assert "401 Unauthorized" in msg
+        mock_file.assert_not_called()
+        mock_response.close.assert_called_once_with()
+        MockSessionFactory.return_value.close.assert_called_once_with()
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("host_modules.file_service.create_http_session")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_download_http_rejects_untrusted_urls(self, mock_exists, mock_stat, MockSessionFactory, MockInit, MockBusName, MockSystemBus):
         """remote_path must not be able to redirect the daemon away from hostname."""
         mock_exists.return_value = False
         mock_dir_stat = mock.Mock()
@@ -225,7 +264,7 @@ class TestFileService(object):
         ]
 
         for hostname, remote_path, protocol, reason in cases:
-            MockRequestsGet.reset_mock()
+            MockSessionFactory.return_value.get.reset_mock()
             with mock.patch("builtins.open", mock.mock_open()) as mock_file:
                 ret, msg = file_service_stub.download(
                     hostname=hostname,
@@ -239,16 +278,16 @@ class TestFileService(object):
             assert ret == file_service.EXIT_FAILURE, "expected rejection ({}): {}".format(reason, remote_path)
             assert msg, "rejection must explain itself ({})".format(reason)
             # The request must never leave the box, and nothing may be written.
-            MockRequestsGet.assert_not_called()
+            MockSessionFactory.assert_not_called()
             mock_file.assert_not_called()
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("requests.get")
+    @mock.patch("host_modules.file_service.create_http_session")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
-    def test_download_http_accepts_equivalent_host_spellings(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+    def test_download_http_accepts_equivalent_host_spellings(self, mock_exists, mock_stat, MockSessionFactory, MockInit, MockBusName, MockSystemBus):
         """Case, trailing dot, ports and IPv6 brackets must not cause false rejections."""
         mock_exists.return_value = False
         mock_dir_stat = mock.Mock()
@@ -267,12 +306,12 @@ class TestFileService(object):
         ]
 
         for hostname, remote_path, protocol in cases:
-            MockRequestsGet.reset_mock()
+            MockSessionFactory.return_value.get.reset_mock()
             mock_response = mock.Mock()
             mock_response.iter_content.return_value = [b"data"]
             mock_response.raise_for_status.return_value = None
             mock_response.status_code = 200
-            MockRequestsGet.return_value = mock_response
+            MockSessionFactory.return_value.get.return_value = mock_response
 
             with mock.patch("builtins.open", mock.mock_open()):
                 ret, msg = file_service_stub.download(
@@ -285,15 +324,15 @@ class TestFileService(object):
                 )
 
             assert ret == 0, "unexpected rejection of {} for {}: {}".format(remote_path, hostname, msg)
-            MockRequestsGet.assert_called_once()
+            MockSessionFactory.return_value.get.assert_called_once()
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("requests.get")
+    @mock.patch("host_modules.file_service.create_http_session")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
-    def test_download_http_rejects_every_3xx(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+    def test_download_http_rejects_every_3xx(self, mock_exists, mock_stat, MockSessionFactory, MockInit, MockBusName, MockSystemBus):
         """No 3xx may be treated as a download, with or without a Location header.
 
         requests.Response.is_redirect only covers 301/302/303/307/308 and only when a
@@ -309,7 +348,7 @@ class TestFileService(object):
 
         for status in (300, 301, 302, 303, 304, 305, 306, 307, 308, 399):
             for with_location in (True, False):
-                MockRequestsGet.reset_mock()
+                MockSessionFactory.return_value.get.reset_mock()
                 mock_response = mock.Mock()
                 mock_response.status_code = status
                 mock_response.headers = (
@@ -318,7 +357,7 @@ class TestFileService(object):
                 )
                 mock_response.raise_for_status.return_value = None
                 mock_response.iter_content.return_value = [b"should-never-be-written"]
-                MockRequestsGet.return_value = mock_response
+                MockSessionFactory.return_value.get.return_value = mock_response
 
                 with mock.patch("builtins.open", mock.mock_open()) as mock_file:
                     ret, msg = file_service_stub.download(
@@ -338,15 +377,16 @@ class TestFileService(object):
                 if with_location:
                     assert "169.254.169.254" in msg, label
                 # requests must have been told not to follow it in the first place.
-                assert MockRequestsGet.call_args.kwargs["allow_redirects"] is False
+                assert MockSessionFactory.return_value.get.call_args.kwargs["allow_redirects"] is False
+                mock_response.close.assert_called_once_with()
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("requests.get")
+    @mock.patch("host_modules.file_service.create_http_session")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
-    def test_download_http_omits_auth_when_no_username(self, mock_exists, mock_stat, MockRequestsGet, MockInit, MockBusName, MockSystemBus):
+    def test_download_http_omits_auth_when_no_username(self, mock_exists, mock_stat, MockSessionFactory, MockInit, MockBusName, MockSystemBus):
         """Anonymous downloads must not send an empty Basic auth header."""
         mock_exists.return_value = False
         mock_dir_stat = mock.Mock()
@@ -357,7 +397,7 @@ class TestFileService(object):
         mock_response.iter_content.return_value = [b"data"]
         mock_response.raise_for_status.return_value = None
         mock_response.status_code = 200
-        MockRequestsGet.return_value = mock_response
+        MockSessionFactory.return_value.get.return_value = mock_response
 
         file_service_stub = file_service.FileService(file_service.MOD_NAME)
         with mock.patch("builtins.open", mock.mock_open()):
@@ -371,7 +411,69 @@ class TestFileService(object):
             )
 
         assert ret == 0
-        assert MockRequestsGet.call_args.kwargs["auth"] is None
+        assert MockSessionFactory.return_value.get.call_args.kwargs["auth"] is None
+        mock_response.close.assert_called_once_with()
+        MockSessionFactory.return_value.close.assert_called_once_with()
+
+    def test_create_http_session_ignores_netrc_and_proxy_environment(self, tmp_path, monkeypatch):
+        """Root's ambient credentials and proxies must never affect a D-Bus request."""
+        netrc = tmp_path / ".netrc"
+        netrc.write_text("machine example.test login rootnetrc password rootsecret\n")
+        netrc.chmod(0o600)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HTTP_PROXY", "http://proxy.test:8080")
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.test:8080")
+
+        session = file_service.create_http_session()
+        try:
+            prepared = session.prepare_request(
+                requests.Request("GET", "http://example.test/file", auth=None)
+            )
+            settings = session.merge_environment_settings(
+                prepared.url, {}, False, None, None
+            )
+        finally:
+            session.close()
+
+        assert prepared.headers.get("Authorization") is None
+        assert settings["proxies"] == {}
+        assert session.trust_env is False
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("host_modules.file_service.create_http_session")
+    def test_download_http_stream_failure_removes_partial_file(self, MockSessionFactory, MockInit, MockBusName, MockSystemBus, tmp_path):
+        """A failed stream must close resources and leave no blocking partial file."""
+        tmp_path.chmod(0o777)
+        local_path = str(tmp_path / "download.tar")
+
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status.return_value = None
+
+        def failing_chunks(chunk_size):
+            yield b"partial"
+            raise requests.exceptions.ConnectionError("stream broke")
+
+        mock_response.iter_content.side_effect = failing_chunks
+        MockSessionFactory.return_value.get.return_value = mock_response
+
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        ret, msg = file_service_stub.download(
+            hostname="example.com",
+            username="user",
+            password="password",
+            remote_path="http://example.com/file.tar",
+            local_path=local_path,
+            protocol="HTTP",
+        )
+
+        assert ret == file_service.EXIT_FAILURE
+        assert "stream broke" in msg
+        assert not os.path.exists(local_path)
+        mock_response.close.assert_called_once_with()
+        MockSessionFactory.return_value.close.assert_called_once_with()
 
     def test_validate_http_url_returns_none_when_acceptable(self):
         """The helper reports problems as strings and success as None."""

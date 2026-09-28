@@ -23,6 +23,15 @@ HTTP_TIMEOUT = (10, 60)
 import os
 
 
+def create_http_session():
+    """Create an HTTP session isolated from process environment credentials."""
+    session = requests.Session()
+    # This root daemon must not inherit proxy settings or credentials from .netrc.
+    # Authentication and the destination are explicit download() parameters.
+    session.trust_env = False
+    return session
+
+
 def normalize_host(host):
     """
     Normalize a host so that equivalent spellings compare equal.
@@ -196,30 +205,49 @@ class FileService(host_service.HostModule):
 
                 # Redirects are not followed: a permitted host could otherwise bounce
                 # the request to one the caller is not allowed to name directly.
-                response = requests.get(
-                    remote_path,
-                    auth=auth,
-                    stream=True,
-                    timeout=HTTP_TIMEOUT,
-                    allow_redirects=False,
-                )
-                # Reject the whole 3xx range by status code rather than relying on
-                # Response.is_redirect, which only covers 301/302/303/307/308 and only
-                # when a Location header is present. A 300 or 304 would otherwise pass
-                # raise_for_status() and be written out as a successful download.
-                if 300 <= response.status_code < 400:
-                    location = response.headers.get("Location")
-                    return EXIT_FAILURE, (
-                        "Refusing redirect response {} from {}{}".format(
-                            response.status_code,
-                            remote_path,
-                            " to {}".format(location) if location else "",
-                        )
+                session = create_http_session()
+                try:
+                    response = session.get(
+                        remote_path,
+                        auth=auth,
+                        stream=True,
+                        timeout=HTTP_TIMEOUT,
+                        allow_redirects=False,
                     )
-                response.raise_for_status()
-                with open(local_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                    try:
+                        # Reject the whole 3xx range by status code rather than relying on
+                        # Response.is_redirect, which only covers 301/302/303/307/308 and
+                        # only when a Location header is present.
+                        if 300 <= response.status_code < 400:
+                            location = response.headers.get("Location")
+                            return EXIT_FAILURE, (
+                                "Refusing redirect response {} from {}{}".format(
+                                    response.status_code,
+                                    remote_path,
+                                    " to {}".format(location) if location else "",
+                                )
+                            )
+                        response.raise_for_status()
+
+                        file_created = False
+                        try:
+                            # Use exclusive creation so a file appearing after the initial
+                            # existence check is never overwritten.
+                            with open(local_path, 'xb') as f:
+                                file_created = True
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                        except Exception:
+                            if file_created:
+                                try:
+                                    os.remove(local_path)
+                                except FileNotFoundError:
+                                    pass
+                            raise
+                    finally:
+                        response.close()
+                finally:
+                    session.close()
 
             elif protocol == "SCP":
                 ssh = paramiko.SSHClient()
