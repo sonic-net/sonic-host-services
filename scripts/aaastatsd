@@ -15,6 +15,12 @@ RADIUS_PAM_AUTH_CONF_STATS_DIR = "/etc/pam_radius_auth.d/statistics/"
 
 def radius_stats_file_path(server):
     """Return the stats path for a server key, or None for an invalid key."""
+    if (not isinstance(server, str) or not server or server in ('.', '..') or
+            os.path.basename(server) != server or '\x00' in server):
+        syslog.syslog(syslog.LOG_ERR,
+                      'RADIUS statistics: refusing invalid server entry')
+        return None
+
     stats_dir = os.path.realpath(RADIUS_PAM_AUTH_CONF_STATS_DIR)
     stats_file = os.path.realpath(os.path.join(stats_dir, server))
 

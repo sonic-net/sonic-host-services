@@ -34,7 +34,8 @@ with mock.patch.dict(sys.modules, {
     loader.exec_module(aaastatsd)
 
 
-@pytest.mark.parametrize('server', ['', '.', 'nested/name'])
+@pytest.mark.parametrize('server', ['', '.', '..', 'nested/name',
+                                    'nested/../192.0.2.1', 'bad\x00name'])
 def test_stats_path_rejects_invalid_server_names(server):
     with mock.patch.object(aaastatsd.syslog, 'syslog'):
         assert aaastatsd.radius_stats_file_path(server) is None
@@ -73,6 +74,19 @@ def test_create_file_accepts_server_address(tmp_path):
 
     assert (tmp_path / '2001:db8::1').exists()
     mocked_update.assert_called_once_with('2001:db8::1')
+
+
+def test_traversal_alias_cannot_unlink_another_servers_file(tmp_path):
+    stats_file = tmp_path / '192.0.2.1'
+    stats_file.write_text('counter data')
+    radius_stats = aaastatsd.RadiusStatistics.__new__(aaastatsd.RadiusStatistics)
+    radius_stats.radius_global = {'statistics': 'False'}
+
+    with mock.patch.object(aaastatsd, 'RADIUS_PAM_AUTH_CONF_STATS_DIR',
+                           str(tmp_path) + os.path.sep):
+        radius_stats.create_file('nested/../192.0.2.1')
+
+    assert stats_file.read_text() == 'counter data'
 
 
 def test_clear_only_truncates_local_stats_files(tmp_path):
