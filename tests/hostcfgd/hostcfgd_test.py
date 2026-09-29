@@ -38,6 +38,9 @@ class TestAaaServerFields(TestCase):
             'ip': '192.0.2.1', 'bind_dn': 'cn=User Name,dc=example',
             'priority': 1,
         }))
+        self.assertTrue(hostcfgd.aaa_server_fields_safe(
+            {'ip': '192.0.2.1', 'nas_id': 'switch-1'},
+            hostcfgd.RADIUS_CONFIG_TOKEN_FIELDS))
 
     @parameterized.expand([(10,), (13,), (0,)])
     def test_invalid_values(self, codepoint):
@@ -45,16 +48,27 @@ class TestAaaServerFields(TestCase):
             'field': 'line' + chr(codepoint) + 'break',
         }))
 
+    @parameterized.expand([('switch retry=0',), ('switch\tretry=0',)])
+    def test_radius_pam_token_separators_are_rejected(self, nas_id):
+        self.assertFalse(hostcfgd.aaa_server_fields_safe(
+            {'nas_id': nas_id}, hostcfgd.RADIUS_CONFIG_TOKEN_FIELDS))
+
+    def test_tacplus_config_separator_is_rejected(self):
+        self.assertFalse(hostcfgd.aaa_server_fields_safe(
+            {'passkey': 'secret,timeout=0'},
+            hostcfgd.TACPLUS_CONFIG_TOKEN_FIELDS, token_delimiters=','))
+
     def test_invalid_server_fields_do_not_reach_templates(self):
         aaa = hostcfgd.AaaCfg(None)
         aaa.tacplus_global = {'src_ip': '192.0.2.1\nsource'}
         aaa.tacplus_servers = {
             '192.0.2.11': {'priority': '1', 'passkey': 'invalid\nkey'},
-            '192.0.2.12': {'priority': '1', 'passkey': 'valid key'},
+            '192.0.2.12': {'priority': '1', 'passkey': 'validkey'},
         }
         aaa.radius_servers = {
             '192.0.2.21': {'passkey': 'invalid\rkey'},
-            '192.0.2.22': {'passkey': 'valid key'},
+            '192.0.2.22': {'passkey': 'validkey'},
+            '192.0.2.23': {'nas_id': 'switch\tretry=0'},
         }
         aaa.ldap_servers = {
             '192.0.2.31': {'priority': '1', 'bind_dn': 'invalid\x00dn'},
@@ -83,6 +97,7 @@ class TestAaaServerFields(TestCase):
         self.assertIn('192.0.2.22', rendered)
         self.assertNotIn('192.0.2.11', rendered)
         self.assertNotIn('192.0.2.21', rendered)
+        self.assertNotIn('192.0.2.23', rendered)
         self.assertTrue(all(entry[1].get('src_ip') is None for entry in render_calls))
 
         ldap_servers = generated.call_args_list[0][0][3]['servers']

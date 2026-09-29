@@ -102,11 +102,24 @@ RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
 
 
-def aaa_server_fields_safe(server):
-    """Return whether string fields can be rendered as single config values."""
-    return all(not isinstance(value, str) or
-               re.search(r'[\r\n\x00]', value) is None
-               for value in server.values())
+TACPLUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'tcp_port', 'passkey', 'auth_type', 'timeout', 'vrf', 'src_ip'))
+RADIUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'auth_port', 'passkey', 'auth_type', 'retransmit', 'timeout',
+     'nas_ip', 'nas_id', 'src_ip', 'vrf'))
+
+
+def aaa_server_fields_safe(server, token_fields=(), token_delimiters=''):
+    """Reject line controls and separators in values rendered as config tokens."""
+    for field, value in server.items():
+        if not isinstance(value, str):
+            continue
+        if re.search(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', value):
+            return False
+        if field in token_fields and (any(char.isspace() for char in value) or
+                                      any(char in value for char in token_delimiters)):
+            return False
+    return True
 
 
 def _radius_host_valid(host):
@@ -733,7 +746,8 @@ class AaaCfg(object):
         ldap_global.update(self.ldap_global)
 
         if 'src_ip' in tacplus_global and not aaa_server_fields_safe(
-                {'src_ip': tacplus_global['src_ip']}):
+                {'src_ip': tacplus_global['src_ip']}, TACPLUS_CONFIG_TOKEN_FIELDS,
+                token_delimiters=','):
             syslog.syslog(syslog.LOG_ERR, "TACPLUS: invalid source address; ignoring")
             tacplus_global.pop('src_ip')
         src_ip = tacplus_global.get('src_ip')
@@ -744,7 +758,8 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
-                if not aaa_server_fields_safe(server):
+                if not aaa_server_fields_safe(
+                        server, TACPLUS_CONFIG_TOKEN_FIELDS, token_delimiters=','):
                     syslog.syslog(syslog.LOG_ERR, "TACPLUS_SERVER: invalid field; ignoring entry")
                     continue
                 servers_conf.append(server)
@@ -785,7 +800,7 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
                         del server['src_ip']
 
-                if not aaa_server_fields_safe(server):
+                if not aaa_server_fields_safe(server, RADIUS_CONFIG_TOKEN_FIELDS):
                     syslog.syslog(syslog.LOG_ERR, "RADIUS_SERVER: invalid field; ignoring entry")
                     continue
                 if not radius_server_entry_valid(server):
