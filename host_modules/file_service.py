@@ -1,12 +1,15 @@
 """File stat handler"""
 
+import errno
+import os
+import secrets
+import stat
+from urllib.parse import urlparse
+
 from host_modules import host_service
 import paramiko
 import requests
 import scp
-import stat
-
-from urllib.parse import urlparse
 
 MOD_NAME = 'file'
 EXIT_FAILURE = 1
@@ -20,7 +23,116 @@ HTTP_PROTOCOL_SCHEMES = {
 # Connect and per-read inactivity timeouts in seconds; this is not a total deadline.
 HTTP_TIMEOUT = (10, 60)
 
-import os
+# Used only when the destination filesystem does not support O_TMPFILE.
+HTTP_TEMP_PREFIX = ".sonic-file-download-"
+HTTP_TEMP_ATTEMPTS = 100
+
+
+def _same_file(left, right):
+    """Return whether two stat results identify the same filesystem object."""
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _create_http_temp_file(dir_fd):
+    """
+    Create a temporary download inode in the destination directory.
+
+    Prefer O_TMPFILE so a failed download never has a pathname that another
+    process can replace. The named fallback is published from its open file
+    descriptor, not from its temporary pathname.
+    """
+    flags = os.O_WRONLY | getattr(os, "O_CLOEXEC", 0)
+    tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+    if tmpfile_flag:
+        try:
+            return os.open(".", flags | tmpfile_flag, 0o666, dir_fd=dir_fd), None
+        except OSError as e:
+            if e.errno not in (errno.EINVAL, errno.EISDIR, errno.EOPNOTSUPP):
+                raise
+
+    flags |= os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for _ in range(HTTP_TEMP_ATTEMPTS):
+        temp_name = "{}{}.tmp".format(HTTP_TEMP_PREFIX, secrets.token_hex(16))
+        try:
+            return os.open(temp_name, flags, 0o666, dir_fd=dir_fd), temp_name
+        except FileExistsError:
+            continue
+
+    raise FileExistsError(
+        errno.EEXIST,
+        "Unable to create a unique temporary download file",
+    )
+
+
+def _remove_named_temp_file(dir_fd, temp_name, temp_stat):
+    """Remove the named fallback only while it still names our open inode."""
+    try:
+        current_stat = os.stat(temp_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+
+    if not _same_file(current_stat, temp_stat):
+        return
+
+    try:
+        os.unlink(temp_name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+
+
+def _write_http_response(response, local_path, dir_path, dir_fd):
+    """
+    Stream a response to a private inode and publish it without overwriting.
+
+    The final pathname is created only after the complete response is written.
+    Linking from /proc/self/fd keeps publication bound to the inode we opened,
+    even if a named fallback is renamed or replaced while streaming.
+    """
+    destination_name = os.path.basename(local_path)
+    if not destination_name:
+        raise ValueError("Destination path has no file name: {}".format(local_path))
+
+    temp_fd, temp_name = _create_http_temp_file(dir_fd)
+    temp_stat = os.fstat(temp_fd)
+    try:
+        # Keep temp_fd open for descriptor-based publication.
+        with os.fdopen(os.dup(temp_fd), "wb") as output:
+            for chunk in response.iter_content(chunk_size=8192):
+                output.write(chunk)
+
+        try:
+            current_dir_stat = os.stat(dir_path)
+        except OSError as e:
+            raise OSError(
+                "Destination directory changed during download: {} ({})".format(
+                    dir_path, e
+                )
+            )
+
+        if not _same_file(os.fstat(dir_fd), current_dir_stat):
+            raise OSError(
+                "Destination directory changed during download: {}".format(dir_path)
+            )
+
+        try:
+            os.link(
+                "/proc/self/fd/{}".format(temp_fd),
+                destination_name,
+                dst_dir_fd=dir_fd,
+                follow_symlinks=True,
+            )
+        except FileExistsError:
+            raise FileExistsError(
+                errno.EEXIST,
+                "File already exists: {}".format(local_path),
+                local_path,
+            )
+    finally:
+        try:
+            if temp_name is not None:
+                _remove_named_temp_file(dir_fd, temp_name, temp_stat)
+        finally:
+            os.close(temp_fd)
 
 
 def create_http_session():
@@ -46,6 +158,10 @@ def normalize_host(host):
         host = host[1:-1]
     if host.endswith("."):
         host = host[:-1]
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        pass
     return host
 
 
@@ -95,6 +211,12 @@ def validate_http_url(remote_path, hostname, protocol):
     if not url_host:
         return "URL in remote_path has no host: {}".format(remote_path)
 
+    # urllib.parse treats backslashes as hostname characters, while Requests
+    # treats them as path separators. Reject the ambiguous authority while
+    # continuing to allow backslashes in the path.
+    if "\\" in url.netloc:
+        return "URL authority in remote_path must not contain backslashes"
+
     # Credentials belong in the username/password arguments, not in the URL. A URL of
     # the form http://trusted@attacker/ reads as "trusted" but resolves to "attacker".
     if url.username is not None or url.password is not None:
@@ -111,7 +233,22 @@ def validate_http_url(remote_path, hostname, protocol):
             )
         )
 
+    try:
+        prepared_url = requests.Request("GET", remote_path).prepare().url
+        prepared_host = urlparse(prepared_url).hostname
+    except (requests.exceptions.RequestException, UnicodeError, ValueError) as e:
+        return "Malformed URL in remote_path: {}".format(e)
+
+    if normalize_host(prepared_host) != declared_host:
+        return (
+            "URL host '{}' is interpreted as '{}' by the HTTP client, "
+            "which does not match the requested hostname '{}'".format(
+                url_host, prepared_host, hostname
+            )
+        )
+
     return None
+
 
 class FileService(host_service.HostModule):
     """
@@ -205,8 +342,19 @@ class FileService(host_service.HostModule):
 
                 # Redirects are not followed because they can select a destination
                 # different from the one validated above.
-                session = create_http_session()
+                dir_fd = None
+                session = None
                 try:
+                    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                    dir_flags |= getattr(os, "O_CLOEXEC", 0)
+                    dir_fd = os.open(dir_path, dir_flags)
+                    anchored_dir_stat = os.fstat(dir_fd)
+                    if not (anchored_dir_stat.st_mode & stat.S_IWOTH):
+                        return EXIT_FAILURE, (
+                            "Directory is not world writable: {}".format(dir_path)
+                        )
+
+                    session = create_http_session()
                     response = session.get(
                         remote_path,
                         auth=auth,
@@ -229,25 +377,16 @@ class FileService(host_service.HostModule):
                             )
                         response.raise_for_status()
 
-                        file_created = False
-                        try:
-                            # Use exclusive creation so a file appearing after the initial
-                            # existence check is never overwritten.
-                            with open(local_path, 'xb') as f:
-                                file_created = True
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                        except Exception:
-                            if file_created:
-                                try:
-                                    os.remove(local_path)
-                                except FileNotFoundError:
-                                    pass
-                            raise
+                        _write_http_response(
+                            response, local_path, dir_path, dir_fd
+                        )
                     finally:
                         response.close()
                 finally:
-                    session.close()
+                    if session is not None:
+                        session.close()
+                    if dir_fd is not None:
+                        os.close(dir_fd)
 
             elif protocol == "SCP":
                 ssh = paramiko.SSHClient()
@@ -300,4 +439,3 @@ class FileService(host_service.HostModule):
             return 0, ""
         except Exception as e:
             return EXIT_FAILURE, str(e)
-
