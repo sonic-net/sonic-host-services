@@ -1136,7 +1136,8 @@ class TestFeatureTemplateValidation(TestCase):
     def test_valid_feature_names(self, name):
         self.assertEqual(featured.Feature(name, {'state': 'enabled'}).name, name)
 
-    @parameterized.expand([('feature name',), ('feature.name',), ('a' * 33,), (None,)])
+    @parameterized.expand([('feature name',), ('feature.name',), ('-feature',),
+                           ('a' * 33,), (None,)])
     def test_invalid_feature_names(self, name):
         with self.assertRaises(ValueError):
             featured.Feature(name, {'state': 'enabled'})

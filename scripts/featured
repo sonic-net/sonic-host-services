@@ -136,7 +136,7 @@ def safe_eval(val, default_value=False):
 class Feature(object):
     """ Represents a feature configuration from CONFIG_DB data. """
 
-    NAME_PATTERN = re.compile(r'[A-Za-z0-9_-]{1,32}')
+    NAME_PATTERN = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_-]{0,31}')
 
     def __init__(self, feature_name, feature_cfg, device_config=None):
         """ Initialize Feature object based on CONFIG_DB data.
