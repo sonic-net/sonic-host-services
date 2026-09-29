@@ -913,11 +913,13 @@ class PasswHardening(object):
         else:
             if key == 'POLICIES':
                 data = data.copy()
-                for field, maximum in (('len_min', 32), ('history_cnt', 100)):
+                # history_cnt=0 is the existing way to disable password history.
+                for field, minimum, maximum in (('len_min', 1, 32),
+                                                ('history_cnt', 0, 100)):
                     if field in data:
                         value = str(data[field])
                         if (not re.fullmatch(r'[0-9]+', value, re.ASCII) or
-                                len(value) > 10 or not 1 <= int(value) <= maximum):
+                                len(value) > 10 or not minimum <= int(value) <= maximum):
                             syslog.syslog(syslog.LOG_ERR,
                                           'PASSW_HARDENING: invalid {} value; ignoring policy update'
                                           .format(field))

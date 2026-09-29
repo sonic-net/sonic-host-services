@@ -80,7 +80,6 @@ class TestHostcfgdPASSWH(TestCase):
                              ('len_min', '1' * 20),
                              ('len_min', '0'),
                              ('len_min', '33'),
-                             ('history_cnt', '0'),
                              ('history_cnt', '101')):
             with self.subTest(field=field, value=value):
                 invalid = {'state': 'enabled', field: value}
@@ -89,7 +88,9 @@ class TestHostcfgdPASSWH(TestCase):
                 self.assertEqual(policy.passw_policies['history_cnt'], '10')
                 self.assertEqual(invalid[field], value)
 
-        for field, value in (('len_min', '32'), ('history_cnt', '100')):
+        for field, value in (('len_min', '32'),
+                             ('history_cnt', '0'),
+                             ('history_cnt', '100')):
             with self.subTest(field=field, value=value):
                 valid = dict(policy.passw_policies, **{field: value})
                 policy.passw_policies_update('POLICIES', valid, modify_conf=False)
