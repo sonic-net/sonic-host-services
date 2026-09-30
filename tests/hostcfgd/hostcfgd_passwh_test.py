@@ -6,6 +6,7 @@ import os
 import sys
 import subprocess
 import re
+import tempfile
 
 from parameterized import parameterized
 from unittest import TestCase, mock
@@ -75,18 +76,20 @@ class TestHostcfgdPASSWH(TestCase):
         self.assertEqual(policy.passw_policies['history_cnt'], '10')
         self.assertEqual(original['len_min'], '08')
 
-        for field, value in (('len_min', 'eight'),
-                             ('history_cnt', '10.5'),
-                             ('len_min', '1' * 20),
-                             ('len_min', '0'),
-                             ('len_min', '33'),
-                             ('history_cnt', '101')):
-            with self.subTest(field=field, value=value):
-                invalid = {'state': 'enabled', field: value}
-                policy.passw_policies_update('POLICIES', invalid, modify_conf=False)
-                self.assertEqual(policy.passw_policies['len_min'], '8')
-                self.assertEqual(policy.passw_policies['history_cnt'], '10')
-                self.assertEqual(invalid[field], value)
+        with mock.patch.object(policy, 'modify_passw_conf_file') as writer:
+            for field, value in (('len_min', 'eight'),
+                                 ('history_cnt', '10.5'),
+                                 ('len_min', '1' * 20),
+                                 ('len_min', '0'),
+                                 ('len_min', '33'),
+                                 ('history_cnt', '101')):
+                with self.subTest(field=field, value=value):
+                    invalid = {'state': 'enabled', field: value}
+                    policy.passw_policies_update('POLICIES', invalid)
+                    self.assertEqual(policy.passw_policies['len_min'], '8')
+                    self.assertEqual(policy.passw_policies['history_cnt'], '10')
+                    self.assertEqual(invalid[field], value)
+                    writer.assert_not_called()
 
         for field, value in (('len_min', '32'),
                              ('history_cnt', '0'),
@@ -95,6 +98,24 @@ class TestHostcfgdPASSWH(TestCase):
                 valid = dict(policy.passw_policies, **{field: value})
                 policy.passw_policies_update('POLICIES', valid, modify_conf=False)
                 self.assertEqual(policy.passw_policies[field], value)
+
+    def test_invalid_initial_policy_renders_default_password_stack(self):
+        policy = hostcfgd.PasswHardening()
+        with tempfile.TemporaryDirectory(dir=output_path) as test_dir, \
+                mock.patch.object(hostcfgd, 'PAM_PASSWORD_CONF_TEMPLATE',
+                                  os.path.join(templates_path, 'common-password.j2')), \
+                mock.patch.object(hostcfgd, 'PAM_PASSWORD_CONF',
+                                  os.path.join(test_dir, 'common-password')), \
+                mock.patch.object(policy, 'is_passwd_aging_expire_update',
+                                  return_value=False):
+            policy.load({'POLICIES': {'state': 'enabled', 'len_min': '0'}})
+            with open(hostcfgd.PAM_PASSWORD_CONF) as password_file:
+                rendered = password_file.read()
+
+        self.assertEqual(policy.passw_policies, {})
+        self.assertIn('pam_unix.so', rendered)
+        self.assertNotIn('pam_pwquality.so', rendered)
+        self.assertNotIn('pam_pwhistory.so', rendered)
 
     def test_passw_template_renders_numeric_fields(self):
         env = hostcfgd.jinja2.Environment(
