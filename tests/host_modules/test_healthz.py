@@ -57,6 +57,8 @@ class FakePipeline:
 class FakeRedis:
     def __init__(self):
         self.stream = []
+        self.max_deleted_entry_id = "0-0"
+        self.entries_added = 0
         self.rows = {}
         self.fail_projection = False
         self.on_scan = None
@@ -67,6 +69,7 @@ class FakeRedis:
         return {"run_id": self.run_id}
 
     def append(self, stream_id, **values):
+        self.entries_added += 1
         self.stream.append((stream_id.encode(), {
             key.encode(): str(value).encode() for key, value in values.items()
         }))
@@ -76,6 +79,10 @@ class FakeRedis:
 
     def xrevrange(self, _key, count):
         return list(reversed(self.stream[-count:]))
+
+    def xinfo_stream(self, _key):
+        return {b"max-deleted-entry-id": self.max_deleted_entry_id.encode(),
+                b"entries-added": self.entries_added, b"length": len(self.stream)}
 
     def xread(self, streams, count, block=None):
         checkpoint = next(iter(streams.values()))
@@ -128,6 +135,7 @@ class TestHealthzWorker(unittest.TestCase):
     def test_replay_publishes_aggregate_without_a_gnoi_call(self):
         self.redis.append("1-0", **transition("PSU0", "temperature", "ACTIVE", 100))
         self.worker.poll_once()
+        self.assertIsNone(self.catalog.get_gap())
         self.assertEqual(self.catalog.get_checkpoint(), "1-0")
         self.assertEqual(self.redis.rows["COMPONENT_HEALTH_INFO|PSU0"], {
             "status": "UNHEALTHY", "unhealthy_count": "1",
@@ -161,6 +169,80 @@ class TestHealthzWorker(unittest.TestCase):
         self.assertEqual(self.redis.rows["COMPONENT_HEALTH_INFO|PSU0"]["last_unhealthy"],
                          "130000000000")
 
+    def test_first_start_records_proven_trim_without_inventing_event(self):
+        self.redis.append("1-0", **transition("PSU0", "alarm", "ACTIVE", 100))
+        self.redis.append("2-0", **transition("PSU0", "alarm", "INACTIVE", 120))
+        self.redis.stream = self.redis.stream[1:]
+        self.redis.max_deleted_entry_id = "1-0"
+
+        self.worker.poll_once()
+
+        gap = self.catalog.get_gap()
+        self.assertIn("before first checkpoint", gap["reason"])
+        self.assertEqual(gap["first_available_id"], "2-0")
+        self.assertEqual(self.catalog.get_checkpoint(), "2-0")
+        self.assertEqual([row["status"] for row in self.catalog.list_events("PSU0", True)],
+                         ["HEALTHY"])
+        self.assertEqual(self.catalog.get_aggregate("PSU0")["unhealthy_count"], 0)
+
+    def test_first_start_detects_maxlen_trim_without_deleted_id(self):
+        self.redis.append("1-0", **transition("PSU0", "alarm", "ACTIVE", 100))
+        self.redis.append("2-0", **transition("PSU0", "alarm", "INACTIVE", 120))
+        self.redis.stream = self.redis.stream[1:]
+
+        self.worker.poll_once()
+
+        self.assertEqual(self.redis.max_deleted_entry_id, "0-0")
+        self.assertIn("before first checkpoint", self.catalog.get_gap()["reason"])
+        self.assertEqual(self.catalog.get_gap()["first_available_id"], "2-0")
+        self.assertEqual(self.catalog.get_checkpoint(), "2-0")
+        self.assertEqual(self.catalog.get_aggregate("PSU0")["unhealthy_count"], 0)
+
+    def test_first_start_records_trimmed_empty_stream(self):
+        self.redis.max_deleted_entry_id = "1-0"
+
+        self.worker.poll_once()
+
+        self.assertIn("before first checkpoint", self.catalog.get_gap()["reason"])
+        self.assertIsNone(self.catalog.get_gap()["first_available_id"])
+        self.assertIsNone(self.catalog.get_checkpoint())
+        self.assertEqual(self.catalog.list_events(), [])
+
+    def test_first_start_trim_keeps_prior_migration_gap(self):
+        self.catalog.mark_gap("legacy transition tail not replayed")
+        self.redis.max_deleted_entry_id = "1-0"
+
+        self.worker.poll_once()
+
+        self.assertEqual(self.catalog.get_gap()["reason"],
+                         "legacy transition tail not replayed")
+
+    def test_first_start_without_redis7_trim_metadata_continues(self):
+        self.redis.append("1-0", **transition("PSU0", "alarm", "ACTIVE", 100))
+
+        with mock.patch.object(self.redis, "xinfo_stream", return_value={}):
+            self.worker.poll_once()
+
+        self.assertIsNone(self.catalog.get_gap())
+        self.assertEqual(self.catalog.get_checkpoint(), "1-0")
+
+    def test_first_start_detects_trim_while_reading(self):
+        self.redis.append("1-0", **transition("PSU0", "alarm", "ACTIVE", 100))
+        self.redis.append("2-0", **transition("PSU0", "alarm", "INACTIVE", 120))
+        read = self.redis.xread
+
+        def trim_then_read(*args, **kwargs):
+            self.redis.stream = self.redis.stream[1:]
+            self.redis.max_deleted_entry_id = "1-0"
+            return read(*args, **kwargs)
+
+        with mock.patch.object(self.redis, "xread", side_effect=trim_then_read):
+            self.worker.poll_once()
+
+        self.assertEqual(self.catalog.get_gap()["first_available_id"], "2-0")
+        self.assertEqual(self.catalog.get_checkpoint(), "2-0")
+        self.assertEqual(len(self.catalog.list_events("PSU0", True)), 1)
+
     def test_trimmed_stream_gap_keeps_known_active_state(self):
         self.catalog.apply_transition("1-0", transition("PSU0", "alarm", "ACTIVE", 100))
         self.redis.append("3-0", **transition("FAN0", "stalled", "ACTIVE", 110))
@@ -168,6 +250,26 @@ class TestHealthzWorker(unittest.TestCase):
         self.assertIsNotNone(self.catalog.get_gap())
         self.assertEqual(self.catalog.get_aggregate("PSU0")["status"], "UNHEALTHY")
         self.assertEqual(self.catalog.get_latest("FAN0")["status"], "UNHEALTHY")
+
+    def test_trim_during_xread_records_gap_before_consuming_retained_entry(self):
+        self.catalog.apply_transition("120-0", transition("PSU0", "alarm", "ACTIVE", 100))
+        self.redis.append("100-0", **transition("PSU0", "alarm", "ACTIVE", 90))
+        self.redis.append("121-0", **transition("FAN0", "stalled", "ACTIVE", 110))
+        self.redis.append("150-0", **transition("FAN1", "stalled", "ACTIVE", 115))
+        read = self.redis.xread
+
+        def trim_then_read(*args, **kwargs):
+            self.redis.stream = self.redis.stream[-1:]
+            return read(*args, **kwargs)
+
+        with mock.patch.object(self.redis, "xread", side_effect=trim_then_read):
+            self.worker.poll_once()
+
+        self.assertEqual(self.catalog.get_gap()["first_available_id"], "150-0")
+        self.assertEqual(self.catalog.get_checkpoint(), "150-0")
+        self.assertEqual(self.catalog.get_aggregate("PSU0")["status"], "UNHEALTHY")
+        self.assertIsNone(self.catalog.get_latest("FAN0"))
+        self.assertEqual(self.catalog.get_latest("FAN1")["status"], "UNHEALTHY")
 
     def test_lost_stream_keeps_known_state_and_reprojects_after_restart(self):
         self.catalog.apply_transition("10-0", transition("PSU0", "alarm", "ACTIVE", 100))
@@ -177,6 +279,32 @@ class TestHealthzWorker(unittest.TestCase):
         self.assertEqual(self.catalog.get_aggregate("PSU0")["status"], "UNHEALTHY")
         self.assertEqual(self.redis.rows["COMPONENT_HEALTH_INFO|PSU0"]["status"],
                          "UNHEALTHY")
+
+    def test_reset_stream_does_not_replay_stale_prefix_after_clear(self):
+        active = transition("PSU0", "alarm", "ACTIVE", 100)
+        self.catalog.apply_transition("10-0", active)
+        self.catalog.apply_transition(
+            "20-0", transition("PSU0", "alarm", "INACTIVE", 120)
+        )
+        self.redis.append("10-0", **active)
+
+        self.worker.poll_once()
+
+        self.assertIn("lost or reset", self.catalog.get_gap()["reason"])
+        self.assertEqual(self.catalog.get_gap()["first_available_id"], "10-0")
+        self.assertEqual(self.catalog.get_checkpoint(), "10-0")
+        self.assertEqual(self.catalog.get_aggregate("PSU0")["status"], "HEALTHY")
+        self.assertEqual(self.catalog.get_aggregate("PSU0")["unhealthy_count"], 1)
+        self.assertEqual(len(self.catalog.list_events("PSU0", True)), 2)
+        self.assertEqual(self.redis.rows["COMPONENT_HEALTH_INFO|PSU0"]["status"],
+                         "HEALTHY")
+
+        self.redis.append("11-0", **transition("PSU0", "alarm", "ACTIVE", 130))
+        self.worker.poll_once()
+        self.assertEqual(self.catalog.get_checkpoint(), "11-0")
+        self.assertEqual(self.catalog.get_aggregate("PSU0")["status"], "UNHEALTHY")
+        self.assertEqual(self.catalog.get_aggregate("PSU0")["unhealthy_count"], 2)
+        self.assertEqual(len(self.catalog.list_events("PSU0", True)), 3)
 
     def test_redis_restart_reports_possible_lost_tail_with_unchanged_bounds(self):
         record = transition("PSU0", "alarm", "ACTIVE", 100)

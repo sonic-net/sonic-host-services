@@ -760,7 +760,7 @@ def test_local_action_recheck_and_artifact_lifecycle():
         DLDDConfig(),
         "sha256:test",
         action_runner=CompletedActionRunner(),
-        artifact_client=FakeArtifactClient(),
+        artifact_client=RecordingArtifactClient(),
         local_action_default_timeout=300,
         clock=lambda: clock[0],
         wall_clock=lambda: 1000.0 + clock[0],
@@ -777,14 +777,17 @@ def test_local_action_recheck_and_artifact_lifecycle():
     assert hold.command.value == "HOLD"
 
     orchestrator.tick()
+    assert orchestrator.artifact_client.metadata is None
     clock[0] = 61.0
     orchestrator.tick()
+    assert orchestrator.artifact_client.metadata is None
     recheck = bundle.monitor_plans["redis"].control_queue.get_nowait()
     assert recheck.command.value == "RECHECK_ONCE"
 
     orchestrator.process_event(
         evidence(item, EvaluationResultType.NO_MATCH, 2, from_recheck=True)
     )
+    assert orchestrator.artifact_client.metadata is not None
     fault_key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
     assert database.values[fault_key]["status"] == "INACTIVE"
     assert json.loads(database.values[fault_key]["repair_actions"]) == []
@@ -804,10 +807,9 @@ def test_local_action_recheck_and_artifact_lifecycle():
     assert stream[0][1]["observed_at"] == "102"
     assert stream[0][1]["artifact_id"] == "dldd-test.tar.gz"
     assert json.loads(database.values[fault_key]["events"])[0]["value_read"] == 51.5
-    assert (
-        json.loads(database.values[fault_key]["healthz_artifact"])["artifact_id"]
-        == "dldd-test.tar.gz"
-    )
+    assert database.values[fault_key]["healthz_artifact_id"] == "dldd-test.tar.gz"
+    assert "healthz_artifact" not in database.values[fault_key]
+    assert not any(name.startswith("healthz_transition_") for name in database.values[fault_key])
 
     # Artifact requests receive floored time and complete component identity.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
@@ -847,11 +849,7 @@ def test_local_action_recheck_and_artifact_lifecycle():
     )
     request = orchestrator._request_artifact(execution, action_result)
 
-    assert request == {
-        "artifact_id": "dldd-test.tar.gz",
-        "requested_at": 101,
-        "location": "/var/lib/sonic/dldd/artifacts/dldd-test.tar.gz",
-    }
+    assert request == "dldd-test.tar.gz"
     assert artifact_client.metadata["timestamp"] == 1234
     assert artifact_client.metadata["component_info"] == {
         "component": "PSU",
@@ -1204,7 +1202,8 @@ def test_primary_processing_exception_isolated_to_work_key():
     assert orchestrator.broken_rules[item.correlation_key]["state"] == "DEGRADED"
 
 
-def test_restart_adopts_legacy_fault_and_marks_missing_artifact_without_event():
+@pytest.mark.parametrize("status", ("ACTIVE", "INACTIVE"))
+def test_restart_migrates_legacy_fault_without_replaying_transition(status):
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
@@ -1224,41 +1223,43 @@ def test_restart_adopts_legacy_fault_and_marks_missing_artifact_without_event():
         "component_type": item.component_type,
         "component_name": item.component_name,
         "symptom": item.symptom,
-        "status": "ACTIVE",
+        "status": status,
         "origin_time": 100,
         "last_detection_time": 101,
+        "inactive_since": 102 if status == "INACTIVE" else "",
         "healthz_artifact": {"artifact_id": "old.tar.gz"},
+        "healthz_transition_id": "legacy-transition",
+        "healthz_transition_observed_at": "obsolete-invalid-time",
+        "healthz_transition_artifact_id": "old.tar.gz",
     })
+    if status == "INACTIVE":
+        database.ttls[key] = 45
 
-    class MissingArtifactClient:
+    class NoPollingArtifactClient:
         def artifact_status(self, artifact_id):
-            assert artifact_id == "old.tar.gz"
-            return "MISSING"
+            raise AssertionError("DLDD must not poll Healthz at restart")
 
     def restarted():
         return PrimaryOrchestrator(
             Queue(), bundle.monitor_plans, bundle.work_items,
             CorrelationEngine(bundle.signatures),
             TelemetryPublisher(database, DLDDConfig()), DLDDConfig(),
-            "sha256:test", artifact_client=MissingArtifactClient(),
+            "sha256:test", artifact_client=NoPollingArtifactClient(),
         )
 
-    restarted().reconcile_existing_faults()
+    first = restarted()
+    first.reconcile_existing_faults()
     row = database.values[key]
-    transition_id = row["healthz_transition_id"]
-    assert transition_id
-    assert json.loads(row["healthz_artifact"])["state"] == "MISSING"
-    first = database.streams["HEALTHZ_TRANSITIONS"][0][1]
-    assert first["transition_id"] == transition_id
-    assert first["replay"] == "1"
-    assert "artifact_id" not in first  # Existing archive was not newly collected.
-    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 1
+    assert row["healthz_artifact_id"] == "old.tar.gz"
+    assert "healthz_artifact" not in row
+    assert not any(name.startswith("healthz_transition_") for name in row)
+    assert database.streams == {}
+    assert first.faults[(item.rule_id, item.component_name)].healthz_artifact_id == "old.tar.gz"
+    if status == "INACTIVE":
+        assert database.ttls[key] == 45
 
     restarted().reconcile_existing_faults()
-    stream = database.streams["HEALTHZ_TRANSITIONS"]
-    assert len(stream) == 2
-    assert stream[-1][1]["transition_id"] == transition_id
-    assert "artifact_id" not in stream[-1][1]
+    assert database.streams == {}
 
 
 def test_restart_and_periodic_fault_reconciliation_lifecycle():
@@ -1370,9 +1371,10 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     assert database.values[key]["last_detection_time"] == "11"
     assert database.values[key]["inactive_since"] == "100.0"
     assert [row[1]["active"] for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
-        "1", "0",
+        "0",
     ]
-    assert database.streams["HEALTHZ_TRANSITIONS"][0][1]["replay"] == "1"
+    assert all("replay" not in row[1] for row in database.streams["HEALTHZ_TRANSITIONS"])
+    assert not any(name.startswith("healthz_transition_") for name in database.values[key])
 
     restarted = PrimaryOrchestrator(
         Queue(),
@@ -1386,11 +1388,7 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     restarted.reconcile_existing_faults()
     retained = restarted.faults[(item.rule_id, item.component_name)]
     assert retained.inactive_deadline == 3700.0
-    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 3
-    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["replay"] == "1"
-    assert database.streams["HEALTHZ_TRANSITIONS"][1][1]["transition_id"] == (
-        database.streams["HEALTHZ_TRANSITIONS"][-1][1]["transition_id"]
-    )
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 1
 
     decision = orchestrator.correlation.consume(
         evidence(item, EvaluationResultType.MATCH, 1)
@@ -1404,7 +1402,7 @@ def test_restart_and_periodic_fault_reconciliation_lifecycle():
     assert database.values[key]["origin_time"] == "10"
     assert database.values[key]["last_detection_time"] == "101"
     assert [entry[1]["active"] for entry in database.streams["HEALTHZ_TRANSITIONS"]] == [
-        "1", "0", "0", "1",
+        "0", "1",
     ]
 
     # Normal periodic confirmation is operational work, not a diagnostic.

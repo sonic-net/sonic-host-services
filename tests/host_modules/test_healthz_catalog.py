@@ -28,6 +28,22 @@ def transition(component="PSU0", symptom="OVER_TEMP", active=True,
     return row
 
 
+@pytest.mark.parametrize(
+    "field", ["observed_at", "retain_until", "last_unhealthy_at"]
+)
+def test_oversized_transition_time_does_not_poison_catalog(tmp_path, field):
+    catalog = HealthzCatalog(tmp_path / "catalog.sqlite3")
+    row = transition(active=False)
+    row[field] = "10000000000"
+    with pytest.raises(ValueError, match="timestamp"):
+        catalog.apply_transition("100-0", row)
+    assert catalog.get_checkpoint() is None
+    assert catalog.list_events() == []
+    assert catalog.apply_transition("101-0", transition(active=False))
+    assert catalog.get_checkpoint() == "101-0"
+    catalog.close()
+
+
 def test_events_overlap_ack_and_restart(tmp_path):
     path = tmp_path / "healthz" / "catalog.sqlite3"
     catalog = HealthzCatalog(path)
@@ -85,15 +101,67 @@ def test_events_overlap_ack_and_restart(tmp_path):
 
 def test_inactive_only_recovery_uses_new_archive_id(tmp_path):
     catalog = HealthzCatalog(tmp_path / "catalog.sqlite3")
-    row = transition(active=False, artifact_id="dldd-recovered.tar.gz")
+    row = transition(active=False, artifact_id="dldd-recovered.tar.gz",
+                     last_unhealthy_at="98")
     assert catalog.apply_transition("100-0", row)
     event = catalog.get_latest("PSU0")
     assert event["id"] == event["artifact_id"] == "dldd-recovered.tar.gz"
     assert event["status"] == "HEALTHY"
     assert catalog.get_aggregate("PSU0")["unhealthy_count"] == 0
-    assert catalog.get_aggregate("PSU0")["last_unhealthy"] is None
+    assert catalog.get_aggregate("PSU0")["last_unhealthy"] == 98000000000
     assert not catalog.apply_transition("101-0", {**row, "replay": "1"})
     assert len(catalog.list_events()) == 1
+    catalog.close()
+
+
+def test_duplicate_transition_id_does_not_change_aggregate(tmp_path):
+    catalog = HealthzCatalog(tmp_path / "catalog.sqlite3")
+    row = transition(active=False, observed_at=100)
+    assert catalog.apply_transition("100-0", row)
+    aggregate = catalog.get_aggregate("PSU0")
+    events = catalog.list_events("PSU0")
+    assert not catalog.apply_transition(
+        "101-0", {**row, "last_unhealthy_at": "98", "replay": "1"}
+    )
+    assert catalog.get_aggregate("PSU0") == aggregate
+    assert catalog.list_aggregates() == [aggregate]  # Projection source is unchanged.
+    assert catalog.list_events("PSU0") == events
+    assert catalog.get_checkpoint() == "101-0"
+    catalog.close()
+
+
+def test_inactive_only_archive_is_visible_during_overlapping_fault(tmp_path):
+    catalog = HealthzCatalog(tmp_path / "catalog.sqlite3")
+    catalog.apply_transition("100-0", transition(artifact_id="dldd-active.tar.gz"))
+    catalog.apply_transition(
+        "101-0", transition(symptom="FAN_STOPPED", active=False,
+                            observed_at=101, artifact_id="dldd-recovered.tar.gz")
+    )
+    event = catalog.get_latest("PSU0")
+    assert event["id"] == event["artifact_id"] == "dldd-recovered.tar.gz"
+    assert event["status"] == "UNHEALTHY"
+    assert catalog.get_aggregate("PSU0") == {
+        "component": "PSU0", "status": "UNHEALTHY",
+        "last_unhealthy": 100000000000, "unhealthy_count": 1,
+    }
+    assert len(catalog.list_events("PSU0")) == 2
+    catalog.close()
+
+
+def test_overlapping_recovery_does_not_readvertise_old_archive(tmp_path):
+    catalog = HealthzCatalog(tmp_path / "catalog.sqlite3")
+    catalog.apply_transition("100-0", transition(artifact_id="dldd-active.tar.gz"))
+    catalog.apply_transition(
+        "101-0", transition(symptom="FAN_STOPPED", observed_at=101,
+                            artifact_id="dldd-fan.tar.gz")
+    )
+    catalog.apply_transition(
+        "102-0", transition(symptom="FAN_STOPPED", active=False,
+                            observed_at=102, artifact_id="dldd-fan.tar.gz")
+    )
+    assert catalog.get_latest("PSU0")["id"] == "dldd-fan.tar.gz"
+    assert len(catalog.list_events("PSU0")) == 2
+    assert catalog.get_aggregate("PSU0")["unhealthy_count"] == 1
     catalog.close()
 
 

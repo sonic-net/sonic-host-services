@@ -139,8 +139,9 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 - DLDD uses the host Healthz artifact boundary. The default
   `HostHealthzArtifactClient` reserves a stable `healthz-<32 lowercase hex>.tar.gz`
   ID before fault publication, runs DLDD rule-specific queries and custom
-  logging, stages bounded output in private temporary files, then sends only
-  concrete absolute paths and archive-relative names through
+  logging, stages bounded query, action, and selected log files in a private
+  temporary directory, then sends only concrete absolute paths and
+  archive-relative names through
   `submit_artifact`. Host Healthz synchronously packages and retains the new
   archive under `/var/lib/sonic/healthz/artifacts/`; DLDD removes its staging
   after submission. A trusted `sonic_platform.dldd.create_artifact_client`
@@ -150,11 +151,10 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   64 KiB request JSON, 50 MiB input/archive, and 20 completed/pending items.
   It publishes a mode-0600 archive through atomic no-clobber `os.link`, then
   removes the staged file. Unfinished pending markers expire after 24 hours.
-  DLDD calls `fail_artifact` on known collection failure and
-  `artifact_status` when reconciling an unfinished reservation after restart.
-  It does not own a second archive-retention policy. Failed reservation does
-  not block fault publication; the fault has no archive ID and reports the
-  request error.
+  DLDD calls `fail_artifact` on known collection failure. Host Healthz expires
+  orphaned pending reservations; DLDD does not poll them after restart or own
+  a second archive-retention policy. Failed reservation does not block fault
+  publication; the fault has no archive ID and reports the request error.
 - gNOI resolves new Healthz IDs under the host Healthz archive tree and old
   `dldd-<32 lowercase hex>.tar.gz` IDs under `/var/lib/sonic/dldd/artifacts/`
   for read compatibility. The contained resolver rejects traversal/symlinks;
@@ -165,8 +165,9 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   `stdout.txt`, `stderr.txt`, and `result.txt` entries. Existing actions that
   return `None` remain valid and add no output entry.
 - DLDD resolves rule log globs to concrete regular files without following
-  symlinks; the host validates submitted paths and archive names before
-  packaging. Directories are not recursively archived. Bounds apply to both
+  symlinks and stages their contents before submission; the host validates
+  submitted paths and archive names before packaging. Directories are not
+  recursively archived. Bounds apply to both
   collected input bytes and the final archive.
 - Declared vendor/DSE query timeouts run through bounded daemon-call slots,
   matching local-action timeout containment. Queries with no declared timeout
@@ -179,9 +180,11 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 
 ## SONiC integration
 
-- DLDD owns `FAULT_INFO` scan/replay and publishes producer-neutral
-  `HEALTHZ_TRANSITIONS` records. A transition record (no `kind` field) has a stable UUID
-  `transition_id` also persisted in `FAULT_INFO`; replay reuses that ID. A
+- DLDD scans `FAULT_INFO` for its own fault lifecycle and publishes
+  producer-neutral `HEALTHZ_TRANSITIONS` records. A transition record (no
+  `kind` field) has a per-publication UUID `transition_id` stored in the
+  stream and host Healthz catalog, not in `FAULT_INFO`. DLDD does not replay
+  Healthz transitions from retained fault rows after restart. A
   confirmed active sample that advances `last_detection_time` emits
   `kind=observation` so generic Healthz can advance `last-unhealthy` without a
   new event or count. Host Healthz consumes the generic stream and does not
@@ -212,9 +215,10 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   generations, and artifacts remain outside that writable boundary.
 - gNOI File remains registered only when the gNMI deployment is write-enabled.
   Read-only deployments can still run packaged and locally provisioned rules.
-- `healthz_artifact` is deliberate non-native `FAULT_INFO` metadata. Standard
-  Healthz Get/List also discover the retained event and advertise its archive
-  only when the final regular file exists; Artifact streams it by ID. A
+- Optional scalar `healthz_artifact_id` is deliberate non-native `FAULT_INFO`
+  metadata. No Healthz transition ID or replay marker is stored in the row.
+  Standard Healthz Get/List also discover the retained event and advertise
+  its archive only when the final regular file exists; Artifact streams it by ID. A
   retained recovery row carrying an earlier archive does not advertise that
   archive twice.
 - `FAULT_INFO` logical updates use transactional `HSET` plus targeted `HDEL`

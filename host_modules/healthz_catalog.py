@@ -21,6 +21,7 @@ DEFAULT_MAX_EVENTS = 4096
 MAX_CATALOG_BYTES = 32 * 1024 * 1024
 DEFAULT_SOURCE_RETAIN_SECONDS = 24 * 60 * 60
 SOURCE_PRUNE_GRACE_SECONDS = 60
+_MAX_SECONDS = ((1 << 63) - 1) // 1000000000
 _CHECKPOINT = "healthz_checkpoint"
 LOGGER = logging.getLogger(__name__)
 
@@ -42,14 +43,17 @@ def _stream_parts(stream_id):
 
 def _seconds(value):
     if isinstance(value, bool):
-        raise TypeError("invalid observation timestamp")
+        raise ValueError("invalid observation timestamp")
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         raise ValueError("invalid observation timestamp")
     if not math.isfinite(number) or number < 0:
         raise ValueError("invalid observation timestamp")
-    return math.floor(number)
+    seconds = math.floor(number)
+    if seconds > _MAX_SECONDS:
+        raise ValueError("invalid observation timestamp")
+    return seconds
 
 
 def _active(value):
@@ -386,6 +390,13 @@ class HealthzCatalog:
             component_type = _text(component_type, "component_type")
         active = _active(transition["active"])
         observed_at = _seconds(transition["observed_at"])
+        last_unhealthy_at = transition.get("last_unhealthy_at")
+        if last_unhealthy_at not in (None, ""):
+            last_unhealthy_at = _seconds(last_unhealthy_at)
+            if not last_unhealthy_at:
+                raise ValueError("last_unhealthy_at must be positive")
+        else:
+            last_unhealthy_at = None
         artifact_id = transition.get("artifact_id") or None
         if artifact_id is not None:
             artifact_id = _text(artifact_id, "artifact_id")
@@ -435,6 +446,12 @@ class HealthzCatalog:
                     event_status = "UNHEALTHY"
                 elif new_count == 0:
                     event_status = "HEALTHY"
+                elif artifact_id and (
+                    prior is None or artifact_id != prior["last_artifact_id"]
+                ):
+                    # A locally recovered source can have a new archive even
+                    # while another source keeps the component unhealthy.
+                    event_status = "UNHEALTHY"
             claimed_artifact = None
             if event_status:
                 claimed_artifact = self._insert_event(
@@ -462,6 +479,8 @@ class HealthzCatalog:
             last = aggregate["last_unhealthy"] if aggregate else None
             if active:
                 last = max(last or 0, observed_at * 1000000000)
+            if last_unhealthy_at is not None:
+                last = max(last or 0, last_unhealthy_at * 1000000000)
             self._db.execute(
                 "INSERT INTO aggregates(component,status,last_unhealthy,unhealthy_count) "
                 "VALUES(?,?,?,?) ON CONFLICT(component) DO UPDATE SET "

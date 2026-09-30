@@ -204,16 +204,31 @@ class HostHealthzArtifactClient(HealthzArtifactClient):
                 if len(name) > 512 or "\\" in name:
                     continue
                 try:
-                    file_size = os.lstat(path).st_size
+                    source = os.fdopen(os.open(
+                        path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                    ), "rb")
                 except OSError:
                     continue
-                if file_size <= 0 or size + file_size > self.max_artifact_bytes:
-                    continue
-                paths.append({
-                    "path": path,
-                    "name": name,
-                })
-                size += file_size
+                with source:
+                    info = os.fstat(source.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_size <= 0
+                            or size + info.st_size > self.max_artifact_bytes):
+                        continue
+                    staged = os.path.join(stage, name)
+                    os.makedirs(os.path.dirname(staged), exist_ok=True)
+                    remaining = info.st_size
+                    with open(staged, "wb") as target:
+                        while remaining:
+                            data = source.read(min(64 * 1024, remaining))
+                            if not data:
+                                break
+                            target.write(data)
+                            remaining -= len(data)
+                    if remaining == info.st_size:
+                        os.unlink(staged)
+                        continue
+                    paths.append({"path": staged, "name": name})
+                    size += info.st_size - remaining
             if len(paths) > _MAX_PATHS:
                 raise RuntimeError("too many DLDD artifact files")
             self._call("submit_artifact", {

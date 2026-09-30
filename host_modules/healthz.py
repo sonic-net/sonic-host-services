@@ -143,12 +143,17 @@ class HealthzWorker:
         checkpoint = self.catalog.get_checkpoint()
         first = client.xrange(TRANSITION_STREAM, count=1)
         last = client.xrevrange(TRANSITION_STREAM, count=1)
+        if not checkpoint:
+            self._check_initial_stream_trim(client, first)
         if checkpoint and checkpoint != "0-0":
             if not last or _stream_id(checkpoint) > _stream_id(last[0][0]):
+                # A retained prefix can contain transitions already superseded
+                # in SQLite.  Replaying it would roll back known source state.
+                resume_after_id = _text(last[0][0]) if last else "0-0"
                 self._report_gap("transition stream was lost or reset", checkpoint,
                                  _text(first[0][0]) if first else None,
-                                 resume_after_id="0-0")
-                checkpoint = "0-0"
+                                 resume_after_id=resume_after_id)
+                checkpoint = resume_after_id
             elif first and _stream_id(checkpoint) < _stream_id(first[0][0]):
                 # A trimmed checkpoint can also mean all trimmed entries were
                 # consumed.  Redis does not retain enough information to prove
@@ -159,6 +164,19 @@ class HealthzWorker:
         if block_ms is not None:
             kwargs["block"] = block_ms
         batches = client.xread({TRANSITION_STREAM: checkpoint or "0-0"}, **kwargs)
+        if batches and not checkpoint:
+            # The stream can be trimmed while the initial XREAD is blocked.
+            self._check_initial_stream_trim(
+                client, client.xrange(TRANSITION_STREAM, count=1)
+            )
+        if batches and checkpoint and checkpoint != "0-0":
+            # Trimming can advance the head while XREAD is blocked, after the
+            # first bounds check.  Record the possible loss before committing
+            # any returned transition to the catalog.
+            first = client.xrange(TRANSITION_STREAM, count=1)
+            if first and _stream_id(checkpoint) < _stream_id(first[0][0]):
+                self._report_gap("checkpoint precedes first retained transition",
+                                 checkpoint, _text(first[0][0]))
         for _, entries in batches:
             for stream_id, raw in entries:
                 transition = {_text(name): _text(value) for name, value in raw.items()}
@@ -176,6 +194,29 @@ class HealthzWorker:
             self._refresh_parents(client)
             self._next_reconcile = time.monotonic() + self.reconcile_seconds
         self._project_pending(client)
+
+    def _check_initial_stream_trim(self, client, first):
+        """Report provable pre-checkpoint loss without inventing old events."""
+        if self.catalog.get_gap() is not None:
+            return
+        try:
+            info = client.xinfo_stream(TRANSITION_STREAM)
+            deleted_id = info.get("max-deleted-entry-id",
+                                  info.get(b"max-deleted-entry-id"))
+            trimmed = deleted_id is not None and _stream_id(deleted_id) > (0, 0)
+            if not trimmed:
+                added = info.get("entries-added", info.get(b"entries-added"))
+                length = info.get("length", info.get(b"length"))
+                trimmed = (added is not None and length is not None
+                           and int(added) > int(length))
+            # Redis before 7 lacks these counters, so its initial trimmed
+            # prefix cannot be established without a prior checkpoint.
+        except Exception as error:  # noqa: BLE001 - optional Redis XINFO metadata
+            LOGGER.debug("Healthz initial stream trim metadata unavailable: %s", error)
+            return
+        if trimmed:
+            self._report_gap("transition stream was trimmed before first checkpoint",
+                             None, _text(first[0][0]) if first else None)
 
     def _check_redis_run_id(self, client):
         try:
@@ -200,7 +241,7 @@ class HealthzWorker:
         if previous is not None:
             # Redis can restart with the same stream bounds even when an
             # unconsumed tail was lost.  This is a conservative possible-gap
-            # signal; the source must replay its current state.
+            # signal; the catalog cannot reconstruct an unretained event.
             self._last_gap = None
             self._report_gap("Redis run_id changed; possible unconsumed "
                              "transition loss", self.catalog.get_checkpoint(), None)

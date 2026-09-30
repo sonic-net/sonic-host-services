@@ -359,11 +359,7 @@ class FaultRecord:
     local_action_state: str = "IDLE"
     local_action_details: Mapping[str, Any] = field(default_factory=dict)
     action_suppressed: bool = False
-    healthz_artifact: Optional[Mapping[str, Any]] = None
-    healthz_transition_id: str = ""
-    healthz_transition_status: str = ""
-    healthz_transition_observed_at: int = 0
-    healthz_transition_artifact_id: str = ""
+    healthz_artifact_id: str = ""
     serial_number: str = ""
     stale_source: bool = False
     inactive_deadline: Optional[float] = None

@@ -227,6 +227,29 @@ def test_artifact_id_is_immediate_and_submit_waits_for_queries(tmp_path):
         client.shutdown()
 
 
+def test_log_is_staged_before_healthz_opens_it(tmp_path):
+    log = tmp_path / "service.log"
+    log.write_bytes(b"before rotation")
+    healthz = RecordingHealthz(tmp_path)
+
+    def call(method, request):
+        if method == "submit_artifact":
+            log.unlink()
+        return healthz(method, request)
+
+    client = HostHealthzArtifactClient(healthz_call=call)
+    try:
+        client.request({"rule": "TEST"}, (str(log),), ())
+        client._jobs.join()
+        assert healthz.failed == []
+        assert healthz.submitted[0][1][
+            "logs/" + str(log).lstrip("/")
+        ] == b"before rotation"
+        assert all("dldd-healthz-" in str(path) for path in healthz.stage_paths)
+    finally:
+        client.shutdown()
+
+
 def test_failed_dldd_collection_releases_healthz_reservation(tmp_path):
     def fail(_unused):
         raise RuntimeError("vendor query failed")
