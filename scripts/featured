@@ -2,6 +2,7 @@
 
 import ast
 import os
+import socket
 import sys
 import subprocess
 import syslog
@@ -756,6 +757,42 @@ class FeatureDaemon:
         except Exception as err:
             syslog.syslog(syslog.LOG_ERR, "Subscribe to table {} (ns='{}') failed with error {}".format(table, namespace, err))
 
+    @staticmethod
+    def subscription_closed(fd):
+        """True when the fd's redis connection is closed: a peek reads EOF or fails, or the fd
+        cannot be probed at all. Never raises (this runs in the select() error recovery)."""
+        try:
+            with socket.socket(fileno=os.dup(fd)) as sock:
+                return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b''
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
+    def drop_dead_subscribers(self):
+        """Drop subscribers whose redis connection is gone; select() would otherwise return
+        ERROR on every call and starve the other tables. A dropped PORT_TABLE namespace can
+        no longer be observed: before the first release it is pending again (fallback applies).
+        Nothing re-subscribes it. Returns the number of subscribers dropped."""
+        dropped = 0
+        for fd, (subscriber, sub_key, table) in list(self.subscriber_map.items()):
+            if not self.subscription_closed(fd):
+                continue
+            syslog.syslog(syslog.LOG_CRIT if table == FEATURE_TBL else syslog.LOG_ERR,
+                          "Dropping subscriber for table {} (ns='{}'): its redis connection is closed"
+                          .format(table, sub_key[0]))
+            try:
+                self.selector.removeSelectable(subscriber)
+            except Exception as err:
+                syslog.syslog(syslog.LOG_ERR, "removeSelectable failed for table {} (ns='{}'): {}"
+                              .format(table, sub_key[0], err))
+            del self.subscriber_map[fd]
+            self.callbacks.pop(sub_key, None)
+            if table == PORT_TBL and not self.feature_handler.is_delayed_enabled:
+                self.feature_handler.pending_port_init_ns.add(sub_key[0])
+            dropped += 1
+        return dropped
+
     def register_callbacks(self):
         def make_callback(func, **kwargs):
             def callback(table, key, op, data):
@@ -792,6 +829,14 @@ class FeatureDaemon:
                 continue
             elif state == self.selector.ERROR:
                 syslog.syslog(syslog.LOG_ERR, "error returned by select")
+                dropped = self.drop_dead_subscribers()
+                if not self.subscriber_map:
+                    # Nothing left to serve; only a restart helps.
+                    syslog.syslog(syslog.LOG_CRIT, "All subscriptions lost (redis unreachable); exiting")
+                    sys.exit(1)
+                if not dropped:
+                    # Nothing to drop: back off instead of spinning.
+                    time.sleep(DEFAULT_SELECT_TIMEOUT / 1000)
                 continue
 
             fd = selectable_.getFd()

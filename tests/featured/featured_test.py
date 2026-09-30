@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import copy
+import socket
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
@@ -1285,8 +1286,9 @@ class TestEnableFeatureGeneratedUnit(TestCase):
 
 
 class NsMockDBConnector(MockDBConnector):
-    """MockDBConnector that remembers its namespace and can fail to connect on demand."""
+    """MockDBConnector that knows its namespace; can fail to connect or be declared dead."""
     fail_appl_db_ns = set()
+    dead_ns = set()
 
     def __init__(self, db, val, tcpFlag=False, name=None):
         if db == featured.APPL_DB and name in NsMockDBConnector.fail_appl_db_ns:
@@ -1298,12 +1300,14 @@ class NsMockDBConnector(MockDBConnector):
 class NsMockSubscriberStateTable:
     """SubscriberStateTable mock keyed by (namespace, table)."""
     _fd = 0
+    instances = []
 
     def __init__(self, conn, table, pop=None, pri=None):
         NsMockSubscriberStateTable._fd += 1
         self.fd, self.conn, self.table = NsMockSubscriberStateTable._fd, conn, table
         self.key = (conn.ns, table)
         self.next = None
+        NsMockSubscriberStateTable.instances.append(self)
 
     def getFd(self):
         return self.fd
@@ -1316,8 +1320,9 @@ class NsMockSubscriberStateTable:
 
 
 class NsMockSelect:
-    """Select mock fed from a queue of (namespace, table, key, op) events or 'TIMEOUT' markers;
-    an empty queue ends the daemon loop with TimeoutError like MockSelect."""
+    """Select mock fed from a queue of (namespace, table, key, op) events or 'TIMEOUT'/'ERROR'
+    markers; a subscriber on a dead redis yields ERROR until it is removed, and an empty
+    queue ends the daemon loop with TimeoutError like MockSelect."""
     OBJECT, TIMEOUT, ERROR = 'OBJECT', 'TIMEOUT', 'ERROR'
     queue = []
 
@@ -1327,11 +1332,16 @@ class NsMockSelect:
     def addSelectable(self, s):
         self.subs[s.key] = s
 
+    def removeSelectable(self, s):
+        del self.subs[s.key]
+
     def select(self, timeout):
         if not NsMockSelect.queue:
             raise TimeoutError
+        if any(s.conn.ns in NsMockDBConnector.dead_ns for s in self.subs.values()):
+            return self.ERROR, None                     # closed subscription: ERROR until it is removed
         event = NsMockSelect.queue.pop(0)
-        if event == self.TIMEOUT:
+        if event in (self.TIMEOUT, self.ERROR):
             return event, None
         ns, table, key, op = event
         s = self.subs[(ns, table)]
@@ -1375,8 +1385,12 @@ class TestFeatureDaemonMultiAsic(TestCase):
         self.addCleanup(MockConfigDb.CONFIG_DB.clear)
         MockRestartWaiter.advancedReboot = False
         NsMockSelect.queue = []
-        NsMockDBConnector.fail_appl_db_ns = set()
-        for target, attr, value in ((featured, 'DBConnector', NsMockDBConnector),
+        NsMockSubscriberStateTable.instances = []
+        NsMockDBConnector.fail_appl_db_ns, NsMockDBConnector.dead_ns = set(), set()
+        closed = lambda fd: any(s.getFd() == fd and s.conn.ns in NsMockDBConnector.dead_ns
+                                for s in NsMockSubscriberStateTable.instances)
+        for target, attr, value in ((featured.FeatureDaemon, 'subscription_closed', staticmethod(closed)),
+                                    (featured, 'DBConnector', NsMockDBConnector),
                                     (featured, 'SonicDBConfig', mock.Mock()),
                                     (swsscommon, 'Select', NsMockSelect),
                                     (swsscommon, 'SubscriberStateTable', NsMockSubscriberStateTable)):
@@ -1519,3 +1533,85 @@ class TestFeatureDaemonMultiAsic(TestCase):
         release, cmds = self._run(daemon)
         release.assert_called_once()
         self.assertFalse(any(c[2] in ('stop', 'disable', 'mask') for c in cmds))
+
+    def test_dead_namespace_redis_is_dropped_and_dispatch_continues(self, *_):
+        """A dead namespace redis: its subscriber is dropped, other tables are served again
+        and the namespace stays pending. (Writes to that namespace's own DBs would still
+        fail, as in the base; not modelled here.)"""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event('asic0'), port_event('asic1')]
+        self._run(daemon)
+        NsMockDBConnector.dead_ns = {'asic2'}
+        MockConfigDb.CONFIG_DB['FEATURE']['swss']['state'] = 'disabled'   # a user disables a feature
+        NsMockSelect.queue = [('', featured.FEATURE_TBL, 'swss', 'SET')]
+        with mock.patch.object(featured.FeatureHandler, 'wait_for_service_stable', return_value='active'):
+            release, cmds = self._run(daemon)
+        self.assertNotIn(('asic2', featured.PORT_TBL), {sk for (_, sk, _) in daemon.subscriber_map.values()})
+        self.assertNotIn(('asic2', featured.PORT_TBL), daemon.callbacks)
+        self.assertIn(['sudo', 'systemctl', 'stop', 'swss@0.service'], cmds)   # FEATURE event was served
+        release.assert_not_called()
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic2'})
+
+    def test_dead_redis_of_ready_namespace_before_release_is_pending_again(self, *_):
+        """A ready namespace whose redis dies before the release is pending again."""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event('asic0')]
+        self._run(daemon)
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic1', 'asic2'})
+        NsMockDBConnector.dead_ns = {'asic0'}
+        NsMockSelect.queue = [port_event('asic1'), port_event('asic2')]
+        release, _ = self._run(daemon)
+        release.assert_not_called()
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic0'})
+        NsMockSelect.queue = [NsMockSelect.TIMEOUT]
+        release, _ = self._run(daemon, init_time=time.time() - featured.PORT_INIT_TIMEOUT_SEC - 1)
+        release.assert_called_once()
+
+    def test_select_error_without_dead_subscriber_backs_off(self, *_):
+        daemon = self._daemon()
+        NsMockSelect.queue = [NsMockSelect.ERROR, NsMockSelect.ERROR]
+        with mock.patch.object(featured.time, 'sleep') as sleep, \
+             mock.patch.object(featured, 'run_cmd'):
+            try:
+                daemon.start(time.time())
+            except TimeoutError:
+                pass
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(len(daemon.subscriber_map), 4)  # nothing dropped
+
+    def test_all_subscriptions_lost_exits(self, *_):
+        """With every subscription gone, featured logs once and exits instead of looping."""
+        daemon = self._daemon()
+        NsMockDBConnector.dead_ns = {''} | set(NS)
+        NsMockSelect.queue = [NsMockSelect.ERROR]
+        with mock.patch.object(featured.time, 'sleep') as sleep, \
+             mock.patch.object(featured, 'run_cmd'), self.assertRaises(SystemExit):
+            daemon.start(time.time())
+        self.assertEqual(daemon.subscriber_map, {})
+        sleep.assert_not_called()
+
+
+class TestSubscriptionClosed(TestCase):
+    """The socket probe behind drop_dead_subscribers(), against real sockets."""
+
+    def setUp(self):
+        self.sock, self.peer = socket.socketpair()
+        self.addCleanup(self.sock.close)
+        self.addCleanup(self.peer.close)
+
+    def test_idle_connection_is_open(self):
+        self.assertFalse(featured.FeatureDaemon.subscription_closed(self.sock.fileno()))
+
+    def test_pending_data_is_open_and_left_unread(self):
+        self.peer.send(b'x')
+        self.assertFalse(featured.FeatureDaemon.subscription_closed(self.sock.fileno()))
+        self.assertEqual(self.sock.recv(1), b'x')
+
+    def test_peer_closed_is_closed(self):
+        self.peer.close()
+        self.assertTrue(featured.FeatureDaemon.subscription_closed(self.sock.fileno()))
+
+    def test_unusable_fd_is_closed_without_raising(self):
+        fd = os.dup(self.sock.fileno())
+        os.close(fd)
+        self.assertTrue(featured.FeatureDaemon.subscription_closed(fd))
