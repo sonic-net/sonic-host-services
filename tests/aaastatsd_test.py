@@ -89,6 +89,45 @@ def test_traversal_alias_cannot_unlink_another_servers_file(tmp_path):
     assert stats_file.read_text() == 'counter data'
 
 
+def test_same_directory_symlink_cannot_unlink_another_servers_file(tmp_path):
+    stats_file = tmp_path / '192.0.2.1'
+    stats_file.write_text('counter data')
+    alias = tmp_path / '192.0.2.2'
+    alias.symlink_to(stats_file)
+    radius_stats = aaastatsd.RadiusStatistics.__new__(aaastatsd.RadiusStatistics)
+    radius_stats.radius_global = {'statistics': 'False'}
+
+    with mock.patch.object(aaastatsd, 'RADIUS_PAM_AUTH_CONF_STATS_DIR',
+                           str(tmp_path) + os.path.sep):
+        radius_stats.create_file('192.0.2.2')
+
+    assert stats_file.read_text() == 'counter data'
+    assert alias.is_symlink()
+
+
+def test_same_directory_symlink_is_not_read_or_written(tmp_path):
+    stats_file = tmp_path / '192.0.2.1'
+    stats_file.write_text('counter data')
+    alias = tmp_path / '192.0.2.2'
+    alias.symlink_to(stats_file)
+    radius_stats = aaastatsd.RadiusStatistics.__new__(aaastatsd.RadiusStatistics)
+    radius_stats.radius_global = {'statistics': 'True'}
+
+    with mock.patch.object(aaastatsd, 'RADIUS_PAM_AUTH_CONF_STATS_DIR',
+                           str(tmp_path) + os.path.sep):
+        with mock.patch.object(radius_stats, 'handle_update') as update:
+            radius_stats.create_file('192.0.2.2')
+            update.assert_not_called()
+        with mock.patch.object(aaastatsd.os, 'listdir', return_value=['192.0.2.2']):
+            radius_stats.handle_clear()
+        with mock.patch.object(builtins, 'open') as file_open:
+            radius_stats.handle_update('192.0.2.2')
+            file_open.assert_not_called()
+
+    assert stats_file.read_text() == 'counter data'
+    assert alias.is_symlink()
+
+
 def test_clear_only_truncates_local_stats_files(tmp_path):
     stats_dir = tmp_path / 'statistics'
     stats_dir.mkdir()

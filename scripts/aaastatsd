@@ -22,7 +22,12 @@ def radius_stats_file_path(server):
         return None
 
     stats_dir = os.path.realpath(RADIUS_PAM_AUTH_CONF_STATS_DIR)
-    stats_file = os.path.realpath(os.path.join(stats_dir, server))
+    stats_entry = os.path.join(stats_dir, server)
+    if os.path.islink(stats_entry):
+        syslog.syslog(syslog.LOG_ERR,
+                      'RADIUS statistics: refusing symlink server entry')
+        return None
+    stats_file = os.path.realpath(stats_entry)
 
     if os.path.dirname(stats_file) != stats_dir:
         syslog.syslog(syslog.LOG_ERR,
