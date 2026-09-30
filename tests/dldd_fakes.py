@@ -8,7 +8,13 @@ import json
 from pathlib import Path
 from threading import RLock
 
-from dldd.telemetry import StateDB, _artifact_id, _later_detection, _redis_value
+from dldd.telemetry import (
+    StateDB,
+    _legacy_healthz_fields,
+    _later_detection,
+    _redis_value,
+    _transition_artifact_id,
+)
 
 
 _VALID_RULE_FIXTURE = (
@@ -119,48 +125,32 @@ class FakeStateDB(StateDB):
             for field in fields:
                 self.values.get(key, {}).pop(field, None)
 
-    def replace_fault(self, key, values, ttl_seconds, transition):
+    def replace_fault(self, key, values, ttl_seconds, transition, refresh_only=False):
         with self._lock:
             self._check_read()
             self._check_write()
             previous = self.values.get(key, {})
-            previous_status = previous.get("status")
             current = {
                 name: _redis_value(value) for name, value in values.items()
             }
-            changed = previous_status != current["status"]
-            migration = (
-                not changed
-                and not previous.get("healthz_transition_id")
-                and transition.get("replay") == "1"
-            )
+            if refresh_only and (
+                not previous
+                or previous.get("producer") != current.get("producer")
+                or previous.get("rule_id") != current.get("rule_id")
+                or previous.get("status") != current.get("status")
+            ):
+                return False
+            artifact_id = _transition_artifact_id(previous, current)
+            changed = artifact_id is not None
             event = dict(transition)
-            if changed or migration:
-                current["healthz_transition_id"] = event["transition_id"]
-                current["healthz_transition_observed_at"] = event["observed_at"]
-                new_artifact = _artifact_id(current.get("healthz_artifact")) if changed else ""
-                old_artifact = _artifact_id(previous.get("healthz_artifact"))
-                current["healthz_transition_artifact_id"] = (
-                    new_artifact if new_artifact != old_artifact else ""
-                )
-                if current["healthz_transition_artifact_id"]:
-                    event["artifact_id"] = current["healthz_transition_artifact_id"]
-            else:
-                for field in (
-                    "healthz_transition_id",
-                    "healthz_transition_observed_at",
-                    "healthz_transition_artifact_id",
-                ):
-                    if field in previous:
-                        current[field] = previous[field]
-                    else:
-                        current.pop(field, None)
+            if artifact_id:
+                event["artifact_id"] = artifact_id
             self.values[key] = current
             if ttl_seconds is None:
                 self.ttls.pop(key, None)
             else:
                 self.ttls[key] = ttl_seconds
-            if changed or migration:
+            if changed:
                 self.append_healthz_transition(event)
             elif current["status"] == "ACTIVE" and _later_detection(
                 current.get("last_detection_time", ""), previous.get("last_detection_time")
@@ -172,14 +162,25 @@ class FakeStateDB(StateDB):
                     "component": current["component_name"],
                     "observed_at": current["last_detection_time"],
                 })
-            return {
-                field: current.get(field, "")
-                for field in (
-                    "healthz_transition_id",
-                    "healthz_transition_observed_at",
-                    "healthz_transition_artifact_id",
-                )
-            }
+            return True
+
+    def migrate_legacy_fault(self, key):
+        with self._lock:
+            self._check_read()
+            previous = self.values.get(key, {})
+            if previous.get("producer") != "dldd":
+                return False
+            legacy_fields, artifact_id = _legacy_healthz_fields(previous)
+            if not legacy_fields:
+                return False
+            self._check_write()
+            current = dict(previous)
+            if artifact_id and not current.get("healthz_artifact_id"):
+                current["healthz_artifact_id"] = artifact_id
+            for field in legacy_fields:
+                current.pop(field, None)
+            self.values[key] = current
+            return True
 
     def append_healthz_transition(self, transition):
         from dldd.telemetry import TelemetryPublisher
@@ -192,6 +193,29 @@ class FakeStateDB(StateDB):
             self._stream_sequence += 1
             stream.append((f"{self._stream_sequence}-0", dict(transition)))
             del stream[:-TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN]
+
+    def clear_with_transitions(self, keys, faults, transitions):
+        from dldd.telemetry import TelemetryPublisher
+
+        with self._lock:
+            self._check_read()
+            self._check_write()
+            if any(self.values.get(key, {}) != expected for key, expected in faults.items()):
+                raise RuntimeError("FAULT_INFO changed during clear-state")
+            stream = TelemetryPublisher.FAULT_TRANSITIONS_STREAM
+            entries = list(self.streams.get(stream, ()))
+            sequence = self._stream_sequence
+            for transition in transitions:
+                sequence += 1
+                entries.append((f"{sequence}-0", dict(transition)))
+            del entries[:-TelemetryPublisher.FAULT_TRANSITIONS_MAXLEN]
+            for key in keys:
+                self.values.pop(key, None)
+                self.ttls.pop(key, None)
+            if sequence != self._stream_sequence:
+                self.streams[stream] = entries
+                self._stream_sequence = sequence
+            self.delete_calls += 1
 
     def delete(self, key):
         with self._lock:

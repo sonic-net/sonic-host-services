@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Host Service to handle docker-to-host communication"""
 
+import importlib
 import logging
 
 import dbus
@@ -18,7 +19,6 @@ from host_modules import (
     glome,
     gnoi_reset,
     gnsi_console,
-    healthz,
     host_service,
     image_service,
     reboot,
@@ -52,7 +52,8 @@ def register_dbus():
     for mod_name, handler_class in mod_dict.items():
         handlers[mod_name] = handler_class
     try:
-        handlers['healthz'] = healthz.Healthz('healthz')
+        handlers['healthz'] = importlib.import_module(
+            'host_modules.healthz').Healthz('healthz')
     except Exception:
         logger.exception('Healthz backend initialization failed; existing host modules remain available')
 

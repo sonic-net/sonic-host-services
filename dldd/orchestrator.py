@@ -63,7 +63,6 @@ class PendingFault:
     wait_until: Optional[float] = None
     outstanding_rechecks: Set[str] = field(default_factory=set)
     last_decision: Optional[CorrelationDecision] = None
-    artifact: Optional[Mapping[str, Any]] = None
     recheck_failed: bool = False
     recheck_deadline: Optional[float] = None
     recheck_attempts: int = 0
@@ -203,11 +202,24 @@ class PrimaryOrchestrator:
                 )
         for record in self.faults.values():
             if record.status == "INACTIVE":
+                # A config refresh must not recreate an expired retained row.
+                if (record.inactive_deadline is not None
+                        and record.inactive_deadline <= self.wall_clock()):
+                    continue
+                try:
+                    if not self.telemetry.state_db.fault_exists(record.redis_key):
+                        continue
+                except Exception as error:
+                    LOGGER.warning(
+                        "unable to check retained fault %s: %s",
+                        record.redis_key, error,
+                    )
+                    continue
                 record.inactive_deadline = (
                     self.wall_clock()
                     + latest.inactive_fault_retention_period
                 )
-                self._publish_fault_record(record)
+                self._publish_fault_record(record, refresh_only=True)
 
     def process_batch(self, limit: int = 128) -> int:
         processed = 0
@@ -444,9 +456,11 @@ class PrimaryOrchestrator:
                 alternate.origin_time = record.origin_time
                 alternate.occurrences = record.occurrences
                 self.published_by_key[fault_key] = alternate.rule_id
+                alternate.healthz_artifact_id = self._request_artifact(winner)
                 self._publish_fault_record(
                     alternate,
                     refresh_remote_window=True,
+                    observation_time=event.observed_at,
                 )
             else:
                 self._publish_fault_record(record, observation_time=event.observed_at)
@@ -589,12 +603,7 @@ class PrimaryOrchestrator:
             return
 
         if decision.changed:
-            artifact = (
-                self._request_artifact(execution)
-                if decision.active and execution.signature.actions.log_collection
-                else None
-            )
-            self._publish_decision(decision, artifact=artifact)
+            self._publish_decision(decision, collect_artifact=decision.active)
         elif decision.active and event.result.result == EvaluationResultType.MATCH:
             self._confirm_asserted_fault(identity, event.event_timestamp)
         self._resume(event, "evidence processed")
@@ -1031,12 +1040,13 @@ class PrimaryOrchestrator:
         hold_deadline: float,
     ) -> None:
         for key in keys:
-            self._command_key(
-                key,
-                MonitorWorkState.RECHECK_REQUESTED,
-                reason,
-                hold_deadline=hold_deadline,
-            )
+            if key in self.work_items:
+                self._command_key(
+                    key,
+                    MonitorWorkState.RECHECK_REQUESTED,
+                    reason,
+                    hold_deadline=hold_deadline,
+                )
 
     def _retry_or_timeout_rechecks(
         self,
@@ -1125,9 +1135,6 @@ class PrimaryOrchestrator:
                     }
                 )
             if action_finished:
-                pending.artifact = self._request_artifact(
-                    pending.execution, pending.action_result
-                )
                 wait_period = (
                     pending.execution.signature.actions.repair_actions.local_actions.wait_period
                 )
@@ -1281,7 +1288,8 @@ class PrimaryOrchestrator:
             local_action_state=action_state,
             local_action_details=action_details,
             actions_taken=actions_taken,
-            artifact=pending.artifact,
+            collect_artifact=True,
+            action_result=pending.action_result,
             action_suppressed=True,
             stale_source=uncertain,
             observation_time=observation_time,
@@ -1310,25 +1318,18 @@ class PrimaryOrchestrator:
                     }
                 )
                 continue
-            if (
-                not record.healthz_transition_id
-                and record.status in ("ACTIVE", "INACTIVE")
+            if any(
+                field in payload for field in (
+                    "healthz_artifact", "healthz_transition_id",
+                    "healthz_transition_observed_at", "healthz_transition_artifact_id",
+                )
             ):
-                # Adopt only the retained current state from older FAULT_INFO
-                # rows. It is labeled as a replay, not as a historical sample.
-                if record.status == "INACTIVE":
-                    record.inactive_deadline = (
-                        self._retained_inactive_since(payload, record)
-                        + self.config.inactive_fault_retention_period
-                    )
-                record.healthz_transition_status = ""
-                if not self.telemetry.publish_fault(
-                    record, replay=True, publication_time=self.wall_clock()
-                ):
-                    raise RuntimeError("unable to adopt retained FAULT_INFO transition")
-            else:
-                self.telemetry.replay_fault_transition(payload)
-            artifact_changed = self._reconcile_artifact_reference(record)
+                # A retained row is not an observation. Migrate its fields
+                # without creating a Healthz event or extending its TTL.
+                retained_key = str(payload["redis_key"])
+                self.telemetry.state_db.migrate_legacy_fault(retained_key)
+                if not self.telemetry.state_db.fault_exists(retained_key):
+                    continue
             identity = (record.rule_id, record.component_name)
             execution = self.correlation.executions.get(identity)
             dynamic_signature = self.dynamic_signatures.get(record.rule_id)
@@ -1359,8 +1360,6 @@ class PrimaryOrchestrator:
                 if pending_dynamic:
                     # Let the first inventory resolve retained dynamic history.
                     self._dse_retirement_candidates.add(identity)
-                if artifact_changed:
-                    self._publish_fault_record(record)
                 continue
             if pending_dynamic:
                 # Preserve dynamic fault ownership until inventory completes.
@@ -1370,8 +1369,6 @@ class PrimaryOrchestrator:
                 ] = record.rule_id
                 self.pending_dynamic_faults[identity] = record
                 self.uncertain_faults.add(identity)
-                if artifact_changed:
-                    self._publish_fault_record(record)
                 continue
             if not current:
                 record.status = "INACTIVE"
@@ -1392,8 +1389,6 @@ class PrimaryOrchestrator:
                 continue
             self.faults[identity] = record
             self.published_by_key[(record.component_name, record.symptom)] = record.rule_id
-            if artifact_changed:
-                self._publish_fault_record(record)
             if execution is None:
                 continue
             self._start_reconciliation(execution, "bootstrap_fault_reconciliation")
@@ -1409,25 +1404,6 @@ class PrimaryOrchestrator:
         except (TypeError, ValueError):
             pass
         return record.last_detection_time
-
-    def _reconcile_artifact_reference(self, record: FaultRecord) -> bool:
-        artifact = record.healthz_artifact
-        if not artifact or self.artifact_client is None:
-            return False
-        artifact_id = artifact.get("artifact_id")
-        if not artifact_id:
-            return False
-        try:
-            status = self.artifact_client.artifact_status(str(artifact_id))
-        except Exception as error:
-            LOGGER.warning("unable to check Healthz artifact %s: %s", artifact_id, error)
-            return False
-        if status not in ("PENDING", "COMPLETED", "MISSING", "FAILED"):
-            return False
-        if artifact.get("state") == status:
-            return False
-        record.healthz_artifact = {**artifact, "state": status}
-        return True
 
     def _start_reconciliation(
         self, execution: SignatureExecution, reason: str
@@ -1489,7 +1465,7 @@ class PrimaryOrchestrator:
                     local_action_state=record.local_action_state,
                     local_action_details=record.local_action_details,
                     actions_taken=record.actions_taken,
-                    artifact=record.healthz_artifact,
+                    artifact=record.healthz_artifact_id,
                     action_suppressed=record.action_suppressed,
                     stale_source=uncertain,
                 )
@@ -1524,6 +1500,9 @@ class PrimaryOrchestrator:
             )
         local = payload.get("local_action_state") or {}
         repairs = payload.get("repair_actions") or []
+        old_artifact = payload.get("healthz_artifact")
+        if not isinstance(old_artifact, Mapping):
+            old_artifact = {}
         return FaultRecord(
             rule_id=int(payload.get("rule_id", 0)),
             rule_name=str(payload.get("rule", "")),
@@ -1553,14 +1532,10 @@ class PrimaryOrchestrator:
             local_action_state=str(local.get("state", "IDLE")),
             local_action_details=dict(local),
             action_suppressed=bool(local.get("action_suppressed", False)),
-            healthz_artifact=payload.get("healthz_artifact"),
-            healthz_transition_id=str(payload.get("healthz_transition_id", "")),
-            healthz_transition_status=str(payload.get("status", "ACTIVE")),
-            healthz_transition_observed_at=int(float(
-                payload.get("healthz_transition_observed_at") or 0
-            )),
-            healthz_transition_artifact_id=str(
-                payload.get("healthz_transition_artifact_id", "")
+            healthz_artifact_id=str(
+                payload.get("healthz_artifact_id")
+                or old_artifact.get("artifact_id")
+                or ""
             ),
             serial_number=str(payload.get("component_serial_number", "")),
             stale_source=bool(payload.get("source_stale", False)),
@@ -1573,6 +1548,8 @@ class PrimaryOrchestrator:
         local_action_details=None,
         actions_taken=(),
         artifact=None,
+        collect_artifact: bool = False,
+        action_result: Optional[ActionSequenceResult] = None,
         action_suppressed: bool = False,
         stale_source: bool = False,
         observation_time: Optional[float] = None,
@@ -1618,7 +1595,7 @@ class PrimaryOrchestrator:
                     else now
                 )
                 existing.occurrences = 1
-                existing.healthz_artifact = None
+                existing.healthz_artifact_id = ""
             elif prior_status == "INACTIVE" and status == "ACTIVE":
                 existing.occurrences += 1
         # Refresh rule-owned metadata whenever a record is reused.
@@ -1669,7 +1646,7 @@ class PrimaryOrchestrator:
             )
             existing.action_suppressed = action_suppressed
         if artifact is not None:
-            existing.healthz_artifact = artifact
+            existing.healthz_artifact_id = artifact
         existing.stale_source = (
             stale_source or self._execution_has_failed_source(execution)
         )
@@ -1685,10 +1662,11 @@ class PrimaryOrchestrator:
 
         winner = self.arbiter.update(decision)
         fault_key = (execution.component_name, metadata.symptom)
+        prior_owner = self.published_by_key.get(fault_key)
         if status == "ACTIVE" and winner is not None:
             if winner.signature.metadata.id != metadata.id:
                 return
-            previous_rule = self.published_by_key.get(fault_key)
+            previous_rule = prior_owner
             if previous_rule is not None and previous_rule != metadata.id:
                 previous = self.faults.get((previous_rule, execution.component_name))
                 try:
@@ -1741,11 +1719,24 @@ class PrimaryOrchestrator:
                         "action_suppressed": alternate.action_suppressed,
                     }
                     alternate.remote_action_time_window = alternate_remote.time_window
+                    # Promotion is a new rule fault, even if its record was active.
+                    alternate.healthz_artifact_id = self._request_artifact(winner)
                     self._publish_fault_record(alternate, observation_time=now)
                     return
             # Retain Redis-key ownership with inactive occurrence history.
             self.published_by_key[fault_key] = metadata.id
 
+        if status == "ACTIVE" and (
+            prior_status != "ACTIVE" or prior_owner != metadata.id
+        ):
+            # An archive carried by this record belongs to an older episode.
+            existing.healthz_artifact_id = ""
+        if collect_artifact and self.published_by_key.get(fault_key) in (
+            None, metadata.id
+        ):
+            existing.healthz_artifact_id = self._request_artifact(
+                execution, action_result
+            )
         self._publish_fault_record(existing, observation_time=now)
 
     def _confirm_asserted_fault(
@@ -1801,6 +1792,7 @@ class PrimaryOrchestrator:
         *,
         refresh_remote_window: bool = False,
         observation_time: Optional[float] = None,
+        refresh_only: bool = False,
     ) -> bool:
         identity = (record.rule_id, record.component_name)
         owner = self.published_by_key.get(
@@ -1821,10 +1813,11 @@ class PrimaryOrchestrator:
             remote_action_time_window=record.remote_action_time_window,
             observation_time=observation_time,
             publication_time=self.wall_clock(),
+            refresh_only=refresh_only,
         )
         if published:
             self.dirty_faults.discard(identity)
-        else:
+        elif not refresh_only:
             self.dirty_faults.add(identity)
         return published
 
@@ -1847,7 +1840,7 @@ class PrimaryOrchestrator:
     ):
         collection = execution.signature.actions.log_collection
         if collection is None or self.artifact_client is None:
-            return None
+            return ""
         try:
             requested_at = self.wall_clock()
             metadata = {
@@ -1874,14 +1867,15 @@ class PrimaryOrchestrator:
                 collection.logs,
                 tuple(item.as_runtime_payload() for item in collection.queries),
             )
-            return request.as_payload()
+            return request.artifact_id
         except Exception as error:
-            return floor_timestamp_fields(
-                {
-                    "requested_at": self.wall_clock(),
-                    "request_error": str(error),
-                }
-            )
+            LOGGER.warning("unable to reserve Healthz artifact: %s", error)
+            self.service_diagnostics.append({
+                "reason": "healthz_artifact_request_failed",
+                "error": bound_diagnostic(str(error), 512),
+                "observed_at": self.wall_clock(),
+            })
+            return ""
 
     def _resume(self, event: FaultEvidenceEvent, reason: str) -> None:
         self._command_event(
@@ -1891,6 +1885,8 @@ class PrimaryOrchestrator:
         )
 
     def _release_key(self, key: str, reason: str) -> None:
+        if key not in self.work_items:
+            return
         broken = self.broken_rules.get(key)
         if broken is not None and broken.get("state") == "BROKEN":
             self._command_key(

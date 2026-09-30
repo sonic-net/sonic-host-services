@@ -99,6 +99,24 @@ class TestHealthzArtifacts(unittest.TestCase):
         self.assertEqual(self.store.status(second), "COMPLETED")
         self.assertEqual(self.store.status(third), "PENDING")
 
+    def test_rejected_reservation_does_not_evict_completed_archive(self):
+        source = os.path.join(self.root, "log.txt")
+        with open(source, "w") as output:
+            output.write("diagnostic data")
+        larger = HealthzArtifacts(self.directory, max_artifacts=3,
+                                  max_bytes=4096)
+        completed = larger.reserve()["artifact_id"]
+        larger.submit(completed, [{"path": source, "name": "log.txt"}])
+        pending = [larger.reserve()["artifact_id"] for _ in range(2)]
+
+        # A restarted process can have a lower limit than the artifacts it
+        # inherited.  Rejecting a new reservation must preserve old archives.
+        with self.assertRaisesRegex(OSError, "capacity is exhausted"):
+            self.store.reserve()
+        self.assertEqual(self.store.status(completed), "COMPLETED")
+        for artifact_id in pending:
+            self.assertEqual(self.store.status(artifact_id), "PENDING")
+
     def test_abandoned_reservation_expires(self):
         artifact_id = self.store.reserve()["artifact_id"]
         marker = self.store._pending(artifact_id)

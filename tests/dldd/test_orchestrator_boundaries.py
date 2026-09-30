@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from dldd.actions import ActionSequenceResult
+from dldd.artifacts import ArtifactReference
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine
 from dldd.orchestrator import PrimaryOrchestrator, Reconciliation
@@ -60,7 +61,7 @@ def runtime_fixture(*, config=None, source_probe=None, artifact_client=None):
     return orchestrator, bundle, item, database, clock
 
 
-def competing_rules_fixture():
+def competing_rules_fixture(*, artifact_client=None):
     with open(
         "tests/dldd/fixtures/valid-redis-rule.json", encoding="utf-8"
     ) as stream:
@@ -89,6 +90,7 @@ def competing_rules_fixture():
         TelemetryPublisher(database, DLDDConfig()),
         DLDDConfig(),
         "sha256:test",
+        artifact_client=artifact_client,
     )
     return orchestrator, items[1000001], items[1000002], database
 
@@ -163,6 +165,15 @@ def active_record(orchestrator, item, **updates):
     return identity, record
 
 
+def assert_fault_healthz_link(row, artifact_id=None):
+    """FAULT_INFO carries only the optional scalar Healthz artifact link."""
+
+    expected_fields = {"healthz_artifact_id"} if artifact_id is not None else set()
+    assert {field for field in row if field.startswith("healthz_")} == expected_fields
+    if artifact_id is not None:
+        assert row["healthz_artifact_id"] == artifact_id
+
+
 def add_static_owner(orchestrator, item, signature, *, register=False):
     """Add the non-DSE work which keeps a component scope executable."""
 
@@ -182,10 +193,12 @@ def add_static_owner(orchestrator, item, signature, *, register=False):
 
 
 def test_runtime_config_update_and_fault_republish_lifecycle():
-    """Apply latest config, refresh deadlines, and retry inactive publication."""
+    """Apply latest config without scheduling a failed refresh as a new fault."""
 
     orchestrator, _, item, database, clock = runtime_fixture()
     identity, record = active_record(orchestrator, item, status="INACTIVE")
+    record.inactive_deadline = 1000 + orchestrator.config.inactive_fault_retention_period
+    assert orchestrator._publish_fault_record(record)
     orchestrator.next_active_recheck[identity] = 100
     orchestrator.source_status[item.source_id] = {
         "state": "UNAVAILABLE",
@@ -214,9 +227,13 @@ def test_runtime_config_update_and_fault_republish_lifecycle():
     assert orchestrator.source_status[item.source_id]["grace_deadline"] == 911
     assert database.ttls[record.redis_key] == 22
 
-    # A failed inactive-row TTL refresh remains dirty until DB recovery.
+    # A failed inactive-row refresh must not become an unrestricted retry.
     orchestrator, _, item, database, clock = runtime_fixture()
     identity, record = active_record(orchestrator, item, status="INACTIVE")
+    record.inactive_deadline = 1000 + orchestrator.config.inactive_fault_retention_period
+    assert orchestrator._publish_fault_record(record)
+    original_row = dict(database.values[record.redis_key])
+    original_events = len(database.streams["HEALTHZ_TRANSITIONS"])
     database.fail_writes_with(RuntimeError("STATE_DB unavailable"))
     latest = DLDDConfig(inactive_fault_retention_period=19)
     orchestrator.queue_config_update(latest)
@@ -225,14 +242,45 @@ def test_runtime_config_update_and_fault_republish_lifecycle():
 
     assert orchestrator.config is latest
     assert orchestrator.telemetry.config is latest
-    assert identity in orchestrator.dirty_faults
-    assert record.redis_key not in database.values
+    assert identity not in orchestrator.dirty_faults
+    assert database.values[record.redis_key] == original_row
 
     database.clear_failures()
+    database.delete(record.redis_key)
     clock[0] = 5
     orchestrator.tick()
     assert identity not in orchestrator.dirty_faults
-    assert database.ttls[record.redis_key] == 14
+    assert record.redis_key not in database.values
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == original_events
+
+
+def test_config_update_does_not_republish_expired_retained_inactive_fault():
+    initial_config = DLDDConfig(inactive_fault_retention_period=5)
+    orchestrator, bundle, item, database, clock = runtime_fixture(
+        config=initial_config
+    )
+    _, record = active_record(orchestrator, item, status="INACTIVE")
+    record.inactive_deadline = 1005.0
+    assert orchestrator._publish_fault_record(record, observation_time=1000.0)
+    original_events = len(database.streams["HEALTHZ_TRANSITIONS"])
+
+    restarted = PrimaryOrchestrator(
+        Queue(), bundle.monitor_plans, bundle.work_items,
+        CorrelationEngine(bundle.signatures),
+        TelemetryPublisher(database, initial_config), initial_config,
+        "sha256:test", clock=lambda: clock[0],
+        wall_clock=lambda: 1000.0 + clock[0],
+    )
+    restarted.reconcile_existing_faults()
+    assert restarted.faults[(item.rule_id, item.component_name)].status == "INACTIVE"
+
+    database.delete(record.redis_key)
+    clock[0] = 6.0
+    restarted.queue_config_update(DLDDConfig(inactive_fault_retention_period=20))
+    restarted.tick()
+
+    assert record.redis_key not in database.values
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == original_events
 
 
 def test_evidence_dispatch_and_localized_failure_policy():
@@ -473,8 +521,12 @@ def test_artifact_request_failure_is_contained():
     )
 
     result = orchestrator._request_artifact(next(iter(bundle.signatures.values())))
-    assert result["request_error"] == "collector unavailable"
-    assert result["requested_at"] == 1000
+    assert result == ""
+    assert orchestrator.service_diagnostics[-1] == {
+        "reason": "healthz_artifact_request_failed",
+        "error": "collector unavailable",
+        "observed_at": 1000,
+    }
 
 
 def test_fault_serialization_and_dirty_retry():
@@ -1074,6 +1126,49 @@ def test_dse_retirement_waits_then_retains_inactive_history():
     assert database.values[record.redis_key]["status"] == "INACTIVE"
 
 
+def test_removed_dse_work_is_not_rechecked_during_deferred_retirement():
+    orchestrator, database, plan, item, signature, record = dse_retirement_fixture()
+    identity = (item.rule_id, item.component_name)
+    execution = orchestrator.correlation.executions[identity]
+    orchestrator._start_reconciliation(execution, "active_fault_periodic_recheck")
+    reconciliation = orchestrator.reconciliation[identity]
+    queued = plan.control_queue.qsize()
+
+    orchestrator.process_expansion(
+        dse_expansion_event(signature, removed_keys=(item.correlation_key,))
+    )
+    assert item.correlation_key not in orchestrator.work_items
+    assert identity in orchestrator.reconciliation
+
+    now = orchestrator.clock()
+    reconciliation.recheck_deadline = now - 1
+    orchestrator._retry_or_timeout_rechecks(
+        identity,
+        reconciliation,
+        now,
+        retry_reason="active_fault_periodic_recheck_retry",
+        timeout_reason="active_fault_periodic_recheck_timed_out",
+        complete=orchestrator._complete_reconciliation,
+    )
+    assert reconciliation.recheck_attempts == 2
+    assert plan.control_queue.qsize() == queued
+
+    reconciliation.recheck_deadline = now - 1
+    orchestrator._retry_or_timeout_rechecks(
+        identity,
+        reconciliation,
+        now,
+        retry_reason="active_fault_periodic_recheck_retry",
+        timeout_reason="active_fault_periodic_recheck_timed_out",
+        complete=orchestrator._complete_reconciliation,
+    )
+    assert identity not in orchestrator.reconciliation
+    assert plan.control_queue.qsize() == queued
+
+    orchestrator.process_expansion(dse_expansion_event(signature))
+    assert database.values[record.redis_key]["status"] == "INACTIVE"
+
+
 def test_dse_retirement_defers_to_remaining_static_scope():
     """Static work keeps the scope alive and is rechecked only when active."""
 
@@ -1197,6 +1292,46 @@ def test_dse_retirement_respects_fault_arbitration():
     assert record.status == "INACTIVE"
 
 
+def test_dse_retirement_promotes_with_fresh_artifact():
+    orchestrator, database, _, item, signature, record = dse_retirement_fixture()
+    alternate_id = item.rule_id + 1
+    alternate = replace(
+        record,
+        rule_id=alternate_id,
+        rule_name="ALTERNATE",
+        healthz_artifact_id="old-low.tar.gz",
+    )
+    orchestrator.faults[(alternate_id, item.component_name)] = alternate
+    winner = SimpleNamespace(
+        component_name=item.component_name,
+        signature=replace(
+            signature,
+            metadata=replace(signature.metadata, id=alternate_id),
+        )
+    )
+    orchestrator.arbiter.retire = lambda *_args: winner
+
+    class ArtifactClient:
+        def request(self, metadata, _logs, _queries):
+            assert metadata["rule_id"] == alternate_id
+            assert orchestrator.published_by_key[(record.component_name, record.symptom)] == alternate_id
+            assert database.values[record.redis_key]["rule_id"] == str(item.rule_id)
+            return ArtifactReference("new-low.tar.gz", 1234, "/tmp/archive")
+
+    orchestrator.artifact_client = ArtifactClient()
+    orchestrator._dse_instances_by_template["template"] = set()
+    assert orchestrator._retire_absent_dse_fault(
+        (item.rule_id, item.component_name), dse_expansion_event(signature)
+    )
+    row = database.values[record.redis_key]
+    assert row["rule_id"] == str(alternate_id)
+    assert_fault_healthz_link(row, "new-low.tar.gz")
+    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["artifact_id"] == (
+        "new-low.tar.gz"
+    )
+    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["observed_at"] == "1234"
+
+
 def test_fault_arbiter_promotion_suppression_and_clear_lifecycle():
     """Promote winners while preserving active and inactive fault history."""
 
@@ -1212,9 +1347,13 @@ def test_fault_arbiter_promotion_suppression_and_clear_lifecycle():
     assert high_record.origin_time == 17
     assert high_record.occurrences == 3
     assert database.values[high_record.redis_key]["rule_id"] == str(high.rule_id)
+    assert_fault_healthz_link(database.values[high_record.redis_key])
     assert [row[1].get("kind", "transition") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
-        "transition", "observation",
+        "transition", "transition",
     ]
+    assert all(row[1]["active"] == "1" for row in database.streams["HEALTHZ_TRANSITIONS"])
+    assert len({row[1]["transition_id"] for row in database.streams["HEALTHZ_TRANSITIONS"]}) == 2
+    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["observed_at"] == "102"
 
     # Promotion also inherits occurrence history from an inactive loser.
     orchestrator, high, low, _ = competing_rules_fixture()
@@ -1245,6 +1384,80 @@ def test_fault_arbiter_promotion_suppression_and_clear_lifecycle():
     orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=4))
     assert database.values[fault_key]["rule_id"] == str(low.rule_id)
     assert database.values[fault_key]["status"] == "ACTIVE"
+    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["observed_at"] == "104"
+
+
+def test_only_published_rule_reserves_artifact():
+    class ArtifactClient:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, metadata, _logs, _queries):
+            rule_id = metadata["rule_id"]
+            record = orchestrator.faults[(rule_id, "PSU")]
+            assert record.status == "ACTIVE"
+            assert orchestrator.published_by_key[("PSU", record.symptom)] == rule_id
+            self.requests.append(rule_id)
+            return ArtifactReference(
+                "archive-{}.tar.gz".format(rule_id), 1000, "/tmp/archive"
+            )
+
+    client = ArtifactClient()
+    orchestrator, high, low, database = competing_rules_fixture(
+        artifact_client=client
+    )
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH))
+    orchestrator.process_event(event(low, EvaluationResultType.MATCH, sequence=2))
+
+    assert client.requests == [high.rule_id]
+    fault = database.values["FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"]
+    assert_fault_healthz_link(
+        fault, "archive-{}.tar.gz".format(high.rule_id)
+    )
+    assert not orchestrator.faults[
+        (low.rule_id, low.component_name)
+    ].healthz_artifact_id
+
+
+def test_promoted_rule_reserves_new_artifact_before_publication():
+    class ArtifactClient:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, metadata, _logs, _queries):
+            rule_id = metadata["rule_id"]
+            record = orchestrator.faults[(rule_id, "PSU")]
+            assert record.status == "ACTIVE"
+            assert orchestrator.published_by_key[("PSU", record.symptom)] == rule_id
+            assert database.values.get(key, {}).get("rule_id") != str(rule_id)
+            self.requests.append(rule_id)
+            return ArtifactReference(
+                "archive-{}.tar.gz".format(len(self.requests)),
+                1000,
+                "/tmp/archive",
+            )
+
+    client = ArtifactClient()
+    orchestrator, high, low, database = competing_rules_fixture(
+        artifact_client=client
+    )
+    key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=1))
+    orchestrator.process_event(event(low, EvaluationResultType.MATCH, sequence=2))
+    assert client.requests == [high.rule_id]
+
+    orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=3))
+    assert client.requests == [high.rule_id, low.rule_id]
+    assert database.values[key]["rule_id"] == str(low.rule_id)
+    assert_fault_healthz_link(database.values[key], "archive-2.tar.gz")
+
+    orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=4))
+    assert client.requests == [high.rule_id, low.rule_id, high.rule_id]
+    assert database.values[key]["rule_id"] == str(high.rule_id)
+    assert_fault_healthz_link(database.values[key], "archive-3.tar.gz")
+    assert [row[1].get("artifact_id") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
+        "archive-1.tar.gz", "archive-2.tar.gz", "archive-3.tar.gz",
+    ]
 
 
 def test_primary_evidence_transition_and_detection_timestamps():
@@ -1253,6 +1466,7 @@ def test_primary_evidence_transition_and_detection_timestamps():
 
     orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=1))
     orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=2))
+    assert_fault_healthz_link(database.values[key])
     assert database.values[key]["origin_time"] == "101"
     assert database.values[key]["last_detection_time"] == "102"
     assert [row[1].get("kind", "transition") for row in database.streams["HEALTHZ_TRANSITIONS"]] == [
@@ -1260,11 +1474,13 @@ def test_primary_evidence_transition_and_detection_timestamps():
     ]
 
     orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=3))
+    assert_fault_healthz_link(database.values[key])
     assert database.values[key]["last_detection_time"] == "102"
     assert database.values[key]["inactive_since"] == "103.0"
     assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 3
 
     orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=4))
+    assert_fault_healthz_link(database.values[key])
     assert database.values[key]["origin_time"] == "101"
     assert database.values[key]["last_detection_time"] == "104"
     assert database.values[key]["occurrences"] == "2"
@@ -1278,12 +1494,12 @@ def test_recurrence_after_inactive_row_expiry_starts_new_fault_history():
     key = "FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"
     orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=1))
     record = orchestrator.faults[(high.rule_id, high.component_name)]
-    record.healthz_artifact = {"artifact_id": "old.tar.gz"}
+    record.healthz_artifact_id = "old.tar.gz"
     orchestrator._publish_fault_record(record)
     orchestrator.process_event(event(high, EvaluationResultType.NO_MATCH, sequence=2))
     assert database.values[key]["origin_time"] == "101"
     assert database.values[key]["occurrences"] == "1"
-    assert "healthz_artifact" in database.values[key]
+    assert_fault_healthz_link(database.values[key], "old.tar.gz")
 
     database.delete(key)  # Redis TTL expiry, not a fault-clear transition.
     orchestrator.process_event(event(high, EvaluationResultType.MATCH, sequence=3))
@@ -1293,7 +1509,7 @@ def test_recurrence_after_inactive_row_expiry_starts_new_fault_history():
     assert row["origin_time"] == "103"
     assert row["last_detection_time"] == "103"
     assert row["occurrences"] == "1"
-    assert "healthz_artifact" not in row
+    assert_fault_healthz_link(row)
     assert [entry[1]["active"] for entry in database.streams["HEALTHZ_TRANSITIONS"]] == [
         "1", "0", "1",
     ]

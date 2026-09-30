@@ -136,11 +136,11 @@ class HealthzArtifacts:
                 os.unlink(marker)
             else:
                 pending += 1
+        if pending >= self.max_artifacts:
+            raise OSError("Healthz artifact capacity is exhausted")
         archives.sort()
         for _, path in archives[:max(0, len(archives) + pending + 1 - self.max_artifacts)]:
             os.unlink(path)
-        if pending >= self.max_artifacts:
-            raise OSError("Healthz artifact capacity is exhausted")
 
     def reserve(self):
         with self._lock:
