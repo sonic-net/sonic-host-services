@@ -180,8 +180,18 @@ class FeatureHandler(object):
         if not key:
             return 
         if op == 'SET' and key == 'PortInitDone':
+            if self._is_swss_deactivating():
+                syslog.syslog(syslog.LOG_INFO, "swss is stopping, skip updating delayed features")
+                return
             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
             self.enable_delayed_services()
+
+    def _is_swss_deactivating(self):
+        try:
+            state = subprocess.run(['systemctl', 'show', 'swss', '-p', 'ActiveState', '--value'], capture_output=True, text=True, timeout=5).stdout.strip()
+            return state == 'deactivating'
+        except Exception:
+            return False
 
     def handler(self, feature_name, op, feature_cfg):
         if not feature_cfg:

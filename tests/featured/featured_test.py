@@ -452,13 +452,36 @@ class TestFeatureHandler(TestCase):
         when swss is ready. This test case covers it.
         """
         feature_handler = featured.FeatureHandler(None, None, {}, False)
-        assert not feature_handler.is_delayed_enabled
-        feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
-        assert feature_handler.is_delayed_enabled
-        
+        with mock.patch.object(feature_handler, '_is_swss_deactivating', return_value=False):
+            assert not feature_handler.is_delayed_enabled
+            feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+            assert feature_handler.is_delayed_enabled
+
+            feature_handler.enable_delayed_services = mock.MagicMock()
+            feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+            feature_handler.enable_delayed_services.assert_called_once()
+
+    def test_port_init_done_while_swss_deactivating(self):
+        """PortInitDone published while swss.service is stopping (e.g. by the container
+        that 'docker restart swss' brings back during systemd's stop) must not trigger
+        delayed services: starting them queues a swss start job during the stop and
+        can drive swss into start-limit-hit.
+        """
+        feature_handler = featured.FeatureHandler(None, None, {}, False)
         feature_handler.enable_delayed_services = mock.MagicMock()
-        feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
-        feature_handler.enable_delayed_services.assert_called_once()
+        with mock.patch.object(feature_handler, '_is_swss_deactivating', return_value=True):
+            feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+        feature_handler.enable_delayed_services.assert_not_called()
+
+    def test_is_swss_deactivating(self):
+        feature_handler = featured.FeatureHandler(None, None, {}, False)
+        with mock.patch('featured.subprocess.run') as mock_run:
+            mock_run.return_value.stdout = 'deactivating\n'
+            assert feature_handler._is_swss_deactivating()
+            mock_run.return_value.stdout = 'active\n'
+            assert not feature_handler._is_swss_deactivating()
+            mock_run.side_effect = Exception('systemctl failed')
+            assert not feature_handler._is_swss_deactivating()
 
     @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
     def test_enable_and_disable_feature_ExclusionList_skips_actions(self, mock_syslog):
