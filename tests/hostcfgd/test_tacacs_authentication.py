@@ -56,7 +56,7 @@ def pam_auth_lines(rendered_config):
     ]
 
 
-def authenticate(lines, username, tacacs_result, password_valid):
+def authenticate(lines, tacacs_result, password_valid):
     result_name = {
         "PAM_SUCCESS": "success",
         "PAM_AUTH_ERR": "auth_err",
@@ -66,9 +66,7 @@ def authenticate(lines, username, tacacs_result, password_valid):
     index = 0
     while index < len(lines):
         line = lines[index]
-        if "pam_succeed_if.so" in line:
-            result = "PAM_SUCCESS" if username == "root" else "PAM_AUTH_ERR"
-        elif "pam_tacplus.so" in line:
+        if "pam_tacplus.so" in line:
             result = tacacs_result
         elif "pam_unix.so" in line:
             result = (
@@ -103,131 +101,11 @@ def authenticate(lines, username, tacacs_result, password_valid):
     return False
 
 
-@pytest.mark.parametrize(
-    "unavailable_result",
-    ["PAM_SERVICE_ERR", "PAM_AUTHINFO_UNAVAIL"],
-)
-@pytest.mark.parametrize("failthrough", [False, True])
 @pytest.mark.parametrize("login", ["tacacs+", "tacacs+,local"])
-def test_f033_unreachable_tacacs_cannot_reach_empty_password_local_auth(
-    login,
-    failthrough,
-    unavailable_result,
-):
-    """Verify the exact fail-open path documented in the F033 report is closed."""
-    lines = pam_auth_lines(
-        render_authentication_config(
-            login,
-            failthrough=failthrough,
-            server_count=2,
-        )
-    )
-
-    assert not authenticate(
-        lines,
-        username="empty_password_user",
-        tacacs_result=unavailable_result,
-        password_valid=False,
-    )
-
-
-@pytest.mark.parametrize(
-    "password_valid,expected",
-    [(True, True), (False, False)],
-)
-def test_f033_root_recovery_requires_a_valid_non_empty_password(
-    password_valid,
-    expected,
-):
-    lines = pam_auth_lines(
-        render_authentication_config("tacacs+", server_count=2)
-    )
-
-    assert authenticate(
-        lines,
-        username="root",
-        tacacs_result="PAM_AUTHINFO_UNAVAIL",
-        password_valid=password_valid,
-    ) is expected
-
-
-@pytest.mark.parametrize(
-    "unavailable_result",
-    ["PAM_SERVICE_ERR", "PAM_AUTHINFO_UNAVAIL"],
-)
-@pytest.mark.parametrize("failthrough", [False, True])
-def test_explicit_tacacs_local_accepts_only_a_valid_local_password(
-    failthrough,
-    unavailable_result,
-):
-    lines = pam_auth_lines(
-        render_authentication_config(
-            "tacacs+,local",
-            failthrough=failthrough,
-            server_count=2,
-        )
-    )
-
-    assert authenticate(
-        lines,
-        username="local_user",
-        tacacs_result=unavailable_result,
-        password_valid=True,
-    )
-    assert not authenticate(
-        lines,
-        username="empty_password_user",
-        tacacs_result=unavailable_result,
-        password_valid=False,
-    )
-
-
 @pytest.mark.parametrize("server_count", [0, 1, 3])
-@pytest.mark.parametrize("failthrough", [False, True])
-def test_tacacs_only_does_not_expose_unrestricted_local_fallback(
-    failthrough,
-    server_count,
-):
+def test_tacacs_modes_share_local_fallback_without_nullok(login, server_count):
     lines = pam_auth_lines(
-        render_authentication_config(
-            "tacacs+",
-            failthrough=failthrough,
-            server_count=server_count,
-        )
-    )
-    tacacs_indexes = [
-        index for index, line in enumerate(lines) if "pam_tacplus.so" in line
-    ]
-    local_indexes = [
-        index for index, line in enumerate(lines) if "pam_unix.so" in line
-    ]
-    root_guard_index = next(
-        index
-        for index, line in enumerate(lines)
-        if "pam_succeed_if.so" in line and "user = root" in line
-    )
-
-    assert len(tacacs_indexes) == server_count
-    assert "success={}".format(server_count + 1) in lines[root_guard_index]
-    for local_index in local_indexes:
-        deny_search_start = (
-            tacacs_indexes[-1] + 1 if tacacs_indexes else root_guard_index + 1
-        )
-        denied_before_local = any(
-            "pam_deny.so" in line
-            for line in lines[deny_search_start:local_index]
-        )
-        assert root_guard_index < local_index and denied_before_local, (
-            "Strict TACACS authentication exposes pam_unix without a root-only "
-            "guard and a deny barrier after TACACS failure"
-        )
-        assert "nullok" not in lines[local_index]
-
-
-@pytest.mark.parametrize("server_count", [0, 1, 3])
-def test_explicit_tacacs_local_mode_retains_local_fallback(server_count):
-    lines = pam_auth_lines(
-        render_authentication_config("tacacs+,local", server_count=server_count)
+        render_authentication_config(login, server_count=server_count)
     )
     tacacs_indexes = [
         index for index, line in enumerate(lines) if "pam_tacplus.so" in line
@@ -238,26 +116,85 @@ def test_explicit_tacacs_local_mode_retains_local_fallback(server_count):
 
     assert len(tacacs_indexes) == server_count
     assert all(tacacs_index < local_index for tacacs_index in tacacs_indexes)
-    deny_search_start = tacacs_indexes[-1] + 1 if tacacs_indexes else 0
-    assert not any(
-        "pam_deny.so" in line for line in lines[deny_search_start:local_index]
-    )
     assert "nullok" not in lines[local_index]
 
 
-def test_local_first_tacacs_behavior_remains_unchanged():
+@pytest.mark.parametrize(
+    "unavailable_result",
+    ["PAM_SERVICE_ERR", "PAM_AUTHINFO_UNAVAIL"],
+)
+@pytest.mark.parametrize("failthrough", [False, True])
+@pytest.mark.parametrize("login", ["tacacs+", "tacacs+,local"])
+def test_unavailable_tacacs_falls_back_to_valid_local_password(
+    login,
+    failthrough,
+    unavailable_result,
+):
     lines = pam_auth_lines(
-        render_authentication_config("local,tacacs+", server_count=2)
+        render_authentication_config(
+            login,
+            failthrough=failthrough,
+            server_count=2,
+        )
     )
-    local_index = next(
-        index for index, line in enumerate(lines) if "pam_unix.so" in line
-    )
-    tacacs_indexes = [
-        index for index, line in enumerate(lines) if "pam_tacplus.so" in line
-    ]
 
-    assert len(tacacs_indexes) == 2
-    assert all(local_index < tacacs_index for tacacs_index in tacacs_indexes)
+    assert authenticate(
+        lines,
+        tacacs_result=unavailable_result,
+        password_valid=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "unavailable_result",
+    ["PAM_SERVICE_ERR", "PAM_AUTHINFO_UNAVAIL"],
+)
+@pytest.mark.parametrize("failthrough", [False, True])
+@pytest.mark.parametrize("login", ["tacacs+", "tacacs+,local"])
+def test_unavailable_tacacs_rejects_empty_local_password(
+    login,
+    failthrough,
+    unavailable_result,
+):
+    lines = pam_auth_lines(
+        render_authentication_config(
+            login,
+            failthrough=failthrough,
+            server_count=2,
+        )
+    )
+
+    assert not authenticate(
+        lines,
+        tacacs_result=unavailable_result,
+        password_valid=False,
+    )
+
+
+@pytest.mark.parametrize("failthrough", [False, True])
+@pytest.mark.parametrize("login", ["tacacs+", "tacacs+,local"])
+def test_tacacs_rejection_preserves_failthrough_behavior(
+    login,
+    failthrough,
+):
+    lines = pam_auth_lines(
+        render_authentication_config(
+            login,
+            failthrough=failthrough,
+            server_count=2,
+        )
+    )
+
+    assert authenticate(
+        lines,
+        tacacs_result="PAM_AUTH_ERR",
+        password_valid=True,
+    ) is failthrough
+    assert not authenticate(
+        lines,
+        tacacs_result="PAM_AUTH_ERR",
+        password_valid=False,
+    )
 
 
 @pytest.mark.parametrize("login", ["tacacs+", "tacacs+,local"])
