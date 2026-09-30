@@ -285,7 +285,12 @@ class FeatureHandler(object):
         device_config.update(self._device_config)
         device_config.update(self._device_running_config)
 
-        feature = Feature(feature_name, feature_cfg, device_config)
+        try:
+            feature = Feature(feature_name, feature_cfg, device_config)
+        except ValueError as err:
+            syslog.syslog(syslog.LOG_ERR,
+                          "Ignoring invalid FEATURE entry {!r}: {}".format(feature_name, err))
+            return
         self._cached_config.setdefault(feature_name, Feature(feature_name, {}))
 
         # Change auto-restart configuration first.
@@ -322,6 +327,7 @@ class FeatureHandler(object):
         """
         # Phase 1: Write all systemd configs and cache features
         syslog.syslog(syslog.LOG_INFO, "Writing systemd configs")
+        valid_features = []
         for feature_name in feature_table.keys():
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
@@ -330,20 +336,23 @@ class FeatureHandler(object):
             device_config = {}
             device_config.update(self._device_config)
             device_config.update(self._device_running_config)
-            feature = Feature(feature_name, feature_table[feature_name], device_config)
+            try:
+                feature = Feature(feature_name, feature_table[feature_name], device_config)
+            except ValueError as err:
+                syslog.syslog(syslog.LOG_ERR,
+                              "Ignoring invalid FEATURE entry {!r}: {}".format(feature_name, err))
+                continue
 
             self._cached_config.setdefault(feature_name, feature)
             self.update_systemd_config(feature, reload=False)
+            valid_features.append(feature_name)
 
         # Perform daemon-reload after all configs are written
         self.reload_systemd_config()
 
         # Phase 2: Start/stop services without daemon-reloads
         syslog.syslog(syslog.LOG_INFO, "Restarting services")
-        for feature_name in feature_table.keys():
-            if not feature_name:
-                syslog.syslog(syslog.LOG_WARNING, "Feature is None")
-                continue
+        for feature_name in valid_features:
             feature = self._cached_config[feature_name]
             self.update_feature_state(feature)
             self.sync_feature_scope(feature)

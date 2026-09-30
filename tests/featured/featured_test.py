@@ -1164,3 +1164,49 @@ class TestFeatureTemplateValidation(TestCase):
         with self.assertRaises(ValueError):
             feature._get_feature_table_key_render_value(
                 configuration, self.DEVICE_CONFIG, ['enabled', 'disabled'])
+
+    def test_invalid_callback_preserves_prior_feature_and_processes_next(self):
+        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(), {}, False)
+        prior = featured.Feature('sflow', {'state': 'enabled'})
+        handler._cached_config['sflow'] = prior
+
+        with mock.patch.object(handler, 'update_systemd_config') as config_writer, \
+                mock.patch.object(handler, 'update_feature_state', return_value=True) as update_state, \
+                mock.patch.object(handler, 'sync_feature_scope'), \
+                mock.patch.object(handler, 'resync_feature_state'):
+            handler.handler('sflow', 'SET', {'state': '{{ "enabled" | upper }}'})
+            handler.handler('bad.name', 'SET', {'state': 'enabled'})
+            self.assertIs(handler._cached_config['sflow'], prior)
+            self.assertNotIn('bad.name', handler._cached_config)
+            config_writer.assert_not_called()
+            update_state.assert_not_called()
+
+            handler.handler('snmp', 'SET', {'state': 'enabled'})
+            self.assertEqual(handler._cached_config['snmp'].state, 'enabled')
+            self.assertEqual(update_state.call_count, 1)
+
+    def test_invalid_startup_rows_do_not_stop_valid_features(self):
+        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(), {}, False)
+        prior = featured.Feature('sflow', {'state': 'enabled'})
+        handler._cached_config['sflow'] = prior
+        feature_table = {
+            'bad.name': {'state': 'enabled'},
+            'sflow': {'state': '{{ "enabled" | upper }}'},
+            'snmp': {'state': 'enabled'},
+        }
+
+        with mock.patch.object(handler, 'update_systemd_config') as config_writer, \
+                mock.patch.object(handler, 'reload_systemd_config') as reload_systemd, \
+                mock.patch.object(handler, 'update_feature_state') as update_state, \
+                mock.patch.object(handler, 'sync_feature_scope'), \
+                mock.patch.object(handler, 'resync_feature_state'), \
+                mock.patch.object(handler, 'sync_feature_delay_state'):
+            handler.sync_state_field(feature_table)
+
+        self.assertIs(handler._cached_config['sflow'], prior)
+        self.assertNotIn('bad.name', handler._cached_config)
+        self.assertEqual(handler._cached_config['snmp'].state, 'enabled')
+        config_writer.assert_called_once_with(mock.ANY, reload=False)
+        self.assertEqual(config_writer.call_args.args[0].name, 'snmp')
+        reload_systemd.assert_called_once_with()
+        update_state.assert_called_once_with(handler._cached_config['snmp'])
