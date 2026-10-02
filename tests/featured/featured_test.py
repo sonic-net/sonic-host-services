@@ -1131,6 +1131,10 @@ class TestFeatureTemplateValidation(TestCase):
         'DEVICE_METADATA': {'localhost': {'type': 'LeafRouter'}},
         'DEVICE_RUNTIME_METADATA': {'ETHERNET_PORTS_PRESENT': True},
     }
+    UNSAFE_TEMPLATE = (
+        "{% if DEVICE_METADATA['__class__']['__mro__'] %}"
+        "enabled{% else %}disabled{% endif %}"
+    )
 
     @parameterized.expand([('swss',), ('dhcp_relay',), ('feature-name',)])
     def test_valid_feature_names(self, name):
@@ -1165,8 +1169,16 @@ class TestFeatureTemplateValidation(TestCase):
             feature._get_feature_table_key_render_value(
                 configuration, self.DEVICE_CONFIG, ['enabled', 'disabled'])
 
+    def test_sandbox_template_error_is_rejected(self):
+        feature = featured.Feature('swss', {'state': 'enabled'})
+        with self.assertRaises(ValueError) as rejected:
+            feature._get_feature_table_key_render_value(
+                self.UNSAFE_TEMPLATE, self.DEVICE_CONFIG, ['enabled', 'disabled'])
+        self.assertIsInstance(rejected.exception.__cause__, featured.jinja2.TemplateError)
+
     def test_invalid_callback_preserves_prior_feature_and_processes_next(self):
-        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(), {}, False)
+        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(),
+                                          self.DEVICE_CONFIG, False)
         prior = featured.Feature('sflow', {'state': 'enabled'})
         handler._cached_config['sflow'] = prior
 
@@ -1175,6 +1187,7 @@ class TestFeatureTemplateValidation(TestCase):
                 mock.patch.object(handler, 'sync_feature_scope'), \
                 mock.patch.object(handler, 'resync_feature_state'):
             handler.handler('sflow', 'SET', {'state': '{{ "enabled" | upper }}'})
+            handler.handler('sflow', 'SET', {'state': self.UNSAFE_TEMPLATE})
             handler.handler('bad.name', 'SET', {'state': 'enabled'})
             self.assertIs(handler._cached_config['sflow'], prior)
             self.assertNotIn('bad.name', handler._cached_config)
@@ -1186,12 +1199,16 @@ class TestFeatureTemplateValidation(TestCase):
             self.assertEqual(update_state.call_count, 1)
 
     def test_invalid_startup_rows_do_not_stop_valid_features(self):
-        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(), {}, False)
+        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(),
+                                          self.DEVICE_CONFIG, False)
         prior = featured.Feature('sflow', {'state': 'enabled'})
+        prior_lldp = featured.Feature('lldp', {'state': 'disabled'})
         handler._cached_config['sflow'] = prior
+        handler._cached_config['lldp'] = prior_lldp
         feature_table = {
             'bad.name': {'state': 'enabled'},
             'sflow': {'state': '{{ "enabled" | upper }}'},
+            'lldp': {'state': self.UNSAFE_TEMPLATE},
             'snmp': {'state': 'enabled'},
         }
 
@@ -1204,6 +1221,7 @@ class TestFeatureTemplateValidation(TestCase):
             handler.sync_state_field(feature_table)
 
         self.assertIs(handler._cached_config['sflow'], prior)
+        self.assertIs(handler._cached_config['lldp'], prior_lldp)
         self.assertNotIn('bad.name', handler._cached_config)
         self.assertEqual(handler._cached_config['snmp'].state, 'enabled')
         config_writer.assert_called_once_with(mock.ANY, reload=False)

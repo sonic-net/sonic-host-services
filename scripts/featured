@@ -180,11 +180,12 @@ class Feature(object):
         try:
             parsed = env.parse(configuration)
             _validate_feature_template_ast(parsed)
+            template = env.from_string(parsed)
+            target_value = template.render(device_config)
         except jinja2.TemplateSyntaxError as err:
             raise ValueError('Invalid FEATURE template syntax: {}'.format(err))
-
-        template = env.from_string(parsed)
-        target_value = template.render(device_config)
+        except jinja2.TemplateError as err:
+            raise ValueError('Invalid FEATURE template: {}'.format(err)) from err
 
         # YANG mandates boolean values are "true" and "false" but this code otherwise expects
         # python "True" and "False" so map accordingly.  This then gets passed to ast.literal_eval()
