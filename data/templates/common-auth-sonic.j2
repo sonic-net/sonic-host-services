@@ -26,7 +26,7 @@ auth	[success=1 default=ignore]	pam_tacplus.so server={{ last_server.ip }}:{{ la
 {% for server in servers %}
 auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_tacplus.so server={{ server.ip }}:{{ server.tcp_port }} secret={{ server.passkey }} login={{ server.auth_type }} timeout={{ server.timeout }} {%if server.vrf %} vrf={{ server.vrf }} {% endif %} {{ 'source_ip=%s' % src_ip if src_ip }} try_first_pass
 {% endfor %}
-auth	[success=1 default=ignore]	pam_unix.so nullok try_first_pass
+auth	[success=1 default=ignore]	pam_unix.so try_first_pass
 
 {% elif auth['login'] == 'local,radius' %}
 auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so nullok try_first_pass
