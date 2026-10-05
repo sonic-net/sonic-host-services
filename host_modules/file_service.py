@@ -27,6 +27,12 @@ HTTP_TIMEOUT = (10, 60)
 HTTP_TEMP_PREFIX = ".sonic-file-download-"
 HTTP_TEMP_ATTEMPTS = 100
 
+# Trusted OpenSSH host-key stores for SFTP and SCP downloads.
+SSH_KNOWN_HOSTS_FILES = (
+    "/etc/ssh/ssh_known_hosts",
+    "/root/.ssh/known_hosts",
+)
+
 
 def _same_file(left, right):
     """Return whether two stat results identify the same filesystem object."""
@@ -142,6 +148,48 @@ def create_http_session():
     # Authentication and the destination are explicit download() parameters.
     session.trust_env = False
     return session
+
+
+def _validate_known_hosts_file(known_hosts_file):
+    """Reject entries that Paramiko would otherwise silently ignore."""
+    with open(known_hosts_file, "r") as known_hosts:
+        for line_number, line in enumerate(known_hosts, 1):
+            entry_text = line.strip()
+            if not entry_text or entry_text.startswith("#"):
+                continue
+
+            try:
+                entry = paramiko.hostkeys.HostKeyEntry.from_line(
+                    entry_text, line_number
+                )
+            except paramiko.hostkeys.InvalidHostKey as e:
+                raise ValueError(
+                    "Invalid host key entry in {} at line {}".format(
+                        known_hosts_file, line_number
+                    )
+                ) from e
+
+            if entry is None:
+                raise ValueError(
+                    "Invalid or unsupported host key entry in {} at line {}".format(
+                        known_hosts_file, line_number
+                    )
+                )
+
+
+def create_ssh_client():
+    """Create an SSH client that rejects servers outside the trusted key stores."""
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+    for known_hosts_file in SSH_KNOWN_HOSTS_FILES:
+        try:
+            _validate_known_hosts_file(known_hosts_file)
+            ssh.load_system_host_keys(known_hosts_file)
+        except FileNotFoundError:
+            continue
+
+    return ssh
 
 
 def normalize_host(host):
@@ -319,8 +367,7 @@ class FileService(host_service.HostModule):
             protocol = protocol.upper()  # Normalize protocol string to uppercase
 
             if protocol == "SFTP":
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh = create_ssh_client()
                 try:
                     ssh.connect(hostname, username=username, password=password)
                     sftp = ssh.open_sftp()
@@ -387,10 +434,8 @@ class FileService(host_service.HostModule):
                         session.close()
                     if dir_fd is not None:
                         os.close(dir_fd)
-
             elif protocol == "SCP":
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh = create_ssh_client()
                 try:
                     ssh.connect(hostname, username=username, password=password)
                     scp_client = scp.SCPClient(ssh.get_transport())

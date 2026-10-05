@@ -1,5 +1,6 @@
 import sys
 import os
+import paramiko
 import pytest
 import requests
 from unittest import mock
@@ -57,10 +58,93 @@ class TestFileService(object):
         assert ret == 1
         assert "Dbus get_file_stat called with no path specified" in msg['error']
 
+    @mock.patch("paramiko.SSHClient")
+    def test_create_ssh_client_loads_trusted_keys_and_rejects_unknown_hosts(self, MockSSHClient):
+        mock_ssh = MockSSHClient.return_value
+
+        with mock.patch(
+            "host_modules.file_service._validate_known_hosts_file"
+        ) as mock_validate:
+            ssh = file_service.create_ssh_client()
+
+        assert ssh is mock_ssh
+        mock_validate.assert_has_calls([
+            mock.call("/etc/ssh/ssh_known_hosts"),
+            mock.call("/root/.ssh/known_hosts"),
+        ])
+        mock_ssh.load_system_host_keys.assert_has_calls([
+            mock.call("/etc/ssh/ssh_known_hosts"),
+            mock.call("/root/.ssh/known_hosts"),
+        ])
+        mock_ssh.set_missing_host_key_policy.assert_called_once()
+        policy = mock_ssh.set_missing_host_key_policy.call_args.args[0]
+        assert isinstance(policy, paramiko.RejectPolicy)
+
+    @mock.patch("paramiko.SSHClient")
+    def test_create_ssh_client_allows_absent_optional_key_stores(self, MockSSHClient):
+        mock_ssh = MockSSHClient.return_value
+
+        with mock.patch(
+            "host_modules.file_service._validate_known_hosts_file",
+            side_effect=FileNotFoundError,
+        ) as mock_validate:
+            assert file_service.create_ssh_client() is mock_ssh
+
+        assert mock_validate.call_count == len(file_service.SSH_KNOWN_HOSTS_FILES)
+        mock_ssh.load_system_host_keys.assert_not_called()
+        policy = mock_ssh.set_missing_host_key_policy.call_args.args[0]
+        assert isinstance(policy, paramiko.RejectPolicy)
+
+    @mock.patch("paramiko.SSHClient")
+    def test_create_ssh_client_surfaces_unreadable_key_store(self, MockSSHClient):
+        mock_ssh = MockSSHClient.return_value
+
+        with mock.patch(
+            "host_modules.file_service._validate_known_hosts_file",
+            side_effect=PermissionError("known_hosts is unreadable"),
+        ):
+            with pytest.raises(PermissionError, match="known_hosts is unreadable"):
+                file_service.create_ssh_client()
+
+        mock_ssh.load_system_host_keys.assert_not_called()
+
+    @pytest.mark.parametrize("entry", [
+        "broken-entry\n",
+        "example.com ssh-unknown AAAA\n",
+        "example.com ssh-rsa !!!not-base64!!!\n",
+    ])
+    def test_create_ssh_client_rejects_malformed_key_store(
+        self, entry, tmp_path, monkeypatch
+    ):
+        known_hosts = tmp_path / "known_hosts"
+        known_hosts.write_text(entry)
+        monkeypatch.setattr(
+            file_service, "SSH_KNOWN_HOSTS_FILES", (str(known_hosts),)
+        )
+
+        with pytest.raises(ValueError, match="line 1"):
+            file_service.create_ssh_client()
+
+    def test_create_ssh_client_loads_real_known_host(self, tmp_path, monkeypatch):
+        host_key = paramiko.RSAKey.generate(1024)
+        known_hosts = tmp_path / "known_hosts"
+        known_hosts.write_text(
+            "example.com {} {}\n".format(host_key.get_name(), host_key.get_base64())
+        )
+        monkeypatch.setattr(
+            file_service, "SSH_KNOWN_HOSTS_FILES", (str(known_hosts),)
+        )
+
+        ssh = file_service.create_ssh_client()
+
+        loaded_key = ssh._system_host_keys.lookup("example.com")[host_key.get_name()]
+        assert loaded_key.get_base64() == host_key.get_base64()
+        assert isinstance(ssh._policy, paramiko.RejectPolicy)
+
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("paramiko.SSHClient")
+    @mock.patch("host_modules.file_service.create_ssh_client")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
     def test_download_sftp_success(self, mock_exists, mock_stat, MockSSHClient, MockInit, MockBusName, MockSystemBus):
@@ -86,6 +170,7 @@ class TestFileService(object):
 
         assert ret == 0
         assert msg == ""
+        MockSSHClient.assert_called_once_with()
         mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
         mock_sftp.get.assert_called_once_with("/remote/path/file.txt", "/local/path/file.txt")
         mock_sftp.close.assert_called_once()
@@ -94,7 +179,7 @@ class TestFileService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("paramiko.SSHClient")
+    @mock.patch("host_modules.file_service.create_ssh_client")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
     def test_download_sftp_failure(self, mock_exists, mock_stat, MockSSHClient, MockInit, MockBusName, MockSystemBus):
@@ -119,6 +204,7 @@ class TestFileService(object):
 
         assert ret == 1
         assert "SFTP error" in msg
+        MockSSHClient.assert_called_once_with()
         mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
         mock_ssh.close.assert_called_once()
 
@@ -666,7 +752,7 @@ class TestFileService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("paramiko.SSHClient")
+    @mock.patch("host_modules.file_service.create_ssh_client")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
     def test_download_scp_success(self, mock_exists, mock_stat, MockSSHClient, MockInit, MockBusName, MockSystemBus):
@@ -691,6 +777,7 @@ class TestFileService(object):
 
             assert ret == 0
             assert msg == ""
+            MockSSHClient.assert_called_once_with()
             mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
             MockSCPClient.assert_called_once_with(mock_ssh.get_transport())
             mock_scp.get.assert_called_once_with("/remote/path/file.txt", "/local/path/file.txt")
@@ -700,7 +787,7 @@ class TestFileService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("paramiko.SSHClient")
+    @mock.patch("host_modules.file_service.create_ssh_client")
     @mock.patch("os.stat")
     @mock.patch("os.path.exists")
     def test_download_scp_failure(self, mock_exists, mock_stat, MockSSHClient, MockInit, MockBusName, MockSystemBus):
@@ -724,8 +811,57 @@ class TestFileService(object):
 
             assert ret == 1
             assert "SCP error" in msg
+            MockSSHClient.assert_called_once_with()
             mock_ssh.connect.assert_called_once_with("example.com", username="user", password="password")
             mock_ssh.close.assert_called_once()
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("host_modules.file_service.create_ssh_client")
+    @mock.patch("os.stat")
+    @mock.patch("os.path.exists")
+    def test_download_ssh_host_key_failure_stops_before_transfer(
+        self,
+        mock_exists,
+        mock_stat,
+        MockSSHClient,
+        MockInit,
+        MockBusName,
+        MockSystemBus,
+    ):
+        mock_exists.return_value = False
+        mock_dir_stat = mock.Mock()
+        mock_dir_stat.st_mode = 0o40777
+        mock_stat.return_value = mock_dir_stat
+
+        mock_ssh = MockSSHClient.return_value
+        mock_ssh.connect.side_effect = paramiko.SSHException(
+            "Server 'example.com' not found in known_hosts"
+        )
+
+        file_service_stub = file_service.FileService(file_service.MOD_NAME)
+        with mock.patch("scp.SCPClient") as MockSCPClient:
+            for protocol in ("SFTP", "SCP"):
+                mock_ssh.reset_mock()
+                mock_ssh.connect.side_effect = paramiko.SSHException(
+                    "Server 'example.com' not found in known_hosts"
+                )
+
+                ret, msg = file_service_stub.download(
+                    hostname="example.com",
+                    username="user",
+                    password="password",
+                    remote_path="/remote/path/file.txt",
+                    local_path="/local/path/file.txt",
+                    protocol=protocol,
+                )
+
+                assert ret == file_service.EXIT_FAILURE
+                assert "known_hosts" in msg
+                mock_ssh.open_sftp.assert_not_called()
+                MockSCPClient.assert_not_called()
+                mock_ssh.close.assert_called_once_with()
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
