@@ -43,6 +43,10 @@ struct ProcDockerStats {
     process_cache: HashMap<u32, std::time::Instant>,
 }
 
+fn create_state_db_connector() -> Result<SonicV2Connector, Box<dyn std::error::Error>> {
+    Ok(SonicV2Connector::new(true, None)?)
+}
+
 fn run_command(cmd: &[&str]) -> Option<String> {
     let output = Command::new(cmd[0]).args(&cmd[1..]).output().ok()?;
     if output.status.success() {
@@ -154,7 +158,7 @@ fn parse_docker_json_output(json_output: &str) -> HashMap<String, HashMap<String
 
 impl ProcDockerStats {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let state_db = SonicV2Connector::new(false, None)?;
+        let state_db = create_state_db_connector()?;
         state_db.connect("STATE_DB", true)?;
 
         Ok(ProcDockerStats {
@@ -411,5 +415,12 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result.contains_key("DOCKER_STATS|abc123"));
         assert_eq!(result["DOCKER_STATS|abc123"].get("NAME").map(String::as_str), Some("valid-container"));
+    }
+
+    #[test]
+    fn test_state_db_connector_uses_unix_socket() {
+        let state_db = create_state_db_connector().expect("create STATE_DB connector");
+        assert!(state_db.use_unix_socket_path());
+        assert_eq!(state_db.netns(), "");
     }
 }

@@ -20,15 +20,13 @@ VERSION = '1.0'
 
 SYSLOG_IDENTIFIER = "procdockerstatsd"
 
-REDIS_HOSTIP = "127.0.0.1"
-
 
 class ProcDockerStats(daemon_base.DaemonBase):
     all_process_obj = {}
 
     def __init__(self, log_identifier):
         super(ProcDockerStats, self).__init__(log_identifier)
-        self.state_db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
+        self.state_db = swsscommon.SonicV2Connector(use_unix_socket_path=True)
         self.state_db.connect("STATE_DB")
 
     def run_command(self, cmd):
