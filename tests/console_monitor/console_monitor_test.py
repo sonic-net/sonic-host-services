@@ -1753,6 +1753,7 @@ class TestDCEServiceStartStop(TestCase):
             
             self.assertTrue(result)
             self.assertTrue(service.running)
+            mock_cdb.assert_called_once_with(use_unix_socket_path=True)
     
     def test_dce_register_callbacks_subscribes_to_tables(self):
         """Test register_callbacks subscribes to CONSOLE_PORT and CONSOLE_SWITCH."""
@@ -1804,12 +1805,12 @@ class TestDTEServiceStartStop(TestCase):
         
         service = console_monitor.DTEService(tty_name="ttyS0", baud=9600)
         
-        with mock.patch.object(MockConfigDb, 'connect'):
-            service.config_db = MockConfigDb()
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=MockConfigDb()) as mock_cdb:
             result = service.start()
             
             self.assertTrue(result)
             self.assertTrue(service.running)
+            mock_cdb.assert_called_once_with(use_unix_socket_path=True)
     
     def test_dte_register_callbacks_subscribes_to_console_switch(self):
         """Test register_callbacks subscribes to CONSOLE_SWITCH."""
@@ -2001,11 +2002,12 @@ class TestProxyServicePhases(TestCase):
         mock_config_db = mock.Mock()
         mock_config_db.get_entry.return_value = {"baud_rate": "115200"}
         
-        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db):
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db) as mock_cdb:
             result = proxy._wait_for_config()
             
             self.assertTrue(result)
             self.assertEqual(proxy.baud, 115200)
+            mock_cdb.assert_called_once_with(use_unix_socket_path=True)
     
     def test_proxy_wait_for_config_stops_when_not_running(self):
         """Test _wait_for_config returns False when stopped."""
