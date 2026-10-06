@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import time
 import copy
@@ -36,6 +37,38 @@ swsscommon.RestartWaiter = MockRestartWaiter
 
 def syslog_side_effect(pri, msg): 
     print(f"{pri}: {msg}")
+
+class TestRunCmd(TestCase):
+    """Tests for command failure logging."""
+
+    @mock.patch("featured.syslog.syslog")
+    def test_nonzero_exit_logs_stdout_and_stderr(self, mock_syslog):
+        cmd = ["systemctl", "stop", "teamd.service"]
+        command_error = subprocess.CalledProcessError(returncode=1, cmd=cmd, output="", stderr="stop failed")
+
+        with mock.patch("featured.subprocess.run", side_effect=command_error):
+            featured.run_cmd(cmd)
+
+        log_message = mock_syslog.call_args.args[1]
+        assert str(cmd) in log_message
+        assert "return code - 1" in log_message
+        assert "stdout:\n" in log_message
+        assert "stderr:\nstop failed" in log_message
+
+    @mock.patch("featured.syslog.syslog")
+    def test_unexpected_error_logging_preserves_original_exception(self, mock_syslog):
+        cmd = ["missing-systemctl", "stop", "teamd.service"]
+        command_error = FileNotFoundError(2, "No such file or directory", cmd[0])
+
+        with mock.patch("featured.subprocess.run", side_effect=command_error):
+            with self.assertRaises(FileNotFoundError) as raised_error:
+                featured.run_cmd(cmd, raise_exception=True)
+
+        assert raised_error.exception is command_error
+        log_message = mock_syslog.call_args.args[1]
+        assert str(cmd) in log_message
+        assert str(command_error) in log_message
+
 
 class TestFeatureHandler(TestCase):
     """Test methods of `FeatureHandler` class.
@@ -429,6 +462,34 @@ class TestFeatureHandler(TestCase):
 
             feature_handler.update_systemd_config(feature)
             mock_reload.assert_called_once()
+
+    def test_update_systemd_config_logs_requested_and_written_restart(self):
+        """Verify the log shows how auto_restart maps to the written systemd value."""
+        test_cases = [
+            ('teamd', 'FixedSwitch', 'enabled', 'always'),
+            ('syncd', 'SpineRouter', 'enabled', 'no'),
+        ]
+
+        for feature_name, device_type, auto_restart, written_restart in test_cases:
+            with self.subTest(feature_name=feature_name, device_type=device_type):
+                device_config = {'DEVICE_METADATA': {'localhost': {'type': device_type}}}
+                feature_handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(),
+                                                          device_config, False)
+                feature = featured.Feature(feature_name, {
+                    'state': 'enabled',
+                    'auto_restart': auto_restart,
+                })
+                expected_log = (f"Updated auto-restart config for {feature_name}.service: "
+                                f"auto_restart={auto_restart} -> Restart={written_restart}")
+
+                with mock.patch.object(feature_handler, 'get_multiasic_feature_instances',
+                                       return_value=([feature_name], ['service'])), \
+                     mock.patch('featured.os.path.exists', return_value=True), \
+                     mock.patch('builtins.open', mock.mock_open()), \
+                     mock.patch('featured.syslog.syslog') as mock_syslog:
+                    feature_handler.update_systemd_config(feature, reload=False)
+
+                mock_syslog.assert_any_call(featured.syslog.LOG_INFO, expected_log)
 
     def test_sync_state_field_empty_table(self):
         """With no features, daemon-reload still fires and no services are started."""

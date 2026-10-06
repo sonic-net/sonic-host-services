@@ -34,8 +34,13 @@ def run_cmd(cmd, log_err=True, raise_exception=False):
                       .format(result.stdout, result.stderr))
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
-                  .format(err.cmd, err.returncode, err.output))
+            error_cmd = getattr(err, 'cmd', cmd)
+            return_code = getattr(err, 'returncode', None)
+            stdout = getattr(err, 'stdout', getattr(err, 'output', None))
+            stderr = getattr(err, 'stderr', None)
+            error_message = (f"{error_cmd} - failed: return code - {return_code}, "
+                             f"stdout:\n{stdout}, stderr:\n{stderr}, error: {err}")
+            syslog.syslog(syslog.LOG_ERR, error_message)
         if raise_exception:
             raise
 
@@ -472,8 +477,6 @@ class FeatureHandler(object):
         # On multi-ASIC device, creates systemd configuration file for each feature instance
         # residing in difference namespace.
         for feature_name in feature_names:
-            syslog.syslog(syslog.LOG_INFO, "Updating feature '{}' systemd config file related to auto-restart ..."
-                          .format(feature_name))
             feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
             feature_systemd_config_file_path = os.path.join(feature_systemd_config_dir_path, 'auto_restart.conf')
 
@@ -482,8 +485,9 @@ class FeatureHandler(object):
             with open(feature_systemd_config_file_path, 'w') as feature_systemd_config_file_handler:
                 feature_systemd_config_file_handler.write(feature_systemd_config)
 
-            syslog.syslog(syslog.LOG_INFO, "Feature '{}' systemd config file related to auto-restart is updated!"
-                          .format(feature_name))
+            update_message = (f"Updated auto-restart config for {feature_name}.service: "
+                              f"auto_restart={feature_config.auto_restart} -> Restart={restart_field_str}")
+            syslog.syslog(syslog.LOG_INFO, update_message)
 
         if reload:
             self.reload_systemd_config()
