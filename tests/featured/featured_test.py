@@ -1676,3 +1676,232 @@ class TestSubscriptionClosed(TestCase):
         fd = os.dup(self.sock.fileno())
         os.close(fd)
         self.assertTrue(featured.FeatureDaemon.subscription_closed(fd))
+
+
+class TestPendingFeatureUpdates(TestCase):
+    """Exercise real initialization/SET/release paths with failing systemd commands."""
+
+    def setUp(self):
+        for name, value in [('is_multi_npu', False), ('get_num_npus', 1),
+                            ('get_num_dpus', 0), ('get_device_runtime_metadata', {})]:
+            patcher = mock.patch.object(device_info, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.config = {'FEATURE': {}}
+        MockConfigDb.set_config_db(self.config)
+        self.state_table = mock.Mock()
+        self.handler = featured.FeatureHandler(MockConfigDb(), self.state_table, {}, False)
+        self.unit_states = {'teamd.service': 'disabled'}
+        self.commands = []
+        self.failure = None
+        self.fail_after_effect = False
+        for name in ['update_systemd_config', 'reload_systemd_config', 'wait_for_service_stable']:
+            patcher = mock.patch.object(self.handler, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(self.handler, 'get_systemd_unit_state',
+                                    side_effect=lambda unit: self.unit_states[unit])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Keep run_cmd real, including its intentional tolerance of enable errors.
+        patcher = mock.patch('featured.subprocess.run', side_effect=self.run_systemctl)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_systemctl(self, cmd, **kwargs):
+        action, unit = cmd[2:]
+        self.commands.append((action, unit))
+        fail = self.failure == (action, unit)
+        if not fail or self.fail_after_effect:
+            if action == 'unmask' and self.unit_states[unit] == 'masked':
+                self.unit_states[unit] = 'disabled'
+            elif action in ('enable', 'disable', 'mask'):
+                self.unit_states[unit] = {'enable': 'enabled', 'disable': 'disabled',
+                                          'mask': 'masked'}[action]
+        if fail:
+            self.failure = None
+            raise subprocess.CalledProcessError(1, cmd, output='', stderr='injected failure')
+        return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+    def initialize(self, state, delayed=False):
+        cfg = {'state': state, 'delayed': str(delayed), 'auto_restart': 'enabled',
+               'has_global_scope': 'True', 'has_per_asic_scope': 'False',
+               'has_per_dpu_scope': 'False'}
+        self.config['FEATURE']['teamd'] = cfg.copy()
+        self.handler.sync_state_field({'teamd': cfg})
+        return cfg
+
+    def send_set(self, cfg):
+        self.config['FEATURE']['teamd'] = cfg.copy()
+        self.handler.handler('teamd', 'SET', cfg)
+
+    @parameterized.expand([
+        (state, delayed) for state in ('enabled', 'always_enabled', 'disabled', 'always_disabled')
+        for delayed in (False, True)
+    ])
+    def test_initial_or_delayed_failure_retries_same_set(self, state, delayed):
+        enabling = state in ('enabled', 'always_enabled')
+        operation = 'start' if enabling else 'mask'
+        self.unit_states['teamd.service'] = 'disabled' if enabling else 'enabled'
+        self.failure = (operation, 'teamd.service')
+        cfg = self.initialize(state, delayed)
+        cached = self.handler._cached_config['teamd']
+        assert cached.state == state
+        assert cached.delayed == delayed
+        assert cached.auto_restart == 'enabled'
+        assert cached.has_global_scope is True
+        assert cached.has_per_asic_scope is False
+        if delayed:
+            assert self.commands == []
+            self.send_set(cfg)
+            assert self.commands == []
+            self.handler.port_listener('PortInitDone', 'SET', {})
+        assert self.commands.count((operation, 'teamd.service')) == 1
+        self.state_table.set.assert_called_with('teamd', [('state', 'failed')])
+        commands_before_retry = len(self.commands)
+        self.send_set(cfg)
+        if enabling:
+            assert self.commands[commands_before_retry:] == [('start', 'teamd.service')]
+        assert self.commands.count((operation, 'teamd.service')) == 2
+        self.state_table.set.assert_called_with(
+            'teamd', [('state', 'enabled' if enabling else 'disabled')])
+        assert 'teamd' not in self.handler._features_pending_update
+        completed_commands = self.commands.copy()
+        self.send_set(cfg)
+        assert self.commands == completed_commands
+
+    @parameterized.expand([
+        ('unmask', 'enabled', 'masked', False),
+        ('stop', 'disabled', 'enabled', False),
+        ('disable', 'disabled', 'enabled', False),
+        ('disable', 'disabled', 'enabled', True),
+        ('mask', 'disabled', 'enabled', False),
+        ('mask', 'disabled', 'enabled', True),
+    ])
+    def test_partial_service_operation_is_retried(self, action, state, unit_state, after_effect):
+        self.unit_states['teamd.service'] = unit_state
+        self.failure = (action, 'teamd.service')
+        self.fail_after_effect = after_effect
+        cfg = self.initialize(state)
+        assert self.commands.count((action, 'teamd.service')) == 1
+        self.send_set(cfg)
+        assert self.commands.count((action, 'teamd.service')) == 2
+        assert self.commands[-1] == ('start' if state == 'enabled' else 'mask', 'teamd.service')
+        self.state_table.set.assert_called_with('teamd', [('state', state)])
+
+    def test_del_clears_pending_before_reregistration(self):
+        self.failure = ('start', 'teamd.service')
+        cfg = self.initialize('enabled')
+        assert 'teamd' in self.handler._features_pending_update
+        self.handler.handler('teamd', 'DEL', {})
+        assert 'teamd' not in self.handler._features_pending_update
+        assert 'teamd' not in self.handler._cached_config
+        self.state_table._del.assert_called_once_with('teamd')
+        commands = self.commands.copy()
+        self.send_set(cfg)
+        # DEL removed the retry intent; enabled units follow the original fast path.
+        assert self.commands == commands
+
+    @parameterized.expand([('enabled', 'start'), ('disabled', 'stop')])
+    def test_failed_instance_does_not_block_others_or_clear_pending(self, state, action):
+        cfg = {'state': state, 'has_global_scope': 'False', 'has_per_asic_scope': 'True'}
+        self.config['FEATURE']['teamd'] = cfg.copy()
+        self.handler.is_multi_npu = True
+        units = ['teamd@0.service', 'teamd@1.service']
+        self.unit_states.update({unit: 'disabled' if state == 'enabled' else 'enabled'
+                                 for unit in units})
+        self.unit_states['teamd.service'] = 'masked'
+        with mock.patch.object(device_info, 'get_num_npus', return_value=2):
+            self.failure = (action, units[0])
+            self.handler.sync_state_field({'teamd': cfg})
+            assert (action, units[1]) in self.commands
+            self.state_table.set.assert_called_with('teamd', [('state', 'failed')])
+            assert 'teamd' in self.handler._features_pending_update
+            # A second failure must leave pending set, even after another instance succeeds.
+            self.failure = (action, units[0])
+            self.send_set(cfg)
+            assert self.commands.count((action, units[0])) == 2
+            assert 'teamd' in self.handler._features_pending_update
+            self.send_set(cfg)
+        assert self.commands.count((action, units[0])) == 3
+        assert 'teamd' not in self.handler._features_pending_update
+        self.state_table.set.assert_called_with('teamd', [('state', state)])
+
+    @parameterized.expand([('enabled', 'start'), ('disabled', 'mask')])
+    def test_pending_does_not_bypass_immutable_restrictions(self, state, action):
+        self.unit_states['teamd.service'] = 'disabled' if state == 'enabled' else 'enabled'
+        self.failure = (action, 'teamd.service')
+        cfg = self.initialize('always_' + state)
+        commands = self.commands.copy()
+        self.send_set(dict(cfg, state=state))
+        assert self.commands == commands
+        assert self.config['FEATURE']['teamd']['state'] == 'always_' + state
+        assert 'teamd' in self.handler._features_pending_update
+        # Switching between the two immutable states remains allowed.
+        other = 'always_disabled' if state == 'enabled' else 'always_enabled'
+        self.send_set(dict(cfg, state=other))
+        assert self.handler._cached_config['teamd'].state == other
+        assert 'teamd' not in self.handler._features_pending_update
+
+    @parameterized.expand([('port',), ('timeout',), ('advanced_boot',)])
+    def test_delayed_release_retries_pending_operation(self, release):
+        self.failure = ('start', 'teamd.service')
+        cfg = self.initialize('enabled')
+        # A subsequent SET defers the unfinished operation until an existing release event.
+        self.send_set(dict(cfg, delayed='True'))
+        assert self.commands.count(('start', 'teamd.service')) == 1
+        assert 'teamd' in self.handler._features_pending_update
+        if release == 'port':
+            self.handler.port_listener('PortInitDone', 'SET', {})
+        elif release == 'timeout':
+            self.handler.handle_port_table_timeout()
+        else:
+            self.handler.is_advanced_boot = True
+            self.handler.handle_adv_boot()
+        assert self.commands.count(('start', 'teamd.service')) == 2
+        assert 'teamd' not in self.handler._features_pending_update
+
+    def test_generated_unit_retry_does_not_enable_unit(self):
+        self.unit_states['teamd.service'] = 'generated'
+        self.failure = ('start', 'teamd.service')
+        cfg = self.initialize('enabled')
+        self.send_set(cfg)
+        assert self.commands.count(('start', 'teamd.service')) == 2
+        assert ('enable', 'teamd.service') not in self.commands
+        assert 'teamd' not in self.handler._features_pending_update
+
+    @parameterized.expand([('enabled', 'start'), ('disabled', 'mask')])
+    def test_failed_state_change_retries_same_set(self, target_state, action):
+        cfg = self.initialize('disabled' if target_state == 'enabled' else 'enabled')
+        self.commands.clear()
+        self.failure = (action, 'teamd.service')
+        target_cfg = dict(cfg, state=target_state)
+        self.send_set(target_cfg)
+        self.state_table.set.assert_called_with('teamd', [('state', 'failed')])
+        self.send_set(target_cfg)
+        assert self.commands.count((action, 'teamd.service')) == 2
+        self.state_table.set.assert_called_with('teamd', [('state', target_state)])
+        commands = self.commands.copy()
+        self.send_set(target_cfg)
+        assert self.commands == commands
+
+    def test_tolerated_enable_error_does_not_leave_pending(self):
+        # Units copied into /run may reject enable; a successful start is sufficient.
+        self.failure = ('enable', 'teamd.service')
+        cfg = self.initialize('enabled')
+        assert self.commands == [('unmask', 'teamd.service'),
+                                 ('enable', 'teamd.service'), ('start', 'teamd.service')]
+        self.state_table.set.assert_called_with('teamd', [('state', 'enabled')])
+        assert 'teamd' not in self.handler._features_pending_update
+        commands = self.commands.copy()
+        self.send_set(cfg)
+        assert self.commands == commands
+
+    @parameterized.expand([('enabled',), ('disabled',)])
+    def test_excluded_feature_does_not_leave_retry_pending(self, state):
+        cfg = {'state': state}
+        self.config['FEATURE']['telemetry'] = cfg.copy()
+        self.unit_states['telemetry.service'] = 'enabled'
+        self.handler.sync_state_field({'telemetry': cfg})
+        assert self.commands == []
+        assert 'telemetry' not in self.handler._features_pending_update

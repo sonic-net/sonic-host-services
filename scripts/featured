@@ -145,6 +145,8 @@ class FeatureHandler(object):
         self._feature_state_table = feature_state_table
         self._device_config = device_config
         self._cached_config = {}
+        # Service operations that must be retried on a later SET or delayed release.
+        self._features_pending_update = set()
         self.is_multi_npu = device_info.is_multi_npu()
         self.is_delayed_enabled = False
         self.is_advanced_boot = is_advanced_boot
@@ -238,6 +240,7 @@ class FeatureHandler(object):
         if not feature_cfg:
             syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
             self._cached_config.pop(feature_name, None)
+            self._features_pending_update.discard(feature_name)
             self._feature_state_table._del(feature_name)
 
             # Clean up feature from namespace CONFIG_DBs and STATE_DBs
@@ -266,8 +269,9 @@ class FeatureHandler(object):
             self.update_systemd_config(feature)
             self._cached_config[feature_name].auto_restart = feature.auto_restart
 
-        # Enable/disable the container service if the feature state was changed from its previous state.
-        if self._cached_config[feature_name].state != feature.state:
+        # Retry incomplete service operations even when the requested state is unchanged.
+        if (self._cached_config[feature_name].state != feature.state or
+                feature_name in self._features_pending_update):
             if self.update_feature_state(feature):
                 self.sync_feature_scope(feature)
                 # Resync namespaces on (re-)registration.
@@ -358,14 +362,17 @@ class FeatureHandler(object):
 
         if enable:
             if not self.enable_feature(feature):
+                self._features_pending_update.add(feature.name)
                 return False
             syslog.syslog(syslog.LOG_INFO, "Feature {} is enabled and started".format(feature.name))
 
         if disable:
             if not self.disable_feature(feature):
+                self._features_pending_update.add(feature.name)
                 return False
             syslog.syslog(syslog.LOG_INFO, "Feature {} is stopped and disabled".format(feature.name))
 
+        self._features_pending_update.discard(feature.name)
         return True
 
     @staticmethod
@@ -563,24 +570,26 @@ class FeatureHandler(object):
     def enable_feature(self, feature):
         if self.is_exclusion_listed(feature.name):
             syslog.syslog(syslog.LOG_INFO, f"ExclusionList: skip enabling '{feature.name}'")
-            return
+            return True
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         failed_instances = []
         for feature_name in feature_names:
-            # Check if it is already enabled, if yes skip the system call
+            # UnitFileState does not prove that an earlier start completed.
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state == "enabled":
+            if unit_file_state == "enabled" and feature.name not in self._features_pending_update:
                 continue
             cmds = []
-            for suffix in feature_suffixes:
-                cmds.append(["sudo", "systemctl", "unmask", "{}.{}".format(feature_name, suffix)])
+            # An enabled unit only needs its unfinished start retried.
+            if unit_file_state != "enabled":
+                for suffix in feature_suffixes:
+                    cmds.append(["sudo", "systemctl", "unmask", "{}.{}".format(feature_name, suffix)])
 
-            # If feature has timer associated with it, start/enable corresponding systemd .timer unit
-            # otherwise, start/enable corresponding systemd .service unit
-            if unit_file_state != "generated":
-                # if UnitFileState of service file is generated, enable it will generate error
-                cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
+                # If feature has timer associated with it, start/enable corresponding systemd .timer unit
+                # otherwise, start/enable corresponding systemd .service unit
+                if unit_file_state != "generated":
+                    # if UnitFileState of service file is generated, enable it will generate error
+                    cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
             cmds.append(["sudo", "systemctl", "start", "{}.{}".format(feature_name, feature_suffixes[-1])])
 
             for cmd in cmds:
@@ -617,13 +626,14 @@ class FeatureHandler(object):
     def disable_feature(self, feature):
         if self.is_exclusion_listed(feature.name):
             syslog.syslog(syslog.LOG_INFO, f"ExclusionList: skip disabling '{feature.name}'")
-            return
+            return True
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
+        failed_instances = []
         for feature_name in feature_names:
-            # Check if it is already disabled, if yes skip the system call
+            # Retry pending stop/disable/mask even if the unit file already changed.
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state in ("disabled", "masked"):
+            if unit_file_state in ("disabled", "masked") and feature.name not in self._features_pending_update:
                 continue
             # Wait for the service to leave 'activating' state before stopping it.
             # Stopping during ExecStartPre kills the startup script without running
@@ -641,10 +651,14 @@ class FeatureHandler(object):
                     run_cmd(cmd, raise_exception=True)
                 except Exception as err:
                     syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be stopped and disabled"
-                                  .format(feature.name, feature_suffixes[-1]))
-                    self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return False
+                                  .format(feature_name, feature_suffixes[-1]))
+                    # Keep stopping the other instances.
+                    failed_instances.append(feature_name)
+                    break
 
+        if failed_instances:
+            self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
+            return False
         self.set_feature_state(feature, self.FEATURE_STATE_DISABLED)
         return True
 
