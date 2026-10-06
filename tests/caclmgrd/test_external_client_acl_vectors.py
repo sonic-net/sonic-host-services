@@ -5,6 +5,38 @@ from unittest.mock import call
 """
 EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
     [
+        "Test for EXTERNAL_CLIENT_ACL with no services configured.",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE"
+                    }
+                },
+                "ACL_RULE": {
+                    "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1"
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_1": {
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "SRC_IP": "20.0.0.55/32"
+                    },
+                },
+                "DEVICE_METADATA": {
+                    "localhost": {
+                    }
+                },
+                "FEATURE": {},
+            },
+            "return": [
+            ],
+        }
+    ],
+    [
         "Test for EXTERNAL_CLIENT_ACL with no dest port configured.",
         {
             "config_db": {
