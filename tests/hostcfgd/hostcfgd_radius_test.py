@@ -10,6 +10,7 @@ from parameterized import parameterized
 from unittest import TestCase, mock
 from tests.hostcfgd.test_radius_vectors import HOSTCFGD_TEST_RADIUS_VECTOR
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_restart_waiter import MockRestartWaiter
 from sonic_py_common.general import getstatusoutput_noshell
 
 
@@ -33,6 +34,8 @@ sys.modules['hostcfgd'] = hostcfgd
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+hostcfgd.swsscommon.RestartWaiter = MockRestartWaiter
+
 
 class TestHostcfgdRADIUS(TestCase):
     """
@@ -41,6 +44,62 @@ class TestHostcfgdRADIUS(TestCase):
     def run_diff(self, file1, file2):
         _, output = getstatusoutput_noshell(['diff', '-ur', file1, file2])
         return output
+
+    @parameterized.expand([
+        ('ipv4', {'ip': '192.0.2.1', 'auth_port': '1812'}, True),
+        ('ipv6', {'ip': '2001:db8::1', 'auth_port': '1812'}, True),
+        ('scoped_ipv6', {'ip': 'fe80::1%Ethernet0', 'auth_port': '1812'}, True),
+        ('hostname', {'ip': 'radius.example.com', 'auth_port': '1812'}, True),
+        ('hostname_with_numeric_label',
+         {'ip': '123.radius.example.com', 'auth_port': '1812'}, True),
+        ('noncanonical_ipv4_two_part',
+         {'ip': '192.0.513', 'auth_port': '1812'}, False),
+        ('noncanonical_ipv4_integer',
+         {'ip': '3221225985', 'auth_port': '1812'}, False),
+        ('invalid_host', {'ip': 'invalid_host', 'auth_port': '1812'}, False),
+        ('invalid_port', {'ip': '192.0.2.1', 'auth_port': 'invalid'}, False),
+        ('port_with_newline', {'ip': '192.0.2.1', 'auth_port': '1812\n'}, False),
+        ('scope_with_newline', {'ip': 'fe80::1%Ethernet0\n', 'auth_port': '1812'}, False),
+        ('port_too_low', {'ip': '192.0.2.1', 'auth_port': '0'}, False),
+        ('port_too_high', {'ip': '192.0.2.1', 'auth_port': '65536'}, False),
+    ])
+    def test_radius_server_entry_valid(self, _, server, expected):
+        with mock.patch.object(hostcfgd.syslog, 'syslog'):
+            self.assertEqual(hostcfgd.radius_server_entry_valid(server), expected)
+
+    def test_radius_server_port_is_normalized(self):
+        server = {'ip': '192.0.2.1', 'auth_port': '01812'}
+        self.assertTrue(hostcfgd.radius_server_entry_valid(server))
+        self.assertEqual(server['auth_port'], '1812')
+
+    def test_radius_hostname_is_rendered_in_pam_config(self):
+        server = {
+            'ip': 'radius.example.com',
+            'auth_port': '1812',
+            'auth_type': 'pap',
+            'retransmit': '3',
+            'timeout': '5',
+            'passkey': 'shared-secret',
+            'skip_msg_auth': False,
+        }
+        self.assertTrue(hostcfgd.radius_server_entry_valid(server))
+
+        env = hostcfgd.jinja2.Environment(loader=hostcfgd.jinja2.FileSystemLoader('/'))
+        env.filters['sub'] = hostcfgd.sub
+        common_auth = env.get_template(
+            os.path.abspath(templates_path + '/common-auth-sonic.j2')
+        ).render(
+            debug=False,
+            trace=False,
+            auth={'login': 'radius,local'},
+            servers=[server],
+        )
+        server_config = env.get_template(
+            os.path.abspath(templates_path + '/pam_radius_auth.conf.j2')
+        ).render(server=server)
+
+        self.assertIn('/radius.example.com_1812.conf', common_auth)
+        self.assertIn('[radius.example.com]:1812', server_config)
 
 
     @parameterized.expand(HOSTCFGD_TEST_RADIUS_VECTOR)

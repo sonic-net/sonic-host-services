@@ -3,6 +3,7 @@
 import ast
 import os
 import re
+import socket
 import sys
 import subprocess
 import syslog
@@ -231,6 +232,9 @@ class FeatureHandler(object):
         self.ns_cfg_db = {}
         self.ns_feature_state_tbl = {}
         self.num_dpus = device_info.get_num_dpus()
+        # Multi-ASIC: PortInitDone is per-namespace; release once no namespace is pending.
+        self.port_init_quorum_ns = set()
+        self.pending_port_init_ns = set()
 
         # Initlaize Global config that loads all database*.json
         if self.is_multi_npu:
@@ -245,6 +249,13 @@ class FeatureHandler(object):
                 db_conn = DBConnector(STATE_DB, 0, False, ns)
                 self.ns_feature_state_tbl[ns] = Table(db_conn, FEATURE_TBL)
 
+            # A namespace that never publishes (e.g. a fabric ASIC without portsyncd)
+            # leaves the release to the PORT_INIT_TIMEOUT_SEC fallback, as before.
+            self.port_init_quorum_ns = set(namespaces)
+            self.pending_port_init_ns = set(namespaces)
+            syslog.syslog(syslog.LOG_INFO,
+                          "PortInitDone quorum namespaces: {}".format(sorted(self.port_init_quorum_ns)))
+
     def enable_delayed_services(self):
         self.is_delayed_enabled = True
         for feature_name in self._cached_config:
@@ -254,18 +265,53 @@ class FeatureHandler(object):
     def handle_adv_boot(self):
         if self.is_advanced_boot:
             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after warm/fast boot")
+            self.pending_port_init_ns.clear()
             self.enable_delayed_services()
 
     def handle_port_table_timeout(self):
         if not self.is_delayed_enabled:
             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after timeout")
+            self.pending_port_init_ns.clear()   # give up on the namespaces that never reported
             self.enable_delayed_services()
 
-    def port_listener(self, key, op, data):
-        if not key:
-            return 
-        if op == 'SET' and key == 'PortInitDone':
-            syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
+    def port_listener(self, key, op, data, namespace=''):
+        if key != 'PortInitDone':
+            return
+
+        # Single-ASIC: every SET re-enables (an swss restart republishes the marker).
+        if not self.is_multi_npu:
+            if op == 'SET':
+                syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
+                self.enable_delayed_services()
+            return
+
+        # Multi-ASIC: SET takes the namespace off the pending set, DEL (swss stop) puts it
+        # back. The first release needs every namespace; afterwards each republishing
+        # namespace re-enables on its own.
+        if namespace not in self.port_init_quorum_ns:
+            return
+        if op == 'DEL':
+            self.pending_port_init_ns.add(namespace)
+            syslog.syslog(syslog.LOG_INFO,
+                          "PortInitDone cleared for namespace '{}'; still pending: {}"
+                          .format(namespace, sorted(self.pending_port_init_ns)))
+            return
+        if op != 'SET':
+            return
+        was_pending = namespace in self.pending_port_init_ns
+        self.pending_port_init_ns.discard(namespace)
+        syslog.syslog(syslog.LOG_INFO,
+                      "PortInitDone received for namespace '{}'; still pending: {}"
+                      .format(namespace, sorted(self.pending_port_init_ns)))
+        if not self.is_delayed_enabled:
+            if not self.pending_port_init_ns:
+                syslog.syslog(syslog.LOG_INFO,
+                              "Updating delayed features after port initialization (all ASICs)")
+                self.enable_delayed_services()
+        elif was_pending:
+            syslog.syslog(syslog.LOG_INFO,
+                          "Updating delayed features after port re-initialization of namespace '{}'"
+                          .format(namespace))
             self.enable_delayed_services()
 
     def handler(self, feature_name, op, feature_cfg):
@@ -610,6 +656,7 @@ class FeatureHandler(object):
             return
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
+        failed_instances = []
         for feature_name in feature_names:
             # Check if it is already enabled, if yes skip the system call
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
@@ -646,10 +693,14 @@ class FeatureHandler(object):
                         run_cmd(cmd, raise_exception=True)
                 except Exception as err:
                     syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be enabled and started"
-                                  .format(feature.name, feature_suffixes[-1]))
-                    self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return False
+                                  .format(feature_name, feature_suffixes[-1]))
+                    # Keep starting the other instances.
+                    failed_instances.append(feature_name)
+                    break
 
+        if failed_instances:
+            self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
+            return False
         self.set_feature_state(feature, self.FEATURE_STATE_ENABLED)
         return True
 
@@ -776,29 +827,84 @@ class FeatureDaemon:
         self.feature_handler = FeatureHandler(self.config_db, feature_state_table, self.device_config, self.advanced_boot)
         self.feature_handler.handle_adv_boot()
 
-    def subscribe(self, dbconn, table, callback, pri):
+        # Per-namespace APPL_DB connectors for the PortInitDone listener (after FeatureHandler
+        # initialized the global DB config). A namespace whose connector fails stays pending.
+        self.ns_appl_db_conn = {}
+        for ns in sorted(self.feature_handler.port_init_quorum_ns):
+            try:
+                self.ns_appl_db_conn[ns] = DBConnector(APPL_DB, 0, False, ns)
+            except Exception as err:
+                syslog.syslog(syslog.LOG_ERR,
+                              "Failed to connect APPL_DB for namespace '{}': {}; its PortInitDone "
+                              "cannot be observed, the {}s fallback applies".format(ns, err, PORT_INIT_TIMEOUT_SEC))
+
+    def subscribe(self, dbconn, table, callback, pri, namespace=''):
         try:
-            if table not in self.callbacks:
-                self.callbacks[table] = []
+            sub_key = (namespace, table)
+            if sub_key not in self.callbacks:
+                self.callbacks[sub_key] = []
                 subscriber = swsscommon.SubscriberStateTable(dbconn, table, swsscommon.TableConsumable.DEFAULT_POP_BATCH_SIZE, pri)
                 self.selector.addSelectable(subscriber) # Add to the Selector
-                self.subscriber_map[subscriber.getFd()] = (subscriber, table) # Maintain a mapping b/w subscriber & fd
+                self.subscriber_map[subscriber.getFd()] = (subscriber, sub_key, table) # Maintain a mapping b/w subscriber & fd
 
-            self.callbacks[table].append(callback)
+            self.callbacks[sub_key].append(callback)
         except Exception as err:
-            syslog.syslog(syslog.LOG_ERR, "Subscribe to table {} failed with error {}".format(table, err))
+            syslog.syslog(syslog.LOG_ERR, "Subscribe to table {} (ns='{}') failed with error {}".format(table, namespace, err))
+
+    @staticmethod
+    def subscription_closed(fd):
+        """True when the fd's redis connection is closed: a peek reads EOF or fails, or the fd
+        cannot be probed at all. Never raises (this runs in the select() error recovery)."""
+        try:
+            with socket.socket(fileno=os.dup(fd)) as sock:
+                return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b''
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
+    def drop_dead_subscribers(self):
+        """Drop subscribers whose redis connection is gone; select() would otherwise return
+        ERROR on every call and starve the other tables. A dropped PORT_TABLE namespace can
+        no longer be observed: before the first release it is pending again (fallback applies).
+        Nothing re-subscribes it. Returns the number of subscribers dropped."""
+        dropped = 0
+        for fd, (subscriber, sub_key, table) in list(self.subscriber_map.items()):
+            if not self.subscription_closed(fd):
+                continue
+            syslog.syslog(syslog.LOG_CRIT if table == FEATURE_TBL else syslog.LOG_ERR,
+                          "Dropping subscriber for table {} (ns='{}'): its redis connection is closed"
+                          .format(table, sub_key[0]))
+            try:
+                self.selector.removeSelectable(subscriber)
+            except Exception as err:
+                syslog.syslog(syslog.LOG_ERR, "removeSelectable failed for table {} (ns='{}'): {}"
+                              .format(table, sub_key[0], err))
+            del self.subscriber_map[fd]
+            self.callbacks.pop(sub_key, None)
+            if table == PORT_TBL and not self.feature_handler.is_delayed_enabled:
+                self.feature_handler.pending_port_init_ns.add(sub_key[0])
+            dropped += 1
+        return dropped
 
     def register_callbacks(self):
-        def make_callback(func):
+        def make_callback(func, **kwargs):
             def callback(table, key, op, data):
-                return func(key, op, data)
+                return func(key, op, data, **kwargs)
             return callback
 
         self.subscribe(self.cfg_db_conn, FEATURE_TBL,
                        make_callback(self.feature_handler.handler), HOSTCFGD_MAX_PRI)
 
-        self.subscribe(self.appl_db_conn, PORT_TBL,
-                       make_callback(self.feature_handler.port_listener), HOSTCFGD_MAX_PRI-1)
+        if self.feature_handler.is_multi_npu:
+            for ns, conn in self.ns_appl_db_conn.items():
+                self.subscribe(conn, PORT_TBL,
+                               make_callback(self.feature_handler.port_listener, namespace=ns),
+                               HOSTCFGD_MAX_PRI-1, namespace=ns)
+        else:
+            self.subscribe(self.appl_db_conn, PORT_TBL,
+                           make_callback(self.feature_handler.port_listener),
+                           HOSTCFGD_MAX_PRI-1)
 
     def render_all_feature_states(self):
         features = self.config_db.get_table(FEATURE_TBL)
@@ -808,26 +914,36 @@ class FeatureDaemon:
         while True:
             state, selectable_ = self.selector.select(DEFAULT_SELECT_TIMEOUT)
 
+            # if the delayed services are not enabled until PORT_INIT_TIMEOUT_SEC, enable them.
+            # Checked on every wake-up so a busy PORT_TABLE cannot postpone it.
+            if int(time.time() - init_time) > PORT_INIT_TIMEOUT_SEC:
+                self.feature_handler.handle_port_table_timeout()
+
             if state == self.selector.TIMEOUT:
-                if int(time.time() - init_time) > PORT_INIT_TIMEOUT_SEC:
-                    # if the delayed services are not enabled until PORT_INIT_TIMEOUT_SEC, enable them
-                    self.feature_handler.handle_port_table_timeout()
                 continue
             elif state == self.selector.ERROR:
                 syslog.syslog(syslog.LOG_ERR, "error returned by select")
+                dropped = self.drop_dead_subscribers()
+                if not self.subscriber_map:
+                    # Nothing left to serve; only a restart helps.
+                    syslog.syslog(syslog.LOG_CRIT, "All subscriptions lost (redis unreachable); exiting")
+                    sys.exit(1)
+                if not dropped:
+                    # Nothing to drop: back off instead of spinning.
+                    time.sleep(DEFAULT_SELECT_TIMEOUT / 1000)
                 continue
 
             fd = selectable_.getFd()
-            # Get the Corresponding subscriber & table
-            subscriber, table = self.subscriber_map.get(fd, (None, ""))
+            # Get the Corresponding subscriber, subscription key & table
+            subscriber, sub_key, table = self.subscriber_map.get(fd, (None, None, ""))
             if not subscriber:
                 syslog.syslog(syslog.LOG_ERR,
                         "No Subscriber object found for fd: {}, subscriber map: {}".format(fd, self.subscriber_map))
                 continue
             key, op, fvs = subscriber.pop()
             # Get the registered callback
-            cbs = self.callbacks.get(table, None)
-            for callback in cbs:
+            cbs = self.callbacks.get(sub_key, None)
+            for callback in (cbs or []):
                 callback(table, key, op, dict(fvs))
 
 

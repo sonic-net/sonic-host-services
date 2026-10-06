@@ -9,6 +9,7 @@ import subprocess
 import syslog
 import signal
 import re
+import socket
 import jinja2
 import psutil
 import time
@@ -99,6 +100,80 @@ RADIUS_SERVER_TIMEOUT_DEFAULT = "5"
 RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
+
+
+TACPLUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'tcp_port', 'passkey', 'auth_type', 'timeout', 'vrf', 'src_ip'))
+RADIUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'auth_port', 'passkey', 'auth_type', 'retransmit', 'timeout',
+     'nas_ip', 'nas_id', 'src_ip', 'vrf'))
+
+
+def aaa_server_fields_safe(server, token_fields=(), token_delimiters=''):
+    """Reject line controls and separators in values rendered as config tokens."""
+    for field, value in server.items():
+        if not isinstance(value, str):
+            continue
+        if re.search(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', value):
+            return False
+        if field in token_fields and (any(char.isspace() for char in value) or
+                                      any(char in value for char in token_delimiters)):
+            return False
+    return True
+
+
+def _radius_host_valid(host):
+    if not isinstance(host, str) or not host or any(ord(char) < 33 or ord(char) == 127 for char in host):
+        return False
+
+    try:
+        if '%' in host:
+            address, scope = host.split('%', 1)
+            if '%' in scope or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', scope):
+                return False
+            ipaddress.IPv6Address(address)
+        else:
+            ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        if '%' in host:
+            return False
+
+    # Reject non-canonical IPv4 forms before applying DNS hostname syntax.
+    try:
+        socket.inet_aton(host)
+        return False
+    except OSError:
+        pass
+
+    hostname = host[:-1] if host.endswith('.') else host
+    if not hostname or len(hostname) > 253:
+        return False
+    label_pattern = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?')
+    return all(label_pattern.fullmatch(label) for label in hostname.split('.'))
+
+
+def radius_server_entry_valid(server):
+    try:
+        if not _radius_host_valid(server['ip']):
+            raise ValueError('invalid host')
+        if not isinstance(server['auth_port'], str) or not re.fullmatch(r'[0-9]+', server['auth_port']):
+            raise ValueError('invalid auth_port')
+        auth_port = int(server['auth_port'])
+        if not 1 <= auth_port <= 65535:
+            raise ValueError('auth_port out of range')
+        server['auth_port'] = str(auth_port)
+        return True
+    except (KeyError, ValueError) as error:
+        syslog.syslog(
+            syslog.LOG_ERR,
+            'RADIUS_SERVER: skipping invalid server entry '
+            '(ip={!r}, auth_port={!r}): {}'.format(
+                server.get('ip'), server.get('auth_port'), error
+            )
+        )
+        return False
+
 
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
@@ -670,10 +745,12 @@ class AaaCfg(object):
         ldap_global = self.ldap_global_default.copy()
         ldap_global.update(self.ldap_global)
 
-        if 'src_ip' in tacplus_global:
-            src_ip = tacplus_global['src_ip']
-        else:
-            src_ip = None
+        if 'src_ip' in tacplus_global and not aaa_server_fields_safe(
+                {'src_ip': tacplus_global['src_ip']}, TACPLUS_CONFIG_TOKEN_FIELDS,
+                token_delimiters=','):
+            syslog.syslog(syslog.LOG_ERR, "TACPLUS: invalid source address; ignoring")
+            tacplus_global.pop('src_ip')
+        src_ip = tacplus_global.get('src_ip')
 
         servers_conf = []
         if self.tacplus_servers:
@@ -681,6 +758,10 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
+                if not aaa_server_fields_safe(
+                        server, TACPLUS_CONFIG_TOKEN_FIELDS, token_delimiters=','):
+                    syslog.syslog(syslog.LOG_ERR, "TACPLUS_SERVER: invalid field; ignoring entry")
+                    continue
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -719,6 +800,11 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
                         del server['src_ip']
 
+                if not aaa_server_fields_safe(server, RADIUS_CONFIG_TOKEN_FIELDS):
+                    syslog.syslog(syslog.LOG_ERR, "RADIUS_SERVER: invalid field; ignoring entry")
+                    continue
+                if not radius_server_entry_valid(server):
+                    continue
                 radsrvs_conf.append(server)
             radsrvs_conf = sorted(radsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -729,6 +815,9 @@ class AaaCfg(object):
                 server = ldap_global.copy()
                 server['ip'] = addr
                 server.update(self.ldap_servers[addr])
+                if not aaa_server_fields_safe(server):
+                    syslog.syslog(syslog.LOG_ERR, "LDAP_SERVER: invalid field; ignoring entry")
+                    continue
                 ldapsrvs_conf.append(server)
             ldapsrvs_conf = sorted(ldapsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -911,6 +1000,20 @@ class PasswHardening(object):
         if data == {}:
             self.passw_policies = {}
         else:
+            if key == 'POLICIES':
+                data = data.copy()
+                # history_cnt=0 is the existing way to disable password history.
+                for field, minimum, maximum in (('len_min', 1, 32),
+                                                ('history_cnt', 0, 100)):
+                    if field in data:
+                        value = str(data[field])
+                        if (not re.fullmatch(r'[0-9]+', value, re.ASCII) or
+                                len(value) > 10 or not minimum <= int(value) <= maximum):
+                            syslog.syslog(syslog.LOG_ERR,
+                                          'PASSW_HARDENING: invalid {} value; ignoring policy update'
+                                          .format(field))
+                            return
+                        data[field] = str(int(value))
             if 'reject_user_passw_match' in data:
                 data['reject_user_passw_match'] = is_true(data['reject_user_passw_match'])
             if 'lower_class' in data:
