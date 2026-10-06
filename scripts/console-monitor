@@ -635,7 +635,7 @@ class ProxyService:
         """Phase 2: Wait for CONFIG_DB configuration"""
         log.info(f"[{self.link_id}] Phase 2: Waiting for CONFIG_DB config...")
 
-        config_db = ConfigDBConnector()
+        config_db = ConfigDBConnector(use_unix_socket_path=True)
         config_db.connect(wait_for_init=True, retry_on=True)
 
         while self.running:
@@ -945,7 +945,7 @@ class DCEService:
     def start(self) -> bool:
         """Start service"""
         try:
-            self.config_db = ConfigDBConnector()
+            self.config_db = ConfigDBConnector(use_unix_socket_path=True)
             self.config_db.connect(wait_for_init=True, retry_on=True)
             log.info("DCE: ConfigDB connected")
 
@@ -1247,7 +1247,7 @@ class DTEService:
     def start(self) -> bool:
         """Start service"""
         try:
-            self.config_db = ConfigDBConnector()
+            self.config_db = ConfigDBConnector(use_unix_socket_path=True)
             self.config_db.connect(wait_for_init=True, retry_on=True)
             log.info("DTE: ConfigDB connected")
 
