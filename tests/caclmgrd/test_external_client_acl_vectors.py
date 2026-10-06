@@ -12,32 +12,26 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "SRC_IP": "20.0.0.55/32"
+                        "SRC_IP": "20.0.0.55/32",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
-            "return": [
-            ],
-        }
+            "return": [],
+        },
     ],
     [
         "Test single IPv4 dst port + src ip for EXTERNAL_CLIENT_ACL",
@@ -47,35 +41,52 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "L4_DST_PORT": "8081",
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "SRC_IP": "20.0.0.55/32"
+                        "SRC_IP": "20.0.0.55/32",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8081', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
             ],
-        }
+        },
     ],
     [
         "Test single IPv4 dst port + dst ip for EXTERNAL_CLIENT_ACL",
@@ -85,35 +96,52 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "L4_DST_PORT": "8081",
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "DST_IP": "20.0.0.66/32"
+                        "DST_IP": "20.0.0.66/32",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-d', '20.0.0.66/32', '--dport', '8081', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-d",
+                    "20.0.0.66/32",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
             ],
-        }
+        },
     ],
     [
         "Test single IPv4 dst port + incoming interface for EXTERNAL_CLIENT_ACL",
@@ -123,36 +151,55 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "L4_DST_PORT": "8081",
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
                         "DST_IP": "0.0.0.0/0",
-                        "IN_PORTS": "mgmt"
+                        "IN_PORTS": "mgmt",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-d', '0.0.0.0/0', '-i', 'mgmt', '--dport', '8081', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-d",
+                    "0.0.0.0/0",
+                    "-i",
+                    "mgmt",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
             ],
-        }
+        },
     ],
     [
         "Test IPv4 dst port range + src ip forEXTERNAL_CLIENT_ACL",
@@ -162,39 +209,100 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "L4_DST_PORT_RANGE": "8081-8083",
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "SRC_IP": "20.0.0.55/32"
+                        "SRC_IP": "20.0.0.55/32",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8081', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8082', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '20.0.0.55/32', '--dport', '8083', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8082', '-j', 'DROP'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8083', '-j', 'DROP'],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "DROP",
+                ],
             ],
-        }
+        },
     ],
     [
         "Test IPv6 single dst port range + src ip forEXTERNAL_CLIENT_ACL",
@@ -204,35 +312,52 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "L4_DST_PORT": "8081",
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "SRC_IP": "2001::2/128"
+                        "SRC_IP": "2001::2/128",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8081', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "2001::2/128",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
             ],
-        }
+        },
     ],
     [
         "Test IPv6 single dst port range + dst ip forEXTERNAL_CLIENT_ACL",
@@ -242,35 +367,52 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "L4_DST_PORT": "8081",
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "DST_IP": "2001::6/128"
+                        "DST_IP": "2001::6/128",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-d', '2001::6/128', '--dport', '8081', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP']
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-d",
+                    "2001::6/128",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
             ],
-        }
+        },
     ],
     [
         "Test IPv6 dst port range + src ip forEXTERNAL_CLIENT_ACL",
@@ -280,38 +422,511 @@ EXTERNAL_CLIENT_ACL_TEST_VECTOR = [
                     "EXTERNAL_CLIENT_ACL": {
                         "stage": "INGRESS",
                         "type": "CTRLPLANE",
-                        "services": [
-                            "EXTERNAL_CLIENT"
-                        ]
+                        "services": ["EXTERNAL_CLIENT"],
                     }
                 },
                 "ACL_RULE": {
                     "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
                         "ETHER_TYPE": "2048",
                         "PACKET_ACTION": "DROP",
-                        "PRIORITY": "1"
+                        "PRIORITY": "1",
                     },
                     "EXTERNAL_CLIENT_ACL|RULE_1": {
                         "L4_DST_PORT_RANGE": "8081-8083",
                         "PACKET_ACTION": "ACCEPT",
                         "PRIORITY": "9998",
-                        "SRC_IP": "2001::2/128"
+                        "SRC_IP": "2001::2/128",
                     },
                 },
-                "DEVICE_METADATA": {
-                    "localhost": {
-                    }
-                },
+                "DEVICE_METADATA": {"localhost": {}},
                 "FEATURE": {},
             },
             "return": [
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8081', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8082', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '2001::2/128', '--dport', '8083', '-j', 'ACCEPT'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8081', '-j', 'DROP'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8082', '-j', 'DROP'],
-                ['iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', '8083', '-j', 'DROP'],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "2001::2/128",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "2001::2/128",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "2001::2/128",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "DROP",
+                ],
             ],
-        }
-    ]
+        },
+    ],
+    [
+        "Test IPv4 multiple dst port + src ip for EXTERNAL_CLIENT_ACL",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": ["EXTERNAL_CLIENT"],
+                    }
+                },
+                "ACL_RULE": {
+                    "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1",
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_1": {
+                        "L4_DST_PORT": "8081",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "SRC_IP": "20.0.0.55/32",
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_2": {
+                        "L4_DST_PORT": "8082",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9997",
+                        "SRC_IP": "20.0.0.55/32",
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_3": {
+                        "L4_DST_PORT": "8083",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9996",
+                        "SRC_IP": "20.0.0.55/32",
+                    },
+                },
+                "DEVICE_METADATA": {"localhost": {}},
+                "FEATURE": {},
+            },
+            "return": [
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "DROP",
+                ],
+            ],
+        },
+    ],
+    [
+        # BUG 4: L4_DST_PORT_RANGE and L4_DST_PORT in the same table where one port
+        # overlaps. Before the fix, L4_DST_PORT_RANGE appended ints and L4_DST_PORT
+        # appended strs, so "8083" not in [8081, 8082, 8083] (int) was True and the
+        # port was added twice, producing duplicate --dport 8083 rules.
+        "Test EXTERNAL_CLIENT_ACL L4_DST_PORT_RANGE processed before L4_DST_PORT - no duplicate rules",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": ["EXTERNAL_CLIENT"],
+                    }
+                },
+                "ACL_RULE": {
+                    "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1",
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_1": {
+                        "L4_DST_PORT_RANGE": "8081-8083",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "SRC_IP": "20.0.0.55/32",
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_2": {
+                        "L4_DST_PORT": "8083",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9997",
+                        "SRC_IP": "20.0.0.66/32",
+                    },
+                },
+                "DEVICE_METADATA": {"localhost": {}},
+                "FEATURE": {},
+            },
+            "return": [
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.55/32",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "20.0.0.66/32",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8083",
+                    "-j",
+                    "DROP",
+                ],
+            ],
+        },
+    ],
+    [
+        # BUG 3: A service listed twice in the same ACL table's services list causes
+        # every iptables rule to be emitted twice. Before the fix, acl_cmds_seen was
+        # reset per service so cross-service duplicates were not caught.
+        "Test NTP ACL table with service listed twice - no duplicate rules emitted",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "NTP_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": ["NTP", "NTP"],
+                    }
+                },
+                "ACL_RULE": {
+                    "NTP_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1",
+                    },
+                    "NTP_ACL|RULE_1": {
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "SRC_IP": "10.0.0.1/32",
+                    },
+                },
+                "DEVICE_METADATA": {"localhost": {}},
+                "FEATURE": {},
+            },
+            "return": [
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "udp",
+                    "-s",
+                    "10.0.0.1/32",
+                    "--dport",
+                    "123",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "udp",
+                    "--dport",
+                    "123",
+                    "-j",
+                    "DROP",
+                ],
+            ],
+        },
+    ],
+    [
+        # Critical regression: if L4_DST_PORT rules are processed before the
+        # L4_DST_PORT_RANGE rule (higher priority = processed first when sorted
+        # descending), the range branch must accumulate rather than reset dst_ports.
+        # Before the fix, dst_ports = [] silently discarded ports already accumulated
+        # by prior L4_DST_PORT rules.
+        "Test EXTERNAL_CLIENT_ACL L4_DST_PORT processed before L4_DST_PORT_RANGE - range must not reset",
+        {
+            "config_db": {
+                "ACL_TABLE": {
+                    "EXTERNAL_CLIENT_ACL": {
+                        "stage": "INGRESS",
+                        "type": "CTRLPLANE",
+                        "services": ["EXTERNAL_CLIENT"],
+                    }
+                },
+                "ACL_RULE": {
+                    "EXTERNAL_CLIENT_ACL|DEFAULT_RULE": {
+                        "ETHER_TYPE": "2048",
+                        "PACKET_ACTION": "DROP",
+                        "PRIORITY": "1",
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_1": {
+                        "L4_DST_PORT": "9000",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9998",
+                        "SRC_IP": "10.0.0.1/32",
+                    },
+                    "EXTERNAL_CLIENT_ACL|RULE_2": {
+                        "L4_DST_PORT_RANGE": "8081-8082",
+                        "PACKET_ACTION": "ACCEPT",
+                        "PRIORITY": "9997",
+                        "SRC_IP": "10.0.0.1/32",
+                    },
+                },
+                "DEVICE_METADATA": {"localhost": {}},
+                "FEATURE": {},
+            },
+            "return": [
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "10.0.0.1/32",
+                    "--dport",
+                    "9000",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "10.0.0.1/32",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "-s",
+                    "10.0.0.1/32",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "ACCEPT",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "9000",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8081",
+                    "-j",
+                    "DROP",
+                ],
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "8082",
+                    "-j",
+                    "DROP",
+                ],
+            ],
+        },
+    ],
 ]
