@@ -249,6 +249,16 @@ class TestHostcfgdDaemon(TestCase):
         MockConfigDb.CONFIG_DB = {}
         self.get_dev_meta.stop()
 
+    def test_config_db_connection_uses_unix_socket(self):
+        with mock.patch.object(hostcfgd, 'ConfigDBConnector') as config_db_connector, \
+                mock.patch.object(hostcfgd.swsscommon, 'RestartWaiter') as restart_waiter:
+            restart_waiter.isAdvancedBootInProgress.return_value = False
+            hostcfgd.HostConfigDaemon()
+
+        config_db_connector.assert_called_once_with(use_unix_socket_path=True)
+        config_db_connector.return_value.connect.assert_called_once_with(
+            wait_for_init=True, retry_on=True)
+
     def test_loopback_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)
         MockConfigDb.event_queue = [('NTP', 'global'),
