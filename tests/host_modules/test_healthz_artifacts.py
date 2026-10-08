@@ -111,11 +111,39 @@ class TestHealthzArtifacts(unittest.TestCase):
 
         # A restarted process can have a lower limit than the artifacts it
         # inherited.  Rejecting a new reservation must preserve old archives.
-        with self.assertRaisesRegex(OSError, "capacity is exhausted"):
-            self.store.reserve()
+        with patch.object(self.store, "acknowledged_artifacts") as acknowledged:
+            with self.assertRaisesRegex(OSError, "capacity is exhausted"):
+                self.store.reserve()
+            acknowledged.assert_not_called()
         self.assertEqual(self.store.status(completed), "COMPLETED")
         for artifact_id in pending:
             self.assertEqual(self.store.status(artifact_id), "PENDING")
+
+    def test_unknown_or_unacknowledged_archive_retention_falls_back_to_age(self):
+        # Both an event without acknowledgement and an archive whose event was
+        # pruned have no known acknowledgement, so neither gets preference.
+        self.store.acknowledged_artifacts = lambda: set()
+        first = self.store.reserve()["artifact_id"]
+        self.store.submit(first, [])
+        os.utime(self.store._archive(first), (1, 1))
+        second = self.store.reserve()["artifact_id"]
+        self.store.submit(second, [])
+        third = self.store.reserve()["artifact_id"]
+        self.assertEqual(self.store.status(first), "MISSING")
+        self.assertEqual(self.store.status(second), "COMPLETED")
+        self.assertEqual(self.store.status(third), "PENDING")
+
+    def test_catalog_read_failure_does_not_evict_completed_archives(self):
+        artifacts = [self.store.reserve()["artifact_id"]]
+        self.store.submit(artifacts[0], [])
+        artifacts.append(self.store.reserve()["artifact_id"])
+        self.store.submit(artifacts[1], [])
+        with patch.object(self.store, "acknowledged_artifacts",
+                          side_effect=OSError("catalog unavailable")):
+            with self.assertRaisesRegex(OSError, "catalog unavailable"):
+                self.store.reserve()
+        for artifact_id in artifacts:
+            self.assertEqual(self.store.status(artifact_id), "COMPLETED")
 
     def test_abandoned_reservation_expires(self):
         artifact_id = self.store.reserve()["artifact_id"]

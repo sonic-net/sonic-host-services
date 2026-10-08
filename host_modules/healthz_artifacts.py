@@ -64,10 +64,11 @@ class HealthzArtifacts:
 
     def __init__(self, directory=ARTIFACT_DIRECTORY,
                  max_artifacts=MAX_ARTIFACTS,
-                 max_bytes=MAX_ARTIFACT_BYTES):
+                 max_bytes=MAX_ARTIFACT_BYTES, acknowledged_artifacts=None):
         self.directory = os.fspath(directory)
         self.max_artifacts = max_artifacts
         self.max_bytes = max_bytes
+        self.acknowledged_artifacts = acknowledged_artifacts
         self._lock = threading.RLock()
         os.makedirs(self.directory, mode=0o700, exist_ok=True)
         info = os.lstat(self.directory)
@@ -138,9 +139,17 @@ class HealthzArtifacts:
                 pending += 1
         if pending >= self.max_artifacts:
             raise OSError("Healthz artifact capacity is exhausted")
-        archives.sort()
-        for _, path in archives[:max(0, len(archives) + pending + 1 - self.max_artifacts)]:
-            os.unlink(path)
+        excess = len(archives) + pending + 1 - self.max_artifacts
+        if excess > 0:
+            acknowledged = (self.acknowledged_artifacts()
+                            if self.acknowledged_artifacts else set())
+            # Missing/pruned catalog rows have no known acknowledgement;
+            # preserve them ahead of known acknowledged archives.
+            archives.sort(key=lambda item: (
+                os.path.basename(item[1]) not in acknowledged, item[0], item[1],
+            ))
+            for _, path in archives[:excess]:
+                os.unlink(path)
 
     def reserve(self):
         with self._lock:

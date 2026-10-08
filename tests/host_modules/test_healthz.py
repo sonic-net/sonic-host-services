@@ -453,6 +453,42 @@ class TestHealthzDbus(unittest.TestCase):
             {"artifact_id": artifact_id}))[0], 0)
         self.assertTrue(os.path.isfile(os.path.join(self.artifacts, artifact_id)))
 
+    def test_reservation_prunes_acknowledged_archive_but_retains_its_event(self):
+        self.endpoint.artifacts.max_artifacts = 2
+        artifacts = []
+        for index, component in enumerate(("PSU0", "PSU1"), start=1):
+            code, body = self.endpoint.reserve_artifact("{}")
+            self.assertEqual(code, 0)
+            artifact_id = json.loads(body)["artifact_id"]
+            self.assertEqual(self.endpoint.submit_artifact(json.dumps({
+                "artifact_id": artifact_id, "paths": [],
+            }))[0], 0)
+            self.catalog.apply_transition(f"{index}-0", transition(
+                component, "alarm", "ACTIVE", index, artifact_id,
+            ))
+            os.utime(os.path.join(self.artifacts, artifact_id), (index, index))
+            artifacts.append(artifact_id)
+
+        first, second = artifacts
+        request = json.dumps({"component": "PSU1", "id": second})
+        self.assertEqual(self.endpoint.ack(request)[0], 0)
+        self.assertEqual(self.endpoint.ack(request)[0], 0)
+        self.assertEqual(self.catalog.acknowledged_artifacts(), {second})
+        for artifact_id in artifacts:
+            self.assertEqual(self.endpoint.artifacts.status(artifact_id), "COMPLETED")
+
+        code, body = self.endpoint.reserve_artifact("{}")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.endpoint.artifacts.status(first), "COMPLETED")
+        self.assertEqual(self.endpoint.artifacts.status(second), "MISSING")
+        self.assertEqual(self.endpoint.artifacts.status(
+            json.loads(body)["artifact_id"]), "PENDING")
+        event = json.loads(self.endpoint.get('{"component":"PSU1"}')[1])
+        self.assertEqual(event["id"], second)
+        self.assertTrue(event["acknowledged"])
+        self.assertNotIn("artifact_id", event)
+        self.assertEqual(len(self.catalog.list_events(include_acknowledged=True)), 2)
+
     def test_get_includes_only_published_descendants(self):
         self.catalog.apply_transition("1-0", transition("chassis", "alarm", "ACTIVE", 100))
         self.catalog.apply_transition("2-0", transition("PSU0", "alarm", "ACTIVE", 101))

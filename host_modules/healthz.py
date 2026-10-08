@@ -303,7 +303,10 @@ class Healthz(host_service.HostModule):
         super().__init__(mod_name)
         self.catalog = catalog or HealthzCatalog()
         self.artifact_directory = artifact_directory
-        self.artifacts = HealthzArtifacts(artifact_directory)
+        self.artifacts = HealthzArtifacts(
+            artifact_directory,
+            acknowledged_artifacts=self.catalog.acknowledged_artifacts,
+        )
         self.legacy_artifact_directory = (legacy_artifact_directory or
             (LEGACY_ARTIFACT_DIRECTORY if artifact_directory == ARTIFACT_DIRECTORY
              else artifact_directory))
