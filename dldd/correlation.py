@@ -56,6 +56,7 @@ class CorrelationDecision:
     changed: bool
     event_snapshots: Tuple[Mapping[str, Any], ...]
     event: FaultEvidenceEvent
+    confirmed: bool = True
 
 
 @dataclass
@@ -66,6 +67,10 @@ class _EventState:
     last_match: Optional[float] = None
     latest_timestamp: Optional[float] = None
     snapshot: Optional[Mapping[str, Any]] = None
+    restored: bool = False
+
+    def has_samples(self, keys) -> bool:
+        return all(key in self.key_timestamps for key in keys)
 
 
 class CorrelationEngine:
@@ -138,7 +143,7 @@ class CorrelationEngine:
         result_type = event.result.result
         if result_type not in (EvaluationResultType.MATCH, EvaluationResultType.NO_MATCH):
             return CorrelationDecision(
-                execution, self._active[identity], False, (), event
+                execution, self._active[identity], False, (), event, confirmed=False
             )
 
         event_definition = next(
@@ -169,7 +174,7 @@ class CorrelationEngine:
                 }
             )
             return CorrelationDecision(
-                execution, self._active[identity], False, (), event
+                execution, self._active[identity], False, (), event, confirmed=False
             )
         state.latest_timestamp = max(
             timestamp, state.latest_timestamp or timestamp
@@ -191,6 +196,8 @@ class CorrelationEngine:
             if not any(state.matching_keys.values()):
                 state.matches.clear()
                 state.last_match = None
+                if state.has_samples(execution.event_keys[event.event_id]):
+                    state.restored = False
 
         evaluation_time = max(
             (
@@ -202,6 +209,8 @@ class CorrelationEngine:
             default=timestamp,
         )
         event_truth = {}
+        confirmed_truth = {}
+        restored_states = []
         snapshots = []
         lookback = execution.signature.conditions.logic_lookback_time
         for definition in execution.signature.conditions.events:
@@ -217,14 +226,46 @@ class CorrelationEngine:
                 and evaluation_time - other.last_match > lookback
             ):
                 truth = False
+            if truth and other.has_samples(execution.event_keys[definition.id]):
+                other.restored = False
+            confirmed_truth[definition.id] = truth
+            if other is not None and other.restored:
+                truth = True
+                restored_states.append(other)
             event_truth[definition.id] = truth
             if truth and other is not None and other.snapshot is not None:
                 snapshots.append(other.snapshot)
 
         active = evaluate_logic(execution.signature.conditions.logic_tree, event_truth)
+        if not active:
+            for other in restored_states:
+                other.restored = False
         changed = active != self._active[identity]
         self._active[identity] = active
-        return CorrelationDecision(execution, active, changed, tuple(snapshots), event)
+        return CorrelationDecision(
+            execution, active, changed, tuple(snapshots), event,
+            confirmed=(evaluate_logic(
+                execution.signature.conditions.logic_tree, confirmed_truth
+            ) if restored_states else active),
+        )
+
+    def restore_active(self, rule_id: int, component_name: str, snapshots) -> None:
+        """Restore established event truth while fresh debounce samples arrive."""
+
+        identity = (rule_id, component_name)
+        execution = self.executions[identity]
+        self._active[identity] = True
+        for snapshot in snapshots:
+            if not isinstance(snapshot, Mapping):
+                continue
+            event_id = snapshot.get("id")
+            if not isinstance(event_id, int) or isinstance(event_id, bool):
+                continue
+            key = (*identity, event_id)
+            if event_id in execution.event_keys and key not in self._events:
+                self._events[key] = _EventState(
+                    deque(), {}, {}, snapshot=snapshot, restored=True
+                )
 
     def set_active(self, rule_id: int, component_name: str, active: bool) -> None:
         self._active[(rule_id, component_name)] = active

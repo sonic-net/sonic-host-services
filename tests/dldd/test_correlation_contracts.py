@@ -2,6 +2,8 @@ from __future__ import absolute_import
 
 from types import SimpleNamespace
 
+import pytest
+
 from dldd.correlation import CorrelationEngine, SignatureExecution
 from dldd.logic import parse_logic
 from dldd.models import ValueConfig
@@ -154,3 +156,117 @@ def test_component_retirement_preserves_other_instance_state():
 
     assert (1000001, "SENSOR0", 1) not in engine._events
     assert (1000001, "SENSOR1", 1) in engine._events
+
+
+@pytest.mark.parametrize("logic,active_after_clear", [("1 AND 2", False),
+                                                    ("1 OR 2", True)])
+def test_restored_debounce_truth_respects_signature_logic(logic, active_after_clear):
+    rule = signature(logic, lookback=10, events=(
+        SimpleNamespace(id=1, match_count=2, match_period=10),
+        SimpleNamespace(id=2, match_count=2, match_period=10),
+    ))
+    first, second = item(), item(event_id=2, key="event-2")
+    engine = CorrelationEngine({})
+    for work in (first, second):
+        engine.register_work_item(rule, work, "generation")
+    engine.restore_active(1000001, "SENSOR0", ({"id": 1}, {"id": 2}))
+
+    decision = engine.consume(evidence(first, EvaluationResultType.MATCH, 100))
+    assert decision.active and not decision.changed and not decision.confirmed
+    decision = engine.consume(evidence(second, EvaluationResultType.NO_MATCH, 101))
+    assert decision.active is active_after_clear
+    assert not decision.confirmed
+    decision = engine.consume(evidence(first, EvaluationResultType.MATCH, 102))
+    assert decision.active is active_after_clear
+    assert decision.confirmed is active_after_clear
+    assert not engine.consume(
+        evidence(first, EvaluationResultType.NO_MATCH, 103)
+    ).active
+
+    # A cleared lifetime and explicit retirement both lose the restored truth.
+    assert not engine.consume(evidence(first, EvaluationResultType.MATCH, 104)).active
+    engine.retire(1000001, "SENSOR0")
+    assert engine._events == {}
+
+    # A rule clear closes restoration for every branch of that lifetime.
+    engine.restore_active(1000001, "SENSOR0", ({"id": 1}, {"id": 2}))
+    assert engine.consume(evidence(
+        first, EvaluationResultType.NO_MATCH, 200,
+    )).active is active_after_clear
+    for timestamp in (201, 202):
+        assert engine.consume(evidence(
+            first, EvaluationResultType.MATCH, timestamp,
+        )).active is active_after_clear
+    engine.consume(evidence(second, EvaluationResultType.MATCH, 203))
+    decision = engine.consume(evidence(second, EvaluationResultType.MATCH, 204))
+    assert decision.active and decision.confirmed
+
+
+def test_restored_event_waits_for_all_owner_keys_before_clear():
+    engine = CorrelationEngine({})
+    first, second = item(key="owner-a"), item(key="owner-b")
+    rule = signature(events=(SimpleNamespace(id=1, match_count=2, match_period=10),))
+    for work in (first, second):
+        engine.register_work_item(rule, work, "generation")
+    engine.restore_active(1000001, "SENSOR0", ({"id": 1},))
+
+    for work, kind, timestamp in (
+        (first, EvaluationResultType.NO_MATCH, 100),
+        (second, EvaluationResultType.COLLECTION_ERROR, 101),
+        (second, EvaluationResultType.MATCH, 102),
+    ):
+        decision = engine.consume(evidence(work, kind, timestamp))
+        assert decision.active and not decision.changed and not decision.confirmed
+    decision = engine.consume(evidence(second, EvaluationResultType.NO_MATCH, 103))
+    assert not decision.active and decision.changed
+
+    # One owner can rebuild the positive count while another remains unknown.
+    # Clearing only the sampled owner must not clear the retained assertion.
+    engine.retire(1000001, "SENSOR0")
+    engine.restore_active(1000001, "SENSOR0", ({"id": 1},))
+    engine.consume(evidence(first, EvaluationResultType.MATCH, 100))
+    engine.consume(evidence(second, EvaluationResultType.COLLECTION_ERROR, 101))
+    assert engine.consume(evidence(first, EvaluationResultType.MATCH, 102)).confirmed
+    decision = engine.consume(evidence(first, EvaluationResultType.NO_MATCH, 103))
+    assert decision.active and not decision.changed and not decision.confirmed
+    decision = engine.consume(evidence(second, EvaluationResultType.NO_MATCH, 104))
+    assert not decision.active and decision.changed
+
+
+def test_restored_truth_survives_lookback_while_debounce_is_pending():
+    engine = CorrelationEngine({})
+    first, second = item(), item(event_id=2, key="event-2")
+    rule = signature("1 AND 2", lookback=10, events=(
+        SimpleNamespace(id=1, match_count=2, match_period=10),
+        SimpleNamespace(id=2, match_count=2, match_period=10),
+    ))
+    for work in (first, second):
+        engine.register_work_item(rule, work, "generation")
+    engine.restore_active(1000001, "SENSOR0", ({"id": 1}, {"id": 2}))
+
+    for work, timestamp in ((first, 100), (second, 111), (first, 112),
+                            (first, 113), (second, 114)):
+        decision = engine.consume(evidence(work, EvaluationResultType.MATCH, timestamp))
+        assert decision.active and not decision.changed
+        assert decision.confirmed is (timestamp == 114)
+    # Fresh confirmation ends restoration; normal history/lookback expiry resumes.
+    assert not engine.consume(evidence(second, EvaluationResultType.MATCH, 125)).active
+
+
+def test_restored_truth_does_not_confirm_expired_samples_with_unknown_owner():
+    engine = CorrelationEngine({})
+    first, unknown = item(key="owner-a"), item(key="owner-b")
+    second = item(event_id=2, key="event-2")
+    rule = signature("1 OR 2", lookback=10, events=(
+        SimpleNamespace(id=1, match_count=2, match_period=100),
+        SimpleNamespace(id=2, match_count=1, match_period=0),
+    ))
+    for work in (first, unknown, second):
+        engine.register_work_item(rule, work, "generation")
+    engine.restore_active(1000001, "SENSOR0", ({"id": 1},))
+    engine.consume(evidence(first, EvaluationResultType.MATCH, 100))
+    assert engine.consume(evidence(first, EvaluationResultType.MATCH, 101)).confirmed
+    for work, timestamp in ((second, 120), (unknown, 121)):
+        decision = engine.consume(evidence(work, EvaluationResultType.NO_MATCH, timestamp))
+        assert decision.active and not decision.changed and not decision.confirmed
+    assert not engine.consume(evidence(first, EvaluationResultType.NO_MATCH, 122)).active
