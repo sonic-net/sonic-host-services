@@ -43,6 +43,10 @@ class RecordingPipeline(object):
             }
         return {b"status": self.client.status} if self.client.status else {}
 
+    def xinfo_stream(self, key):
+        self.operations.append(("xinfo_stream", key))
+        return {"last-generated-id": self.client.last_generated_id}
+
     def multi(self):
         self.operations.append(("multi",))
 
@@ -74,6 +78,7 @@ class RecordingRedisClient(object):
     def __init__(
         self, fields=(), status=None, fault_type=b"hash",
         stream_type=b"stream", execute_error=None, previous=None,
+        last_generated_id=b"100-0",
     ):
         self.fields = fields
         self.status = status
@@ -81,6 +86,7 @@ class RecordingRedisClient(object):
         self.stream_type = stream_type
         self.execute_error = execute_error
         self.previous = previous
+        self.last_generated_id = last_generated_id
         self.transaction = RecordingPipeline(self)
         self.scan_pattern = None
         self.deleted = []
@@ -509,10 +515,10 @@ def test_production_state_db_hash_replacement_and_transaction_contract():
     )
     names = [operation[0] for operation in client.transaction.operations]
     assert names == [
-        "watch", "hgetall", "watch", "type", "multi", "xadd",
+        "watch", "hgetall", "watch", "type", "xinfo_stream", "multi", "xadd",
         "hset", "persist", "execute",
     ]
-    assert client.transaction.operations[5] == (
+    assert client.transaction.operations[6] == (
         "xadd", "HEALTHZ_TRANSITIONS",
         transition, 10000, False,
     )
@@ -654,6 +660,7 @@ def test_production_clear_queues_transitions_and_delete_together():
         ("watch", (key, "HEALTHZ_TRANSITIONS")),
         ("hgetall", key),
         ("type", "HEALTHZ_TRANSITIONS"),
+        ("xinfo_stream", "HEALTHZ_TRANSITIONS"),
         ("multi",),
         ("xadd", "HEALTHZ_TRANSITIONS", transition, 10000, False),
         ("delete", (key, "DLDD_STATUS|process_state")),
@@ -670,6 +677,42 @@ def test_production_clear_queues_transitions_and_delete_together():
     with pytest.raises(TypeError, match="HEALTHZ_TRANSITIONS"):
         SonicStateDB(client).clear_with_transitions((key,), {key: expected}, (transition,))
     assert "multi" not in [entry[0] for entry in client.transaction.operations]
+
+
+def test_fault_publication_rejects_exhausted_stream_before_mutation():
+    client = RecordingRedisClient(
+        last_generated_id=b"18446744073709551615-18446744073709551615"
+    )
+    with pytest.raises(ValueError, match="stream ID range is exhausted"):
+        SonicStateDB(client).replace_fault(
+            "FAULT_INFO|PSU0|SYMPTOM", {"status": "ACTIVE"}, None,
+            {"transition_id": "new", "active": "1"},
+        )
+    assert [entry[0] for entry in client.transaction.operations] == [
+        "watch", "hgetall", "watch", "type", "xinfo_stream",
+    ]
+
+
+@pytest.mark.parametrize("remaining, succeeds", [(0, False), (1, False), (2, True)])
+def test_clear_checks_stream_capacity_for_the_whole_batch(remaining, succeeds):
+    maximum = (1 << 64) - 1
+    client = RecordingRedisClient(
+        previous={"status": "ACTIVE"},
+        last_generated_id="{}-{}".format(maximum, maximum - remaining),
+    )
+    keys = ("FAULT_INFO|PSU0|SYMPTOM", "FAULT_INFO|PSU1|SYMPTOM")
+    faults = {key: {"status": "ACTIVE"} for key in keys}
+    transitions = tuple({"transition_id": key, "active": "0"} for key in keys)
+    if succeeds:
+        SonicStateDB(client).clear_with_transitions(keys, faults, transitions)
+        assert [entry[0] for entry in client.transaction.operations][-4:] == [
+            "xadd", "xadd", "delete", "execute",
+        ]
+    else:
+        with pytest.raises(ValueError, match="stream ID range is exhausted"):
+            SonicStateDB(client).clear_with_transitions(keys, faults, transitions)
+        assert not any(entry[0] in ("multi", "xadd", "delete", "execute")
+                       for entry in client.transaction.operations)
 
 
 def test_fault_scan_is_atomic_on_row_failure():

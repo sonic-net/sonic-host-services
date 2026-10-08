@@ -528,6 +528,14 @@ class HealthzCatalog:
                 (component, event_id),
             ).fetchone())
 
+    def acknowledged_artifacts(self):
+        """Archive IDs eligible for preferred eviction; retain their events."""
+        with self._lock:
+            return {row["artifact_id"] for row in self._db.execute(
+                "SELECT artifact_id FROM events "
+                "WHERE acknowledged=1 AND artifact_id IS NOT NULL"
+            )}
+
     def get_aggregate(self, component):
         component = _text(component, "component")
         with self._lock:

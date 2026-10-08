@@ -338,10 +338,7 @@ class SonicStateDB(StateDB):
                     )
                     if changed or observation:
                         transaction.watch(stream)
-                        if decode_db_text(transaction.type(stream)) not in (
-                            "none", "stream"
-                        ):
-                            raise TypeError("HEALTHZ_TRANSITIONS key is not a stream")
+                        self._check_transition_stream(transaction)
                     transaction.multi()
                     if changed:
                         transaction.xadd(
@@ -395,6 +392,21 @@ class SonicStateDB(StateDB):
         raise RuntimeError("FAULT_INFO changed during legacy Healthz cleanup")
 
     @staticmethod
+    def _check_transition_stream(transaction, count=1):
+        """Reject wrong type and ID exhaustion while the stream is watched."""
+
+        stream = TelemetryPublisher.FAULT_TRANSITIONS_STREAM
+        kind = decode_db_text(transaction.type(stream))
+        if kind not in ("none", "stream"):
+            raise TypeError("HEALTHZ_TRANSITIONS key is not a stream")
+        if kind == "stream":
+            last_id = transaction.xinfo_stream(stream)["last-generated-id"]
+            milliseconds, sequence = map(int, decode_db_text(last_id).split("-"))
+            maximum = (1 << 64) - 1
+            if milliseconds == maximum and sequence > maximum - count:
+                raise ValueError("HEALTHZ_TRANSITIONS stream ID range is exhausted")
+
+    @staticmethod
     def _queue_hash(transaction, key, mapping, existing, ttl_seconds):
         stale_fields = tuple(
             sorted({decode_db_text(name) for name in existing} - set(mapping))
@@ -432,10 +444,7 @@ class SonicStateDB(StateDB):
                 if decode_db_hash(transaction.hgetall(key)) != expected:
                     raise RuntimeError("FAULT_INFO changed during clear-state")
             if transitions:
-                if decode_db_text(transaction.type(stream)) not in (
-                    "none", "stream"
-                ):
-                    raise TypeError("HEALTHZ_TRANSITIONS key is not a stream")
+                self._check_transition_stream(transaction, len(transitions))
             transaction.multi()
             for transition in transitions:
                 transaction.xadd(
