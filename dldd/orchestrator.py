@@ -580,7 +580,10 @@ class PrimaryOrchestrator:
                 and existing.action_suppressed
             ):
                 self.arbiter.update(decision)
-                self._confirm_asserted_fault(identity, event.event_timestamp)
+                if decision.confirmed:
+                    self._confirm_asserted_fault(
+                        identity, event.event_timestamp, decision.event_snapshots
+                    )
                 self._resume(event, "local action already executed for active lifetime")
                 return
             if self.action_runner is None:
@@ -604,8 +607,11 @@ class PrimaryOrchestrator:
 
         if decision.changed:
             self._publish_decision(decision, collect_artifact=decision.active)
-        elif decision.active and event.result.result == EvaluationResultType.MATCH:
-            self._confirm_asserted_fault(identity, event.event_timestamp)
+        elif (decision.active and decision.confirmed
+              and event.result.result == EvaluationResultType.MATCH):
+            self._confirm_asserted_fault(
+                identity, event.event_timestamp, decision.event_snapshots
+            )
         self._resume(event, "evidence processed")
 
     def _hold_owned_evidence(
@@ -657,12 +663,20 @@ class PrimaryOrchestrator:
             self._process_runtime_status(event, release=False)
         decision = self.correlation.consume(event)
         state.outstanding_rechecks.discard(event.correlation_key)
-        if decision is not None:
+        # Errors and discarded late evidence cannot replace usable decisions.
+        decisive = decisive and decision is not None and (
+            not decision.active or bool(decision.event_snapshots)
+        )
+        if decisive:
             state.last_decision = decision
-            if decisive and decision.active and result_type == EvaluationResultType.MATCH:
+            if (decision.active and decision.confirmed
+                    and result_type == EvaluationResultType.MATCH):
                 state.last_confirmed_at = max(
                     state.last_confirmed_at or event.event_timestamp,
                     event.event_timestamp,
+                )
+                self._confirm_asserted_fault(
+                    identity, event.event_timestamp, decision.event_snapshots
                 )
         if not decisive:
             state.recheck_failed = True
@@ -1409,6 +1423,9 @@ class PrimaryOrchestrator:
         self, execution: SignatureExecution, reason: str
     ) -> None:
         identity = (execution.signature.metadata.id, execution.component_name)
+        record = self.faults.get(identity)
+        if record is not None and record.status == "ACTIVE":
+            self.correlation.restore_active(*identity, record.events)
         keys = set(execution.work_keys)
         now = self.clock()
         deadline = now + self.config.fault_evidence_ack_timeout
@@ -1473,7 +1490,8 @@ class PrimaryOrchestrator:
                 self.arbiter.update(effective)
                 if reconciliation.last_confirmed_at is not None:
                     self._confirm_asserted_fault(
-                        identity, reconciliation.last_confirmed_at
+                        identity, reconciliation.last_confirmed_at,
+                        decision.event_snapshots if decision.confirmed else (),
                     )
                 self.next_active_recheck[identity] = (
                     self.clock() + self.config.active_fault_recheck_interval
@@ -1740,19 +1758,19 @@ class PrimaryOrchestrator:
         self._publish_fault_record(existing, observation_time=now)
 
     def _confirm_asserted_fault(
-        self, identity: Tuple[int, str], observed_at: float
+        self, identity: Tuple[int, str], observed_at: float, snapshots=()
     ) -> None:
-        """Record a new positive sample without creating a status event."""
+        """Retain current positive evidence without creating a status event."""
 
         record = self.faults.get(identity)
-        if (
-            record is None
-            or record.status != "ACTIVE"
-            or observed_at <= record.last_detection_time
-        ):
+        if record is None or record.status != "ACTIVE":
             return
-        record.last_detection_time = observed_at
-        self._publish_fault_record(record, observation_time=observed_at)
+        events = tuple(snapshots) if snapshots else record.events
+        if observed_at <= record.last_detection_time and events == record.events:
+            return
+        record.events = events
+        record.last_detection_time = max(record.last_detection_time, observed_at)
+        self._publish_fault_record(record, observation_time=record.last_detection_time)
 
     def _refresh_fault_source_staleness(self) -> None:
         failed_keys = self._failed_correlation_keys()

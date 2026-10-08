@@ -28,14 +28,17 @@ from dldd.telemetry import TelemetryPublisher
 from dldd.validation import load_rules
 from tests.dldd_fakes import FakeStateDB
 from tests.dldd.test_orchestrator import (
+    CompletedActionRunner,
+    RecordingArtifactClient,
     dse_expansion_event,
     dse_retirement_fixture,
     evidence,
 )
 
 
-def runtime_fixture(*, config=None, source_probe=None, artifact_client=None):
-    rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")
+def runtime_fixture(*, config=None, source_probe=None, artifact_client=None,
+                    rule_document=None):
+    rules = load_rules(rule_document or "tests/dldd/fixtures/valid-redis-rule.json")
     bundle = build_plans(
         rules.materialized_rules,
         "sha256:test",
@@ -59,6 +62,27 @@ def runtime_fixture(*, config=None, source_probe=None, artifact_client=None):
         wall_clock=lambda: 1000.0 + clock[0],
     )
     return orchestrator, bundle, item, database, clock
+
+
+def debounced_fixture(logic="1", *, local_actions=False):
+    with open("tests/dldd/fixtures/valid-redis-rule.json", encoding="utf-8") as stream:
+        document = json.load(stream)
+    signature = document["signatures"][0]["signature"]
+    conditions = signature["conditions"]
+    conditions.update(logic=logic, logic_lookback_time=10)
+    first = conditions["events"][0]["event"]
+    first.update(match_count=2, match_period=10)
+    if logic == "1 OR 2":
+        second = deepcopy(first)
+        second["id"] = 2
+        second["path"]["key"] = "PSU_INFO|PSU1"
+        conditions["events"].append({"event": second})
+    repairs = signature["actions"]["repair_actions"]
+    if local_actions:
+        repairs["local_actions"]["wait_period"] = 0
+    else:
+        repairs.pop("local_actions", None)
+    return runtime_fixture(rule_document=json.dumps(document))
 
 
 def competing_rules_fixture(*, artifact_client=None):
@@ -946,6 +970,158 @@ def test_retained_fault_reconciliation_and_staleness_lifecycle():
     orchestrator._refresh_fault_source_staleness()
     assert active.stale_source is False
     assert database.values[active.redis_key].get("source_stale") is None
+
+
+def test_restart_preserves_established_debounce_until_confirmed_clear(tmp_path):
+    """Restart must not turn the first positive sample into a recovery."""
+
+    from dldd.reset import clear_runtime_state
+
+    initial, bundle, item, database, _ = debounced_fixture()
+    identity = (item.rule_id, item.component_name)
+    execution = initial.correlation.executions[identity]
+    initial.correlation.consume(event(item, EvaluationResultType.MATCH, sequence=1))
+    decision = initial.correlation.consume(
+        event(item, EvaluationResultType.MATCH, sequence=2)
+    )
+    initial._publish_decision(decision)
+    record = initial.faults[identity]
+    record.healthz_artifact_id = "prior-archive.tar.gz"
+    initial._publish_fault_record(record)
+    key = record.redis_key
+
+    def restarted():
+        return PrimaryOrchestrator(
+            Queue(), bundle.monitor_plans, bundle.work_items,
+            CorrelationEngine({identity: execution}),
+            TelemetryPublisher(database, DLDDConfig()), DLDDConfig(),
+            "sha256:test", wall_clock=lambda: 1000,
+        )
+
+    # Repeated restarts preserve the episode, artifact link and detection time
+    # until fresh samples satisfy the rule's count again.
+    for sequence in (3, 4):
+        current = restarted()
+        current.reconcile_existing_faults()
+        current.process_event(event(
+            item, EvaluationResultType.MATCH, sequence=sequence,
+            from_recheck=True,
+        ))
+        assert database.values[key]["status"] == "ACTIVE"
+        assert database.values[key]["occurrences"] == "1"
+        assert database.values[key]["last_detection_time"] == "102"
+        assert database.values[key]["healthz_artifact_id"] == "prior-archive.tar.gz"
+        assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 1
+
+    current.process_event(event(item, EvaluationResultType.MATCH, sequence=5))
+    assert database.values[key]["last_detection_time"] == "105"
+    current.process_event(event(item, EvaluationResultType.NO_MATCH, sequence=6))
+    assert database.values[key]["status"] == "INACTIVE"
+    assert database.values[key]["last_detection_time"] == "105"
+    assert database.values[key]["healthz_artifact_id"] == "prior-archive.tar.gz"
+    assert [entry[1]["active"] for entry in database.streams["HEALTHZ_TRANSITIONS"]
+            if entry[1].get("kind") != "observation"] == ["1", "0"]
+
+    # Explicit clear removes both the row and restored correlation history;
+    # the next lifetime must pass ordinary debounce from an empty state.
+    clear_runtime_state(database, str(tmp_path / "state.json"), include_faults=True)
+    assert key not in database.values
+    current = restarted()
+    current.reconcile_existing_faults()
+    current.process_event(event(item, EvaluationResultType.MATCH, sequence=7))
+    assert key not in database.values
+    current.process_event(event(item, EvaluationResultType.MATCH, sequence=8))
+    assert database.values[key]["status"] == "ACTIVE"
+    assert database.values[key]["occurrences"] == "1"
+
+
+@pytest.mark.parametrize("second_confirmation,recheck_error", [
+    (102, False), (104, False),
+    pytest.param(104, True, id="periodic-confirmation-then-error"),
+])
+def test_confirmed_or_branch_is_retained_for_restart(second_confirmation, recheck_error):
+    initial, bundle, first, database, _ = debounced_fixture("1 OR 2")
+    second = next(item for item in bundle.work_items.values() if item.event_id == 2)
+    identity = (first.rule_id, first.component_name)
+    for sequence in (1, 2):
+        initial.process_event(event(first, EvaluationResultType.MATCH, sequence=sequence))
+    record = initial.faults[identity]
+    record.healthz_artifact_id = "prior-archive.tar.gz"
+    initial._publish_fault_record(record)
+    key = record.redis_key
+    initial.process_event(event(second, EvaluationResultType.MATCH,
+                                sequence=3 if recheck_error else 1))
+    if recheck_error:
+        initial._start_reconciliation(initial.correlation.executions[identity], "periodic")
+    initial.process_event(event(
+        second, EvaluationResultType.MATCH, sequence=second_confirmation - 100,
+        from_recheck=recheck_error,
+    ))
+    if recheck_error:
+        initial.process_event(event(first, EvaluationResultType.COLLECTION_ERROR,
+                                    sequence=5, from_recheck=True))
+    assert {sample["id"] for sample in json.loads(database.values[key]["events"])} == {1, 2}
+    assert database.values[key]["last_detection_time"] == str(second_confirmation)
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == (
+        3 if recheck_error else (1 if second_confirmation == 102 else 2)
+    )
+    initial.process_event(event(first, EvaluationResultType.NO_MATCH,
+                                sequence=6 if recheck_error else 5))
+
+    restarted = PrimaryOrchestrator(
+        Queue(), bundle.monitor_plans, bundle.work_items,
+        CorrelationEngine(bundle.signatures), TelemetryPublisher(database, DLDDConfig()),
+        DLDDConfig(), "sha256:test", wall_clock=lambda: 1000,
+    )
+    restarted.reconcile_existing_faults()
+    restarted.process_event(event(first, EvaluationResultType.NO_MATCH,
+                                  sequence=7 if recheck_error else 6, from_recheck=True))
+    restarted.process_event(event(second, EvaluationResultType.MATCH,
+                                  sequence=8 if recheck_error else 7, from_recheck=True))
+    assert database.values[key]["status"] == "ACTIVE"
+    assert database.values[key]["occurrences"] == "1"
+    assert database.values[key]["healthz_artifact_id"] == "prior-archive.tar.gz"
+    assert database.values[key]["last_detection_time"] == str(second_confirmation)
+    assert [row[1]["active"] for row in database.streams["HEALTHZ_TRANSITIONS"]
+            if row[1].get("kind") != "observation"] == ["1"]
+
+
+def test_post_action_confirmation_survives_final_error_and_restart():
+    initial, bundle, first, database, _ = debounced_fixture("1 OR 2", local_actions=True)
+    second = next(item for item in bundle.work_items.values() if item.event_id == 2)
+    initial.action_runner = CompletedActionRunner()
+    initial.artifact_client = RecordingArtifactClient()
+    identity = (first.rule_id, first.component_name)
+    initial.process_event(event(second, EvaluationResultType.MATCH, sequence=0))
+    for sequence in (1, 2):
+        initial.process_event(event(first, EvaluationResultType.MATCH, sequence=sequence))
+    key = initial.faults[identity].redis_key
+    initial.tick()
+    initial.process_event(event(second, EvaluationResultType.MATCH,
+                                sequence=4, from_recheck=True))
+    assert key not in database.values and not database.streams
+    assert initial.artifact_client.metadata is None
+    initial.process_event(event(first, EvaluationResultType.COLLECTION_ERROR,
+                                sequence=5, from_recheck=True))
+    assert {sample["id"] for sample in json.loads(database.values[key]["events"])} == {1, 2}
+    assert database.values[key]["last_detection_time"] == "104"
+    assert database.values[key]["healthz_artifact_id"] == "dldd-test.tar.gz"
+    assert initial.artifact_client.metadata is not None
+
+    restarted = PrimaryOrchestrator(
+        Queue(), bundle.monitor_plans, bundle.work_items,
+        CorrelationEngine(bundle.signatures), TelemetryPublisher(database, DLDDConfig()),
+        DLDDConfig(), "sha256:test", wall_clock=lambda: 1000,
+    )
+    restarted.reconcile_existing_faults()
+    restarted.process_event(event(first, EvaluationResultType.NO_MATCH,
+                                  sequence=6, from_recheck=True))
+    restarted.process_event(event(second, EvaluationResultType.MATCH,
+                                  sequence=7, from_recheck=True))
+    assert database.values[key]["status"] == "ACTIVE"
+    assert database.values[key]["occurrences"] == "1"
+    assert database.values[key]["healthz_artifact_id"] == "dldd-test.tar.gz"
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == 1
 
 
 def test_removed_dse_work_cleans_only_its_runtime_state():
