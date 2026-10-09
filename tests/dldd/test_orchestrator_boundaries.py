@@ -278,6 +278,37 @@ def test_runtime_config_update_and_fault_republish_lifecycle():
     assert len(database.streams["HEALTHZ_TRANSITIONS"]) == original_events
 
 
+def test_rejected_config_refresh_preserves_failed_recovery_retry():
+    orchestrator, _, item, database, clock = runtime_fixture()
+    identity, record = active_record(orchestrator, item)
+    assert orchestrator._publish_fault_record(record)
+    active_row = dict(database.values[record.redis_key])
+    original_events = len(database.streams["HEALTHZ_TRANSITIONS"])
+
+    record.status = "INACTIVE"
+    record.inactive_deadline = 1000 + orchestrator.config.inactive_fault_retention_period
+    database.fail_writes_with(RuntimeError("STATE_DB unavailable"))
+    assert not orchestrator._publish_fault_record(record, observation_time=1001)
+    assert identity in orchestrator.dirty_faults
+    database.clear_failures()
+
+    # The retained ACTIVE row cannot accept an INACTIVE metadata-only refresh.
+    orchestrator.queue_config_update(DLDDConfig(inactive_fault_retention_period=19))
+    orchestrator._apply_queued_config_updates()
+    assert database.values[record.redis_key] == active_row
+    assert identity in orchestrator.dirty_faults
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == original_events
+
+    clock[0] = 5
+    orchestrator._retry_dirty_faults()
+    assert database.values[record.redis_key]["status"] == "INACTIVE"
+    assert identity not in orchestrator.dirty_faults
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == original_events + 1
+    assert database.streams["HEALTHZ_TRANSITIONS"][-1][1]["active"] == "0"
+    orchestrator._retry_dirty_faults()
+    assert len(database.streams["HEALTHZ_TRANSITIONS"]) == original_events + 1
+
+
 def test_config_update_does_not_republish_expired_retained_inactive_fault():
     initial_config = DLDDConfig(inactive_fault_retention_period=5)
     orchestrator, bundle, item, database, clock = runtime_fixture(

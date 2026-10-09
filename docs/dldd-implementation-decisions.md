@@ -134,8 +134,9 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 - Primary action deadlines independently prevent a lost/stuck worker future
   from leaving a candidate held forever; the candidate proceeds through the
   required failed-action artifact, wait, and recheck path.
-- Log-only rules request an artifact asynchronously and publish after signature
-  confirmation without inventing a local-action wait/recheck phase.
+- Log-only rules reserve a Healthz artifact ID only for the selected fault
+  immediately before publication, then collect and submit files asynchronously;
+  they do not invent a local-action wait/recheck phase.
 - DLDD uses the host Healthz artifact boundary. The default
   `HostHealthzArtifactClient` reserves a stable `healthz-<32 lowercase hex>.tar.gz`
   ID before fault publication, runs DLDD rule-specific queries and custom
@@ -164,9 +165,11 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 - Completed action output uses `actions/NNN/metadata.json` and the present
   `stdout.txt`, `stderr.txt`, and `result.txt` entries. Existing actions that
   return `None` remain valid and add no output entry.
-- DLDD resolves rule log globs to concrete regular files without following
-  symlinks and stages their contents before submission; the host validates
-  submitted paths and archive names before packaging. Directories are not
+- DLDD resolves trusted rule log globs to concrete regular files, rejects
+  final-file symlinks, and stages their contents before submission; source
+  directory ancestors can contain symlinks. Host Healthz and gNOI reject
+  symlinks throughout submitted and served paths. The host validates archive
+  names before packaging. Directories are not
   recursively archived. Bounds apply to both
   collected input bytes and the final archive.
 - Declared vendor/DSE query timeouts run through bounded daemon-call slots,
@@ -190,8 +193,11 @@ not a replacement for either HLD; where the HLD is explicit, the HLD wins.
   new event or count. Host Healthz consumes the generic stream and does not
   parse DLDD fault rows. The old `DLDD_FAULT_TRANSITIONS` unconsumed tail is
   not replayed during migration; Healthz records a conservative history gap.
-  Redis `MULTI/EXEC` still admits partial execution-time writes, a known
-  atomicity deviation requiring separate disposition.
+  Redis `WATCH/MULTI/EXEC` validates watched row/stream types and complete-batch
+  stream-ID capacity before mutation. Expiry/contention retries and maxmemory
+  rejection preserve row/stream atomic visibility under stable command
+  permissions. Concurrent administrative command-ACL changes during `EXEC`
+  and crash/power-loss durability remain outside that verified boundary.
 - `dldd.service` is a static FEATURE-managed unit.  It binds to `sonic.target`,
   requires database/config setup for startup, and has no gNMI/gNOI lifecycle
   dependency.  Runtime Redis failures degrade local publication but are handled
