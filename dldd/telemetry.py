@@ -649,11 +649,10 @@ class TelemetryPublisher:
                     transition["last_unhealthy_at"] = last_unhealthy_at
             if fault.status == "INACTIVE" and fault.inactive_deadline is not None:
                 transition["retain_until"] = str(math.ceil(published_at + ttl))
-            self.state_db.replace_fault(
+            return self.state_db.replace_fault(
                 fault.redis_key, payload, ttl, transition,
                 refresh_only=refresh_only,
             )
-            return True
         except Exception as error:
             LOGGER.error("unable to publish %s: %s", fault.redis_key, error)
             return False
