@@ -3,6 +3,9 @@
 This file records choices left open by the Device Local Diagnosis HLDs.  It is
 not a replacement for either HLD; where the HLD is explicit, the HLD wins.
 
+For Healthz ownership, the DLDD artifact flow and the upstream RPC contract, see
+the [Healthz overview](healthz-overview.md).
+
 ## Structure and vendor extensions
 
 - DLDD is part of `sonic-host-services`, because it is a root host service and
