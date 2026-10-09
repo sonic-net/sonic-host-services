@@ -1285,6 +1285,108 @@ class TestEnableFeatureGeneratedUnit(TestCase):
         assert ["sudo", "systemctl", "start", "bgp@1.service"] in cmds
 
 
+class TestFeatureTemplateValidation(TestCase):
+    DEVICE_CONFIG = {
+        'DEVICE_METADATA': {'localhost': {'type': 'LeafRouter'}},
+        'DEVICE_RUNTIME_METADATA': {'ETHERNET_PORTS_PRESENT': True},
+    }
+    UNSAFE_TEMPLATE = (
+        "{% if DEVICE_METADATA['__class__']['__mro__'] %}"
+        "enabled{% else %}disabled{% endif %}"
+    )
+
+    @parameterized.expand([('swss',), ('dhcp_relay',), ('feature-name',)])
+    def test_valid_feature_names(self, name):
+        self.assertEqual(featured.Feature(name, {'state': 'enabled'}).name, name)
+
+    @parameterized.expand([('feature name',), ('feature.name',), ('-feature',),
+                           ('a' * 33,), (None,)])
+    def test_invalid_feature_names(self, name):
+        with self.assertRaises(ValueError):
+            featured.Feature(name, {'state': 'enabled'})
+
+    @parameterized.expand([
+        ('enabled', 'enabled'),
+        ('{% if DEVICE_METADATA["localhost"]["type"] == "LeafRouter" %}enabled{% else %}disabled{% endif %}', 'enabled'),
+        ('{% if DEVICE_RUNTIME_METADATA is defined and DEVICE_RUNTIME_METADATA["ETHERNET_PORTS_PRESENT"] %}enabled{% else %}disabled{% endif %}', 'enabled'),
+    ])
+    def test_allowed_templates(self, configuration, expected):
+        feature = featured.Feature('swss', {'state': 'enabled'})
+        self.assertEqual(feature._get_feature_table_key_render_value(
+            configuration, self.DEVICE_CONFIG, ['enabled', 'disabled']), expected)
+
+    @parameterized.expand([
+        ('{% for item in [1] %}enabled{% endfor %}',),
+        ('{{ "enabled" | upper }}',),
+        ('{% set value = "enabled" %}{{ value }}',),
+        ('{{ DEVICE_METADATA.keys }}',),
+        ('{{ OTHER_METADATA["state"] }}',),
+    ])
+    def test_unsupported_templates(self, configuration):
+        feature = featured.Feature('swss', {'state': 'enabled'})
+        with self.assertRaises(ValueError):
+            feature._get_feature_table_key_render_value(
+                configuration, self.DEVICE_CONFIG, ['enabled', 'disabled'])
+
+    def test_sandbox_template_error_is_rejected(self):
+        feature = featured.Feature('swss', {'state': 'enabled'})
+        with self.assertRaises(ValueError) as rejected:
+            feature._get_feature_table_key_render_value(
+                self.UNSAFE_TEMPLATE, self.DEVICE_CONFIG, ['enabled', 'disabled'])
+        self.assertIsInstance(rejected.exception.__cause__, featured.jinja2.TemplateError)
+
+    def test_invalid_callback_preserves_prior_feature_and_processes_next(self):
+        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(),
+                                          self.DEVICE_CONFIG, False)
+        prior = featured.Feature('sflow', {'state': 'enabled'})
+        handler._cached_config['sflow'] = prior
+
+        with mock.patch.object(handler, 'update_systemd_config') as config_writer, \
+                mock.patch.object(handler, 'update_feature_state', return_value=True) as update_state, \
+                mock.patch.object(handler, 'sync_feature_scope'), \
+                mock.patch.object(handler, 'resync_feature_state'):
+            handler.handler('sflow', 'SET', {'state': '{{ "enabled" | upper }}'})
+            handler.handler('sflow', 'SET', {'state': self.UNSAFE_TEMPLATE})
+            handler.handler('bad.name', 'SET', {'state': 'enabled'})
+            self.assertIs(handler._cached_config['sflow'], prior)
+            self.assertNotIn('bad.name', handler._cached_config)
+            config_writer.assert_not_called()
+            update_state.assert_not_called()
+
+            handler.handler('snmp', 'SET', {'state': 'enabled'})
+            self.assertEqual(handler._cached_config['snmp'].state, 'enabled')
+            self.assertEqual(update_state.call_count, 1)
+
+    def test_invalid_startup_rows_do_not_stop_valid_features(self):
+        handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(),
+                                          self.DEVICE_CONFIG, False)
+        prior = featured.Feature('sflow', {'state': 'enabled'})
+        prior_lldp = featured.Feature('lldp', {'state': 'disabled'})
+        handler._cached_config['sflow'] = prior
+        handler._cached_config['lldp'] = prior_lldp
+        feature_table = {
+            'bad.name': {'state': 'enabled'},
+            'sflow': {'state': '{{ "enabled" | upper }}'},
+            'lldp': {'state': self.UNSAFE_TEMPLATE},
+            'snmp': {'state': 'enabled'},
+        }
+
+        with mock.patch.object(handler, 'update_systemd_config') as config_writer, \
+                mock.patch.object(handler, 'reload_systemd_config') as reload_systemd, \
+                mock.patch.object(handler, 'update_feature_state') as update_state, \
+                mock.patch.object(handler, 'sync_feature_scope'), \
+                mock.patch.object(handler, 'resync_feature_state'), \
+                mock.patch.object(handler, 'sync_feature_delay_state'):
+            handler.sync_state_field(feature_table)
+
+        self.assertIs(handler._cached_config['sflow'], prior)
+        self.assertIs(handler._cached_config['lldp'], prior_lldp)
+        self.assertNotIn('bad.name', handler._cached_config)
+        self.assertEqual(handler._cached_config['snmp'].state, 'enabled')
+        config_writer.assert_called_once_with(mock.ANY, reload=False)
+        self.assertEqual(config_writer.call_args.args[0].name, 'snmp')
+        reload_systemd.assert_called_once_with()
+        update_state.assert_called_once_with(handler._cached_config['snmp'])
 class NsMockDBConnector(MockDBConnector):
     """MockDBConnector that knows its namespace; can fail to connect or be declared dead."""
     fail_appl_db_ns = set()
