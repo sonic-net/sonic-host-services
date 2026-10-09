@@ -1406,6 +1406,17 @@ class TestFeatureDaemonMultiAsic(TestCase):
             daemon.register_callbacks()
         return daemon
 
+    def test_config_db_connections_use_unix_sockets(self, *_):
+        with mock.patch.object(featured, 'ConfigDBConnector', wraps=MockConfigDb) as connector:
+            self._daemon()
+
+        self.assertEqual(connector.call_args_list, [
+            call(use_unix_socket_path=True),
+            call(use_unix_socket_path=True, namespace='asic0'),
+            call(use_unix_socket_path=True, namespace='asic1'),
+            call(use_unix_socket_path=True, namespace='asic2'),
+        ])
+
     @staticmethod
     def _run(daemon, init_time=None):
         """Drive start() until the event queue is empty; return (release mock, systemctl cmds)."""

@@ -157,7 +157,7 @@ class FeatureHandler(object):
             namespaces = device_info.get_namespaces()
             for ns in namespaces:
                 #Connect to ConfigDB in each namespace
-                self.ns_cfg_db[ns] = ConfigDBConnector(namespace=ns)
+                self.ns_cfg_db[ns] = ConfigDBConnector(use_unix_socket_path=True, namespace=ns)
                 self.ns_cfg_db[ns].connect(wait_for_init=True, retry_on=True)
 
                 #Connect to stateDB in each namespace
@@ -717,7 +717,7 @@ class FeatureDaemon:
         if swsscommon.RestartWaiter.isAdvancedBootInProgress(self.state_db_conn):
             self.advanced_boot = True
             swsscommon.RestartWaiter.waitAdvancedBootDone()
-        self.config_db = ConfigDBConnector()
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         self.selector = swsscommon.Select()
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')

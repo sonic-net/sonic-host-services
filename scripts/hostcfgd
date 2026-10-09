@@ -2429,7 +2429,7 @@ class HostConfigDaemon:
             swsscommon.RestartWaiter.waitAdvancedBootDone()
         # Just a sanity check to verify if the CONFIG_DB has been initialized
         # before moving forward
-        self.config_db = ConfigDBConnector()
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
 
