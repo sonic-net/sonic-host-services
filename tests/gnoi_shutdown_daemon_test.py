@@ -106,7 +106,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             timeout = gnoi_shutdown_daemon._get_halt_timeout()
             self.assertEqual(timeout, gnoi_shutdown_daemon.STATUS_POLL_TIMEOUT_SEC)
 
-    @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
+    @patch('gnoi_shutdown_daemon.swsscommon.DBConnector')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
@@ -156,7 +156,9 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 gnoi_shutdown_daemon.main()
 
         # Verify initialization
-        mock_db_connect.assert_has_calls([call("STATE_DB"), call("CONFIG_DB")])
+        mock_db_connect.assert_has_calls([
+            call("STATE_DB", 0, False), call("CONFIG_DB", 0, False)
+        ])
         mock_gnoi_reboot_handler.assert_called_with(mock_state_db, mock_config_db, mock_chassis)
 
         # Verify that a thread was created to handle the transition
@@ -342,7 +344,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         self.assertEqual(ports, ["12345", "8080", "50052"])
         self.assertEqual(mock_config.hget.call_count, 3)
 
-    @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
+    @patch('gnoi_shutdown_daemon.swsscommon.DBConnector')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     def test_main_loop_no_dpu_name(self, mock_config_db_connector_class, mock_db_connect):
         """Test main loop with a malformed key."""
@@ -384,7 +386,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 gnoi_shutdown_daemon.main()
 
-    @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
+    @patch('gnoi_shutdown_daemon.swsscommon.DBConnector')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     def test_main_loop_get_transition_exception(self, mock_config_db_connector_class, mock_db_connect):
         """Test main loop when hget raises an exception."""
@@ -760,7 +762,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         handler._wait_for_gnoi_halt_in_progress.assert_called_once()
         handler._send_reboot_command.assert_called_once()
 
-    @patch('gnoi_shutdown_daemon.daemon_base.db_connect')
+    @patch('gnoi_shutdown_daemon.swsscommon.DBConnector')
     @patch('gnoi_shutdown_daemon.GnoiRebootHandler')
     @patch('gnoi_shutdown_daemon.swsscommon.ConfigDBConnector')
     @patch('threading.Thread')
@@ -771,8 +773,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         mock_thread_config_db = MagicMock()
         mock_thread_state_db = MagicMock()
 
-        # main() calls db_connect("STATE_DB") then ("CONFIG_DB");
-        # handle_and_cleanup then calls ("CONFIG_DB") and ("STATE_DB") for its own thread.
+        # main() connects to STATE_DB then CONFIG_DB; handle_and_cleanup
+        # opens CONFIG_DB and STATE_DB connections for its own thread.
         mock_db_connect.side_effect = [mock_state_db, mock_config_db,
                                        mock_thread_config_db, mock_thread_state_db]
         mock_config_db.hget.return_value = "down"
@@ -807,8 +809,8 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         target_fn(*target_args)
 
         # Verify per-thread connections were opened
-        mock_db_connect.assert_any_call("CONFIG_DB")
-        mock_db_connect.assert_any_call("STATE_DB")
+        mock_db_connect.assert_any_call("CONFIG_DB", 0, False)
+        mock_db_connect.assert_any_call("STATE_DB", 0, False)
 
         # Verify _handle_transition received the per-thread connections, not the shared ones
         mock_handler_instance._handle_transition.assert_called_once_with(

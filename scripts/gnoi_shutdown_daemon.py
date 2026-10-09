@@ -12,7 +12,6 @@ import time
 import subprocess
 import os
 import threading
-import sonic_py_common.daemon_base as daemon_base
 from sonic_platform_base.module_base import ModuleBase
 from sonic_py_common import syslogger, device_info
 from swsscommon import swsscommon
@@ -333,11 +332,11 @@ class GnoiRebootHandler:
 
 def main():
     # Connect for STATE_DB (for gnoi_halt_in_progress flag) and CONFIG_DB
-    state_db = daemon_base.db_connect("STATE_DB")
-    config_db = daemon_base.db_connect("CONFIG_DB")
+    state_db = swsscommon.DBConnector("STATE_DB", 0, False)
+    config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
 
     # Also connect ConfigDBConnector for pubsub support (has get_redis_client method)
-    config_db_connector = swsscommon.ConfigDBConnector()
+    config_db_connector = swsscommon.ConfigDBConnector(use_unix_socket_path=True)
     config_db_connector.connect(wait_for_init=False)
 
     # Get chassis instance for accessing ModuleBase APIs
@@ -420,8 +419,10 @@ def main():
                             # Per-thread DB connections: a redis connection is a
                             # single non-thread-safe socket, so sharing one lets
                             # concurrent DPU reads cross their IP/port values.
-                            thread_config_db = daemon_base.db_connect("CONFIG_DB")
-                            thread_state_db = daemon_base.db_connect("STATE_DB")
+                            thread_config_db = swsscommon.DBConnector(
+                                "CONFIG_DB", 0, False)
+                            thread_state_db = swsscommon.DBConnector(
+                                "STATE_DB", 0, False)
                             reboot_handler._handle_transition(
                                 dpu,
                                 config_db=thread_config_db,
