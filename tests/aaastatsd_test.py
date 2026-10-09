@@ -144,3 +144,56 @@ def test_clear_only_truncates_local_stats_files(tmp_path):
 
     assert local_file.read_text() == ''
     assert other_file.read_text() == 'keep data'
+
+
+def test_radius_statistics_uses_unix_socket_for_counters_db():
+    counters_db = mock.Mock()
+
+    with mock.patch.object(aaastatsd, 'ConfigDBConnector',
+                           return_value=counters_db) as connector, \
+            mock.patch.object(aaastatsd, 'RadiusCountersDbMon') as db_monitor, \
+            mock.patch.object(aaastatsd, 'RadiusStatsFileMon'), \
+            mock.patch.object(aaastatsd.syslog, 'syslog'):
+        aaastatsd.RadiusStatistics(mock.Mock(), {}, {})
+
+    connector.assert_called_once_with(use_unix_socket_path=True)
+    counters_db.db_connect.assert_called_once_with(
+        'COUNTERS_DB', wait_for_init=False, retry_on=True)
+    db_monitor.return_value.start.assert_called_once_with()
+
+
+def test_radius_update_uses_unix_socket_for_counters_db(tmp_path):
+    counters_db = mock.Mock()
+    radius_stats = aaastatsd.RadiusStatistics.__new__(
+        aaastatsd.RadiusStatistics)
+    radius_stats.radius_global = {'statistics': 'True'}
+    radius_stats.radius_counter_names = []
+
+    with mock.patch.object(aaastatsd, 'RADIUS_PAM_AUTH_CONF_STATS_DIR',
+                           str(tmp_path) + os.path.sep), \
+            mock.patch.object(aaastatsd, 'ConfigDBConnector',
+                              return_value=counters_db) as connector:
+        radius_stats.handle_update('192.0.2.1')
+
+    connector.assert_called_once_with(use_unix_socket_path=True)
+    counters_db.db_connect.assert_called_once_with(
+        'COUNTERS_DB', wait_for_init=False, retry_on=False)
+    counters_db.set_entry.assert_called_once_with(
+        'RADIUS_SERVER_STATS', '192.0.2.1', None)
+
+
+def test_aaa_stats_daemon_uses_unix_socket_for_config_db():
+    config_db = mock.Mock()
+    config_db.get_table.side_effect = [{}, {}]
+
+    with mock.patch.object(aaastatsd, 'ConfigDBConnector',
+                           return_value=config_db) as connector, \
+            mock.patch.object(aaastatsd, 'RadiusStatistics') as radius_stats, \
+            mock.patch.object(aaastatsd.syslog, 'syslog'):
+        daemon = aaastatsd.AAAStatsDaemon()
+
+    connector.assert_called_once_with(use_unix_socket_path=True)
+    config_db.connect.assert_called_once_with(
+        wait_for_init=True, retry_on=True)
+    radius_stats.assert_called_once_with(config_db, {}, {})
+    assert daemon.config_db is config_db
