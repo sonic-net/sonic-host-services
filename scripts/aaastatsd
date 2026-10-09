@@ -139,7 +139,7 @@ class RadiusStatistics:
             self.radius_server_update(row, radius_conf[row])
 
 
-        self.counters_db = ConfigDBConnector()
+        self.counters_db = ConfigDBConnector(use_unix_socket_path=True)
         self.counters_db.db_connect('COUNTERS_DB', wait_for_init=False,
 		retry_on=True)
         syslog.syslog(syslog.LOG_INFO, 'CountersDB connect success')
@@ -207,7 +207,7 @@ class RadiusStatistics:
                 radius_counters = lines[0].split(' ')
                 entry = dict(zip(self.radius_counter_names, radius_counters))
 
-        counters_db = ConfigDBConnector()
+        counters_db = ConfigDBConnector(use_unix_socket_path=True)
         counters_db.db_connect('COUNTERS_DB', wait_for_init=False,
 		retry_on=False)
 
@@ -217,7 +217,7 @@ class RadiusStatistics:
 
 class AAAStatsDaemon:
     def __init__(self):
-        self.config_db = ConfigDBConnector()
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
 
