@@ -1,0 +1,376 @@
+# WARNING: QUALIFICATION-ONLY RULES. DO NOT INSTALL THIS FILE AS THE DAEMON'S
+# ACTIVE RULESET. It deliberately contains localized platform-extension
+# failures and is intended only for on-demand DLDD CLI validation on the
+# identified DUT software generation.
+schema_version: "0.0.1"
+signatures:
+  - signature:
+      metadata:
+        name: DLDD_DUT_EXTENSION_CONTROL
+        id: 9999219
+        version: "1.0.0"
+        description: Deterministic Redis control for the extension-negative catalog.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, extension-control]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|DLDD_ACTIVE_TEST"
+                path: value
+              evaluation:
+                type: comparison
+                operator: "=="
+                value: 1
+                value_configs: {type: int, unit: state}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_UNKNOWN_SELECTOR
+        id: 9999220
+        version: "1.0.0"
+        description: Cisco DSE does not configure this source selector.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-unknown-selector]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{dldd_unknown*}:{get_value()}"
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_UNKNOWN_SOURCE_FUNCTION
+        id: 9999221
+        version: "1.0.0"
+        description: Cisco DSE does not expose this function on temperature sources.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-unknown-source-function]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{temperature*}:{get_unknown_source()}"
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_SOURCE_ROLE
+        id: 9999222
+        version: "1.0.0"
+        description: Uses an evaluation-only threshold function as a source.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-source-role]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{temperature*}:{get_high_threshold()}"
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_EVALUATION_ROLE
+        id: 9999223
+        version: "1.0.0"
+        description: Uses a source-only value function as an evaluator.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-evaluation-role]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{temperature*}:{get_value()}"
+              evaluation:
+                type: dse
+                value: "{temperature*}:{get_value()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_PLATFORM_API_HOOK
+        id: 9999224
+        version: "1.0.0"
+        description: References a Platform API hook absent from this DUT.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-platform-api-hook]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: platform_api
+              path:
+                hook: dldd_missing_platform_hook
+                operation: get_value
+              evaluation: {type: boolean, value: false}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_ACTION_UNSUPPORTED
+        id: 9999225
+        version: "1.0.0"
+        description: Cisco DSE does not expose local action resolution.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-action]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|DLDD_ACTIVE_TEST"
+                path: value
+              evaluation: {type: boolean, value: true}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          local_actions:
+            wait_period: 0
+            action_list:
+              - action:
+                  type: dse
+                  command: "{temperature*}:{reset()}"
+                  timeout: 5
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_DSE_QUERY_UNSUPPORTED
+        id: 9999226
+        version: "1.0.0"
+        description: Cisco DSE does not expose artifact query resolution.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-query]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: redis
+              path:
+                database: STATE_DB
+                table: DLDD_TEST_SENSOR
+                key: "DLDD_TEST_SENSOR|DLDD_ACTIVE_TEST"
+                path: value
+              evaluation: {type: boolean, value: true}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+        log_collection:
+          queries:
+            - query:
+                type: dse
+                command: "{temperature*}:{get_status()}"
+                timeout: 5
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_CISCO_DSE_DIRECT_RESULT
+        id: 9999227
+        version: "1.0.0"
+        description: Cisco DSE has no direct-result source function.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-direct-result]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{temperature*}:{get_direct_value()}"
+              evaluation:
+                type: comparison
+                operator: ">="
+                value: 1000000
+                value_configs: {type: float, unit: celsius}
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_CISCO_DSE_FIXED_EVALUATION
+        id: 9999228
+        version: "1.0.0"
+        description: Cisco DSE has no fixed-result evaluation function.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-fixed-evaluation]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{temperature*}:{get_value()}"
+              evaluation:
+                type: dse
+                value: "{temperature*}:{get_fixed_threshold()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600
+
+  - signature:
+      metadata:
+        name: DLDD_BROKEN_CISCO_DSE_TRUSTED_COMPARATOR
+        id: 9999229
+        version: "1.0.0"
+        description: Cisco DSE has no trusted-callable comparator function.
+        product_ids: [8102_28fh_dpu_o]
+        sw_versions: [grboudre_dldd-impl.0-1d85491a7]
+        component: DLDD_QUALIFICATION
+        symptom: SYMPTOM_UNKNOWN
+        error_type: DLDD_TEST
+        severity: UNKNOWN
+        tags: [dldd-dut-qualification, broken-dse-trusted-comparator]
+      conditions:
+        logic: "1"
+        logic_lookback_time: 0
+        events:
+          - event:
+              id: 1
+              type: dse
+              path: "{temperature*}:{get_value()}"
+              evaluation:
+                type: dse
+                value: "{temperature*}:{get_trusted_comparator()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          remote_actions:
+            action_list: [ACTION_REPLACE]
+            time_window: 3600

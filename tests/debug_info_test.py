@@ -125,13 +125,88 @@ class TestDebugArtifactCollector:
         rc, msg = self.debug_info_module.check("anything")
         assert rc == 0
         assert "ready" in msg.lower()
-    
-    def test_ack_failure(self):
-        with mock.patch("debug_info.os.remove", side_effect=OSError("fail")):
-            rc, msg = self.debug_info_module.ack("/tmp/foo")
+
+    def test_ack_deletes_regular_artifact(self):
+        artifact = os.path.join(self.base_path, "artifact.tar.gz")
+        with open(artifact, "w") as stream:
+            stream.write("artifact")
+        with mock.patch("debug_info.ARTIFACT_DIR", self.base_path):
+            rc, msg = self.debug_info_module.ack(artifact)
+        assert rc == 0
+        assert msg == ""
+        assert not os.path.exists(artifact)
+
+    def test_ack_rejects_unsafe_and_non_regular_artifacts(self):
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = os.path.join(outside_dir, "outside-artifact")
+            with open(outside, "w") as stream:
+                stream.write("outside")
+            directory = os.path.join(self.base_path, "directory")
+            os.mkdir(directory)
+            symlink = os.path.join(self.base_path, "artifact-link")
+            os.symlink(outside, symlink)
+
+            cases = [
+                ("", "missing"),
+                ("relative-artifact", "absolute path"),
+                (self.base_path, "outside the allowed directory"),
+                (os.path.join(self.base_path, "..", "outside-artifact"), "parent traversal"),
+                (os.path.join(self.base_path, "bad\x00name"), "NUL byte"),
+                (directory, "regular file"),
+                (symlink, "symbolic links"),
+                (os.path.join(self.base_path, "missing.tar.gz"), "not found"),
+            ]
+            with mock.patch("debug_info.ARTIFACT_DIR", self.base_path):
+                for artifact, expected in cases:
+                    rc, msg = self.debug_info_module.ack(artifact)
+                    assert rc == 1
+                    assert expected in msg
+
+            assert os.path.exists(outside)
+            assert os.path.lexists(symlink)
+
+    def test_ack_rejects_intermediate_symlink(self):
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = os.path.join(outside_dir, "artifact.tar.gz")
+            with open(outside, "w") as stream:
+                stream.write("outside")
+            symlink_dir = os.path.join(self.base_path, "linked-directory")
+            os.symlink(outside_dir, symlink_dir)
+
+            with mock.patch("debug_info.ARTIFACT_DIR", self.base_path):
+                rc, msg = self.debug_info_module.ack(
+                    os.path.join(symlink_dir, "artifact.tar.gz"))
+
             assert rc == 1
-            assert "Failed to delete" in msg
-    
+            assert "symbolic links" in msg
+            assert os.path.exists(outside)
+
+    def test_ack_does_not_unlink_changed_artifact(self):
+        artifact = os.path.join(self.base_path, "artifact.tar.gz")
+        with open(artifact, "w") as stream:
+            stream.write("artifact")
+
+        real_stat = os.stat
+        stat_calls = []
+
+        def report_replaced_inode(*args, **kwargs):
+            result = real_stat(*args, **kwargs)
+            stat_calls.append(result)
+            if len(stat_calls) == 2:
+                return mock.Mock(
+                    st_mode=result.st_mode,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino + 1)
+            return result
+
+        with mock.patch("debug_info.ARTIFACT_DIR", self.base_path), \
+             mock.patch("debug_info.os.stat", side_effect=report_replaced_inode):
+            rc, msg = self.debug_info_module.ack(artifact)
+
+        assert rc == 1
+        assert "changed while acknowledgement" in msg
+        assert os.path.exists(artifact)
+
     def test_register(self):
         cls, modname = register()
         assert cls is DebugArtifactCollector

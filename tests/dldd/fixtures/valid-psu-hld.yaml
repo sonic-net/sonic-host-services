@@ -1,0 +1,84 @@
+schema_version: "0.0.1"
+local_action_default_timeout: 300
+signatures:
+  - signature:
+      metadata:
+        name: PSU_OV_FAULT
+        id: 1000001
+        version: "1.0.0"
+        description: >
+          An over voltage fault has occurred on the output feed from the PSU
+          to the chassis.
+        product_ids:
+          - "8122-64EHF-O P1"
+          - "8122-64EHF-O P2"
+        sw_versions:
+          - "202311.3.0.1"
+        component: PSU
+        symptom: "SYMPTOM_OVER_THRESHOLD"
+        error_type: "POWER"
+        severity: "CRITICAL"
+        priority: 1
+        tags:
+          - power
+          - voltage
+      conditions:
+        logic: "1 OR 2"
+        logic_lookback_time: 60
+        events:
+          - event:
+              id: 1
+              type: i2c
+              instances: ["PSU0:IO-MUX-6", "PSU1:IO-MUX-7"]
+              path:
+                bus: ["IO-MUX-6", "IO-MUX-7"]
+                chip_addr: "0x58"
+                i2c_type: get
+                command: "0x7A"
+                size: b
+                scaling: "N/A"
+              evaluation:
+                type: mask
+                logic: "&"
+                value: "0b10000000"
+              match_count: 1
+              match_period: 0
+          - event:
+              id: 2
+              type: dse
+              path: "{psu*}:{get_fault()}"
+              evaluation:
+                type: dse
+                operator: equals
+                value: "{psu*}:{failure_value()}"
+              match_count: 1
+              match_period: 0
+      actions:
+        repair_actions:
+          local_actions:
+            wait_period: 60
+            action_list:
+              - action:
+                  type: dse
+                  command: "PSU:reset()"
+                  timeout: 120
+          remote_actions:
+            action_list:
+              - ACTION_RESEAT
+              - ACTION_COLD_REBOOT
+              - ACTION_POWER_CYCLE
+              - ACTION_FACTORY_RESET
+              - ACTION_REPLACE
+            time_window: 86400
+        log_collection:
+          logs:
+            - log: "/var/log/platform.log"
+          queries:
+            - query:
+                type: dse
+                command: "PSU:get_status()"
+                timeout: 60
+            - query:
+                type: cli
+                argv: ["/usr/local/bin/show", "platform", "voltage"]
+                timeout: 60

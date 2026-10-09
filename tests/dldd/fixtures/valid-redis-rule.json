@@ -1,0 +1,87 @@
+{
+  "schema_version": "0.0.1",
+  "local_action_default_timeout": 300,
+  "signatures": [
+    {
+      "signature": {
+        "metadata": {
+          "name": "PSU_OV_FAULT",
+          "id": 1000001,
+          "version": "1.0.0",
+          "description": "PSU output voltage is above its safe threshold.",
+          "product_ids": ["PRODUCT-A"],
+          "sw_versions": ["202311.3.0.1"],
+          "component": "PSU",
+          "symptom": "SYMPTOM_OVER_THRESHOLD",
+          "error_type": "POWER",
+          "severity": "CRITICAL",
+          "tags": ["power", "voltage"]
+        },
+        "conditions": {
+          "logic": "1",
+          "logic_lookback_time": 60,
+          "events": [
+            {
+              "event": {
+                "id": 1,
+                "type": "redis",
+                "path": {
+                  "database": "STATE_DB",
+                  "table": "PSU_INFO",
+                  "key": "PSU_INFO|PSU0",
+                  "path": "value/output_voltage"
+                },
+                "evaluation": {
+                  "type": "comparison",
+                  "operator": ">",
+                  "value": 50.0,
+                  "unit": "volts",
+                  "value_configs": {
+                    "type": "float",
+                    "unit": "volts"
+                  }
+                },
+                "match_count": 1,
+                "match_period": 0
+              }
+            }
+          ]
+        },
+        "actions": {
+          "repair_actions": {
+            "local_actions": {
+              "wait_period": 60,
+              "action_list": [
+                {
+                  "action": {
+                    "type": "cli",
+                    "argv": ["/usr/local/bin/psu-reset", "PSU0"]
+                  }
+                }
+              ]
+            },
+            "remote_actions": {
+              "action_list": ["ACTION_RESEAT", "ACTION_REPLACE"],
+              "time_window": 86400
+            }
+          },
+          "log_collection": {
+            "logs": [
+              {"log": "/var/log/platform.log"}
+            ],
+            "queries": [
+              {
+                "query": {
+                  "type": "cli",
+                  "argv": ["/usr/local/bin/show", "platform", "psu"],
+                  "timeout": 60,
+                  "max_output_bytes": 1048576
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

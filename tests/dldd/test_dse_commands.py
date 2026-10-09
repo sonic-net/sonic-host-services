@@ -1,0 +1,93 @@
+from __future__ import absolute_import
+
+import json
+from pathlib import Path
+
+from dldd.dse import (
+    DSEContext,
+    DSEHook,
+    DSEReference,
+    DSERegistry,
+    ResolvedCommand,
+    ResolvedEvaluation,
+)
+from dldd.validation import ValidationContext, validate_document
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "valid-redis-rule.json"
+
+
+class RecordingHook(DSEHook):
+    def __init__(self):
+        self.action_command = None
+        self.query_command = None
+
+    def resolve_source(self, reference, context):
+        return ()
+
+    def resolve_evaluation(self, reference, context):
+        return ResolvedEvaluation(comparator=lambda value: bool(value))
+
+    def resolve_action(self, command, context):
+        self.action_command = command
+        return ResolvedCommand(executor=lambda operation: None)
+
+    def resolve_query(self, command, context):
+        self.query_command = command
+        return ResolvedCommand(executor=lambda operation: None)
+
+
+def test_dse_action_and_query_resolution_contract():
+    hook = RecordingHook()
+    registry = DSERegistry(hook=hook)
+
+    registry.resolve_action("PSU:reset()", DSEContext())
+    registry.resolve_query("{psu*}:{get_status()}", DSEContext())
+
+    assert hook.action_command == DSEReference(selector="PSU", function="reset")
+    assert hook.query_command == DSEReference(
+        selector="psu*", function="get_status"
+    )
+
+    hook = RecordingHook()
+    registry = DSERegistry(hook=hook)
+    action = "reset power rail 7"
+    query = "collect-blackbox --scope psu0"
+
+    registry.resolve_action(action, DSEContext())
+    registry.resolve_query(query, DSEContext())
+
+    assert hook.action_command is action
+    assert hook.query_command is query
+
+    with FIXTURE.open("r", encoding="utf-8") as stream:
+        document = json.load(stream)
+    actions = document["signatures"][0]["signature"]["actions"]
+    local = actions["repair_actions"]["local_actions"]
+    local["action_list"] = [
+        {
+            "action": {
+                "type": "dse",
+                "command": "reset power rail 7",
+                "timeout": 10,
+            }
+        }
+    ]
+    actions["log_collection"]["queries"] = [
+        {"query": {"type": "dse", "command": "collect blackbox for psu0"}}
+    ]
+    hook = RecordingHook()
+
+    result = validate_document(
+        document,
+        context=ValidationContext(dse_registry=DSERegistry(hook=hook)),
+    )
+
+    assert result.activation_valid
+    assert hook.action_command == "reset power rail 7"
+    assert hook.query_command == "collect blackbox for psu0"
+    materialized_actions = result.materialized_rules[0].signature.actions
+    assert callable(
+        materialized_actions.repair_actions.local_actions.action_list[0].executor
+    )
+    assert callable(materialized_actions.log_collection.queries[0].executor)
