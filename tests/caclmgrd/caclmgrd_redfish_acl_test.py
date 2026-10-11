@@ -110,6 +110,8 @@ class TestCaclmgrdRedfishAcl(TestCase):
         self.caclmgrd.ControlPlaneAclManager.get_chassis_midplane_interface_ip = mock.MagicMock(return_value='')
         caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
         self.assertFalse(caclmgrd_daemon.RedfishAllowed)
+        caclmgrd_daemon.program_redfish_egress_nat = mock.MagicMock()
+        caclmgrd_daemon.set_mgmt_interface_forwarding = mock.MagicMock()
 
         def sub_with(events):
             sub = mock.MagicMock()
@@ -122,6 +124,8 @@ class TestCaclmgrdRedfishAcl(TestCase):
             sub_with([("redfish", "SET", (("state", "enabled"),))]), "", notif)
         self.assertTrue(caclmgrd_daemon.RedfishAllowed)
         self.assertIn("", notif)
+        caclmgrd_daemon.program_redfish_egress_nat.assert_called_with(True)
+        caclmgrd_daemon.set_mgmt_interface_forwarding.assert_called_with(True)
 
         # disable: flag flips False and namespace queued
         notif = set()
@@ -129,6 +133,8 @@ class TestCaclmgrdRedfishAcl(TestCase):
             sub_with([("redfish", "SET", (("state", "disabled"),))]), "", notif)
         self.assertFalse(caclmgrd_daemon.RedfishAllowed)
         self.assertIn("", notif)
+        caclmgrd_daemon.program_redfish_egress_nat.assert_called_with(False)
+        caclmgrd_daemon.set_mgmt_interface_forwarding.assert_called_with(False)
 
         # non-redfish FEATURE event: ignored, nothing queued
         notif = set()
