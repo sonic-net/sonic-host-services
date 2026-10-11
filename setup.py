@@ -50,7 +50,8 @@ setup(
         'scripts/switch_platform_init.py',
         'scripts/sonic-host-server',
         'scripts/ldap.py',
-        'scripts/console-monitor'
+        'scripts/console-monitor',
+        'scripts/ire_watchdog'
     ],
     install_requires = [
         'dbus-python',
