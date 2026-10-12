@@ -15,6 +15,7 @@ Usage:
     console-monitor dte [tty] [baud]      # Start DTE service
 """
 
+import glob
 import os
 import re
 import sys
@@ -30,7 +31,7 @@ import subprocess
 import select
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional, Callable, Dict, Set
+from typing import Optional, Callable, Dict, Set, Tuple
 
 from swsscommon.swsscommon import (
     DBConnector,
@@ -76,6 +77,7 @@ def set_log_level(level_str: str) -> None:
 HEARTBEAT_INTERVAL = 5.0      # DTE heartbeat send interval (seconds)
 HEARTBEAT_TIMEOUT = 15.0      # DCE heartbeat timeout (seconds)
 RETRY_INTERVAL = 3.0          # Retry interval for waiting phases (seconds)
+ERROR_LOG_INTERVAL = 60.0     # Retry intervl to open log file/report logging error (seconds)
 
 # Baud rate mapping
 BAUD_MAP = {
@@ -93,8 +95,28 @@ BAUD_MAP = {
 CONSOLE_PORT_TABLE = "CONSOLE_PORT"
 CONSOLE_SWITCH_TABLE = "CONSOLE_SWITCH"
 
+# STATE_DB logging runtime fields. logging_status distinguishes "never
+# requested" (disabled) from "requested but the log file could not be opened"
+# (failed). logging_error is present only while status is failed.
+LOGGING_STATUS_KEY = "logging_status"
+LOGGING_ERROR_KEY = "logging_error"
+LOGGING_STATUS_DISABLED = "disabled"
+LOGGING_STATUS_ACTIVE = "active"
+LOGGING_STATUS_FAILED = "failed"
+
 # Default baud rate
 DEFAULT_BAUD = 9600
+
+# Console logrotate defaults
+LOGROTATE_DIR = "/etc/logrotate.d"
+LOGROTATE_CONF_PREFIX = "console-monitor-logging-"
+DEFAULT_LOG_FILE_TEMPLATE = "/var/log/console-{}.log"
+# NOTE: Keep these defaults aligned with src/sonic-utilities/config/console.py
+# (DEFAULT_LOGROTATE_SIZE / DEFAULT_LOGROTATE_COUNT).
+DEFAULT_LOGROTATE_SIZE = "10M"
+DEFAULT_LOGROTATE_COUNT = 10
+# Same pattern as sonic-utilities config/console.py LOGROTATE_SIZE_PATTERN.
+LOGROTATE_SIZE_PATTERN = re.compile(r'^[0-9]+[kKMG]?$')
 
 # Kernel command line path
 PROC_CMDLINE = "/proc/cmdline"
@@ -150,6 +172,27 @@ MAX_FRAME_BUFFER_SIZE = 64
 # SOF/EOF sequences
 SOF_SEQUENCE = bytes([SpecialChar.SOF] * SOF_LEN)
 EOF_SEQUENCE = bytes([SpecialChar.EOF] * EOF_LEN)
+
+
+def log_error_throttled(
+    last_time: float,
+    count: int,
+    message: str,
+    interval: float = ERROR_LOG_INTERVAL,
+) -> Tuple[float, int]:
+    """Log *message* at most once per *interval*.
+
+    Returns the updated (last_log_time, pending_count). Callers keep that
+    state so a tight I/O loop cannot flood syslog.
+    """
+    now = time.monotonic()
+    count += 1
+    if now - last_time < interval:
+        return last_time, count
+    if count > 1 and last_time > 0.0:
+        message = f"{message} ({count} occurrences)"
+    log.error(message)
+    return now, 0
 
 
 def log_binary_data(data: bytes, direction: str) -> None:
@@ -490,6 +533,58 @@ def calculate_filter_timeout(baud: int, multiplier: int = 3) -> float:
     return char_time * MAX_FRAME_BUFFER_SIZE * multiplier
 
 
+def logrotate_conf_path(link_id: str) -> str:
+    """Return the logrotate config path: /etc/logrotate.d/console-monitor-logging-<line>."""
+    return os.path.join(LOGROTATE_DIR, f"{LOGROTATE_CONF_PREFIX}{link_id}")
+
+
+def default_log_file(link_id: str) -> str:
+    """Return the default console log file path for a line."""
+    return DEFAULT_LOG_FILE_TEMPLATE.format(link_id)
+
+
+def validate_log_file_path(path: str) -> str:
+    """Reject log_file values that cannot be safely emitted in a logrotate stanza."""
+    if not isinstance(path, str) or not path:
+        raise ValueError("log file path must be a non-empty string")
+    if not os.path.isabs(path):
+        raise ValueError("log file path must be an absolute path")
+    if any(ch.isspace() for ch in path):
+        raise ValueError("log file path must not contain whitespace")
+    if '{' in path or '}' in path:
+        raise ValueError("log file path must not contain '{' or '}'")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        raise ValueError("log file path must not contain control characters")
+    if any(ch in path for ch in ('"', "'", '`', '\\')):
+        raise ValueError("log file path must not contain quotes or backslashes")
+    return path
+
+
+def validate_logrotate_size(size: str) -> str:
+    """Reject logrotate_size values that cannot be interpolated into a stanza."""
+    size_str = size if isinstance(size, str) else str(size)
+    if not LOGROTATE_SIZE_PATTERN.fullmatch(size_str):
+        raise ValueError(f"invalid logrotate size '{size_str}'")
+    return size_str
+
+
+def build_logrotate_config(log_file: str, size: str, count: int) -> str:
+    """Build logrotate configuration for a console log file."""
+    quoted_path = '"{}"'.format(validate_log_file_path(log_file))
+    size = validate_logrotate_size(size)
+    return (
+        f"{quoted_path} {{\n"
+        f"    missingok\n"
+        f"    notifempty\n"
+        f"    size {size}\n"
+        f"    rotate {count}\n"
+        f"    compress\n"
+        f"    delaycompress\n"
+        f"    copytruncate\n"
+        f"}}\n"
+    )
+
+
 # ============================================================
 # PTY Bridge (runs as independent process, exec socat)
 # ============================================================
@@ -566,6 +661,8 @@ class ProxyService:
         self.baud: int = DEFAULT_BAUD
         self.device_path: str = ""
         self.ptm_path: str = ""
+        self.logging_enabled: bool = False
+        self.log_file_path: str = ""
 
         # Proxy resources
         self.state_db: Optional[DBConnector] = None
@@ -575,6 +672,7 @@ class ProxyService:
         self.mirror_control_server: Optional[MirrorControlServer] = None
         self.ser_fd: int = -1
         self.ptm_fd: int = -1
+        self.log_fd: int = -1
         self.filter: Optional[FrameFilter] = None
 
         # State tracking
@@ -582,6 +680,11 @@ class ProxyService:
         self._last_heartbeat_time: float = 0.0
         self._last_data_activity: float = 0.0
         self._last_serial_data_time: float = 0.0
+        self._last_write_log_error: float = 0.0
+        self._write_log_error_count: int = 0
+        self._logging_status: Optional[str] = None
+        self._logging_error: str = ""
+        self._last_log_open_attempt: float = 0.0
 
         # Wakeup pipe for signal handling
         self._wake_r: int = -1
@@ -642,7 +745,12 @@ class ProxyService:
             entry = config_db.get_entry(CONSOLE_PORT_TABLE, self.link_id)
             if entry:
                 self.baud = int(entry.get('baud_rate', DEFAULT_BAUD))
-                log.info(f"[{self.link_id}] Config loaded: baud={self.baud}")
+                self.logging_enabled = entry.get('logging_enabled', 'no') == 'yes'
+                self.log_file_path = entry.get('log_file') or default_log_file(self.link_id)
+                log.info(f"[{self.link_id}] Config loaded: baud={self.baud}, "
+                         f"logging={'enabled' if self.logging_enabled else 'disabled'}, "
+                         f"log_file={self.log_file_path}")
+                log.debug(f"[{self.link_id}] Full CONSOLE_PORT entry: {entry}")
                 return True
 
             log.debug(f"[{self.link_id}] Config not found, retrying in {RETRY_INTERVAL}s...")
@@ -696,6 +804,8 @@ class ProxyService:
             # Open PTM
             self.ptm_fd = os.open(self.ptm_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
 
+            self._open_log_file()
+
             # Create frame filter
             self.filter = FrameFilter(
                 on_frame=self._on_frame_received,
@@ -732,6 +842,13 @@ class ProxyService:
                 time_since_heartbeat = now - self._last_heartbeat_time
                 select_timeout = max(0.1, HEARTBEAT_TIMEOUT - time_since_heartbeat)
 
+                if self.logging_enabled and self.log_fd < 0 and self.log_file_path:
+                    remaining_log_retry = ERROR_LOG_INTERVAL - (now - self._last_log_open_attempt)
+                    if remaining_log_retry > 0:
+                        select_timeout = min(select_timeout, remaining_log_retry)
+                    else:
+                        select_timeout = 0
+
                 # If filter has pending data, consider filter timeout
                 if self.filter and self.filter.has_pending_data():
                     time_since_serial = now - self._last_serial_data_time
@@ -767,6 +884,7 @@ class ProxyService:
 
                 # Check heartbeat timeout
                 self._check_heartbeat_timeout()
+                self._retry_log_open()
 
                 # Check filter timeout
                 if self.filter and self.filter.has_pending_data() and not serial_data_received:
@@ -778,6 +896,49 @@ class ProxyService:
                 if self.running:
                     log.error(f"[{self.link_id}] Loop error: {e}")
                     time.sleep(0.1)
+
+    def _open_log_file(self) -> bool:
+        """Open the configured log file and publish logging status to STATE_DB."""
+        self._last_log_open_attempt = time.monotonic()
+        if not self.logging_enabled or not self.log_file_path:
+            self.log_fd = -1
+            self._update_logging_state(LOGGING_STATUS_DISABLED)
+            return False
+        try:
+            self.log_fd = os.open(
+                self.log_file_path,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                0o640,
+            )
+            log.info(f"[{self.link_id}] Console logging enabled: {self.log_file_path}")
+            self._update_logging_state(LOGGING_STATUS_ACTIVE)
+            return True
+        except OSError as e:
+            log.error(f"[{self.link_id}] Failed to open log file {self.log_file_path}: {e}")
+            self.log_fd = -1
+            self._update_logging_state(LOGGING_STATUS_FAILED, str(e))
+            return False
+
+    def _retry_log_open(self) -> None:
+        """Retry a failed log open so a transient error can recover without restart."""
+        if not self.logging_enabled or self.log_fd >= 0 or not self.log_file_path:
+            return
+        if time.monotonic() - self._last_log_open_attempt < ERROR_LOG_INTERVAL:
+            return
+        self._open_log_file()
+
+    def _write_log(self, data: bytes) -> None:
+        """Write console I/O data to the configured log file."""
+        if self.log_fd < 0 or not data:
+            return
+        try:
+            os.write(self.log_fd, data)
+        except OSError as e:
+            self._last_write_log_error, self._write_log_error_count = log_error_throttled(
+                self._last_write_log_error,
+                self._write_log_error_count,
+                f"[{self.link_id}] Failed to write to log file: {e}",
+            )
 
     def _on_serial_read(self) -> None:
         """Serial data read callback"""
@@ -816,7 +977,8 @@ class ProxyService:
             log.warning(f"[{self.link_id}] Unknown frame type: {frame.frame_type}")
 
     def _on_user_data_received(self, data: bytes) -> None:
-        """User data callback"""
+        """User data callback (device -> user, includes echoed input)."""
+        self._write_log(data)
         if self.ptm_fd >= 0:
             try:
                 written = os.write(self.ptm_fd, data)
@@ -860,12 +1022,36 @@ class ProxyService:
         except Exception as e:
             log.error(f"[{self.link_id}] Failed to update state: {e}")
 
+    def _update_logging_state(self, status: str, error: str = "") -> None:
+        """Publish logging runtime status to STATE_DB (only when it changes)."""
+        if status == self._logging_status and error == self._logging_error:
+            return
+
+        self._logging_status = status
+        self._logging_error = error
+        if self.state_table is None:
+            return
+
+        try:
+            fields = [(LOGGING_STATUS_KEY, status)]
+            if error:
+                fields.append((LOGGING_ERROR_KEY, error))
+            self.state_table.set(self.link_id, fields)
+            if not error:
+                self.state_table.hdel(self.link_id, LOGGING_ERROR_KEY)
+            extra = f" ({error})" if error else ""
+            log.info(f"[{self.link_id}] Logging status: {status}{extra}")
+        except Exception as e:
+            log.error(f"[{self.link_id}] Failed to update logging state: {e}")
+
     def _cleanup_state(self) -> None:
         """Cleanup STATE_DB state"""
         try:
             if self.state_table:
                 self.state_table.hdel(self.link_id, "oper_state")
                 self.state_table.hdel(self.link_id, "last_state_change")
+                self.state_table.hdel(self.link_id, LOGGING_STATUS_KEY)
+                self.state_table.hdel(self.link_id, LOGGING_ERROR_KEY)
                 log.info(f"[{self.link_id}] STATE_DB cleaned up")
         except Exception as e:
             log.error(f"[{self.link_id}] Failed to cleanup STATE_DB: {e}")
@@ -894,7 +1080,7 @@ class ProxyService:
                     pass
 
         # Close file descriptors
-        for fd in (self._wake_r, self._wake_w, self.ser_fd, self.ptm_fd):
+        for fd in (self._wake_r, self._wake_w, self.ser_fd, self.ptm_fd, self.log_fd):
             if fd >= 0:
                 try:
                     os.close(fd)
@@ -902,7 +1088,7 @@ class ProxyService:
                     pass
 
         self._wake_r = self._wake_w = -1
-        self.ser_fd = self.ptm_fd = -1
+        self.ser_fd = self.ptm_fd = self.log_fd = -1
         log.info(f"[{self.link_id}] Cleanup complete")
 
     def stop(self) -> None:
@@ -941,6 +1127,7 @@ class DCEService:
 
         # Cache for detecting configuration changes
         self._config_cache: Dict[str, dict] = {}
+        self._logrotate_links: Set[str] = set()
 
     def start(self) -> bool:
         """Start service"""
@@ -1005,6 +1192,14 @@ class DCEService:
     def console_port_handler(self, key: str, op: str, data: dict) -> None:
         """CONSOLE_PORT table change handler"""
         log.info(f"DCE: CONSOLE_PORT change: key={key}, op={op}, data={data}")
+        if op == "DEL":
+            log.warning(f"DCE: [{key}] CONSOLE_PORT deleted from CONFIG_DB")
+        elif op == "SET" and self.config_db:
+            try:
+                full_entry = self.config_db.get_entry(CONSOLE_PORT_TABLE, key)
+                log.info(f"DCE: [{key}] CONSOLE_PORT full entry after change: {full_entry}")
+            except Exception as e:
+                log.debug(f"DCE: [{key}] Failed to read full CONSOLE_PORT entry: {e}")
         self._sync()
 
     def console_switch_handler(self, key: str, op: str, data: dict) -> None:
@@ -1034,10 +1229,20 @@ class DCEService:
                 key_str = str(key) if not isinstance(key, str) else key
                 configs[key_str] = {
                     "baud": int(entry.get("baud_rate", DEFAULT_BAUD)),
+                    "logging_enabled": entry.get("logging_enabled", "no"),
+                    "log_file": entry.get("log_file") or default_log_file(key_str),
+                    "logrotate_size": entry.get("logrotate_size", DEFAULT_LOGROTATE_SIZE),
+                    "logrotate_count": str(entry.get("logrotate_count", DEFAULT_LOGROTATE_COUNT)),
                 }
         except Exception as e:
             log.error(f"DCE: Failed to get configs: {e}")
         return configs
+
+    @staticmethod
+    def _config_changed_keys(old_config: dict, new_config: dict) -> set:
+        """Return keys whose values differ between two cached port config dicts."""
+        keys = set(old_config) | set(new_config)
+        return {key for key in keys if old_config.get(key) != new_config.get(key)}
 
     def _sync(self) -> None:
         """Sync services with CONFIG_DB"""
@@ -1049,6 +1254,7 @@ class DCEService:
                     self._stop_link(link_id)
                 self.active_links.clear()
                 self._config_cache.clear()
+            self._sync_logrotate_configs()
             return
 
         # Get configuration
@@ -1068,16 +1274,105 @@ class DCEService:
                 self.active_links.add(link_id)
                 self._config_cache[link_id] = redis_configs[link_id]
 
-        # Restart links with changed configuration (e.g., baud rate)
+        # Restart links with changed configuration (e.g., baud rate, logging).
+        # Skip restart if logrotate_size/logrotate_count alone changed.
+        _LOGROTATE_CONFIG_KEYS = frozenset({"logrotate_size", "logrotate_count"})
         for link_id in redis_ids & current_ids:
             new_config = redis_configs[link_id]
             old_config = self._config_cache.get(link_id, {})
-            if new_config != old_config:
-                log.info(f"DCE: [{link_id}] Config changed: {old_config} -> {new_config}")
-                self._restart_link(link_id)
+            if new_config == old_config:
+                continue
+            changed_keys = self._config_changed_keys(old_config, new_config)
+            if changed_keys <= _LOGROTATE_CONFIG_KEYS:
                 self._config_cache[link_id] = new_config
+                continue
+            log.info(f"DCE: [{link_id}] Config changed: {old_config} -> {new_config}")
+            if ("logging_enabled" in changed_keys or "log_file" in changed_keys):
+                log.warning(f"DCE: [{link_id}] Logging config changed, proxy will restart")
+            self._restart_link(link_id)
+            self._config_cache[link_id] = new_config
 
+        self._sync_logrotate_configs()
         log.info(f"DCE: Sync complete, {len(self.active_links)} links active")
+
+    def _get_logging_configs(self) -> Optional[Dict[str, dict]]:
+        """Get console logging configuration for all ports with logging enabled.
+
+        Returns None if CONFIG_DB cannot be read so callers can skip
+        destructive logrotate reconciliation. An empty dict means the table
+        was read successfully and no ports currently have logging enabled.
+        """
+        configs = {}
+        try:
+            table_data = self.config_db.get_table(CONSOLE_PORT_TABLE)
+        except Exception as e:
+            log.error(f"DCE: Failed to get logging configs: {e}")
+            return None
+
+        for key, entry in table_data.items():
+            key_str = str(key) if not isinstance(key, str) else key
+            if entry.get("logging_enabled", "no") != "yes":
+                continue
+            try:
+                configs[key_str] = {
+                    "log_file": validate_log_file_path(
+                        entry.get("log_file") or default_log_file(key_str)
+                    ),
+                    "logrotate_size": validate_logrotate_size(
+                        entry.get("logrotate_size", DEFAULT_LOGROTATE_SIZE)
+                    ),
+                    "logrotate_count": int(entry.get("logrotate_count", DEFAULT_LOGROTATE_COUNT)),
+                }
+            except (TypeError, ValueError, AttributeError) as e:
+                log.error(f"DCE: [{key_str}] Skipping invalid logging config: {e}")
+        return configs
+
+    def _sync_logrotate_configs(self) -> None:
+        """Create or remove logrotate configs for configured console log files."""
+        desired_links = set()
+        try:
+            if self._check_feature_enabled():
+                logging_configs = self._get_logging_configs()
+                if logging_configs is None:
+                    log.error("DCE: Skipping logrotate sync; CONFIG_DB read failed")
+                    return
+            else:
+                logging_configs = {}
+            desired_links = set(logging_configs.keys())
+
+            for link_id, cfg in logging_configs.items():
+                conf_path = logrotate_conf_path(link_id)
+                conf_content = build_logrotate_config(
+                    cfg["log_file"],
+                    cfg["logrotate_size"],
+                    cfg["logrotate_count"],
+                )
+                try:
+                    with open(conf_path, 'w') as conf_file:
+                        conf_file.write(conf_content)
+                    log.info(f"DCE: [{link_id}] Updated logrotate config: {conf_path}")
+                except OSError as e:
+                    log.error(f"DCE: [{link_id}] Failed to write logrotate config {conf_path}: {e}")
+
+            # Stale logrotate conf files left by a previous DCE run are cleaned up.
+            # And only the desired_links conf files are retained.
+            # Files matching prefix console-monitor-logging-* are managed here.
+            existing_links = set()
+            pattern = os.path.join(LOGROTATE_DIR, f"{LOGROTATE_CONF_PREFIX}*")
+            for conf_path in glob.glob(pattern):
+                existing_links.add(os.path.basename(conf_path)[len(LOGROTATE_CONF_PREFIX):])
+
+            for link_id in existing_links - desired_links:
+                conf_path = logrotate_conf_path(link_id)
+                try:
+                    os.remove(conf_path)
+                    log.info(f"DCE: [{link_id}] Removed logrotate config: {conf_path}")
+                except OSError as e:
+                    log.error(f"DCE: [{link_id}] Failed to remove logrotate config {conf_path}: {e}")
+
+            self._logrotate_links = desired_links
+        except Exception as e:
+            log.error(f"DCE: Failed to sync logrotate configs: {e}")
 
     def _start_link(self, link_id: str) -> bool:
         """Start pty-bridge and proxy for a link (pty-bridge first, then proxy)"""
