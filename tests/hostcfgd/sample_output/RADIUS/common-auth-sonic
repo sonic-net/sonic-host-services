@@ -18,7 +18,7 @@ auth	[success=4 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_au
 auth	[success=3 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.4_1645.conf privilege_level protocol=pap retry=4 nas_ip_address=10.10.10.10 debug try_first_pass require_message_authenticator 
 auth	[success=2 new_authtok_reqd=done default=ignore auth_err=die]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/10.10.10.5_1645.conf privilege_level protocol=pap retry=1 nas_ip_address=10.10.10.10 debug try_first_pass  
 # Local
-auth	[success=done new_authtok_reqd=done default=ignore auth_err=die maxtries=die]	pam_unix.so nullok try_first_pass
+auth	[success=done new_authtok_reqd=done default=ignore auth_err=die maxtries=die]	pam_unix.so try_first_pass
 auth	requisite	pam_deny.so
 # Cache MPL(Privilege)
 auth	[success=1 default=ignore]	pam_exec.so /usr/sbin/cache_radius

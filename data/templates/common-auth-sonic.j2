@@ -10,10 +10,10 @@
 # here are the per-package modules (the "Primary" block)
 
 {% if auth['login'] == 'local' %}
-auth	[success=1 default=ignore]	pam_unix.so nullok try_first_pass
+auth	[success=1 default=ignore]	pam_unix.so try_first_pass
 
 {% elif auth['login'] == 'local,tacacs+' %}
-auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_unix.so nullok try_first_pass
+auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_unix.so try_first_pass
 {% for server in servers | sub(0, -1) %}
 auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_tacplus.so server={{ server.ip }}:{{ server.tcp_port }} secret={{ server.passkey }} login={{ server.auth_type }} timeout={{ server.timeout }} {% if server.vrf %} vrf={{ server.vrf }} {% endif %} {{ 'source_ip=%s' % src_ip if src_ip }} try_first_pass
 {% endfor %}
@@ -29,7 +29,7 @@ auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not
 auth	[success=1 default=ignore]	pam_unix.so try_first_pass
 
 {% elif auth['login'] == 'local,radius' %}
-auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so nullok try_first_pass
+auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so try_first_pass
 # For the RADIUS servers, on success jump to the cacheing the MPL(Privilege)
 {% for server in servers %}
 auth	[success={{ (servers | count) - loop.index0 }} new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/{{ server.ip }}_{{ server.auth_port }}.conf privilege_level protocol={{ server.auth_type }} retry={{ server.retransmit }}{% if server.nas_ip is defined %} nas_ip_address={{ server.nas_ip }}{% endif %}{% if server.nas_id is defined %} client_id={{ server.nas_id }}{% endif %}{% if debug %} debug{% endif %}{% if trace %} trace{% endif %}{% if server.statistics %} statistics={{ server.ip }}{% endif %} try_first_pass {% if not server.skip_msg_auth %}require_message_authenticator{% endif %} 
@@ -50,7 +50,7 @@ auth	[success=ok default=ignore]	pam_succeed_if.so user = root
 auth	[success={{ (servers | count) + 1 - loop.index0 }} new_authtok_reqd=done default=ignore{{ ' auth_err=die' if not auth['failthrough'] }}]	pam_radius_auth.so conf=/etc/pam_radius_auth.d/{{ server.ip }}_{{ server.auth_port }}.conf privilege_level protocol={{ server.auth_type }} retry={{ server.retransmit }}{% if server.nas_ip is defined %} nas_ip_address={{ server.nas_ip }}{% endif %}{% if server.nas_id is defined %} client_id={{ server.nas_id }}{% endif %}{% if debug %} debug{% endif %}{% if trace %} trace{% endif %}{% if server.statistics %} statistics={{ server.ip }}{% endif %} try_first_pass {% if not server.skip_msg_auth %}require_message_authenticator{% endif %} 
 {% endfor %}
 # Local
-auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so nullok try_first_pass
+auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so try_first_pass
 auth	requisite	pam_deny.so
 # Cache MPL(Privilege)
 auth	[success=1 default=ignore]	pam_exec.so /usr/sbin/cache_radius
@@ -66,19 +66,19 @@ auth	requisite	pam_deny.so
 # Cache MPL(Privilege)
 auth	[success=2 default=ignore]	pam_exec.so /usr/sbin/cache_radius
 # Local
-auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so nullok try_first_pass
+auth	[success=done new_authtok_reqd=done default=ignore{{ ' auth_err=die maxtries=die' if not auth['failthrough'] }}]	pam_unix.so try_first_pass
 
 {% elif auth['login'] == 'ldap,local' %}
 auth    [success=2 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
-auth    [success=1 default=ignore]      pam_unix.so nullok try_first_pass
+auth    [success=1 default=ignore]      pam_unix.so try_first_pass
 {% elif auth['login'] == 'local,ldap' %}
-auth    [success=2 default=ignore]      pam_unix.so nullok try_first_pass
+auth    [success=2 default=ignore]      pam_unix.so try_first_pass
 auth    [success=1 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
 {% elif auth['login'] == 'ldap' %}
 auth    [success=1 default=ignore]      pam_ldap.so minimum_uid=1000 try_first_pass
 
 {% else %}
-auth	[success=1 default=ignore]	pam_unix.so nullok try_first_pass
+auth	[success=1 default=ignore]	pam_unix.so try_first_pass
 
 {% endif %}
 #
