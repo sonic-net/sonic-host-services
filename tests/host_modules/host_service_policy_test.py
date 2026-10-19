@@ -152,6 +152,13 @@ def _allows_host_service_ownership(rule):
 
 
 class TestHostServicePolicy:
+    def test_policy_does_not_include_other_configuration(self):
+        root = ET.parse(POLICY_PATH).getroot()
+        assert not any(
+            element.tag in {"include", "includedir"}
+            for element in root.iter()
+        ), "HostService policy must not import unchecked D-Bus configuration"
+
     def test_registered_names_include_security_sensitive_endpoints(self):
         assert {
             BUS_NAME_BASE,
