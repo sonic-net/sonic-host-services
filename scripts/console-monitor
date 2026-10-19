@@ -544,7 +544,7 @@ def default_log_file(link_id: str) -> str:
 
 
 def validate_log_file_path(path: str) -> str:
-    """Reject log_file values that cannot be safely emitted in a logrotate stanza."""
+    """Reject log_file values that are unsafe to open or emit in a logrotate stanza."""
     if not isinstance(path, str) or not path:
         raise ValueError("log file path must be a non-empty string")
     if not os.path.isabs(path):
@@ -905,6 +905,13 @@ class ProxyService:
             self._update_logging_state(LOGGING_STATUS_DISABLED)
             return False
         try:
+            validate_log_file_path(self.log_file_path)
+        except ValueError as e:
+            log.error(f"[{self.link_id}] Invalid log file path {self.log_file_path}: {e}")
+            self.log_fd = -1
+            self._update_logging_state(LOGGING_STATUS_FAILED, str(e))
+            return False
+        try:
             self.log_fd = os.open(
                 self.log_file_path,
                 os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
@@ -931,14 +938,22 @@ class ProxyService:
         """Write console I/O data to the configured log file."""
         if self.log_fd < 0 or not data:
             return
+        offset = 0
         try:
-            os.write(self.log_fd, data)
+            while offset < len(data):
+                written = os.write(self.log_fd, data[offset:])
+                if written <= 0:
+                    raise OSError("short write")
+                offset += written
         except OSError as e:
             self._last_write_log_error, self._write_log_error_count = log_error_throttled(
                 self._last_write_log_error,
                 self._write_log_error_count,
                 f"[{self.link_id}] Failed to write to log file: {e}",
             )
+            self._update_logging_state(LOGGING_STATUS_FAILED, str(e))
+            return
+        self._update_logging_state(LOGGING_STATUS_ACTIVE)
 
     def _on_serial_read(self) -> None:
         """Serial data read callback"""
@@ -1207,8 +1222,12 @@ class DCEService:
         log.info(f"DCE: CONSOLE_SWITCH change: key={key}, op={op}, data={data}")
         self._sync()
 
-    def _check_feature_enabled(self) -> bool:
-        """Check if console switch feature is enabled"""
+    def _check_feature_enabled(self) -> Optional[bool]:
+        """Return True/False when console_mgmt is readable, or None on lookup failure.
+
+        None must not be treated as disabled: callers skip destructive work
+        (stopping proxies, deleting logrotate confs) when the read fails.
+        """
         try:
             entry = self.config_db.get_entry(CONSOLE_SWITCH_TABLE, "console_mgmt")
             if entry:
@@ -1218,7 +1237,7 @@ class DCEService:
             return False
         except Exception as e:
             log.error(f"DCE: Failed to check feature status: {e}")
-            return False
+            return None
 
     def _get_all_configs(self) -> Dict[str, dict]:
         """Get all serial port configurations"""
@@ -1247,7 +1266,11 @@ class DCEService:
     def _sync(self) -> None:
         """Sync services with CONFIG_DB"""
         # Check if feature is enabled
-        if not self._check_feature_enabled():
+        enabled = self._check_feature_enabled()
+        if enabled is None:
+            log.error("DCE: Skipping sync; failed to read console_mgmt status")
+            return
+        if not enabled:
             if self.active_links:
                 log.info("DCE: Feature disabled, stopping all services")
                 for link_id in list(self.active_links):
@@ -1331,7 +1354,11 @@ class DCEService:
         """Create or remove logrotate configs for configured console log files."""
         desired_links = set()
         try:
-            if self._check_feature_enabled():
+            enabled = self._check_feature_enabled()
+            if enabled is None:
+                log.error("DCE: Skipping logrotate sync; failed to read console_mgmt status")
+                return
+            if enabled:
                 logging_configs = self._get_logging_configs()
                 if logging_configs is None:
                     log.error("DCE: Skipping logrotate sync; CONFIG_DB read failed")
