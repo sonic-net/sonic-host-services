@@ -156,7 +156,6 @@ class TestHostServicePolicy:
         assert {
             BUS_NAME_BASE,
             BUS_NAME_BASE + ".config",
-            FILE_BUS_NAME,
             IMAGE_BUS_NAME,
         }.issubset(HOST_SERVICE_BUS_NAMES)
 
@@ -165,7 +164,6 @@ class TestHostServicePolicy:
             "<allow/>",
             '<allow send_destination="*"/>',
             '<allow send_destination="org.SONiC.HostService"/>',
-            '<allow send_destination="org.SONiC.HostService.file"/>',
             '<allow send_destination="org.SONiC.HostService.config"/>',
             (
                 '<allow send_destination="org.SONiC.HostService.image_service" '
@@ -185,6 +183,7 @@ class TestHostServicePolicy:
             '<allow send_type="method_call"/>',
         ]
         unrelated_rules = [
+            '<allow send_destination="org.SONiC.HostService.file"/>',
             '<allow receive_sender="org.SONiC.HostService"/>',
             '<allow send_type="signal"/>',
             '<allow send_broadcast="true"/>',
@@ -209,10 +208,9 @@ class TestHostServicePolicy:
             '<allow send_destination="*"/>',
             '<allow send_destination="org.SONiC.HostService"/>',
             '<allow send_destination="org.SONiC.HostService.image_service"/>',
-            '<allow send_destination="org.SONiC.HostService.file"/>',
             '<allow send_destination="org.SONiC.HostService.config"/>',
             (
-                '<allow send_destination="org.SONiC.HostService.file" '
+                '<allow send_destination="org.SONiC.HostService.config" '
                 'send_interface="org.SONiC.HostService.image_service" '
                 'send_member="checksum" '
                 'send_path="/org/SONiC/HostService/image_service" '
@@ -229,6 +227,7 @@ class TestHostServicePolicy:
             '<allow send_type="method_call"/>',
         ]
         unrelated_rules = [
+            '<allow send_destination="org.SONiC.HostService.file"/>',
             '<allow receive_sender="org.SONiC.HostService"/>',
             '<allow send_type="signal"/>',
             '<allow send_broadcast="true"/>',
@@ -252,11 +251,11 @@ class TestHostServicePolicy:
             '<allow own="*"/>',
             '<allow own="org.SONiC.HostService"/>',
             '<allow own="org.SONiC.HostService.image_service"/>',
-            '<allow own="org.SONiC.HostService.file"/>',
             '<allow own="org.SONiC.HostService.config"/>',
             '<allow own_prefix="org.SONiC.HostService"/>',
         ]
         unrelated_rules = [
+            '<allow own="org.SONiC.HostService.file"/>',
             '<allow own="org.example.Service"/>',
             '<allow own_prefix="org.example"/>',
             '<allow send_destination="org.SONiC.HostService"/>',
