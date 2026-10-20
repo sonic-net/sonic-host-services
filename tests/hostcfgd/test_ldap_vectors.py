@@ -51,7 +51,7 @@ HOSTCFGD_TEST_LDAP_VECTOR = [
                         "bind_dn": "cn=ldapadm,dc=example,dc=com",
                         "base_dn": "ou=users,dc=example,dc=com",
                         "bind_timeout": "2",
-                        "search_timeout": "2",
+                        "timeout": "2",
                         "version": "3"
                     }
                 },
@@ -126,3 +126,4 @@ HOSTCFGD_TEST_LDAP_VECTOR = [
         }
     ]
 ]
+
