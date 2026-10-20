@@ -4,6 +4,7 @@ import sys
 import time
 import copy
 import socket
+import subprocess
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
@@ -73,6 +74,11 @@ class TestRunCmd(TestCase):
 class TestFeatureHandler(TestCase):
     """Test methods of `FeatureHandler` class.
     """
+    def setUp(self):
+        bmc_patcher = mock.patch('sonic_py_common.device_info.is_switch_bmc', return_value=False)
+        bmc_patcher.start()
+        self.addCleanup(bmc_patcher.stop)
+
     def checks_config_table(self, feature_table, expected_table):
         """Compares `FEATURE` table in `CONFIG_DB` with expected output table.
 
@@ -1271,6 +1277,167 @@ class TestWaitForServiceStable(TestCase):
             assert call_order[0] == ("wait", "bgp@3.service")
             assert call_order[1][0] == "cmd"
             assert "stop" in call_order[1][1]
+
+
+class TestAbsentBmcFeature(TestCase):
+    """Only disabled BMC features with no packaged scope may be absent."""
+
+    def setUp(self):
+        self.patch('sonic_py_common.device_info.is_multi_npu', return_value=False)
+        self.patch('sonic_py_common.device_info.get_num_dpus', return_value=0)
+        self.patch('sonic_py_common.device_info.get_device_runtime_metadata', return_value={})
+        self.is_bmc = self.patch('sonic_py_common.device_info.is_switch_bmc', return_value=True)
+        self.log = self.patch('featured.syslog.syslog')
+        self.run = self.patch('featured.subprocess.run')
+        self.popen = self.patch('featured.subprocess.Popen', side_effect=self.systemd_show)
+        self.wait = self.patch('featured.FeatureHandler.wait_for_service_stable')
+        self.config = {
+            'state': 'disabled',
+            'auto_restart': 'enabled',
+            'has_global_scope': 'False',
+            'has_per_asic_scope': 'False',
+            'has_per_dpu_scope': 'False',
+        }
+        self.load_state = 'not-found'
+        self.load_rc = 0
+        self.db = mock.Mock()
+        self.db.get_entry.side_effect = lambda *args: self.config.copy()
+        self.state_table = mock.Mock()
+        self.handler = featured.FeatureHandler(self.db, self.state_table, {}, False)
+
+    def patch(self, target, **kwargs):
+        patcher = mock.patch(target, **kwargs)
+        result = patcher.start()
+        self.addCleanup(patcher.stop)
+        return result
+
+    def systemd_show(self, cmd, **kwargs):
+        prop = cmd[-1]
+        self.assertIn(prop, ('LoadState', 'UnitFileState'))
+        value = self.load_state if prop == 'LoadState' else ''
+        return mock.Mock(
+            returncode=self.load_rc if prop == 'LoadState' else 0,
+            communicate=mock.Mock(return_value=(
+                '{}={}\n'.format(prop, value).encode(), b'')))
+
+    @parameterized.expand([
+        ('startup', 'swss'),
+        ('startup', 'radv'),
+        ('startup', 'restapi'),
+        ('startup', 'sflow'),
+        ('startup', 'syncd'),
+        ('startup', 'teamd'),
+        ('startup', 'snmp'),
+        ('change', 'swss'),
+        ('auto_restart', 'swss'),
+        ('delayed', 'snmp'),
+        ('always_disabled', 'swss'),
+    ])
+    @patchfs
+    def test_absent_unit_reconciliation(self, path, name, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        if path == 'always_disabled':
+            self.config['state'] = 'always_disabled'
+        if path == 'delayed':
+            self.config['delayed'] = 'True'
+        if path == 'change':
+            self.handler._cached_config[name] = featured.Feature(name, {'state': 'enabled'})
+            self.handler.handler(name, 'SET', self.config)
+        elif path == 'auto_restart':
+            self.handler._cached_config[name] = featured.Feature(
+                name, dict(self.config, auto_restart='disabled'))
+            self.handler.handler(name, 'SET', self.config)
+        else:
+            self.handler.sync_state_field({name: self.config})
+        if path == 'delayed':
+            self.state_table.set.assert_not_called()
+            self.handler.handle_port_table_timeout()
+
+        if path == 'auto_restart':
+            self.state_table.set.assert_not_called()
+        else:
+            self.state_table.set.assert_called_with(name, [('state', 'disabled')])
+        self.wait.assert_not_called()
+        self.assertFalse(os.path.exists(
+            self.handler.SYSTEMD_SERVICE_CONF_DIR.format(name)))
+        self.popen.assert_any_call(
+            ['sudo', 'systemctl', 'show', '{}.service'.format(name), '--property', 'LoadState'],
+            stdout=featured.subprocess.PIPE, stderr=featured.subprocess.PIPE)
+        self.assertTrue(self.run.called)  # The normal daemon-reload still runs.
+        for invocation in self.run.call_args_list:
+            self.assertEqual(invocation.args[0], ['sudo', 'systemctl', 'daemon-reload'])
+        self.assertFalse(any(c.args[0] == featured.syslog.LOG_ERR
+                             for c in self.log.call_args_list))
+
+    @parameterized.expand([
+        ('switch_host', {'has_global_scope': 'False'}, False, 'not-found', 0),
+        ('global_scope', {'has_global_scope': 'True'}, True, 'not-found', 0),
+        ('asic_scope', {'has_per_asic_scope': 'True'}, True, 'not-found', 0),
+        ('dpu_scope', {'has_per_dpu_scope': 'True'}, True, 'not-found', 0),
+        ('missing_scope', None, True, 'not-found', 0),
+        ('loaded', {}, True, 'loaded', 0),
+        ('bad_setting', {}, True, 'bad-setting', 0),
+        ('query_failure', {}, True, 'not-found', 1),
+        ('empty_load_state', {}, True, '', 0),
+    ])
+    def test_required_units_and_stop_failures_are_not_skipped(
+            self, name, overrides, is_bmc, load_state, rc):
+        if overrides is None:
+            self.config.pop('has_global_scope')
+        else:
+            self.config.update(overrides)
+        self.is_bmc.return_value = is_bmc
+        self.load_state, self.load_rc = load_state, rc
+        stop = ['sudo', 'systemctl', 'stop', 'swss.service']
+        self.run.side_effect = subprocess.CalledProcessError(5, stop, output='stop failed')
+
+        result = self.handler.disable_feature(featured.Feature('swss', self.config))
+
+        self.assertFalse(result)
+        self.wait.assert_called_once_with('swss.service')
+        self.run.assert_called_once_with(stop, capture_output=True, check=True, text=True)
+        self.state_table.set.assert_called_once_with('swss', [('state', 'failed')])
+        self.assertTrue(any('return code - 5' in c.args[1]
+                            for c in self.log.call_args_list))
+        self.assertTrue(any('failed to be stopped and disabled' in c.args[1]
+                            for c in self.log.call_args_list))
+
+    @parameterized.expand([('enabled',), ('always_enabled',)])
+    def test_enabled_absent_unit_still_fails(self, state):
+        self.config['state'] = state
+        self.run.side_effect = subprocess.CalledProcessError(
+            5, ['sudo', 'systemctl', 'unmask', 'swss.service'])
+
+        self.assertFalse(self.handler.enable_feature(featured.Feature('swss', self.config)))
+
+        self.state_table.set.assert_called_once_with('swss', [('state', 'failed')])
+        self.assertTrue(any('failed to be enabled and started' in c.args[1]
+                            for c in self.log.call_args_list))
+
+    @patchfs
+    def test_loaded_unscoped_unit_keeps_config_and_stop_actions(self, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.load_state = 'loaded'
+
+        self.handler.sync_state_field({'swss': self.config})
+
+        self.assertTrue(os.path.exists(os.path.join(
+            self.handler.SYSTEMD_SERVICE_CONF_DIR.format('swss'), 'auto_restart.conf')))
+        self.wait.assert_called_once_with('swss.service')
+        self.run.assert_any_call(['sudo', 'systemctl', 'stop', 'swss.service'],
+                                 capture_output=True, check=True, text=True)
+        self.state_table.set.assert_called_with('swss', [('state', 'disabled')])
+
+    def test_missing_load_property_is_not_absence(self):
+        self.popen.side_effect = None
+        self.popen.return_value = mock.Mock(
+            returncode=0, communicate=mock.Mock(return_value=(b'', b'')))
+
+        self.assertFalse(self.handler.is_intentionally_absent_bmc_unit(
+            featured.Feature('swss', self.config), 'swss.service'))
+
+        self.log.assert_called_once_with(
+            featured.syslog.LOG_ERR, 'Missing LoadState in status of swss.service')
 
 
 class TestEnableFeatureGeneratedUnit(TestCase):
