@@ -399,7 +399,10 @@ class FeatureHandler(object):
         """
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config, True)
         for feature_name in feature_names:
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
+            unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_bmc_unit(feature_config, unit):
+                continue
+            unit_file_state = self.get_systemd_unit_state(unit)
             if not unit_file_state:
                 continue
             if not self.is_multi_npu:
@@ -472,6 +475,9 @@ class FeatureHandler(object):
         # On multi-ASIC device, creates systemd configuration file for each feature instance
         # residing in difference namespace.
         for feature_name in feature_names:
+            unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_bmc_unit(feature_config, unit):
+                continue
             syslog.syslog(syslog.LOG_INFO, "Updating feature '{}' systemd config file related to auto-restart ..."
                           .format(feature_name))
             feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
@@ -539,10 +545,10 @@ class FeatureHandler(object):
                       "Timed out waiting for '{}' to leave activating state".format(unit))
         return "activating"
 
-    def get_systemd_unit_state(self, unit):
-        """ Returns service configuration """
+    def get_systemd_unit_state(self, unit, property_name="UnitFileState"):
+        """Return a systemd state property, or 'invalid' if the query fails."""
 
-        cmd = ["sudo", "systemctl", "show", unit, "--property", "UnitFileState"]
+        cmd = ["sudo", "systemctl", "show", unit, "--property", property_name]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
@@ -550,7 +556,29 @@ class FeatureHandler(object):
             return 'invalid'  # same as systemd's "invalid indicates that it could not be determined whether the unit file is enabled".
 
         props = dict([line.split("=") for line in stdout.decode().strip().splitlines()])
-        return props["UnitFileState"]
+        if property_name not in props:
+            syslog.syslog(syslog.LOG_ERR, "Missing {} in status of {}".format(property_name, unit))
+            return 'invalid'
+        return props[property_name]
+
+    def is_intentionally_absent_bmc_unit(self, feature, unit):
+        """Recognize disabled, unscoped BMC features whose units are not packaged.
+
+        The image's init_cfg template derives global/ASIC scopes from installed
+        service units. A disabled state alone is not evidence of intentional
+        absence; missing scope fields retain Feature's normal defaults.
+        """
+        if feature.state not in ("disabled", "always_disabled") or \
+           feature.has_global_scope or feature.has_per_asic_scope or feature.has_per_dpu_scope:
+            return False
+        if not device_info.is_switch_bmc():
+            return False
+        if self.get_systemd_unit_state(unit, "LoadState") != "not-found":
+            return False
+        syslog.syslog(syslog.LOG_INFO,
+                      "Skipping absent BMC unit '{}' for disabled feature '{}' with no scope"
+                      .format(unit, feature.name))
+        return True
 
     def is_exclusion_listed(self, feature_name):
         """Return True if the feature is in the exclusion list."""
@@ -617,14 +645,16 @@ class FeatureHandler(object):
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         for feature_name in feature_names:
+            service_unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_bmc_unit(feature, service_unit):
+                continue
             # Check if it is already disabled, if yes skip the system call
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
+            unit_file_state = self.get_systemd_unit_state(service_unit)
             if unit_file_state in ("disabled", "masked"):
                 continue
             # Wait for the service to leave 'activating' state before stopping it.
             # Stopping during ExecStartPre kills the startup script without running
             # ExecStop, leaving Docker containers orphaned (see issue #24875).
-            service_unit = "{}.{}".format(feature_name, feature_suffixes[-1])
             self.wait_for_service_stable(service_unit)
             cmds = []
             for suffix in reversed(feature_suffixes):
