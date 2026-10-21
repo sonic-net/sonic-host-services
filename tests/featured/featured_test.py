@@ -1280,7 +1280,7 @@ class TestWaitForServiceStable(TestCase):
 
 
 class TestAbsentBmcFeature(TestCase):
-    """Only disabled BMC features with no packaged scope may be absent."""
+    """Disabled BMC features may be absent regardless of their scope defaults."""
 
     def setUp(self):
         self.patch('sonic_py_common.device_info.is_multi_npu', return_value=False)
@@ -1294,9 +1294,6 @@ class TestAbsentBmcFeature(TestCase):
         self.config = {
             'state': 'disabled',
             'auto_restart': 'enabled',
-            'has_global_scope': 'False',
-            'has_per_asic_scope': 'False',
-            'has_per_dpu_scope': 'False',
         }
         self.load_state = 'not-found'
         self.load_rc = 0
@@ -1328,7 +1325,13 @@ class TestAbsentBmcFeature(TestCase):
         ('startup', 'syncd'),
         ('startup', 'teamd'),
         ('startup', 'snmp'),
+        ('startup', 'eventd'),
         ('change', 'swss'),
+        ('change', 'restapi'),
+        ('change', 'snmp'),
+        ('change', 'teamd'),
+        ('change', 'eventd'),
+        ('change', 'radv'),
         ('auto_restart', 'swss'),
         ('delayed', 'snmp'),
         ('always_disabled', 'swss'),
@@ -1336,6 +1339,7 @@ class TestAbsentBmcFeature(TestCase):
     @patchfs
     def test_absent_unit_reconciliation(self, path, name, fs):
         fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.assertTrue(featured.Feature(name, self.config).has_global_scope)
         if path == 'always_disabled':
             self.config['state'] = 'always_disabled'
         if path == 'delayed':
@@ -1370,22 +1374,28 @@ class TestAbsentBmcFeature(TestCase):
                              for c in self.log.call_args_list))
 
     @parameterized.expand([
-        ('switch_host', {'has_global_scope': 'False'}, False, 'not-found', 0),
-        ('global_scope', {'has_global_scope': 'True'}, True, 'not-found', 0),
-        ('asic_scope', {'has_per_asic_scope': 'True'}, True, 'not-found', 0),
-        ('dpu_scope', {'has_per_dpu_scope': 'True'}, True, 'not-found', 0),
-        ('missing_scope', None, True, 'not-found', 0),
-        ('loaded', {}, True, 'loaded', 0),
-        ('bad_setting', {}, True, 'bad-setting', 0),
-        ('query_failure', {}, True, 'not-found', 1),
-        ('empty_load_state', {}, True, '', 0),
+        ('no_scope', {'has_global_scope': 'False'}),
+        ('global_scope', {'has_global_scope': 'True'}),
+        ('asic_scope', {'has_per_asic_scope': 'True'}),
+        ('dpu_scope', {'has_per_dpu_scope': 'True'}),
     ])
-    def test_required_units_and_stop_failures_are_not_skipped(
-            self, name, overrides, is_bmc, load_state, rc):
-        if overrides is None:
-            self.config.pop('has_global_scope')
-        else:
-            self.config.update(overrides)
+    def test_explicit_scope_does_not_prevent_absent_unit_skip(self, name, overrides):
+        self.config.update(overrides)
+
+        self.assertTrue(self.handler.disable_feature(featured.Feature('swss', self.config)))
+
+        self.run.assert_not_called()
+        self.wait.assert_not_called()
+        self.state_table.set.assert_called_once_with('swss', [('state', 'disabled')])
+
+    @parameterized.expand([
+        ('switch_host', False, 'not-found', 0),
+        ('loaded', True, 'loaded', 0),
+        ('bad_setting', True, 'bad-setting', 0),
+        ('query_failure', True, 'not-found', 1),
+        ('empty_load_state', True, '', 0),
+    ])
+    def test_systemd_failures_are_not_skipped(self, name, is_bmc, load_state, rc):
         self.is_bmc.return_value = is_bmc
         self.load_state, self.load_rc = load_state, rc
         stop = ['sudo', 'systemctl', 'stop', 'swss.service']
@@ -1415,7 +1425,7 @@ class TestAbsentBmcFeature(TestCase):
                             for c in self.log.call_args_list))
 
     @patchfs
-    def test_loaded_unscoped_unit_keeps_config_and_stop_actions(self, fs):
+    def test_loaded_unit_keeps_config_and_stop_actions(self, fs):
         fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
         self.load_state = 'loaded'
 

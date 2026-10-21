@@ -573,21 +573,20 @@ class FeatureHandler(object):
         return props[property_name]
 
     def is_intentionally_absent_bmc_unit(self, feature, unit):
-        """Recognize disabled, unscoped BMC features whose units are not packaged.
+        """Recognize disabled BMC features whose units are not packaged.
 
-        The image's init_cfg template derives global/ASIC scopes from installed
-        service units. A disabled state alone is not evidence of intentional
-        absence; missing scope fields retain Feature's normal defaults.
+        BMC platform defaults can retain disabled features without their service
+        units. Scope is not a packaging signal: omitted fields default to global.
+        Only a successful LoadState=not-found query permits skipping the unit.
         """
-        if feature.state not in ("disabled", "always_disabled") or \
-           feature.has_global_scope or feature.has_per_asic_scope or feature.has_per_dpu_scope:
+        if feature.state not in ("disabled", "always_disabled"):
             return False
         if not device_info.is_switch_bmc():
             return False
         if self.get_systemd_unit_state(unit, "LoadState") != "not-found":
             return False
         syslog.syslog(syslog.LOG_INFO,
-                      "Skipping absent BMC unit '{}' for disabled feature '{}' with no scope"
+                      "Skipping absent BMC unit '{}' for disabled feature '{}'"
                       .format(unit, feature.name))
         return True
 
