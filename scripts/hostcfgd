@@ -14,7 +14,7 @@ import time
 import json
 from shutil import copy2
 from datetime import datetime
-from sonic_py_common import device_info
+from sonic_py_common import device_info, multi_asic
 from sonic_py_common.general import check_output_pipe
 from swsscommon.swsscommon import ConfigDBConnector, DBConnector, Table
 from swsscommon import swsscommon
@@ -141,7 +141,7 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
             raise
 
 def run_cmd_output(cmd, log_err=True, raise_exception=False):
-    output = ''
+    output = b''
     try:
         output = subprocess.check_output(cmd)
     except Exception as err:
@@ -1486,7 +1486,9 @@ class DeviceMetaCfg(object):
     1) Handle hostname change
     """
 
-    def __init__(self):
+    def __init__(self, config_db, state_db_conn):
+        self.config_db = config_db
+        self.state_db_conn = state_db_conn
         self.hostname = ''
         self.timezone = None
         self.syslog_with_osversion = None
@@ -1531,6 +1533,31 @@ class DeviceMetaCfg(object):
                 return
             run_cmd(['sudo', 'monit', 'reload'])
 
+    def get_container_names(self):
+        feature_table = self.config_db.get_table('FEATURE')
+        keys = self.state_db_conn.keys("FEATURE|*")
+        names = set()
+        is_multi_asic = multi_asic.is_multi_asic()
+        asic_count = multi_asic.get_num_asics() if is_multi_asic else 1
+
+        for name in feature_table.keys():
+            data = {}
+            key = "FEATURE|{}".format(name)
+            if keys and (key in keys):
+                data = self.state_db_conn.hgetall(key)
+            if data.get("state", "unknown").lower() in ("enabled", "always_enabled"):
+                if is_multi_asic:
+                    if data.get("has_global_scope", '').lower() == 'true':
+                        names.add(name)
+
+                    if data.get("has_per_asic_scope", '').lower() == 'true':
+                        for i in range(asic_count):
+                            names.add(multi_asic.get_container_name_from_asic_id(name, i))
+                else:
+                    names.add(name)
+
+        return names
+
     def apply_timezone_if_needed(self, new_tz):
         """
         Apply timezone if it differs from either:
@@ -1546,7 +1573,24 @@ class DeviceMetaCfg(object):
             if new_tz is None:
                 syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: Recieved empty timezone')
                 return
-            
+
+            containers = self.get_container_names()
+            for container in containers:
+                try:
+                    localtime_target_path = run_cmd_output(['docker', 'exec', container, 'readlink', '/etc/localtime'])
+                    print(localtime_target_path)
+                    current_timezone = "/".join(localtime_target_path.decode().strip().split("/")[4:])
+                    if current_timezone != new_tz:
+                        syslog.syslog(syslog.LOG_INFO, f'DeviceMetaCfg: Changing timezone of {container} to {new_tz}')
+                        run_cmd(['docker', 'exec', container, 'ln', '-sf',
+                                 f'/usr/share/zoneinfo/{new_tz}', '/etc/localtime'])
+                        run_cmd(['docker', 'exec', container, 'supervisorctl',
+                                 'restart', 'rsyslogd'])
+                    else:
+                        syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: No change in timezone for {container}')
+                except Exception as e:
+                    syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Failed to change timezone of {container} to {new_tz}: {e}')
+
             system_timezone_realpath = os.path.realpath(ETC_LOCALTIME)
             new_timezone_realpath = os.path.realpath(f'{ZONEINFO_DIR}/{new_tz}')
             if new_tz == self.timezone and new_timezone_realpath == system_timezone_realpath:
@@ -2192,7 +2236,7 @@ class HostConfigDaemon:
         self.pamLimitsCfg.update_config_file()
 
         # Initialize DeviceMetaCfg
-        self.devmetacfg = DeviceMetaCfg()
+        self.devmetacfg = DeviceMetaCfg(self.config_db, self.state_db_conn)
 
         # Initialize MgmtIfaceCfg
         self.mgmtifacecfg = MgmtIfaceCfg()
