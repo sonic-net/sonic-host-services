@@ -105,7 +105,7 @@ class DebugArtifactCollector(host_service.HostModule):
     board_type = ""
     try:
       # Connect to CONFIG_DB
-      db = swsscommon.SonicV2Connector(use_unix_socket_path=True)
+      db = swsscommon.SonicV2Connector()
       db.connect(db.CONFIG_DB)
       # Get device metadata
       metadata = db.get_all(db.CONFIG_DB, 'DEVICE_METADATA|localhost')
