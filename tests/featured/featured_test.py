@@ -4,7 +4,6 @@ import sys
 import time
 import copy
 import socket
-import subprocess
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
@@ -1448,6 +1447,18 @@ class TestAbsentBmcFeature(TestCase):
 
         self.log.assert_called_once_with(
             featured.syslog.LOG_ERR, 'Missing LoadState in status of swss.service')
+
+    def test_pending_disable_clears_when_bmc_unit_is_absent(self):
+        feature = featured.Feature('swss', self.config)
+        self.handler._cached_config['swss'] = feature
+        self.handler._features_pending_update.add('swss')
+
+        self.handler.handler('swss', 'SET', self.config)
+
+        self.assertNotIn('swss', self.handler._features_pending_update)
+        self.state_table.set.assert_called_once_with('swss', [('state', 'disabled')])
+        self.run.assert_not_called()
+        self.wait.assert_not_called()
 
 
 class TestEnableFeatureGeneratedUnit(TestCase):
