@@ -10,6 +10,7 @@ from swsscommon import swsscommon
 from parameterized import parameterized
 from unittest import TestCase, mock
 from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_restart_waiter import MockRestartWaiter
 from tests.common.mock_bootloader import MockBootloader
 from sonic_py_common.general import getstatusoutput_noshell
 
@@ -31,6 +32,7 @@ original_syslog = hostcfgd.syslog
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+swsscommon.RestartWaiter = MockRestartWaiter
 running_services = [{"unit":"ssh.service","load":"loaded","active":"active","sub":"running","description":"OpenBSD Secure Shell server"},
             {"unit":"restapi.service","load":"loaded","active":"active","sub":"running","description":"SONiC Restful API Service"}]
 
@@ -43,6 +45,7 @@ class TestHostcfgdFIPS(TestCase):
         return output
 
     def setUp(self):
+        os.environ["HOSTCFGD_UNIT_TESTING"] = "2"
         self._workPath =os.path.join('/tmp/test_fips/', self._testMethodName)
         self.test_data = {'DEVICE_METADATA':{},'FIPS': {}}
         self.test_data['DEVICE_METADATA'] = {'localhost': {'hostname': 'fips'}}
@@ -58,6 +61,7 @@ class TestHostcfgdFIPS(TestCase):
 
     def tearDown(self):
         shutil.rmtree(self._workPath, ignore_errors=True)
+        os.environ["HOSTCFGD_UNIT_TESTING"] = ""
 
     def assert_fips_runtime_config(self, result='1'):
         with open(hostcfgd.OPENSSL_FIPS_CONFIG_FILE) as f:
