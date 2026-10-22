@@ -24,6 +24,12 @@ class TestCaclmgrdBmcLink(TestCase):
         modules_path = os.path.dirname(test_path)
         sys.path.insert(0, modules_path)
         self.caclmgrd = load_module_from_source('caclmgrd', os.path.join(modules_path, "scripts", "caclmgrd"))
+        MockConfigDb.set_config_db({
+            "ACL_RULE": {},
+            "ACL_TABLE": {},
+            "DEVICE_METADATA": {"localhost": {}},
+            "FEATURE": {},
+        })
 
     def _daemon(self, fs):
         if not os.path.exists(DBCONFIG_PATH):
@@ -51,12 +57,6 @@ class TestCaclmgrdBmcLink(TestCase):
             self.assertListEqual([], daemon.generate_allow_bmc_link_traffic(''))
 
     def _generate_full_rules(self, fs):
-        MockConfigDb.set_config_db({
-            "ACL_RULE": {},
-            "ACL_TABLE": {},
-            "DEVICE_METADATA": {"localhost": {}},
-            "FEATURE": {},
-        })
         daemon_cls = self.caclmgrd.ControlPlaneAclManager
         daemon_cls.get_namespace_mgmt_ip = mock.MagicMock()
         daemon_cls.get_namespace_mgmt_ipv6 = mock.MagicMock()
