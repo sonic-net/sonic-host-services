@@ -85,7 +85,16 @@ def get_dpu_halt_services_timeout():
 
 
 def get_switch_host_halt_services_timeout():
-    """Read the switch-host HALT timeout, or use HALT_TIMEOUT."""
+    """Read the switch-host HALT timeout from platform.json, or use HALT_TIMEOUT.
+
+    Only a positive JSON integer is accepted; anything else is logged and
+    replaced by the default. The value bounds the completion check that runs
+    after ``reboot -p`` returns, not the teardown itself. The platform owner
+    sizes it together with the BMC's ``graceful_shutdown_timeout``, which has
+    to outlast request, pre-shutdown, this value and polling for a failed
+    check to be reported as ``check_failed`` rather than ``deadline``; nothing
+    checks that at run time.
+    """
     try:
         data = device_info.get_platform_json_data()
         if not isinstance(data, dict):
@@ -95,6 +104,12 @@ def get_switch_host_halt_services_timeout():
 
         value = data.get("switch_host_halt_services_timeout")
         if type(value) is not int or value <= 0:
+            if value is not None:
+                logger.info(
+                    "%s: Ignoring switch_host_halt_services_timeout=%r in platform.json, "
+                    "not a positive integer. Using default %d",
+                    MOD_NAME, value, HALT_TIMEOUT
+                )
             return HALT_TIMEOUT
 
         return value
@@ -251,8 +266,8 @@ class Reboot(host_service.HostModule):
            if Halt reboot is Successful."""
         if reboot_method in REBOOT_METHOD_HALT_BOOT_VALUES:
             # Periodically check every 5 seconds until PMON container is stopped or timeout occurs
-            logger.info("%s: Waiting until services are halted or timeout occurs", MOD_NAME)
             timeout = get_halt_services_timeout()
+            logger.info("%s: Waiting up to %d seconds until services are halted", MOD_NAME, timeout)
             start_time = time.monotonic()
 
             def halt_is_complete():

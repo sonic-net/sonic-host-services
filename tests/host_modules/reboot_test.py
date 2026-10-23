@@ -182,16 +182,16 @@ class TestReboot(object):
         )
 
     @pytest.mark.parametrize(
-        "platform_data,expected",
+        "platform_data,expected,logged",
         [
-            ({"switch_host_halt_services_timeout": 90}, 90),
-            ({"switch_host_halt_services_timeout": True}, EXPECTED_HALT_TIMEOUT),
-            ({"switch_host_halt_services_timeout": 1.5}, EXPECTED_HALT_TIMEOUT),
-            ({"switch_host_halt_services_timeout": "90"}, EXPECTED_HALT_TIMEOUT),
-            ({"switch_host_halt_services_timeout": None}, EXPECTED_HALT_TIMEOUT),
-            ({"switch_host_halt_services_timeout": 0}, EXPECTED_HALT_TIMEOUT),
-            ({"switch_host_halt_services_timeout": -1}, EXPECTED_HALT_TIMEOUT),
-            ({}, EXPECTED_HALT_TIMEOUT),
+            ({"switch_host_halt_services_timeout": 90}, 90, False),
+            ({"switch_host_halt_services_timeout": True}, EXPECTED_HALT_TIMEOUT, True),
+            ({"switch_host_halt_services_timeout": 1.5}, EXPECTED_HALT_TIMEOUT, True),
+            ({"switch_host_halt_services_timeout": "90"}, EXPECTED_HALT_TIMEOUT, True),
+            ({"switch_host_halt_services_timeout": None}, EXPECTED_HALT_TIMEOUT, False),
+            ({"switch_host_halt_services_timeout": 0}, EXPECTED_HALT_TIMEOUT, True),
+            ({"switch_host_halt_services_timeout": -1}, EXPECTED_HALT_TIMEOUT, True),
+            ({}, EXPECTED_HALT_TIMEOUT, False),
         ],
         ids=[
             "positive-integer",
@@ -205,7 +205,7 @@ class TestReboot(object):
         ],
     )
     def test_switch_host_halt_services_timeout_requires_positive_integer(
-            self, platform_data, expected):
+            self, platform_data, expected, logged, caplog):
         with (
             mock.patch(
                 "host_modules.reboot.device_info.is_switch_host",
@@ -215,8 +215,13 @@ class TestReboot(object):
                 "host_modules.reboot.device_info.get_platform_json_data",
                 return_value=platform_data,
             ),
+            caplog.at_level(logging.INFO),
         ):
             assert host_reboot.get_halt_services_timeout() == expected
+        assert any(
+            "Ignoring switch_host_halt_services_timeout" in record.message
+            for record in caplog.records
+        ) is logged
 
     @pytest.mark.parametrize(
         "is_switch_host,is_smartswitch,is_dpu,platform_data,expected",
