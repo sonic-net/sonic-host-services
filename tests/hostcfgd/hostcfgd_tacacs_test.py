@@ -38,7 +38,7 @@ class TestHostcfgdTACACS(TestCase):
         Test hostcfd daemon - TACACS
     """
     def run_diff(self, file1, file2):
-        _, output = getstatusoutput_noshell(['diff', '-uR', file1, file2])
+        _, output = getstatusoutput_noshell(['diff', '-ur', file1, file2])
         return output
 
     """
