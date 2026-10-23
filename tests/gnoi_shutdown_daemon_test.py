@@ -806,9 +806,13 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
         target_args = thread_call_kwargs['args']
         target_fn(*target_args)
 
-        # Verify per-thread connections were opened
-        mock_db_connect.assert_any_call("CONFIG_DB", use_tcp=False)
-        mock_db_connect.assert_any_call("STATE_DB", use_tcp=False)
+        # Verify main and worker transports independently, in connection order.
+        self.assertEqual(mock_db_connect.call_args_list, [
+            call("STATE_DB", use_tcp=False),
+            call("CONFIG_DB", use_tcp=False),
+            call("CONFIG_DB", use_tcp=False),
+            call("STATE_DB", use_tcp=False),
+        ])
 
         # Verify _handle_transition received the per-thread connections, not the shared ones
         mock_handler_instance._handle_transition.assert_called_once_with(
