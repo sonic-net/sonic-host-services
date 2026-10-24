@@ -17,29 +17,56 @@ import switch_platform_init as ppi
 
 class TestSwitchPlatformInit(unittest.TestCase):
 
+  def setUp(self):
+    config_patch = mock.patch.object(ppi, 'SonicDBConfig', autospec=True)
+    self.config = config_patch.start()
+    self.addCleanup(config_patch.stop)
+    self.config.getDbSock.return_value = '/var/run/redis/redis.sock'
+    self.config.getDbId.side_effect = {
+        'CONFIG_DB': 4, 'STATE_DB': 6, 'APPL_STATE_DB': 14
+    }.__getitem__
+    auth_patch = mock.patch.object(ppi, 'connection_kwargs', return_value={})
+    self.auth = auth_patch.start()
+    self.addCleanup(auth_patch.stop)
+
   def test_init(self):
-    with mock.patch('redis.Redis', autospec=True) as mock_redis:
+    with mock.patch('redis.Redis', autospec=True) as client:
       ppi.SwitchPlatformInit()
-      mock_redis.assert_call_count = 3
-      mock_redis.assert_has_calls(
-          calls=[
-              mock.call(
-                  host=ppi.REDIS_HOST,
-                  port=ppi.REDIS_PORT_NUMBER,
-                  db=ppi.REDIS_CONFIG_DB_NUMBER,
-              ),
-              mock.call(
-                  host=ppi.REDIS_HOST,
-                  port=ppi.REDIS_PORT_NUMBER,
-                  db=ppi.REDIS_STATE_DB_NUMBER,
-              ),
-              mock.call(
-                  host=ppi.REDIS_HOST,
-                  port=ppi.REDIS_PORT_NUMBER,
-                  db=ppi.REDIS_APPL_STATE_DB_NUMBER,
-              ),
-          ]
-      )
+      self.assertEqual(client.call_args_list, [
+          mock.call(unix_socket_path='/var/run/redis/redis.sock', db=4),
+          mock.call(unix_socket_path='/var/run/redis/redis.sock', db=6),
+          mock.call(unix_socket_path='/var/run/redis/redis.sock', db=14),
+      ])
+      self.assertEqual(self.auth.call_count, 3)
+
+  def test_each_database_uses_its_own_metadata_and_login(self):
+    self.config.getDbSock.side_effect = lambda name: '/run/' + name + '.sock'
+    self.auth.return_value = {'username': 'writer', 'password': 'test-value'}
+    with mock.patch('redis.Redis', autospec=True) as client:
+      ppi.SwitchPlatformInit()
+      self.assertEqual(client.call_args_list, [
+          mock.call(unix_socket_path='/run/' + name + '.sock', db=db,
+                    username='writer', password='test-value')
+          for name, db in [('CONFIG_DB', 4), ('STATE_DB', 6), ('APPL_STATE_DB', 14)]
+      ])
+      self.assertEqual(self.auth.call_args_list, [
+          mock.call(unix_socket_path='/run/' + name + '.sock')
+          for name in ['CONFIG_DB', 'STATE_DB', 'APPL_STATE_DB']
+      ])
+
+  def test_missing_metadata_stops_without_tcp_retry(self):
+    self.config.getDbSock.side_effect = RuntimeError('missing database')
+    with mock.patch('redis.Redis') as client:
+      with self.assertRaises(RuntimeError):
+        ppi.SwitchPlatformInit()
+      client.assert_not_called()
+
+  def test_missing_writer_password_stops_without_tcp_retry(self):
+    self.auth.side_effect = RuntimeError('missing password')
+    with mock.patch('redis.Redis') as client:
+      with self.assertRaises(RuntimeError):
+        ppi.SwitchPlatformInit()
+      client.assert_not_called()
 
   @mock.patch(
       'switch_platform_init.SwitchPlatformInit.__init__',
