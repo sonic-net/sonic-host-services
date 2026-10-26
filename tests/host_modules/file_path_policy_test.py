@@ -6,6 +6,7 @@ import os
 import stat
 import struct
 import socket
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -135,6 +136,106 @@ def test_failed_upload_is_not_published(store):
         with store.create(path) as output:
             output.write(b"partial")
             raise RuntimeError("synthetic transfer failure")
+    assert not Path(store._physical(path)).exists()
+    assert list(Path(store._physical("/host/sonic-image-exports/staging")).iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", [
+    "missing", "mismatch", "invalid", "truncated", "missing-descriptor",
+    "timeout", "descriptor-setup",
+])
+def test_failed_create_response_reclaims_staging_and_descriptors(store, failure):
+    path = EXPORT_ROOT + "/failed-create.bin"
+    staging = Path(store._physical("/host/sonic-image-exports/staging"))
+    with store.create(path) as output:
+        output.write(b"original image")
+    recvmsg = socket.socket.recvmsg
+    communicate = subprocess.Popen.communicate
+
+    for _ in range(3):
+        received = []
+        timed_out = False
+
+        def receive(channel, *args, **kwargs):
+            payload, ancillary, flags, address = recvmsg(channel, *args, **kwargs)
+            for level, kind, data in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    descriptors = array.array("i")
+                    descriptors.frombytes(data)
+                    received.extend(descriptors)
+            if ancillary:
+                token = payload[2:].decode("ascii").strip()
+                assert [entry.name for entry in staging.iterdir()] == [token]
+                if failure == "missing":
+                    payload = b""
+                elif failure == "mismatch":
+                    other = ("0" if token[0] != "0" else "1") + token[1:]
+                    payload = ("OK " + other).encode("ascii")
+                elif failure == "invalid":
+                    payload = b"OK invalid"
+                elif failure == "truncated":
+                    flags |= socket.MSG_TRUNC
+                elif failure == "missing-descriptor":
+                    for descriptor in received:
+                        os.close(descriptor)
+                    ancillary = []
+            return payload, ancillary, flags, address
+
+        def wait(process, *args, **kwargs):
+            nonlocal timed_out
+            if failure == "timeout" and received and not timed_out:
+                timed_out = True
+                raise subprocess.TimeoutExpired(process.args, 30)
+            return communicate(process, *args, **kwargs)
+
+        with mock.patch.object(socket.socket, "recvmsg", receive), \
+                mock.patch.object(subprocess.Popen, "communicate", wait):
+            if failure == "descriptor-setup":
+                with mock.patch("os.set_inheritable",
+                                side_effect=OSError(errno.EIO, "synthetic setup failure")):
+                    with pytest.raises(OSError):
+                        with store.create(path):
+                            pytest.fail("failed create response was accepted")
+            else:
+                with pytest.raises((OSError, subprocess.TimeoutExpired)):
+                    with store.create(path):
+                        pytest.fail("failed create response was accepted")
+        assert len(received) == 1
+        for descriptor in received:
+            with pytest.raises(OSError) as error:
+                os.fstat(descriptor)
+            assert error.value.errno == errno.EBADF
+        assert list(staging.iterdir()) == []
+        with store.open(path) as source:
+            assert source.read() == b"original image"
+
+
+def test_create_file_object_failure_closes_descriptor_and_reclaims_staging(store):
+    path = EXPORT_ROOT + "/failed-create.bin"
+    request = store._request
+    fdopen = os.fdopen
+    received = []
+
+    def capture(operation, *args):
+        descriptor, token = request(operation, *args)
+        if operation == "create":
+            received.append(descriptor)
+        return descriptor, token
+
+    def construct(descriptor, mode, *args, **kwargs):
+        if mode == "wb":
+            raise OSError(errno.EINVAL, "synthetic file-object failure")
+        return fdopen(descriptor, mode, *args, **kwargs)
+
+    with mock.patch.object(store, "_request", side_effect=capture), \
+            mock.patch("os.fdopen", side_effect=construct):
+        with pytest.raises(OSError):
+            with store.create(path):
+                pytest.fail("invalid file object was accepted")
+    assert len(received) == 1
+    with pytest.raises(OSError) as error:
+        os.fstat(received[0])
+    assert error.value.errno == errno.EBADF
     assert not Path(store._physical(path)).exists()
     assert list(Path(store._physical("/host/sonic-image-exports/staging")).iterdir()) == []
 
@@ -317,6 +418,8 @@ def test_posix_acl_enforced_by_actual_unprivileged_worker(service, store):
     path = EXPORT_ROOT + "/sonic.bin"
     with store.create(path) as image:
         image.write(b"image")
+    expected = (0, hashlib.sha256(b"image").hexdigest())
+    assert service.checksum(path, "sha256") == expected
     # A named-user deny on a root-owned ancestor is invisible to mode-bit-only
     # checks. The actual non-root open must enforce it.
     entries = [(0x01, 7, 0xFFFFFFFF), (0x02, 0, 65534),
@@ -330,6 +433,8 @@ def test_posix_acl_enforced_by_actual_unprivileged_worker(service, store):
             pytest.skip("fixture filesystem does not support POSIX ACLs")
         raise
     assert service.checksum(path, "sha256") == (errno.EACCES, DENIED)
+    os.removexattr(store._physical("/host"), "system.posix_acl_access")
+    assert service.checksum(path, "sha256") == expected
 
 
 def test_worker_dispatch_and_publication_contract(store):
@@ -340,7 +445,10 @@ def test_worker_dispatch_and_publication_contract(store):
             mock.patch("os.getegid", return_value=65534), \
             mock.patch("os.getuid", return_value=65534), \
             mock.patch("os.getgroups", return_value=[]):
-        descriptor, token = image_store.worker_operation(store.host_root, "create", path, "")
+        requested_token = "0123456789abcdef0123456789abcdef"
+        descriptor, token = image_store.worker_operation(
+            store.host_root, "create", path, requested_token)
+        assert token == requested_token
         try:
             os.fchown(descriptor, 65534, 65534)
             os.write(descriptor, b"unit image")
@@ -352,11 +460,13 @@ def test_worker_dispatch_and_publication_contract(store):
             assert source.read() == b"unit image"
         descriptor, _ = image_store.worker_operation(store.host_root, "open", EXPORT_ROOT, "")
         os.close(descriptor)
-        descriptor, token = image_store.worker_operation(store.host_root, "create", path, "")
+        descriptor, token = image_store.worker_operation(
+            store.host_root, "create", path, requested_token)
         os.close(descriptor)
         image_store.worker_operation(store.host_root, "abort", path, token)
         image_store.worker_operation(store.host_root, "abort", path, token)
-        for operation, token in (("invalid", ""), ("publish", "invalid"), ("abort", "../bad")):
+        for operation, token in (("invalid", ""), ("create", ""), ("create", "../bad"),
+                                 ("publish", "invalid"), ("abort", "../bad")):
             with pytest.raises(PermissionError):
                 image_store.worker_operation(store.host_root, operation, path, token)
 

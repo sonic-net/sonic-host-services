@@ -148,11 +148,13 @@ class ImageStore:
                 logger.error("Managed-image worker failed: %s", stderr.decode(errors="replace"))
                 raise OSError(errno.EIO, "Managed-image worker failed")
             result_token = payload[2:].decode("ascii").strip()
-            if operation == "create" and not _TOKEN.fullmatch(result_token):
+            if operation == "create" and (
+                    not _TOKEN.fullmatch(result_token) or result_token != token):
                 raise OSError(errno.EIO, "Invalid managed-image staging response")
-            descriptor = received.pop() if needs_fd else None
+            descriptor = received[-1] if needs_fd else None
             if descriptor is not None:
                 os.set_inheritable(descriptor, False)
+                received.pop()
             return descriptor, result_token
         finally:
             parent.close()
@@ -180,10 +182,16 @@ class ImageStore:
     def create(self, path):
         artifact_parts(path)
         self.prepare()
-        descriptor, token = self._request("create", path)
+        token = uuid.uuid4().hex
         committed = False
         try:
-            with os.fdopen(descriptor, "wb") as target:
+            descriptor, _ = self._request("create", path, token)
+            try:
+                target = os.fdopen(descriptor, "wb")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with target:
                 yield target
                 target.flush()
                 os.fsync(target.fileno())
@@ -357,19 +365,18 @@ def worker_operation(host_root, operation, path, token):
             return _open_artifact(images, parts, uid, gid), ""
         if operation not in ("create", "publish"):
             raise PermissionError(errno.EACCES, DENIED)
+        if not _TOKEN.fullmatch(token):
+            raise PermissionError(errno.EACCES, DENIED)
         staging = _directory(store._physical(STORE_ROOT + "/staging"))
         try:
             _check_owned(staging, uid, gid, 0o700, directory=True)
             if operation == "create":
-                token = uuid.uuid4().hex
                 descriptor = os.open(
                     token, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                     | os.O_CLOEXEC, 0o600, dir_fd=staging,
                 )
                 os.fchmod(descriptor, 0o600)
                 return descriptor, token
-            if not _TOKEN.fullmatch(token):
-                raise PermissionError(errno.EACCES, DENIED)
             source = os.open(token, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                              dir_fd=staging)
             try:
