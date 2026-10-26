@@ -234,6 +234,34 @@ def test_nested_private_images(store):
         assert source.read() == b"image"
 
 
+def test_directory_denial_closes_transferred_descriptor(store):
+    with store.create(EXPORT_ROOT + "/release/image.bin") as output:
+        output.write(b"image")
+    descriptor, token = store._request("open", EXPORT_ROOT + "/release")
+    with mock.patch.object(store, "_request", return_value=(descriptor, token)):
+        with pytest.raises(PermissionError):
+            with store.open(EXPORT_ROOT + "/release"):
+                pytest.fail("directory exported as an image")
+    with pytest.raises(OSError) as error:
+        os.fstat(descriptor)
+    assert error.value.errno == errno.EBADF
+
+
+def test_file_object_construction_failure_closes_transferred_descriptor(store):
+    path = EXPORT_ROOT + "/image.bin"
+    with store.create(path) as output:
+        output.write(b"image")
+    descriptor, token = store._request("open", path)
+    with mock.patch.object(store, "_request", return_value=(descriptor, token)), \
+            mock.patch("os.fdopen", side_effect=OSError(errno.EINVAL, "synthetic failure")):
+        with pytest.raises(OSError):
+            with store.open(path):
+                pytest.fail("invalid file object was accepted")
+    with pytest.raises(OSError) as error:
+        os.fstat(descriptor)
+    assert error.value.errno == errno.EBADF
+
+
 def test_missing_or_root_service_identity_fails_closed(store):
     passwd = Path(store._physical("/etc/passwd"))
     for record in ("", "sonic-image:x:0:0:Invalid:/root:/usr/sbin/nologin\n"):

@@ -166,9 +166,14 @@ class ImageStore:
     @contextmanager
     def open(self, path):
         descriptor, _ = self._request("open", path)
-        with os.fdopen(descriptor, "rb") as source:
-            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise PermissionError(errno.EACCES, DENIED)
+            source = os.fdopen(descriptor, "rb")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with source:
             yield source
 
     @contextmanager
