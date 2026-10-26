@@ -10,17 +10,20 @@ import hashlib
 import logging
 import os
 import requests
-import stat
+import shutil
 import subprocess
 import json
+import tempfile
+from urllib.parse import urlsplit
 
 from host_modules import host_service
 from host_modules.file_path_policy import check_read_path, open_checksum_file
-import tempfile
+from host_modules.image_store import DENIED, EXPORT_ROOT, ImageStore, artifact_parts
 
 MOD_NAME = "image_service"
 
-DEFAULT_IMAGE_SAVE_AS = "/tmp/downloaded-sonic.bin"
+DEFAULT_IMAGE_SAVE_AS = EXPORT_ROOT + "/downloaded-sonic.bin"
+INSTALL_STAGING_PARENT = "/host"
 
 logger = logging.getLogger(__name__)
 
@@ -37,25 +40,14 @@ class ImageService(host_service.HostModule):
 
         Args:
              image_url: url for remote image.
-             save_as: local path for the downloaded image. The directory must exist and be *all* writable.
+             save_as: destination beneath the managed image export directory.
         """
         logger.info("Download new sonic image from {} as {}".format(image_url, save_as))
-        # Check if the directory exists, is absolute and has write permission.
-        if not os.path.isabs(save_as):
-            logger.error("The path {} is not an absolute path".format(save_as))
-            return errno.EINVAL, "Path is not absolute"
-        dir = os.path.dirname(save_as)
-        if not os.path.isdir(dir):
-            logger.error("Directory {} does not exist".format(dir))
-            return errno.ENOENT, "Directory does not exist"
-        st_mode = os.stat(dir).st_mode
-        if (
-            not (st_mode & stat.S_IWUSR)
-            or not (st_mode & stat.S_IWGRP)
-            or not (st_mode & stat.S_IWOTH)
-        ):
-            logger.error("Directory {} is not all writable {}".format(dir, st_mode))
-            return errno.EACCES, "Directory is not all writable"
+        try:
+            artifact_parts(save_as)
+        except PermissionError:
+            logger.warning("Denied download outside managed image exports")
+            return errno.EACCES, DENIED
         try:
             response = requests.get(image_url, stream=True)
             if response.status_code != 200:
@@ -66,12 +58,13 @@ class ImageService(host_service.HostModule):
                 )
                 return errno.EIO, "HTTP error: {}".format(response.status_code)
 
-            with tempfile.NamedTemporaryFile(dir="/tmp", delete=False) as tmp_file:
+            with ImageStore().create(save_as) as tmp_file:
                 for chunk in response.iter_content(chunk_size=8192):
                     tmp_file.write(chunk)
-                temp_file_path = tmp_file.name
-            os.replace(temp_file_path, save_as)
             return 0, "Download successful"
+        except PermissionError:
+            logger.warning("Denied managed-image download")
+            return errno.EACCES, DENIED
         except Exception as e:
             logger.error("Failed to write downloaded image to disk: {}".format(e))
             return errno.EIO, str(e)
@@ -81,12 +74,37 @@ class ImageService(host_service.HostModule):
     )
     def install(self, where):
         """
-        Install a a sonic image:
+        Install a managed local image or a remote HTTP(S) image.
 
         Args:
-            where: either a local path or a remote url pointing to the image.
+            where: a managed artifact path or an HTTP(S) image URL.
         """
-        logger.info("Using sonic-installer to install the image at {}.".format(where))
+        logger.info("Installing a SONiC image")
+        try:
+            if urlsplit(where).scheme.lower() in ("http", "https"):
+                return self._run_installer(where)
+            check_read_path(where)
+            with open_checksum_file(where) as source:
+                # sonic-installer may reopen its input in descendants. Give it
+                # a private copy, never a caller-selected privileged pathname.
+                with tempfile.TemporaryDirectory(
+                        prefix=".sonic-image-install-", dir=INSTALL_STAGING_PARENT) as directory:
+                    image = os.path.join(directory, "image.bin")
+                    descriptor = os.open(
+                        image, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600
+                    )
+                    with os.fdopen(descriptor, "wb") as target:
+                        shutil.copyfileobj(source, target, length=1024 * 1024)
+                    return self._run_installer(image)
+        except PermissionError:
+            logger.warning("Denied installation from an unavailable image artifact")
+            return errno.EACCES, DENIED
+        except (OSError, ValueError, subprocess.SubprocessError):
+            logger.exception("Image installation failed")
+            return errno.EIO, "Image installation failed"
+
+    @staticmethod
+    def _run_installer(where):
         cmd = ["/usr/local/bin/sonic-installer", "install", "-y", where]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ""
@@ -115,12 +133,8 @@ class ImageService(host_service.HostModule):
         try:
             check_read_path(file_path)
         except PermissionError:
-            logger.warning("Denied checksum access to a sensitive pathname")
-            return errno.EACCES, "Sensitive pathname access denied"
-
-        if not os.path.isfile(file_path):
-            logger.error("File {} does not exist".format(file_path))
-            return errno.ENOENT, "File does not exist"
+            logger.warning("Denied checksum outside managed image exports")
+            return errno.EACCES, DENIED
 
         hash_func = None
         if algorithm == "sha256":
@@ -139,8 +153,8 @@ class ImageService(host_service.HostModule):
                     hash_func.update(chunk)
             return 0, hash_func.hexdigest()
         except PermissionError:
-            logger.warning("Denied checksum access to a restricted file")
-            return errno.EACCES, "Sensitive pathname access denied"
+            logger.warning("Denied checksum access to an unavailable image artifact")
+            return errno.EACCES, DENIED
         except Exception as e:
             logger.error("Failed to calculate checksum: {}".format(e))
             return errno.EIO, str(e)

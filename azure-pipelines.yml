@@ -90,9 +90,19 @@ stages:
         pytest
       displayName: 'Test Python 3'
 
+    - script: |
+        set -eu
+        sudo env "PATH=$PATH" \
+          "PYTHONPATH=$(python3 -c 'import site; print(site.getusersitepackages())')" \
+          python3 -m pytest -o addopts="" \
+          --cov=host_modules --cov-append --cov-report=xml --cov-report=html \
+          --junitxml=image-export-test-results.xml \
+          tests/host_modules/image_service_test.py tests/host_modules/file_path_policy_test.py
+      displayName: 'Test real image-worker credential drops and private publication'
+
     - task: PublishTestResults@2
       inputs:
-        testResultsFiles: '$(System.DefaultWorkingDirectory)/test-results.xml'
+        testResultsFiles: '$(System.DefaultWorkingDirectory)/*test-results.xml'
         testRunTitle: Python 3
         failTaskOnFailedTests: true
       condition: succeededOrFailed()
