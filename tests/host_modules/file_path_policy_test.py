@@ -1,6 +1,7 @@
 import errno
 import array
 import hashlib
+import json
 import os
 import stat
 import struct
@@ -136,6 +137,92 @@ def test_failed_upload_is_not_published(store):
             raise RuntimeError("synthetic transfer failure")
     assert not Path(store._physical(path)).exists()
     assert list(Path(store._physical("/host/sonic-image-exports/staging")).iterdir()) == []
+
+
+def test_abort_does_not_require_images_directory(store):
+    with pytest.raises(RuntimeError):
+        with store.create(EXPORT_ROOT + "/aborted.bin") as output:
+            output.write(b"partial")
+            Path(store._physical(EXPORT_ROOT)).rmdir()
+            raise RuntimeError("synthetic transfer failure")
+    assert list(Path(store._physical("/host/sonic-image-exports/staging")).iterdir()) == []
+
+
+def test_identity_upgrade_rollback_and_interrupted_migration(store):
+    path = EXPORT_ROOT + "/release/sonic.bin"
+    with store.create(path) as output:
+        output.write(b"image survives identity changes")
+    passwd = Path(store._physical("/etc/passwd"))
+    real_chown = os.fchown
+    interrupted = False
+
+    def interrupt(descriptor, uid, gid):
+        nonlocal interrupted
+        real_chown(descriptor, uid, gid)
+        if not interrupted:
+            interrupted = True
+            raise OSError(errno.EINTR, "synthetic power loss")
+
+    passwd.write_text("sonic-image:x:65533:65533:Image:/nonexistent:/usr/sbin/nologin\n")
+    with mock.patch("os.fchown", side_effect=interrupt):
+        with pytest.raises(OSError):
+            store.prepare()
+    for uid in (65533, 65534, 65532, 65534):
+        passwd.write_text(f"sonic-image:x:{uid}:{uid}:Image:/nonexistent:/usr/sbin/nologin\n")
+        with store.open(path) as source:
+            assert source.read() == b"image survives identity changes"
+        for logical in (EXPORT_ROOT, EXPORT_ROOT + "/release", path,
+                        "/host/sonic-image-exports/staging"):
+            info = Path(store._physical(logical)).stat()
+            assert info.st_uid == uid and info.st_gid == uid
+            assert stat.S_IMODE(info.st_mode) == (0o600 if logical == path else 0o700)
+        record = json.loads(Path(store._physical(
+            "/host/sonic-image-exports/ownership.json")).read_text())
+        assert record["uid"] == uid and record["next_uid"] == 0
+
+
+@pytest.mark.parametrize("kind", ["root-owner", "unknown-owner", "public-mode",
+                                 "symlink", "hardlink", "fifo", "hidden",
+                                 "staging-directory"])
+def test_migration_rejects_unsafe_tree_before_changing_valid_artifact(store, kind):
+    path = EXPORT_ROOT + "/safe.bin"
+    with store.create(path) as output:
+        output.write(b"safe")
+    safe = Path(store._physical(path))
+    unsafe = Path(store._physical(EXPORT_ROOT + "/unsafe.bin"))
+    if kind == "symlink":
+        unsafe.symlink_to(safe)
+    elif kind == "hardlink":
+        os.link(safe, unsafe)
+    elif kind == "fifo":
+        os.mkfifo(unsafe, 0o600)
+        os.chown(unsafe, 65534, 65534)
+    elif kind == "staging-directory":
+        unsafe = Path(store._physical(
+            "/host/sonic-image-exports/staging/0123456789abcdef0123456789abcdef"))
+        unsafe.mkdir(mode=0o700)
+        os.chown(unsafe, 65534, 65534)
+    else:
+        if kind == "hidden":
+            unsafe = unsafe.with_name(".hidden")
+        unsafe.write_bytes(b"unsafe")
+        uid = {"root-owner": 0, "unknown-owner": 65532}.get(kind, 65534)
+        os.chown(unsafe, uid, uid)
+        unsafe.chmod(0o644 if kind == "public-mode" else 0o600)
+    Path(store._physical("/etc/passwd")).write_text(
+        "sonic-image:x:65533:65533:Image:/nonexistent:/usr/sbin/nologin\n")
+    with pytest.raises(OSError):
+        store.prepare()
+    assert safe.stat().st_uid == 65534
+
+
+@pytest.mark.parametrize("data", ["{}", "{",
+    '{"version":1,"uid":0,"gid":0,"next_uid":0,"next_gid":0}',
+    '{"version":1,"uid":65534,"gid":65534,"next_uid":65533,"next_gid":0}'])
+def test_malformed_ownership_journal_fails_closed(store, data):
+    Path(store._physical("/host/sonic-image-exports/ownership.json")).write_text(data)
+    with pytest.raises(OSError):
+        store.prepare()
 
 
 def test_nested_private_images(store):

@@ -2,6 +2,8 @@
 
 import array
 import errno
+import fcntl
+import json
 import logging
 import os
 import re
@@ -71,7 +73,7 @@ class ImageStore:
             uid, gid = int(matches[0][2]), int(matches[0][3])
         except ValueError as error:
             raise OSError(errno.ENXIO, "Invalid managed-image service identity") from error
-        if uid <= 0 or gid <= 0 or matches[0][6] != "/usr/sbin/nologin":
+        if not (0 < uid < 2**32 - 1 and 0 < gid < 2**32 - 1) or matches[0][6] != "/usr/sbin/nologin":
             raise OSError(errno.ENXIO, "Invalid managed-image service account")
         return uid, gid
 
@@ -87,8 +89,7 @@ class ImageStore:
             self._ensure_directory(parent, "sonic-image-exports", 0, 0, 0o755)
             base = _directory("sonic-image-exports", parent)
             try:
-                for name in ("images", "staging"):
-                    self._ensure_directory(base, name, uid, gid, 0o700)
+                _prepare_ownership(base, uid, gid)
             finally:
                 os.close(base)
         finally:
@@ -114,6 +115,8 @@ class ImageStore:
     def _request(self, operation, path, token=""):
         artifact_parts(path, allow_directory=operation == "open")
         uid, gid = self.credentials()
+        if operation != "abort":
+            self.prepare()
         received = []
         parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         process = None
@@ -189,6 +192,139 @@ class ImageStore:
                     logger.exception("Failed to remove managed-image staging artifact")
 
 
+def _root_record(base, name, flags):
+    descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         0o600, dir_fd=base)
+    try:
+        _check_owned(descriptor, 0, 0, 0o600)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _read_ownership(base):
+    with os.fdopen(_root_record(base, "ownership.json", os.O_RDONLY), "rb") as source:
+        data = source.read(513)
+    try:
+        record = json.loads(data)
+    except (ValueError, UnicodeError) as error:
+        raise OSError(errno.EINVAL, "Invalid managed-image ownership journal") from error
+    keys = {"version", "uid", "gid", "next_uid", "next_gid"}
+    if (len(data) > 512 or not isinstance(record, dict) or set(record) != keys
+            or any(type(record[key]) is not int for key in keys)
+            or record["version"] != 1
+            or not all(0 < record[key] < 2**32 - 1 for key in ("uid", "gid"))
+            or not all(0 <= record[key] < 2**32 - 1 for key in ("next_uid", "next_gid"))
+            or bool(record["next_uid"]) != bool(record["next_gid"])):
+        raise OSError(errno.EINVAL, "Invalid managed-image ownership journal")
+    return record
+
+
+def _write_ownership(base, record):
+    name = ".ownership-" + uuid.uuid4().hex
+    descriptor = _root_record(base, name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as target:
+            json.dump(record, target)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(name, "ownership.json", src_dir_fd=base, dst_dir_fd=base)
+        os.fsync(base)
+    finally:
+        try:
+            os.unlink(name, dir_fd=base)
+        except FileNotFoundError:
+            pass
+
+
+def _walk_ownership(parent, name, record, migrate, staging, depth=0):
+    descriptor = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+    try:
+        def validate():
+            info = os.fstat(descriptor)
+            owner = (info.st_uid, info.st_gid)
+            known = owner == (record["uid"], record["gid"]) or (
+                record["next_uid"] != 0
+                and owner == (record["next_uid"], record["next_gid"]))
+            directory = stat.S_ISDIR(info.st_mode)
+            if (not known or stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600)
+                    or (not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1))
+                    or depth > 16 or (depth == 0 and not directory)
+                    or (staging and depth != 0 and directory)):
+                raise PermissionError(errno.EACCES, DENIED)
+            return directory
+
+        directory = validate()
+        # Inspect type before opening; do not invoke a device's open as root.
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC
+        if directory:
+            flags |= os.O_DIRECTORY
+        opened = os.open(f"/proc/self/fd/{descriptor}", flags)
+        os.close(descriptor)
+        descriptor = opened
+        if directory:
+            for child in os.listdir(descriptor):
+                if (not _COMPONENT.fullmatch(child)
+                        or (staging and not _TOKEN.fullmatch(child))):
+                    raise PermissionError(errno.EACCES, DENIED)
+                _walk_ownership(descriptor, child, record, migrate, staging, depth + 1)
+        if migrate:
+            validate()
+            os.fchown(descriptor, record["next_uid"], record["next_gid"])
+            os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ownership_trees(base, record, migrate=False):
+    for name in ("images", "staging"):
+        _walk_ownership(base, name, record, migrate, name == "staging")
+
+
+def _prepare_ownership(base, uid, gid):
+    with os.fdopen(_root_record(base, "ownership.lock", os.O_RDWR | os.O_CREAT), "r+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            record = _read_ownership(base)
+        except FileNotFoundError:
+            record = None
+        missing = record is None
+        if missing:
+            record = {"version": 1, "uid": uid, "gid": gid, "next_uid": 0, "next_gid": 0}
+        for name in ("images", "staging"):
+            try:
+                os.mkdir(name, 0o700, dir_fd=base)
+            except FileExistsError:
+                continue
+            descriptor = _directory(name, base)
+            try:
+                os.fchown(descriptor, record["uid"], record["gid"])
+                os.fchmod(descriptor, 0o700)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        if missing:
+            _ownership_trees(base, record)
+            _write_ownership(base, record)
+        while record["next_uid"] or (record["uid"], record["gid"]) != (uid, gid):
+            if not record["next_uid"]:
+                _ownership_trees(base, record)
+                record.update(next_uid=uid, next_gid=gid)
+                _write_ownership(base, record)
+            _ownership_trees(base, record)
+            _ownership_trees(base, record, migrate=True)
+            record.update(uid=record["next_uid"], gid=record["next_gid"],
+                          next_uid=0, next_gid=0)
+            _write_ownership(base, record)
+        for name in ("images", "staging"):
+            descriptor = _directory(name, base)
+            try:
+                _check_owned(descriptor, uid, gid, 0o700, directory=True)
+            finally:
+                os.close(descriptor)
+
+
 def worker_operation(host_root, operation, path, token):
     """Run only after the parent has dropped all root and supplementary IDs."""
     uid, gid = os.geteuid(), os.getegid()
@@ -196,12 +332,25 @@ def worker_operation(host_root, operation, path, token):
         raise PermissionError(errno.EACCES, DENIED)
     parts = artifact_parts(path, allow_directory=operation == "open")
     store = ImageStore(host_root)
+    if operation == "abort":
+        if not _TOKEN.fullmatch(token):
+            raise PermissionError(errno.EACCES, DENIED)
+        staging = _directory(store._physical(STORE_ROOT + "/staging"))
+        try:
+            _check_owned(staging, uid, gid, 0o700, directory=True)
+            try:
+                os.unlink(token, dir_fd=staging)
+            except FileNotFoundError:
+                pass
+            return None, ""
+        finally:
+            os.close(staging)
     images = _directory(store._physical(EXPORT_ROOT))
     try:
         _check_owned(images, uid, gid, 0o700, directory=True)
         if operation == "open":
             return _open_artifact(images, parts, uid, gid), ""
-        if operation not in ("create", "publish", "abort"):
+        if operation not in ("create", "publish"):
             raise PermissionError(errno.EACCES, DENIED)
         staging = _directory(store._physical(STORE_ROOT + "/staging"))
         try:
@@ -216,12 +365,6 @@ def worker_operation(host_root, operation, path, token):
                 return descriptor, token
             if not _TOKEN.fullmatch(token):
                 raise PermissionError(errno.EACCES, DENIED)
-            if operation == "abort":
-                try:
-                    os.unlink(token, dir_fd=staging)
-                except FileNotFoundError:
-                    pass
-                return None, ""
             source = os.open(token, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                              dir_fd=staging)
             try:
