@@ -300,7 +300,7 @@ def _prepare_ownership(base, uid, gid):
             descriptor = _directory(name, base)
             try:
                 os.fchown(descriptor, record["uid"], record["gid"])
-                os.fchmod(descriptor, 0o700)
+                os.fchmod(descriptor, stat.S_IRWXU)
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
