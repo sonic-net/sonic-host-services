@@ -15,6 +15,7 @@ import subprocess
 import json
 
 from host_modules import host_service
+from host_modules.file_path_policy import check_read_path, open_checksum_file
 import tempfile
 
 MOD_NAME = "image_service"
@@ -111,6 +112,12 @@ class ImageService(host_service.HostModule):
 
         logger.info("Calculating {} checksum for file {}".format(algorithm, file_path))
 
+        try:
+            check_read_path(file_path)
+        except PermissionError:
+            logger.warning("Denied checksum access to a sensitive pathname")
+            return errno.EACCES, "Sensitive pathname access denied"
+
         if not os.path.isfile(file_path):
             logger.error("File {} does not exist".format(file_path))
             return errno.ENOENT, "File does not exist"
@@ -127,10 +134,13 @@ class ImageService(host_service.HostModule):
             return errno.EINVAL, "Unsupported algorithm"
 
         try:
-            with open(file_path, "rb") as f:
+            with open_checksum_file(file_path) as f:
                 for chunk in iter(lambda: f.read(4096), b""):
                     hash_func.update(chunk)
             return 0, hash_func.hexdigest()
+        except PermissionError:
+            logger.warning("Denied checksum access to a restricted file")
+            return errno.EACCES, "Sensitive pathname access denied"
         except Exception as e:
             logger.error("Failed to calculate checksum: {}".format(e))
             return errno.EIO, str(e)

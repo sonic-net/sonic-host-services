@@ -263,7 +263,7 @@ class TestImageService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("os.path.isfile")
-    @mock.patch("builtins.open", new_callable=mock.mock_open, read_data=b"test data")
+    @mock.patch("host_modules.image_service.open_checksum_file", new_callable=mock.mock_open, read_data=b"test data")
     def test_checksum(
         self,
         mock_open,
@@ -289,7 +289,7 @@ class TestImageService(object):
         assert rc == 0, "wrong return value"
         assert checksum == expected_checksum, "checksum does not match expected value"
         mock_isfile.assert_called_once_with(file_path)
-        mock_open.assert_called_once_with(file_path, "rb")
+        mock_open.assert_called_once_with(file_path)
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
@@ -345,7 +345,7 @@ class TestImageService(object):
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
     @mock.patch("os.path.isfile")
-    @mock.patch("builtins.open", new_callable=mock.mock_open, read_data=b"test data")
+    @mock.patch("host_modules.image_service.open_checksum_file", new_callable=mock.mock_open, read_data=b"test data")
     def test_checksum_general_exception(
         self, mock_open, mock_isfile, MockInit, MockBusName, MockSystemBus
     ):
@@ -371,7 +371,7 @@ class TestImageService(object):
                 "general error" in msg.lower()
             ), "message should contain 'general error'"
             mock_isfile.assert_called_once_with(file_path)
-            mock_open.assert_called_once_with(file_path, "rb")
+            mock_open.assert_called_once_with(file_path)
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
@@ -688,4 +688,3 @@ class TestImageService(object):
 
         assert rc == 1
         assert "Invalid InstallRequest JSON" in response
-
