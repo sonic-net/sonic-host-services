@@ -1736,6 +1736,26 @@ class TestEnableFeatureGeneratedUnit(TestCase):
                         ["sudo", "systemctl", "start", "bgp.service"]]
         mocked_set_state.assert_called_once_with(mock.ANY, featured.FeatureHandler.FEATURE_STATE_ENABLED)
 
+    def test_enable_feature_rechecks_generated_unit_after_unmask(self):
+        """A masked generated unit is not enabled after unmask exposes its real state."""
+        handler = self._create_handler()
+        feature = featured.Feature("bgp", {"state": "enabled", "auto_restart": "enabled"})
+        cmds = []
+
+        with mock.patch.object(handler, "get_multiasic_feature_instances",
+                               return_value=(["bgp"], ["service"])), \
+             mock.patch.object(handler, "get_systemd_unit_state",
+                               side_effect=["masked", "generated"]), \
+             mock.patch("featured.run_cmd", side_effect=lambda cmd, **kwargs: cmds.append(cmd)), \
+             mock.patch.object(handler, "set_feature_state") as mocked_set_state:
+
+            result = handler.enable_feature(feature)
+
+        assert result is True
+        assert cmds == [["sudo", "systemctl", "unmask", "bgp.service"],
+                        ["sudo", "systemctl", "start", "bgp.service"]]
+        mocked_set_state.assert_called_once_with(mock.ANY, featured.FeatureHandler.FEATURE_STATE_ENABLED)
+
     def test_enable_feature_skips_enable_for_generated_timer_unit(self):
         """A generated feature with a .timer unit still unmasks both units and skips enable."""
         result, cmds, _ = self._run_enable_feature("generated",

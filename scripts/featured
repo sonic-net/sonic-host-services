@@ -650,6 +650,13 @@ class FeatureHandler(object):
                 syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
                 try:
                     if "enable" in cmd:
+                        # Unmasking can expose a generated or transient unit even
+                        # when its original UnitFileState was masked.
+                        current_unit_file_state = self.get_systemd_unit_state(
+                            "{}.{}".format(feature_name, feature_suffixes[-1])
+                        )
+                        if current_unit_file_state in ("generated", "transient"):
+                            continue
                         # If we are running an enable command, then ignore any errors that might come
                         # from the service file being defined only in the /run folder. This is because
                         # it doesn't make sense to enable generated services. In Trixie, because of
