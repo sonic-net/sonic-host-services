@@ -147,6 +147,8 @@ class FeatureHandler(object):
         self._cached_config = {}
         # Service operations that must be retried on a later SET or delayed release.
         self._features_pending_update = set()
+        # Restart policies skipped for absent units must be applied before enabling.
+        self._features_pending_config = set()
         self.is_multi_npu = device_info.is_multi_npu()
         self.is_delayed_enabled = False
         self.is_advanced_boot = is_advanced_boot
@@ -241,6 +243,7 @@ class FeatureHandler(object):
             syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
             self._cached_config.pop(feature_name, None)
             self._features_pending_update.discard(feature_name)
+            self._features_pending_config.discard(feature_name)
             self._feature_state_table._del(feature_name)
 
             # Clean up feature from namespace CONFIG_DBs and STATE_DBs
@@ -293,6 +296,7 @@ class FeatureHandler(object):
         """
         # Phase 1: Write all systemd configs and cache features
         syslog.syslog(syslog.LOG_INFO, "Writing systemd configs")
+        configured_features = set()
         for feature_name in feature_table.keys():
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
@@ -304,10 +308,12 @@ class FeatureHandler(object):
             feature = Feature(feature_name, feature_table[feature_name], device_config)
 
             self._cached_config.setdefault(feature_name, feature)
-            self.update_systemd_config(feature, reload=False)
+            if self.update_systemd_config(feature, reload=False):
+                configured_features.add(feature_name)
 
         # Perform daemon-reload after all configs are written
-        self.reload_systemd_config()
+        if self.reload_systemd_config():
+            self._features_pending_config.difference_update(configured_features)
 
         # Phase 2: Start/stop services without daemon-reloads
         syslog.syslog(syslog.LOG_INFO, "Restarting services")
@@ -411,7 +417,10 @@ class FeatureHandler(object):
         """
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config, True)
         for feature_name in feature_names:
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
+            unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_unit(feature_config, unit):
+                continue
+            unit_file_state = self.get_systemd_unit_state(unit)
             if not unit_file_state:
                 continue
             if not self.is_multi_npu:
@@ -462,7 +471,8 @@ class FeatureHandler(object):
             Set to False when batching multiple config updates.
 
         Returns:
-            None.
+            True if all instance configs were written and any requested reload
+            succeeded; False if a unit was skipped or the reload failed.
         """
         # As per the current code(due to various dependencies) SWSS service stop/start also stops/starts the dependent services(syncd, teamd, bgpd etc)
         # There is an issue seen of syncd service getting stopped twice upon a critical process crash in syncd service due to above reason.
@@ -480,6 +490,7 @@ class FeatureHandler(object):
 
         feature_systemd_config = "[Service]\nRestart={}\n".format(restart_field_str)
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config)
+        configured = True
 
         # On multi-ASIC device, creates systemd configuration file for each feature instance
         # residing in difference namespace.
@@ -487,6 +498,11 @@ class FeatureHandler(object):
             feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
             feature_systemd_config_file_path = os.path.join(feature_systemd_config_dir_path, 'auto_restart.conf')
 
+            unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_unit(feature_config, unit):
+                self._features_pending_config.add(feature_config.name)
+                configured = False
+                continue
             if not os.path.exists(feature_systemd_config_dir_path):
                 os.mkdir(feature_systemd_config_dir_path)
             with open(feature_systemd_config_file_path, 'w') as feature_systemd_config_file_handler:
@@ -497,15 +513,22 @@ class FeatureHandler(object):
             syslog.syslog(syslog.LOG_INFO, update_message)
 
         if reload:
-            self.reload_systemd_config()
+            if not self.reload_systemd_config():
+                return False
+            if configured:
+                self._features_pending_config.discard(feature_config.name)
+        return configured
 
     def reload_systemd_config(self):
+        """Reload systemd configuration and report whether it succeeded."""
         try:
             syslog.syslog(syslog.LOG_INFO, "Reloading systemd configuration files ...")
             run_cmd(["sudo", "systemctl", "daemon-reload"], raise_exception=True)
             syslog.syslog(syslog.LOG_INFO, "Systemd configuration files are reloaded!")
+            return True
         except Exception as err:
             syslog.syslog(syslog.LOG_ERR, "Failed to reload systemd configuration files!")
+            return False
 
     def get_multiasic_feature_instances(self, feature, all_instance=False):
         # Create feature name suffix depending feature is running in host or namespace or in both
@@ -550,10 +573,10 @@ class FeatureHandler(object):
                       "Timed out waiting for '{}' to leave activating state".format(unit))
         return "activating"
 
-    def get_systemd_unit_state(self, unit):
-        """ Returns service configuration """
+    def get_systemd_unit_state(self, unit, property_name="UnitFileState"):
+        """Return a systemd state property, or 'invalid' if the query fails."""
 
-        cmd = ["sudo", "systemctl", "show", unit, "--property", "UnitFileState"]
+        cmd = ["sudo", "systemctl", "show", unit, "--property", property_name]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
@@ -561,7 +584,26 @@ class FeatureHandler(object):
             return 'invalid'  # same as systemd's "invalid indicates that it could not be determined whether the unit file is enabled".
 
         props = dict([line.split("=") for line in stdout.decode().strip().splitlines()])
-        return props["UnitFileState"]
+        if property_name not in props:
+            syslog.syslog(syslog.LOG_ERR, "Missing {} in status of {}".format(property_name, unit))
+            return 'invalid'
+        return props[property_name]
+
+    def is_intentionally_absent_unit(self, feature, unit):
+        """Recognize disabled features whose units are not packaged.
+
+        Platform defaults can retain disabled features without their service
+        units. Scope is not a packaging signal: omitted fields default to global.
+        Only a successful LoadState=not-found query permits skipping the unit.
+        """
+        if feature.state not in ("disabled", "always_disabled"):
+            return False
+        if self.get_systemd_unit_state(unit, "LoadState") != "not-found":
+            return False
+        syslog.syslog(syslog.LOG_INFO,
+                      "Skipping absent unit '{}' for disabled feature '{}'"
+                      .format(unit, feature.name))
+        return True
 
     def is_exclusion_listed(self, feature_name):
         """Return True if the feature is in the exclusion list."""
@@ -571,6 +613,18 @@ class FeatureHandler(object):
         if self.is_exclusion_listed(feature.name):
             syslog.syslog(syslog.LOG_INFO, f"ExclusionList: skip enabling '{feature.name}'")
             return True
+
+        if feature.name in self._features_pending_config:
+            try:
+                configured = self.update_systemd_config(feature)
+            except OSError as err:
+                syslog.syslog(syslog.LOG_ERR,
+                              "Failed to apply pending auto-restart config for feature '{}': {}"
+                              .format(feature.name, err))
+                configured = False
+            if not configured:
+                self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
+                return False
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
         failed_instances = []
@@ -596,6 +650,13 @@ class FeatureHandler(object):
                 syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
                 try:
                     if "enable" in cmd:
+                        # Unmasking can expose a generated or transient unit even
+                        # when its original UnitFileState was masked.
+                        current_unit_file_state = self.get_systemd_unit_state(
+                            "{}.{}".format(feature_name, feature_suffixes[-1])
+                        )
+                        if current_unit_file_state in ("generated", "transient"):
+                            continue
                         # If we are running an enable command, then ignore any errors that might come
                         # from the service file being defined only in the /run folder. This is because
                         # it doesn't make sense to enable generated services. In Trixie, because of
@@ -639,6 +700,8 @@ class FeatureHandler(object):
             # Stopping during ExecStartPre kills the startup script without running
             # ExecStop, leaving Docker containers orphaned (see issue #24875).
             service_unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_unit(feature, service_unit):
+                continue
             self.wait_for_service_stable(service_unit)
             cmds = []
             for suffix in reversed(feature_suffixes):
