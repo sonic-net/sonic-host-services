@@ -34,7 +34,13 @@ class TestCaclmgrdBmcLink(TestCase):
     def _daemon(self, fs):
         if not os.path.exists(DBCONFIG_PATH):
             fs.create_file(DBCONFIG_PATH)
-        return self.caclmgrd.ControlPlaneAclManager("caclmgrd")
+        # The constructor runs real "ip" commands, which cannot run under pyfakefs.
+        daemon_cls = self.caclmgrd.ControlPlaneAclManager
+        for name in ("get_namespace_mgmt_ip", "get_namespace_mgmt_ipv6"):
+            patcher = mock.patch.object(daemon_cls, name, return_value='')
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return daemon_cls("caclmgrd")
 
     @patchfs
     def test_no_bmc_data(self, fs):
@@ -67,11 +73,12 @@ class TestCaclmgrdBmcLink(TestCase):
 
     def _generate_full_rules(self, fs):
         daemon_cls = self.caclmgrd.ControlPlaneAclManager
-        daemon_cls.get_namespace_mgmt_ip = mock.MagicMock()
-        daemon_cls.get_namespace_mgmt_ipv6 = mock.MagicMock()
-        daemon_cls.generate_block_ip2me_traffic_iptables_commands = mock.MagicMock(return_value=[])
-        daemon_cls.get_chain_list = mock.MagicMock(return_value=["INPUT", "FORWARD", "OUTPUT"])
-        daemon_cls.get_chassis_midplane_interface_ip = mock.MagicMock(return_value='')
+        for name, value in (("generate_block_ip2me_traffic_iptables_commands", []),
+                            ("get_chain_list", ["INPUT", "FORWARD", "OUTPUT"]),
+                            ("get_chassis_midplane_interface_ip", '')):
+            patcher = mock.patch.object(daemon_cls, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         daemon = self._daemon(fs)
         rules, _ = daemon.get_acl_rules_and_translate_to_iptables_commands('', MockConfigDb())
         return [tuple(r) for r in rules]
