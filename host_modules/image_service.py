@@ -10,7 +10,6 @@ import hashlib
 import logging
 import os
 import requests
-import shutil
 import stat
 import subprocess
 import json
@@ -18,12 +17,10 @@ import json
 from host_modules import host_service
 from host_modules.file_path_policy import DENIED, open_checksum_file
 import tempfile
-from urllib.parse import urlsplit
 
 MOD_NAME = "image_service"
 
 DEFAULT_IMAGE_SAVE_AS = "/tmp/downloaded-sonic.bin"
-INSTALL_STAGING_PARENT = "/host"
 
 logger = logging.getLogger(__name__)
 
@@ -84,41 +81,12 @@ class ImageService(host_service.HostModule):
     )
     def install(self, where):
         """
-        Install a public local SONiC image or a remote HTTP(S) image.
+        Install a a sonic image:
 
         Args:
             where: either a local path or a remote url pointing to the image.
         """
-        logger.info("Installing a SONiC image")
-        try:
-            if urlsplit(where).scheme.lower() in ("http", "https"):
-                return self._run_installer(where)
-            with open_checksum_file(where) as source:
-                # The installer can reopen its input in descendants. Give it a
-                # private copy of the validated inode, not the caller's path.
-                with tempfile.TemporaryDirectory(
-                        prefix=".sonic-image-install-", dir=INSTALL_STAGING_PARENT) as directory:
-                    image = os.path.join(directory, "image.bin")
-                    descriptor = os.open(
-                        image, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600
-                    )
-                    try:
-                        target = os.fdopen(descriptor, "wb")
-                    except BaseException:
-                        os.close(descriptor)
-                        raise
-                    with target:
-                        shutil.copyfileobj(source, target, length=1024 * 1024)
-                    return self._run_installer(image)
-        except PermissionError:
-            logger.warning("Denied installation from a non-public local image")
-            return errno.EACCES, DENIED
-        except (OSError, ValueError, subprocess.SubprocessError):
-            logger.exception("Image installation failed")
-            return errno.EIO, "Image installation failed"
-
-    @staticmethod
-    def _run_installer(where):
+        logger.info("Using sonic-installer to install the image at {}.".format(where))
         cmd = ["/usr/local/bin/sonic-installer", "install", "-y", where]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         msg = ""

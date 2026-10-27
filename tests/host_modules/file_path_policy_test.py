@@ -17,11 +17,10 @@ from host_modules.file_path_policy import DENIED, open_checksum_file
 
 
 @pytest.fixture
-def public_root(monkeypatch):
+def public_root():
     with tempfile.TemporaryDirectory(prefix="public-image-", dir="/tmp") as directory:
         root = Path(directory)
         root.chmod(0o755)
-        monkeypatch.setattr(image_service, "INSTALL_STAGING_PARENT", directory)
         yield root
 
 
@@ -34,8 +33,6 @@ def service():
 
 def assert_denied(service, path):
     assert service.checksum(str(path), "sha256") == (errno.EACCES, DENIED)
-    with mock.patch("subprocess.run", side_effect=AssertionError("privileged installer")):
-        assert service.install(str(path)) == (errno.EACCES, DENIED)
 
 
 def assert_checksum(service, path, content=b"public image"):
@@ -118,8 +115,6 @@ def test_directory_budget_exact_limit(service, public_root, kind):
         requested = current / "link"
         requested.symlink_to("image" if kind == "relative" else image)
     assert_checksum(service, requested)
-    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stderr=b"")):
-        assert service.install(str(requested)) == (0, "")
     beyond = current / "beyond"
     beyond.mkdir(mode=0o755)
     blocked = beyond / "image"
@@ -272,29 +267,7 @@ def test_unsupported_local_reads(service, public_root, kind):
     assert_denied(service, path)
 
 
-@pytest.mark.parametrize("returncode", [0, 1])
-def test_local_install_uses_private_copy_and_cleans_up(service, public_root, returncode):
-    path = public_root / "image"
-    path.write_bytes(b"public image")
-    path.chmod(0o644)
-    installed = []
-
-    def install(command, **kwargs):
-        copy = Path(command[-1])
-        installed.append(copy)
-        assert copy != path
-        assert copy.read_bytes() == b"public image"
-        assert stat.S_IMODE(copy.stat().st_mode) == 0o600
-        assert stat.S_IMODE(copy.parent.stat().st_mode) == 0o700
-        return mock.Mock(returncode=returncode, stderr=b"Error: synthetic failure")
-
-    with mock.patch("subprocess.run", side_effect=install):
-        assert service.install(str(path))[0] == returncode
-    assert len(installed) == 1 and not installed[0].parent.exists()
-
-
-@pytest.mark.parametrize("operation", ["checksum", "install"])
-def test_replacement_after_validation_cannot_change_read(service, public_root, operation):
+def test_replacement_after_validation_cannot_change_read(service, public_root):
     path = public_root / "image"
     path.write_bytes(b"public image")
     path.chmod(0o644)
@@ -309,16 +282,7 @@ def test_replacement_after_validation_cannot_change_read(service, public_root, o
             yield source
 
     with mock.patch.object(image_service, "open_checksum_file", replace):
-        if operation == "checksum":
-            assert_checksum(service, path)
-        else:
-            def install(command, **kwargs):
-                assert Path(command[-1]).read_bytes() == b"public image"
-                return mock.Mock(returncode=0, stderr=b"")
-
-            with mock.patch("subprocess.run", side_effect=install):
-                assert service.install(str(path)) == (0, "")
-    assert list(public_root.glob(".sonic-image-install-*")) == []
+        assert_checksum(service, path)
 
 
 @pytest.mark.parametrize("code", [
@@ -340,70 +304,22 @@ def test_caller_body_errors_propagate_unchanged(public_root, code):
     assert len(os.listdir("/proc/self/fd")) == before
 
 
-@pytest.mark.parametrize("operation", ["installer", "staging", "copy"])
-def test_operational_missing_file_is_not_access_denial(service, public_root, monkeypatch, caplog, operation):
-    path = public_root / "image"
-    path.write_bytes(b"public image")
-    path.chmod(0o644)
-    installer = mock.Mock(return_value=mock.Mock(returncode=0, stderr=b""))
-    failure = FileNotFoundError(errno.ENOENT, "missing operational dependency")
-    if operation == "installer":
-        installer.side_effect = failure
-    elif operation == "staging":
-        monkeypatch.setattr(image_service, "INSTALL_STAGING_PARENT", str(public_root / "missing"))
-    else:
-        monkeypatch.setattr(image_service.shutil, "copyfileobj", mock.Mock(side_effect=failure))
-    monkeypatch.setattr(image_service.subprocess, "run", installer)
-    before = len(os.listdir("/proc/self/fd"))
-    assert service.install(str(path)) == (errno.EIO, "Image installation failed")
-    assert "Image installation failed" in caplog.text
-    assert "Denied installation" not in caplog.text
-    if operation == "installer":
-        installer.assert_called_once()
-    else:
-        installer.assert_not_called()
-    assert list(public_root.glob(".sonic-image-install-*")) == []
-    assert len(os.listdir("/proc/self/fd")) == before
-
-
-def test_copy_failure_cleans_up_without_running_installer(service, public_root):
-    path = public_root / "image"
-    path.write_bytes(b"public image")
-    path.chmod(0o644)
-    with mock.patch("shutil.copyfileobj", side_effect=OSError(errno.ENOSPC, "disk full")), \
-            mock.patch("subprocess.run") as installer:
-        assert service.install(str(path)) == (errno.EIO, "Image installation failed")
-    installer.assert_not_called()
-    assert list(public_root.glob(".sonic-image-install-*")) == []
-
-
-@pytest.mark.parametrize("operation", ["checksum", "install"])
-def test_descriptor_construction_failure_closes_all_descriptors(service, public_root, operation):
+def test_descriptor_construction_failure_closes_all_descriptors(service, public_root):
     path = public_root / "image"
     path.write_bytes(b"public image")
     path.chmod(0o644)
     opened = []
     real_open = os.open
-    real_fdopen = os.fdopen
 
     def capture(*args, **kwargs):
         descriptor = real_open(*args, **kwargs)
         opened.append(descriptor)
         return descriptor
 
-    def construct(descriptor, mode, *args, **kwargs):
-        if operation == "checksum" or mode == "wb":
-            raise OSError(errno.EIO, "synthetic failure")
-        return real_fdopen(descriptor, mode, *args, **kwargs)
-
     with mock.patch.object(file_path_policy.os, "open", side_effect=capture), \
-            mock.patch("os.fdopen", side_effect=construct), \
-            mock.patch("subprocess.run") as installer:
-        result = service.checksum(str(path), "sha256") if operation == "checksum" \
-            else service.install(str(path))
+            mock.patch("os.fdopen", side_effect=OSError(errno.EIO, "synthetic failure")):
+        result = service.checksum(str(path), "sha256")
         assert result[0] == errno.EIO
-    installer.assert_not_called()
-    assert list(public_root.glob(".sonic-image-install-*")) == []
     assert opened
     for descriptor in opened:
         with pytest.raises(OSError) as error:

@@ -201,11 +201,11 @@ class TestImageService(object):
     @mock.patch("subprocess.run")
     def test_install_success(self, mock_run, MockInit, MockBusName, MockSystemBus):
         """
-        Test that the `install` method passes a remote image URL to the installer.
+        Test that the `install` method successfully installs an image.
         """
         # Arrange
         image_service = ImageService(mod_name="image_service")
-        where = "https://example.com/sonic_image.img"
+        where = "/tmp/sonic_image.img"
         mock_result = mock.Mock()
         mock_result.returncode = 0
         mock_result.stderr = b""
@@ -229,11 +229,11 @@ class TestImageService(object):
     @mock.patch("subprocess.run")
     def test_install_fail(self, mock_run, MockInit, MockBusName, MockSystemBus):
         """
-        Test that remote installation returns the installer's non-zero exit code.
+        Test that the `install` method fails when the installation command returns a non-zero exit code.
         """
         # Arrange
         image_service = ImageService(mod_name="image_service")
-        where = "https://example.com/sonic_image.img"
+        where = "/tmp/sonic_image.img"
         mock_result = mock.Mock()
         mock_result.returncode = 1
         mock_result.stderr = b"Error: Installation failed"
