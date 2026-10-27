@@ -321,6 +321,51 @@ def test_replacement_after_validation_cannot_change_read(service, public_root, o
     assert list(public_root.glob(".sonic-image-install-*")) == []
 
 
+@pytest.mark.parametrize("code", [
+    errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOTDIR,
+    errno.ELOOP, errno.ENXIO, errno.ENAMETOOLONG, errno.EIO,
+])
+def test_caller_body_errors_propagate_unchanged(public_root, code):
+    path = public_root / "image"
+    path.write_bytes(b"public image")
+    path.chmod(0o644)
+    failure = OSError(code, "caller operation failed")
+    before = len(os.listdir("/proc/self/fd"))
+    with pytest.raises(OSError) as caught:
+        with open_checksum_file(str(path)) as source:
+            assert source.read() == b"public image"
+            raise failure
+    assert caught.value is failure
+    assert source.closed
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+@pytest.mark.parametrize("operation", ["installer", "staging", "copy"])
+def test_operational_missing_file_is_not_access_denial(service, public_root, monkeypatch, caplog, operation):
+    path = public_root / "image"
+    path.write_bytes(b"public image")
+    path.chmod(0o644)
+    installer = mock.Mock(return_value=mock.Mock(returncode=0, stderr=b""))
+    failure = FileNotFoundError(errno.ENOENT, "missing operational dependency")
+    if operation == "installer":
+        installer.side_effect = failure
+    elif operation == "staging":
+        monkeypatch.setattr(image_service, "INSTALL_STAGING_PARENT", str(public_root / "missing"))
+    else:
+        monkeypatch.setattr(image_service.shutil, "copyfileobj", mock.Mock(side_effect=failure))
+    monkeypatch.setattr(image_service.subprocess, "run", installer)
+    before = len(os.listdir("/proc/self/fd"))
+    assert service.install(str(path)) == (errno.EIO, "Image installation failed")
+    assert "Image installation failed" in caplog.text
+    assert "Denied installation" not in caplog.text
+    if operation == "installer":
+        installer.assert_called_once()
+    else:
+        installer.assert_not_called()
+    assert list(public_root.glob(".sonic-image-install-*")) == []
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
 def test_copy_failure_cleans_up_without_running_installer(service, public_root):
     path = public_root / "image"
     path.write_bytes(b"public image")

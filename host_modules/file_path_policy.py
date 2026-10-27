@@ -35,6 +35,7 @@ def open_checksum_file(path):
     directories = [os.open("/", os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)]
     pending = deque(path.split("/"))
     links = 0
+    validated = False
     try:
         while pending:
             part = pending.popleft()
@@ -82,6 +83,7 @@ def open_checksum_file(path):
                     with source:
                         while directories:
                             os.close(directories.pop())
+                        validated = True
                         yield source
                     return
             finally:
@@ -89,8 +91,10 @@ def open_checksum_file(path):
                     os.close(descriptor)
         raise PermissionError(errno.EACCES, DENIED)
     except OSError as error:
-        if error.errno in (errno.EACCES, errno.EPERM, errno.ENOENT,
-                           errno.ENOTDIR, errno.ELOOP, errno.ENXIO, errno.ENAMETOOLONG):
+        # Errors from the caller's with-body are not path-validation failures.
+        if not validated and error.errno in (
+                errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOTDIR,
+                errno.ELOOP, errno.ENXIO, errno.ENAMETOOLONG):
             raise PermissionError(errno.EACCES, DENIED) from error
         raise
     finally:
