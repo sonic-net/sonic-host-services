@@ -75,6 +75,24 @@ def test_missing_private_and_non_directory_denials_match(service, public_root, s
     assert_denied(service, str(public_root / "missing") + suffix)
 
 
+@pytest.mark.parametrize("path", [
+    "/" * 4096, "/" * (128 * 1024), "/" + "\u00e9" * 2048,
+], ids=["at-limit", "large", "utf8-byte-limit"])
+def test_overlong_paths_are_denied_before_filesystem_access(service, path):
+    with mock.patch.object(file_path_policy.os, "open", side_effect=AssertionError("filesystem access")):
+        assert_denied(service, path)
+
+
+@pytest.mark.parametrize("name", ["image", "\u00e9"], ids=["ascii", "utf8"])
+def test_longest_supported_raw_path(service, public_root, name):
+    path = public_root / name
+    path.write_bytes(b"public image")
+    path.chmod(0o644)
+    requested = "/" * (4095 - len(os.fsencode(path))) + str(path)
+    assert len(os.fsencode(requested)) == 4095
+    assert_checksum(service, requested)
+
+
 def test_private_and_search_only_ancestors(service, public_root):
     parent = public_root / "parent"
     parent.mkdir(mode=0o755)
