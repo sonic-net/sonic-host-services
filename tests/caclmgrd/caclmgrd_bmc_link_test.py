@@ -42,34 +42,27 @@ class TestCaclmgrdBmcLink(TestCase):
             self.addCleanup(patcher.stop)
         return daemon_cls("caclmgrd")
 
-    @patchfs
-    def test_no_bmc_data(self, fs):
-        daemon = self._daemon(fs)
-        with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value=None, create=True):
-            self.assertListEqual([], daemon.generate_allow_bmc_link_traffic(''))
+    def _generate(self, bmc_data, namespace=''):
+        # The method does not use self, so the daemon does not need to be built.
+        with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value=bmc_data, create=True):
+            return self.caclmgrd.ControlPlaneAclManager.generate_allow_bmc_link_traffic(mock.MagicMock(), namespace)
 
-    @patchfs
-    def test_allow_bmc_link_interface(self, fs):
-        daemon = self._daemon(fs)
-        with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value=BMC_DATA, create=True):
-            expected = [['iptables', '-A', 'INPUT', '-i', 'bmc0', '-j', 'ACCEPT']]
-            self.assertListEqual(expected, daemon.generate_allow_bmc_link_traffic(''))
-            self.assertListEqual([], daemon.generate_allow_bmc_link_traffic('asic0'))
+    def test_no_bmc_data(self):
+        self.assertListEqual([], self._generate(None))
 
-    @patchfs
-    def test_allow_bmc_link_interface_on_bmc_side(self, fs):
+    def test_allow_bmc_link_interface(self):
+        expected = [['iptables', '-A', 'INPUT', '-i', 'bmc0', '-j', 'ACCEPT']]
+        self.assertListEqual(expected, self._generate(BMC_DATA))
+        self.assertListEqual([], self._generate(BMC_DATA, 'asic0'))
+
+    def test_allow_bmc_link_interface_on_bmc_side(self):
         # The same bmc.json is used on the switch host and on the BMC, so the
         # rule must be generated from the interface name alone, with no role.
-        daemon = self._daemon(fs)
-        with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value={"bmc_if_name": "bmc0"}, create=True):
-            expected = [['iptables', '-A', 'INPUT', '-i', 'bmc0', '-j', 'ACCEPT']]
-            self.assertListEqual(expected, daemon.generate_allow_bmc_link_traffic(''))
+        expected = [['iptables', '-A', 'INPUT', '-i', 'bmc0', '-j', 'ACCEPT']]
+        self.assertListEqual(expected, self._generate({"bmc_if_name": "bmc0"}))
 
-    @patchfs
-    def test_bmc_data_without_interface(self, fs):
-        daemon = self._daemon(fs)
-        with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value={"bmc_addr": "169.254.100.1"}, create=True):
-            self.assertListEqual([], daemon.generate_allow_bmc_link_traffic(''))
+    def test_bmc_data_without_interface(self):
+        self.assertListEqual([], self._generate({"bmc_addr": "169.254.100.1"}))
 
     def _generate_full_rules(self, fs):
         daemon_cls = self.caclmgrd.ControlPlaneAclManager
