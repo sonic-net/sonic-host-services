@@ -7,5 +7,5 @@ Build-Depends: debhelper (>=11)
 
 Package: sonic-host-services-data
 Architecture: all
-Depends: ${misc:Depends}, adduser
+Depends: ${misc:Depends}
 Description: Data files required for SONiC host services
