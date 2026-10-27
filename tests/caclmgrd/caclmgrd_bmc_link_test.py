@@ -51,6 +51,15 @@ class TestCaclmgrdBmcLink(TestCase):
             self.assertListEqual([], daemon.generate_allow_bmc_link_traffic('asic0'))
 
     @patchfs
+    def test_allow_bmc_link_interface_on_bmc_side(self, fs):
+        # The same bmc.json is used on the switch host and on the BMC, so the
+        # rule must be generated from the interface name alone, with no role.
+        daemon = self._daemon(fs)
+        with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value={"bmc_if_name": "bmc0"}, create=True):
+            expected = [['iptables', '-A', 'INPUT', '-i', 'bmc0', '-j', 'ACCEPT']]
+            self.assertListEqual(expected, daemon.generate_allow_bmc_link_traffic(''))
+
+    @patchfs
     def test_bmc_data_without_interface(self, fs):
         daemon = self._daemon(fs)
         with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value={"bmc_addr": "169.254.100.1"}, create=True):
