@@ -3,6 +3,8 @@ import hashlib
 import os
 import stat
 import struct
+import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -91,6 +93,69 @@ def test_longest_supported_raw_path(service, public_root, name):
     requested = "/" * (4095 - len(os.fsencode(path))) + str(path)
     assert len(os.fsencode(requested)) == 4095
     assert_checksum(service, requested)
+
+
+@pytest.mark.parametrize("name", ["a" * 255, "\u00e9" * 127 + "a"], ids=["ascii", "utf8"])
+def test_component_length_denials(service, public_root, name):
+    path = public_root / name
+    path.write_bytes(b"public image")
+    path.chmod(0o644)
+    assert_checksum(service, path)
+    assert_denied(service, str(path) + "a")
+
+
+def test_directory_budget_preserves_descriptor_headroom(service, public_root):
+    directories, files = [], []
+    current = public_root
+    healthy = public_root / "healthy"
+    healthy.write_bytes(b"public image")
+    healthy.chmod(0o644)
+    try:
+        for _ in range(1050):
+            current = current / "d"
+            current.mkdir(mode=0o755)
+            directories.append(current)
+        image, private = current / "image", current / "private"
+        for path, mode in [(image, 0o644), (private, 0o600)]:
+            path.write_bytes(b"public image")
+            path.chmod(mode)
+            files.append(path)
+        script = """
+import errno, os, resource, sys
+from host_modules.file_path_policy import DENIED, open_checksum_file
+resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024))
+deep, healthy = sys.argv[1:]
+with open(deep, "rb") as source:
+    assert source.read() == b"public image"
+baseline = len(os.listdir("/proc/self/fd"))
+with open_checksum_file(healthy) as source:
+    assert len(os.listdir("/proc/self/fd")) <= baseline + 2
+    assert source.read() == b"public image"
+before = len(os.listdir("/proc/self/fd"))
+for _ in range(20):
+    try:
+        with open_checksum_file(deep):
+            raise AssertionError("unbounded directory traversal")
+    except PermissionError as error:
+        assert error.errno == errno.EACCES and error.strerror == DENIED
+assert len(os.listdir("/proc/self/fd")) == before
+with open(healthy, "rb") as source:
+    assert source.read() == b"public image"
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(image), str(healthy)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert_denied(service, image)
+        assert_denied(service, private)
+        assert_denied(service, current / "missing")
+        assert_checksum(service, healthy)
+    finally:
+        for path in files:
+            path.unlink()
+        for directory in reversed(directories):
+            directory.rmdir()
 
 
 def test_private_and_search_only_ancestors(service, public_root):

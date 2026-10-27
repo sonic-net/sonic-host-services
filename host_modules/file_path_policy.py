@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 DENIED = "File read access denied"
 MAX_READ_PATH_LENGTH = 4096
+MAX_READ_DIRECTORIES = 64
 
 
 def _check_public(descriptor, required):
@@ -45,6 +46,8 @@ def open_checksum_file(path):
                     raise PermissionError(errno.EACCES, DENIED)
                 os.close(directories.pop())
                 continue
+            if len(directories) >= MAX_READ_DIRECTORIES:
+                raise PermissionError(errno.EACCES, DENIED)
             descriptor = os.open(
                 part, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=directories[-1],
@@ -77,6 +80,8 @@ def open_checksum_file(path):
                         os.close(source_fd)
                         raise
                     with source:
+                        while directories:
+                            os.close(directories.pop())
                         yield source
                     return
             finally:
@@ -85,7 +90,7 @@ def open_checksum_file(path):
         raise PermissionError(errno.EACCES, DENIED)
     except OSError as error:
         if error.errno in (errno.EACCES, errno.EPERM, errno.ENOENT,
-                           errno.ENOTDIR, errno.ELOOP, errno.ENXIO):
+                           errno.ENOTDIR, errno.ELOOP, errno.ENXIO, errno.ENAMETOOLONG):
             raise PermissionError(errno.EACCES, DENIED) from error
         raise
     finally:

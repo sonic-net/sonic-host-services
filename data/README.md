@@ -13,6 +13,11 @@ unchanged. No managed-image store, service account or companion gNMI package
 is required. Download outputs retain their existing permissions; non-public
 files must be made public explicitly before these read APIs can use them.
 
+Local read resolution is bounded to raw paths shorter than 4096 bytes,
+40 symlinks and 64 descriptors per ancestor stack, plus fixed target handles.
+Exceeding these safety limits returns the same read denial. Ancestor
+descriptors are released before hashing or copying the validated file.
+
 
 ## To build
 
