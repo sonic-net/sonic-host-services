@@ -41,6 +41,48 @@ def assert_checksum(service, path, content=b"public image"):
     )
 
 
+@pytest.mark.parametrize("mask", [0o022, 0o077])
+def test_download_is_public_and_can_be_checksummed(service, public_root, mask):
+    public_root.chmod(0o777)
+    path = public_root / "downloaded-image"
+    content = b"downloaded SONiC image"
+    response = mock.Mock(status_code=200)
+    response.iter_content.return_value = iter([content[:10], content[10:]])
+    previous_mask = os.umask(mask)
+    try:
+        with mock.patch.object(image_service.requests, "get", return_value=response) as get, \
+                mock.patch.object(image_service.os, "fchmod", wraps=os.fchmod) as fchmod:
+            assert service.download("https://example.com/image", str(path)) == (
+                0, "Download successful"
+            )
+        get.assert_called_once_with("https://example.com/image", stream=True)
+        assert_checksum(service, path, content)
+        fchmod.assert_called_once_with(mock.ANY, 0o644)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+        assert path.read_bytes() == content
+    finally:
+        os.umask(previous_mask)
+
+
+def test_download_permission_failure_does_not_publish(service, public_root, caplog):
+    public_root.chmod(0o777)
+    path = public_root / "existing-image"
+    path.write_bytes(b"existing image")
+    response = mock.Mock(status_code=200)
+    response.iter_content.return_value = iter([b"new image"])
+    error = PermissionError(errno.EPERM, "Cannot publish image permissions")
+    with mock.patch.object(image_service.requests, "get", return_value=response), \
+            mock.patch.object(image_service.tempfile, "NamedTemporaryFile"), \
+            mock.patch.object(image_service.os, "fchmod", side_effect=error), \
+            mock.patch.object(image_service.os, "replace") as replace:
+        assert service.download("https://example.com/image", str(path)) == (
+            errno.EIO, str(error)
+        )
+    replace.assert_not_called()
+    assert path.read_bytes() == b"existing image"
+    assert "Failed to write downloaded image to disk" in caplog.text
+
+
 def set_deny_acl(path, directory=False):
     owner, other = (7, 5) if directory else (6, 4)
     entries = [(1, owner, 0xFFFFFFFF), (2, 0, 65534), (4, other, 0xFFFFFFFF),

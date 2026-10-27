@@ -69,6 +69,7 @@ class ImageService(host_service.HostModule):
             with tempfile.NamedTemporaryFile(dir="/tmp", delete=False) as tmp_file:
                 for chunk in response.iter_content(chunk_size=8192):
                     tmp_file.write(chunk)
+                os.fchmod(tmp_file.fileno(), 0o644)
                 temp_file_path = tmp_file.name
             os.replace(temp_file_path, save_as)
             return 0, "Download successful"
