@@ -46,8 +46,6 @@ def open_checksum_file(path):
                     raise PermissionError(errno.EACCES, DENIED)
                 os.close(directories.pop())
                 continue
-            if len(directories) >= MAX_READ_DIRECTORIES:
-                raise PermissionError(errno.EACCES, DENIED)
             descriptor = os.open(
                 part, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=directories[-1],
@@ -64,6 +62,8 @@ def open_checksum_file(path):
                             os.close(directories.pop())
                     pending.extendleft(reversed(target.split("/")))
                 elif stat.S_ISDIR(mode):
+                    if len(directories) >= MAX_READ_DIRECTORIES:
+                        raise PermissionError(errno.EACCES, DENIED)
                     directories.append(descriptor)
                     descriptor = None
                 else:

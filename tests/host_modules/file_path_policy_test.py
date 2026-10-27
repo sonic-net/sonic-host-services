@@ -104,17 +104,47 @@ def test_component_length_denials(service, public_root, name):
     assert_denied(service, str(path) + "a")
 
 
+@pytest.mark.parametrize("kind", ["file", "relative", "absolute"])
+def test_directory_budget_exact_limit(service, public_root, kind):
+    current = public_root
+    for _ in range(64 - len(public_root.parts)):
+        current = current / "d"
+        current.mkdir(mode=0o755)
+    image = current / "image"
+    image.write_bytes(b"public image")
+    image.chmod(0o644)
+    requested = image
+    if kind != "file":
+        requested = current / "link"
+        requested.symlink_to("image" if kind == "relative" else image)
+    assert_checksum(service, requested)
+    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stderr=b"")):
+        assert service.install(str(requested)) == (0, "")
+    beyond = current / "beyond"
+    beyond.mkdir(mode=0o755)
+    blocked = beyond / "image"
+    blocked.write_bytes(b"public image")
+    blocked.chmod(0o644)
+    assert_denied(service, blocked)
+
+
 def test_directory_budget_preserves_descriptor_headroom(service, public_root):
     directories, files = [], []
     current = public_root
     healthy = public_root / "healthy"
     healthy.write_bytes(b"public image")
     healthy.chmod(0o644)
+    edge = None
     try:
         for _ in range(1050):
             current = current / "d"
             current.mkdir(mode=0o755)
             directories.append(current)
+            if len(current.parts) == 64:
+                edge = current / "edge"
+                edge.write_bytes(b"public image")
+                edge.chmod(0o644)
+                files.append(edge)
         image, private = current / "image", current / "private"
         for path, mode in [(image, 0o644), (private, 0o600)]:
             path.write_bytes(b"public image")
@@ -124,11 +154,14 @@ def test_directory_budget_preserves_descriptor_headroom(service, public_root):
 import errno, os, resource, sys
 from host_modules.file_path_policy import DENIED, open_checksum_file
 resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024))
-deep, healthy = sys.argv[1:]
+deep, healthy, edge = sys.argv[1:]
 with open(deep, "rb") as source:
     assert source.read() == b"public image"
 baseline = len(os.listdir("/proc/self/fd"))
 with open_checksum_file(healthy) as source:
+    assert len(os.listdir("/proc/self/fd")) <= baseline + 2
+    assert source.read() == b"public image"
+with open_checksum_file(edge) as source:
     assert len(os.listdir("/proc/self/fd")) <= baseline + 2
     assert source.read() == b"public image"
 before = len(os.listdir("/proc/self/fd"))
@@ -143,7 +176,7 @@ with open(healthy, "rb") as source:
     assert source.read() == b"public image"
 """
         result = subprocess.run(
-            [sys.executable, "-c", script, str(image), str(healthy)],
+            [sys.executable, "-c", script, str(image), str(healthy), str(edge)],
             capture_output=True, text=True,
         )
         assert result.returncode == 0, result.stderr
