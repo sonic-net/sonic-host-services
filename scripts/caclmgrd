@@ -396,11 +396,22 @@ class ControlPlaneAclManager(logger.Logger):
             return []
 
         bmc_data = device_info.get_bmc_data()
-        intf = bmc_data.get("bmc_if_name") if bmc_data else None
-        if not intf:
+        if not bmc_data:
             return []
 
-        return [['iptables', '-A', 'INPUT', '-i', intf, '-j', 'ACCEPT']]
+        # bmc_if_addr is the switch-host end of the link and bmc_addr the BMC end.
+        if device_info.is_switch_host():
+            local_ip, peer_ip = bmc_data.get("bmc_if_addr"), bmc_data.get("bmc_addr")
+        elif device_info.is_switch_bmc():
+            local_ip, peer_ip = bmc_data.get("bmc_addr"), bmc_data.get("bmc_if_addr")
+        else:
+            return []
+
+        intf = bmc_data.get("bmc_if_name")
+        if not (intf and local_ip and peer_ip):
+            return []
+
+        return [['iptables', '-A', 'INPUT', '-i', intf, '-s', peer_ip, '-d', local_ip, '-j', 'ACCEPT']]
 
     def generate_allow_internal_docker_ip_traffic_commands(self, namespace):
         allow_internal_docker_ip_cmds = []
