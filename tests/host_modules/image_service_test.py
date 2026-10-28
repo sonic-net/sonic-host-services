@@ -262,12 +262,11 @@ class TestImageService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("os.path.isfile")
-    @mock.patch("builtins.open", new_callable=mock.mock_open, read_data=b"test data")
+    @mock.patch("host_modules.image_service.open_checksum_file",
+                new_callable=mock.mock_open, read_data=b"test data")
     def test_checksum(
         self,
         mock_open,
-        mock_isfile,
         MockInit,
         MockBusName,
         MockSystemBus,
@@ -280,7 +279,6 @@ class TestImageService(object):
         # Arrange
         image_service = ImageService(mod_name="image_service")
         file_path = "/tmp/test_file.img"
-        mock_isfile.return_value = True
 
         # Act
         rc, checksum = image_service.checksum(file_path, algorithm)
@@ -288,15 +286,15 @@ class TestImageService(object):
         # Assert
         assert rc == 0, "wrong return value"
         assert checksum == expected_checksum, "checksum does not match expected value"
-        mock_isfile.assert_called_once_with(file_path)
-        mock_open.assert_called_once_with(file_path, "rb")
+        mock_open.assert_called_once_with(file_path)
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("os.path.isfile")
+    @mock.patch("host_modules.image_service.open_checksum_file",
+                side_effect=PermissionError(errno.EACCES, "File read access denied"))
     def test_checksum_no_such_file(
-        self, mock_isfile, MockInit, MockBusName, MockSystemBus
+        self, mock_open, MockInit, MockBusName, MockSystemBus
     ):
         """
         Test that the `checksum` method fails when the file does not exist.
@@ -305,22 +303,21 @@ class TestImageService(object):
         image_service = ImageService(mod_name="image_service")
         file_path = "/nonexistent_dir/test_file.img"
         algorithm = "sha256"
-        mock_isfile.return_value = False
 
         # Act
         rc, msg = image_service.checksum(file_path, algorithm)
 
         # Assert
         assert rc != 0, "wrong return value"
-        assert "not exist" in msg.lower(), "message should contain 'not exist'"
-        mock_isfile.assert_called_once_with(file_path)
+        assert (rc, msg) == (errno.EACCES, "File read access denied")
+        mock_open.assert_called_once_with(file_path)
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("os.path.isfile")
+    @mock.patch("host_modules.image_service.open_checksum_file")
     def test_checksum_unsupported_algorithm(
-        self, mock_isfile, MockInit, MockBusName, MockSystemBus
+        self, mock_open, MockInit, MockBusName, MockSystemBus
     ):
         """
         Test that the `checksum` method fails when an unsupported algorithm is provided.
@@ -329,7 +326,6 @@ class TestImageService(object):
         image_service = ImageService(mod_name="image_service")
         file_path = "/tmp/test_file.img"
         algorithm = "unsupported_algo"
-        mock_isfile.return_value = True
 
         # Act
         rc, msg = image_service.checksum(file_path, algorithm)
@@ -339,15 +335,15 @@ class TestImageService(object):
         assert (
             "unsupported algorithm" in msg.lower()
         ), "message should contain 'unsupported algorithm'"
-        mock_isfile.assert_called_once_with(file_path)
+        mock_open.assert_not_called()
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
-    @mock.patch("os.path.isfile")
-    @mock.patch("builtins.open", new_callable=mock.mock_open, read_data=b"test data")
+    @mock.patch("host_modules.image_service.open_checksum_file",
+                new_callable=mock.mock_open, read_data=b"test data")
     def test_checksum_general_exception(
-        self, mock_open, mock_isfile, MockInit, MockBusName, MockSystemBus
+        self, mock_open, MockInit, MockBusName, MockSystemBus
     ):
         """
         Test that the `checksum` method handles general exceptions during file reading.
@@ -356,7 +352,6 @@ class TestImageService(object):
         image_service = ImageService(mod_name="image_service")
         file_path = "/tmp/test_file.img"
         algorithm = "sha256"
-        mock_isfile.return_value = True
 
         with mock.patch.object(hashlib, algorithm) as mock_hash_func:
             mock_hash_instance = mock_hash_func.return_value
@@ -370,8 +365,7 @@ class TestImageService(object):
             assert (
                 "general error" in msg.lower()
             ), "message should contain 'general error'"
-            mock_isfile.assert_called_once_with(file_path)
-            mock_open.assert_called_once_with(file_path, "rb")
+            mock_open.assert_called_once_with(file_path)
 
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
@@ -688,4 +682,3 @@ class TestImageService(object):
 
         assert rc == 1
         assert "Invalid InstallRequest JSON" in response
-

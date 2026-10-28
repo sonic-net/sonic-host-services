@@ -15,6 +15,7 @@ import subprocess
 import json
 
 from host_modules import host_service
+from host_modules.file_path_policy import DENIED, open_checksum_file
 import tempfile
 
 MOD_NAME = "image_service"
@@ -68,6 +69,7 @@ class ImageService(host_service.HostModule):
             with tempfile.NamedTemporaryFile(dir="/tmp", delete=False) as tmp_file:
                 for chunk in response.iter_content(chunk_size=8192):
                     tmp_file.write(chunk)
+                os.fchmod(tmp_file.fileno(), 0o644)
                 temp_file_path = tmp_file.name
             os.replace(temp_file_path, save_as)
             return 0, "Download successful"
@@ -111,10 +113,6 @@ class ImageService(host_service.HostModule):
 
         logger.info("Calculating {} checksum for file {}".format(algorithm, file_path))
 
-        if not os.path.isfile(file_path):
-            logger.error("File {} does not exist".format(file_path))
-            return errno.ENOENT, "File does not exist"
-
         hash_func = None
         if algorithm == "sha256":
             hash_func = hashlib.sha256()
@@ -127,10 +125,13 @@ class ImageService(host_service.HostModule):
             return errno.EINVAL, "Unsupported algorithm"
 
         try:
-            with open(file_path, "rb") as f:
+            with open_checksum_file(file_path) as f:
                 for chunk in iter(lambda: f.read(4096), b""):
                     hash_func.update(chunk)
             return 0, hash_func.hexdigest()
+        except PermissionError:
+            logger.warning("Denied checksum of a non-public file")
+            return errno.EACCES, DENIED
         except Exception as e:
             logger.error("Failed to calculate checksum: {}".format(e))
             return errno.EIO, str(e)
