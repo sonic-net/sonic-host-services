@@ -235,7 +235,8 @@ HOSTCFGD_TEST_TACACS_VECTOR = [
                             "auth_type": "chap",
                             "timeout": 5,
                             "passkey": "dellsonic",
-                            "src_intf": "Ethernet0"
+                            "src_intf": "Ethernet0",
+                            "traceid_authorization": "true"
                     }
                 },
                 "TACPLUS_SERVER": {
