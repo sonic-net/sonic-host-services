@@ -5,6 +5,8 @@ After=database.service config-setup.service
 BindsTo=sonic.target
 After=sonic.target
 Wants=dldd-rules-watch.timer
+FailureAction=none
+StartLimitAction=none
 
 [Service]
 Type=simple
@@ -12,3 +14,17 @@ ExecStartPre=/usr/bin/install -d -m 0750 /var/lib/sonic/dldd/inbox /var/lib/soni
 ExecStart=/usr/local/bin/dldd run
 Restart=on-failure
 RestartSec=10
+CPUAccounting=yes
+CPUQuota=100%
+CPUWeight=10
+MemoryAccounting=yes
+MemoryHigh=256M
+MemoryMax=512M
+MemorySwapMax=0
+TasksAccounting=yes
+TasksMax=128
+LimitNOFILE=1024
+OOMPolicy=kill
+KillMode=control-group
+SendSIGKILL=yes
+TimeoutStopSec=30

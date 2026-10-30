@@ -186,6 +186,18 @@ the [Healthz overview](healthz-overview.md).
 
 ## SONiC integration
 
+- The packaged DLDD unit accounts CPU, memory, and tasks and sets an aggregate
+  `CPUQuota=100%`, `CPUWeight=10`, `MemoryHigh=256M`, `MemoryMax=512M`,
+  `MemorySwapMax=0`, `TasksMax=128`, and per-process `LimitNOFILE=1024`.
+  Affinity is not pinned; platform overrides use normal systemd drop-ins.
+  The resource profile must be qualified with the target workload.
+- `OOMPolicy=kill` groups cgroup OOM cleanup. `KillMode=control-group`,
+  `TimeoutStopSec=30`, and `SendSIGKILL=yes` bound cleanup of killable unit
+  processes. `FailureAction=none` and `StartLimitAction=none` prevent these unit
+  actions from requesting host-wide recovery. FEATURE restart policy remains
+  authoritative. These controls do not undo hardware side effects, cancel an
+  in-process hook thread, impose per-command process-tree cleanup, or provide
+  a watchdog/security sandbox. Core storage follows the host's existing policy.
 - DLDD scans `FAULT_INFO` for its own fault lifecycle and publishes
   producer-neutral `HEALTHZ_TRANSITIONS` records. A transition record (no
   `kind` field) has a per-publication UUID `transition_id` stored in the

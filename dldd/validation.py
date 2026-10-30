@@ -49,7 +49,7 @@ from .rule_schema.errors import (
     bound_identity,
     bound_path,
 )
-from .rule_schema.v0_0_1 import MAX_EVENTS_PER_SIGNATURE
+from .rule_schema.v0_0_1 import MAX_EVENTS_PER_SIGNATURE as MAX_EVENTS_PER_SIGNATURE
 
 
 SUPPORTED_SCHEMA_VERSIONS = frozenset(DEFAULT_CONTRACT_REGISTRY.versions)
