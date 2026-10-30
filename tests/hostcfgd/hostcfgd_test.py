@@ -942,13 +942,10 @@ class TestDeviceMetaCfgLoad(TestCase):
             '/usr/share/zoneinfo/UTC',
             OSError("Permission denied accessing timezone file")
         ]
-        mock_run_cmd_output.side_effect = [
-            CalledProcessError(returncode=1, cmd=['docker', 'exec', 'lldp', 'readlink', '/etc/localtime'], output="Permission denied")
-        ]
         self.devmeta_cfg.apply_timezone_if_needed('America/New_York')
+        mock_run_cmd_output.assert_not_called()
         expected_syslog_calls = [
             call(mock.ANY, 'DeviceMetaCfg: timezone update to America/New_York'),
-            call(mock.ANY, 'DeviceMetaCfg: Failed to change timezone of lldp to America/New_York: Command \'[\'docker\', \'exec\', \'lldp\', \'readlink\', \'/etc/localtime\']\' returned non-zero exit status 1.'),
             call(mock.ANY, 'DeviceMetaCfg: Invalid timezone files for /etc/localtime America/New_York: Permission denied accessing timezone file')
         ]
         mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
@@ -1010,17 +1007,12 @@ class TestDeviceMetaCfgLoad(TestCase):
             '/usr/share/zoneinfo/America/New_York'
         ]
         self.devmeta_cfg.timezone = 'America/New_York'
-        mock_run_cmd_output.side_effect = [
-            b'/usr/share/zoneinfo/America/New_York',
-        ]
-        self.devmeta_cfg.apply_timezone_if_needed('America/New_York')
-        expected_calls = [
-            call(['docker', 'exec', 'lldp', 'readlink', '/etc/localtime']),
-        ]
-        mock_run_cmd_output.assert_has_calls(expected_calls, any_order=False)
+        with mock.patch.object(self.devmeta_cfg, 'get_container_names') as mock_get_container_names:
+            self.devmeta_cfg.apply_timezone_if_needed('America/New_York')
+        mock_get_container_names.assert_not_called()
+        mock_run_cmd_output.assert_not_called()
         expected_syslog_calls = [
             call(mock.ANY, 'DeviceMetaCfg: timezone update to America/New_York'),
-            call(mock.ANY, 'DeviceMetaCfg: No change in timezone for lldp'),
             call(mock.ANY, 'DeviceMetaCfg: No change in timezone')
         ]
         mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
