@@ -47,6 +47,9 @@ REBOOT_CAUSE_NON_HARDWARE = "Non-Hardware"
 REBOOT_CAUSE_HARDWARE_OTHER = "Hardware - Other"
 REBOOT_CAUSE_HEARTBEAT_LOSS = "Heartbeat with the Supervisor card lost"
 REBOOT_CAUSE_KERNEL_PANIC = "Kernel Panic"
+REBOOT_CAUSE_GRACEFUL_SHUTDOWN_FROM_BMC = "graceful shutdown from BMC"
+# Keep equal to ChassisBase.REBOOT_CAUSE_POWER_DOWN_REQUEST_FROM_BMC.
+REBOOT_CAUSE_POWER_DOWN_REQUEST_FROM_BMC = "Power down request from BMC"
 
 # Global logger class instance
 sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
@@ -123,8 +126,10 @@ def get_reboot_cause_from_platform():
     return hardware_reboot_cause_major, hardware_reboot_cause_minor
 
 
-def find_hardware_reboot_cause():
-    hardware_reboot_cause_major, hardware_reboot_cause_minor = get_reboot_cause_from_platform()
+def find_hardware_reboot_cause(platform_reboot_cause=None):
+    if platform_reboot_cause is None:
+        platform_reboot_cause = get_reboot_cause_from_platform()
+    hardware_reboot_cause_major, hardware_reboot_cause_minor = platform_reboot_cause
     if hardware_reboot_cause_major:
         sonic_logger.log_info("Platform api indicates reboot cause {}".format(hardware_reboot_cause_major))
     else:
@@ -183,7 +188,10 @@ def determine_reboot_cause():
 
     # 2. Check if the previous reboot was caused by hardware
     #    If yes, the hardware reboot cause will be treated as the reboot cause
-    hardware_reboot_cause = find_hardware_reboot_cause()
+    hardware_reboot_cause_major, hardware_reboot_cause_minor = get_reboot_cause_from_platform()
+    hardware_reboot_cause = find_hardware_reboot_cause(
+        (hardware_reboot_cause_major, hardware_reboot_cause_minor)
+    )
 
     # 3. If there is a REBOOT_CAUSE_FILE, it will contain any software-related
     #    reboot info. We will use it as the previous cause.
@@ -199,7 +207,13 @@ def determine_reboot_cause():
     #   the software_reboot_cause will be treated as the reboot cause if it's not unknown
     #   otherwise, the cmdline_reboot_cause will be treated as the reboot cause if it's not none
     # Else the software_reboot_cause will be treated as the reboot cause
-    if (REBOOT_CAUSE_KERNEL_PANIC not in software_reboot_cause and
+    if (hardware_reboot_cause_major ==
+            REBOOT_CAUSE_POWER_DOWN_REQUEST_FROM_BMC and
+            software_reboot_cause ==
+            REBOOT_CAUSE_GRACEFUL_SHUTDOWN_FROM_BMC):
+        previous_reboot_cause = software_reboot_cause
+        additional_reboot_info = hardware_reboot_cause
+    elif (REBOOT_CAUSE_KERNEL_PANIC not in software_reboot_cause and
         REBOOT_CAUSE_HEARTBEAT_LOSS not in software_reboot_cause and
         REBOOT_CAUSE_NON_HARDWARE not in hardware_reboot_cause):
         previous_reboot_cause = hardware_reboot_cause
