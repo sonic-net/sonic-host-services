@@ -269,7 +269,18 @@ class FeatureHandler(object):
         if self._cached_config[feature_name].auto_restart != feature.auto_restart:
             syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
                             .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
-            self.update_systemd_config(feature)
+            try:
+                configured = self.update_systemd_config(feature)
+            except OSError as err:
+                syslog.syslog(syslog.LOG_ERR,
+                              "Failed to apply auto-restart config for feature '{}': {}"
+                              .format(feature.name, err))
+                configured = False
+            if not configured and feature.state in ("enabled", "always_enabled"):
+                self._features_pending_config.add(feature_name)
+                self._features_pending_update.add(feature_name)
+                self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
+                return
             self._cached_config[feature_name].auto_restart = feature.auto_restart
 
         # Retry incomplete service operations even when the requested state is unchanged.
