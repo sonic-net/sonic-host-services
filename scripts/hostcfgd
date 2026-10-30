@@ -1574,6 +1574,12 @@ class DeviceMetaCfg(object):
                 syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: Recieved empty timezone')
                 return
 
+            system_timezone_realpath = os.path.realpath(ETC_LOCALTIME)
+            new_timezone_realpath = os.path.realpath(f'{ZONEINFO_DIR}/{new_tz}')
+            if new_tz == self.timezone and new_timezone_realpath == system_timezone_realpath:
+                syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: No change in timezone')
+                return
+
             containers = self.get_container_names()
             for container in containers:
                 try:
@@ -1590,12 +1596,6 @@ class DeviceMetaCfg(object):
                         syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: No change in timezone for {container}')
                 except Exception as e:
                     syslog.syslog(syslog.LOG_ERR, f'DeviceMetaCfg: Failed to change timezone of {container} to {new_tz}: {e}')
-
-            system_timezone_realpath = os.path.realpath(ETC_LOCALTIME)
-            new_timezone_realpath = os.path.realpath(f'{ZONEINFO_DIR}/{new_tz}')
-            if new_tz == self.timezone and new_timezone_realpath == system_timezone_realpath:
-                syslog.syslog(syslog.LOG_DEBUG, 'DeviceMetaCfg: No change in timezone')
-                return
 
             run_cmd(['timedatectl', 'set-timezone', new_tz])
             self.timezone = new_tz
