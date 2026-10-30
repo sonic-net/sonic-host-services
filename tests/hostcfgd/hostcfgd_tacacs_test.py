@@ -1,3 +1,4 @@
+import copy
 import importlib.machinery
 import importlib.util
 import filecmp
@@ -129,6 +130,22 @@ class TestHostcfgdTACACS(TestCase):
         self.check_config(test_name, test_data, "config_db_local_and_tacacs")
         # test disable accounting
         self.check_config(test_name, test_data, "config_db_disable_accounting")
+
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_traceid_disabled_with_tacacs(self, test_name, test_data):
+        test_data = copy.deepcopy(test_data)
+        config_name = "config_db_tacacs"
+        test_data[config_name]["TACPLUS"]["global"]["traceid_authorization"] = "false"
+        op_path = output_path + "/" + test_name + "_traceid_disabled"
+        sop_path = sample_output_path + "/" + test_name + "_" + config_name
+        host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+
+        self.render_config_file(host_config_daemon)
+
+        with open(hostcfgd.NSS_TACPLUS_CONF) as conf_file:
+            directives = conf_file.read().splitlines()
+        self.assertIn("tacacs_authorization", directives)
+        self.assertNotIn("traceid_authorization", directives)
 
     @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
     def test_hostcfgd_sshd_not_empty(self, test_name, test_data):
