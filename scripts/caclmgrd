@@ -391,10 +391,7 @@ class ControlPlaneAclManager(logger.Logger):
 
         return allow_internal_chassis_midplane_traffic
 
-    def generate_allow_bmc_link_traffic(self, namespace):
-        if namespace:
-            return []
-
+    def generate_allow_bmc_link_traffic(self):
         bmc_data = device_info.get_bmc_data()
         if not bmc_data:
             return []
@@ -748,7 +745,8 @@ class ControlPlaneAclManager(logger.Logger):
         iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace, config_db_connector)
 
         # Add iptables commands to allow internal BMC link traffic
-        iptables_cmds += self.generate_allow_bmc_link_traffic(namespace)
+        if not namespace:
+            iptables_cmds += self.generate_allow_bmc_link_traffic()
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections

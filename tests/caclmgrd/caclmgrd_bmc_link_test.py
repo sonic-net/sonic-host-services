@@ -42,12 +42,12 @@ class TestCaclmgrdBmcLink(TestCase):
             self.addCleanup(patcher.stop)
         return daemon_cls("caclmgrd")
 
-    def _generate(self, bmc_data, host=True, bmc=False, namespace=''):
+    def _generate(self, bmc_data, host=True, bmc=False):
         # The method does not use self, so the daemon does not need to be built.
         with mock.patch("sonic_py_common.device_info.get_bmc_data", return_value=bmc_data, create=True), \
                 mock.patch("sonic_py_common.device_info.is_switch_host", return_value=host, create=True), \
                 mock.patch("sonic_py_common.device_info.is_switch_bmc", return_value=bmc, create=True):
-            return self.caclmgrd.ControlPlaneAclManager.generate_allow_bmc_link_traffic(mock.MagicMock(), namespace)
+            return self.caclmgrd.ControlPlaneAclManager.generate_allow_bmc_link_traffic(mock.MagicMock())
 
     def test_no_bmc_data(self):
         self.assertListEqual([], self._generate(None))
@@ -56,7 +56,6 @@ class TestCaclmgrdBmcLink(TestCase):
         expected = [['iptables', '-A', 'INPUT', '-i', 'bmc0', '-s', '169.254.100.1',
                      '-d', '169.254.100.2', '-j', 'ACCEPT']]
         self.assertListEqual(expected, self._generate(BMC_DATA))
-        self.assertListEqual([], self._generate(BMC_DATA, namespace='asic0'))
 
     def test_switch_bmc_rule(self):
         expected = [['iptables', '-A', 'INPUT', '-i', 'bmc0', '-s', '169.254.100.2',
