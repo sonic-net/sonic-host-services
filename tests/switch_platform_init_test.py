@@ -5,7 +5,6 @@ import sys
 import unittest
 from unittest import mock
 
-import redis
 
 test_path = os.path.dirname(os.path.abspath(__file__))
 sonic_host_service_path = os.path.dirname(test_path)
@@ -17,38 +16,24 @@ import switch_platform_init as ppi
 
 class TestSwitchPlatformInit(unittest.TestCase):
 
-  def test_init(self):
-    with mock.patch('redis.Redis', autospec=True) as mock_redis:
-      ppi.SwitchPlatformInit()
-      mock_redis.assert_call_count = 3
-      mock_redis.assert_has_calls(
-          calls=[
-              mock.call(
-                  host=ppi.REDIS_HOST,
-                  port=ppi.REDIS_PORT_NUMBER,
-                  db=ppi.REDIS_CONFIG_DB_NUMBER,
-              ),
-              mock.call(
-                  host=ppi.REDIS_HOST,
-                  port=ppi.REDIS_PORT_NUMBER,
-                  db=ppi.REDIS_STATE_DB_NUMBER,
-              ),
-              mock.call(
-                  host=ppi.REDIS_HOST,
-                  port=ppi.REDIS_PORT_NUMBER,
-                  db=ppi.REDIS_APPL_STATE_DB_NUMBER,
-              ),
-          ]
-      )
+  def setUp(self):
+    patch = mock.patch.object(ppi, 'DBConnector')
+    self.connector = patch.start()
+    self.addCleanup(patch.stop)
 
-  @mock.patch(
-      'switch_platform_init.SwitchPlatformInit.__init__',
-      side_effect=redis.RedisError,
-  )
-  def test_assert_redis_error(self, mock_init):
-    with self.assertRaises(redis.RedisError):
+  def test_init_uses_three_explicit_native_socket_connections(self):
+    ppi.SwitchPlatformInit()
+    self.assertEqual(self.connector.call_args_list, [
+        mock.call(name, 0, False)
+        for name in ['CONFIG_DB', 'STATE_DB', 'APPL_STATE_DB']
+    ])
+
+  def test_native_connection_failure_stops_without_retrying_tcp(self):
+    self.connector.side_effect = RuntimeError('selected writer credential is unavailable')
+    with self.assertRaises(SystemExit) as result:
       ppi.SwitchPlatformInit()
-    mock_init.assert_called_once()
+    self.assertEqual(result.exception.code, 1)
+    self.connector.assert_called_once_with('CONFIG_DB', 0, False)
 
   def test_primary_version_dict(self):
     platform = ppi.SwitchPlatformInit()
