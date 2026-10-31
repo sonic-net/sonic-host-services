@@ -7,7 +7,8 @@ import os
 import shutil
 import subprocess
 import sys
-import redis
+
+from swsscommon.swsscommon import DBConnector
 
 ACTIVE = "active"
 BIOS_VERSION_FILE = "/sys/devices/virtual/dmi/id/bios_version"
@@ -50,11 +51,6 @@ PAYLOAD_SIGNATURE_TYPE = "payload-signature-type"
 PAYLOAD_VERSION = "payload-version"
 PLATFORM = "platform"
 PORT_TABLE_CPU = "PORT_TABLE:CPU"
-REDIS_APPL_STATE_DB_NUMBER = 14
-REDIS_CONFIG_DB_NUMBER = 4
-REDIS_HOST = "localhost"
-REDIS_PORT_NUMBER = 6379
-REDIS_STATE_DB_NUMBER = 6
 RELEASE = "RELEASE"
 SECURE_PAYLOAD_ENFORCED = "secure-payload-enforced"
 SERIAL_NUMBER = "serial-no"
@@ -80,18 +76,16 @@ class SwitchPlatformInit:
 
   def __init__(self):
     try:
-      self.config_db = redis.Redis(
-          host=REDIS_HOST, port=REDIS_PORT_NUMBER, db=REDIS_CONFIG_DB_NUMBER
-      )
-      self.state_db = redis.Redis(
-          host=REDIS_HOST, port=REDIS_PORT_NUMBER, db=REDIS_STATE_DB_NUMBER
-      )
-      self.appl_state_db = redis.Redis(
-          host=REDIS_HOST, port=REDIS_PORT_NUMBER, db=REDIS_APPL_STATE_DB_NUMBER
-      )
-    except redis.RedisError as error:
+      self.config_db = self._connect_redis("CONFIG_DB")
+      self.state_db = self._connect_redis("STATE_DB")
+      self.appl_state_db = self._connect_redis("APPL_STATE_DB")
+    except RuntimeError as error:
       logger.error("Error interacting with Redis: %s", str(error))
       sys.exit(1)
+
+  @staticmethod
+  def _connect_redis(db_name):
+    return DBConnector(db_name, 0, False)
 
   def populate_version_dictionaries(self):
     """Populate the version dictionaries for the primary and alternate versions."""
