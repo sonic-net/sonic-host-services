@@ -357,6 +357,8 @@ class FrameFilter:
                 self._buffer.append(byte)
                 if self.in_frame:
                     self._escape_next = True
+                if len(self._buffer) >= MAX_FRAME_BUFFER_SIZE:
+                    self._flush_buffer()
 
             elif byte == SpecialChar.SOF:
                 if not self._in_frame:
@@ -651,6 +653,13 @@ class ProxyService:
 
     Does not listen for CONFIG_DB changes. Configuration changes are handled
     by DCE service restarting this process via systemctl.
+
+    Pending DUT output pauses serial reads, bounding the output queue to one
+    4096-byte read plus the frame filter's buffered tail. Heartbeat and frame
+    timeout observation pauses with those reads; signal handling and PTM input
+    remain active. Lossless physical UART reception still requires the sender
+    to honor flow control. Shutdown makes one best-effort nonblocking drain
+    and reports any undelivered output.
     """
 
     def __init__(self, link_id: str):
@@ -674,6 +683,8 @@ class ProxyService:
         self.ptm_fd: int = -1
         self.log_fd: int = -1
         self.filter: Optional[FrameFilter] = None
+        self._ptm_tx_pending = bytearray()
+        self._ptm_write_failed = False
 
         # State tracking
         self._current_oper_state: Optional[str] = None
@@ -722,7 +733,7 @@ class ProxyService:
         self._run_loop()
         self._cleanup()
 
-        return EXIT_SUCCESS
+        return EXIT_SERVICE_START_FAILED if self._ptm_write_failed else EXIT_SUCCESS
 
     def _get_udev_prefix(self) -> bool:
         """Phase 1: Get udev prefix"""
@@ -841,6 +852,8 @@ class ProxyService:
                 now = time.monotonic()
                 time_since_heartbeat = now - self._last_heartbeat_time
                 select_timeout = max(0.1, HEARTBEAT_TIMEOUT - time_since_heartbeat)
+                if self._ptm_tx_pending:
+                    select_timeout = HEARTBEAT_TIMEOUT
 
                 if self.logging_enabled and self.log_fd < 0 and self.log_file_path:
                     remaining_log_retry = ERROR_LOG_INTERVAL - (now - self._last_log_open_attempt)
@@ -850,7 +863,7 @@ class ProxyService:
                         select_timeout = 0
 
                 # If filter has pending data, consider filter timeout
-                if self.filter and self.filter.has_pending_data():
+                if not self._ptm_tx_pending and self.filter and self.filter.has_pending_data():
                     time_since_serial = now - self._last_serial_data_time
                     remaining_filter_timeout = filter_timeout - time_since_serial
                     if remaining_filter_timeout > 0:
@@ -858,10 +871,13 @@ class ProxyService:
                     else:
                         select_timeout = 0
 
-                # Use select to monitor serial port, PTM, and wakeup pipe
-                readable, _, _ = select.select(
-                    [self.ser_fd, self.ptm_fd, self._wake_r],
-                    [], [],
+                read_fds = [self.ptm_fd, self._wake_r]
+                if not self._ptm_tx_pending:
+                    read_fds.append(self.ser_fd)
+                write_fds = [self.ptm_fd] if self._ptm_tx_pending else []
+                readable, writable, _ = select.select(
+                    read_fds,
+                    write_fds, [],
                     select_timeout
                 )
 
@@ -882,12 +898,16 @@ class ProxyService:
                         except OSError:
                             pass
 
+                if self.ptm_fd in writable:
+                    self._flush_ptm_tx()
+
                 # Check heartbeat timeout
                 self._check_heartbeat_timeout()
                 self._retry_log_open()
 
                 # Check filter timeout
-                if self.filter and self.filter.has_pending_data() and not serial_data_received:
+                if (not self._ptm_tx_pending and self.filter
+                        and self.filter.has_pending_data() and not serial_data_received):
                     now = time.monotonic()
                     if now - self._last_serial_data_time >= filter_timeout:
                         self.filter.on_timeout()
@@ -957,7 +977,7 @@ class ProxyService:
 
     def _on_serial_read(self) -> None:
         """Serial data read callback"""
-        if not self.running or not self.filter:
+        if not self.running or not self.filter or self._ptm_tx_pending:
             return
         try:
             data = os.read(self.ser_fd, 4096)
@@ -995,15 +1015,38 @@ class ProxyService:
         """User data callback (device -> user, includes echoed input)."""
         self._write_log(data)
         if self.ptm_fd >= 0:
-            try:
-                written = os.write(self.ptm_fd, data)
-                if written and self.mirror_manager:
-                    self.mirror_manager.submit("rx", data[:written])
-            except OSError:
-                pass
+            self._ptm_tx_pending.extend(data)
+
+    def _flush_ptm_tx(self) -> None:
+        """Forward pending output once; retain short or temporarily blocked writes."""
+        if not self._ptm_tx_pending or self._ptm_write_failed:
+            return
+        data = bytes(self._ptm_tx_pending)
+        try:
+            written = os.write(self.ptm_fd, data)
+            if written <= 0:
+                raise OSError("PTM write made no progress")
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError as e:
+            log.error(f"[{self.link_id}] Failed to forward console output to PTM: {e}")
+            self._ptm_write_failed = True
+            self.running = False
+            return
+
+        del self._ptm_tx_pending[:written]
+        if self.mirror_manager:
+            self.mirror_manager.submit("rx", data[:written])
+        if not self._ptm_tx_pending:
+            # Resume the observation window after deliberately paused reads.
+            now = time.monotonic()
+            self._last_serial_data_time = now
+            self._last_data_activity = now
 
     def _check_heartbeat_timeout(self) -> None:
         """Check heartbeat timeout"""
+        if self._ptm_tx_pending:
+            return
         now = time.monotonic()
         time_since_heartbeat = now - self._last_heartbeat_time
 
@@ -1073,6 +1116,16 @@ class ProxyService:
 
     def _cleanup(self) -> None:
         """Cleanup all resources"""
+        # Do not expose an incomplete control frame as user output on shutdown.
+        if self.filter and self.ptm_fd >= 0:
+            self.filter.on_timeout()
+        if self._ptm_tx_pending:
+            self._flush_ptm_tx()
+            if self._ptm_tx_pending:
+                log.warning(f"[{self.link_id}] Discarding {len(self._ptm_tx_pending)} bytes "
+                            "of undelivered console output during shutdown")
+                self._ptm_tx_pending.clear()
+
         # Stop accepting new control requests before closing the current
         # writer.  Shutdown is bounded and leaves any unfinished source logs.
         if self.mirror_control_server:
@@ -1084,15 +1137,6 @@ class ProxyService:
 
         # Cleanup STATE_DB
         self._cleanup_state()
-
-        # Flush remaining data
-        if self.filter and self.ptm_fd >= 0:
-            remaining = self.filter.flush()
-            if remaining:
-                try:
-                    os.write(self.ptm_fd, remaining)
-                except OSError:
-                    pass
 
         # Close file descriptors
         for fd in (self._wake_r, self._wake_w, self.ser_fd, self.ptm_fd, self.log_fd):
