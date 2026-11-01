@@ -333,8 +333,8 @@ class GnoiRebootHandler:
 
 def main():
     # Connect for STATE_DB (for gnoi_halt_in_progress flag) and CONFIG_DB
-    state_db = daemon_base.db_connect("STATE_DB")
-    config_db = daemon_base.db_connect("CONFIG_DB")
+    state_db = daemon_base.db_connect("STATE_DB", use_tcp=False)
+    config_db = daemon_base.db_connect("CONFIG_DB", use_tcp=False)
 
     # Also connect ConfigDBConnector for pubsub support (has get_redis_client method)
     config_db_connector = swsscommon.ConfigDBConnector()
@@ -420,8 +420,8 @@ def main():
                             # Per-thread DB connections: a redis connection is a
                             # single non-thread-safe socket, so sharing one lets
                             # concurrent DPU reads cross their IP/port values.
-                            thread_config_db = daemon_base.db_connect("CONFIG_DB")
-                            thread_state_db = daemon_base.db_connect("STATE_DB")
+                            thread_config_db = daemon_base.db_connect("CONFIG_DB", use_tcp=False)
+                            thread_state_db = daemon_base.db_connect("STATE_DB", use_tcp=False)
                             reboot_handler._handle_transition(
                                 dpu,
                                 config_db=thread_config_db,
