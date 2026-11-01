@@ -639,9 +639,11 @@ class TestMemoryStatisticsCfgd(TestCase):
             mock_apply.assert_not_called()
 
     # Group 3: Daemon Management Tests
+    @mock.patch('hostcfgd.time.sleep')
+    @mock.patch('hostcfgd.psutil.Process')
     @mock.patch('hostcfgd.subprocess.Popen')
     @mock.patch('hostcfgd.os.kill')
-    def test_restart_memory_statistics_success(self, mock_kill, mock_popen):
+    def test_restart_memory_statistics_success(self, mock_kill, mock_popen, mock_process, mock_sleep):
         """
         Test successful restart of the memory statistics daemon.
         Verifies proper shutdown of existing process and startup of new process.
@@ -649,18 +651,25 @@ class TestMemoryStatisticsCfgd(TestCase):
         with mock.patch('hostcfgd.syslog.syslog'):
             with mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=123):
                 self.mem_stat_cfg.restart_memory_statistics()
-                mock_kill.assert_called_with(123, signal.SIGTERM)
-                mock_popen.assert_called_once()
+                mock_kill.assert_called_once_with(123, signal.SIGTERM)
+                mock_process.assert_called_once_with(123)
+                mock_process.return_value.wait.assert_called_once_with(timeout=10)
+                mock_sleep.assert_called_once_with(1)
+                mock_popen.assert_called_once_with([self.mem_stat_cfg.DAEMON_EXEC_PATH])
 
+    @mock.patch('hostcfgd.time.sleep')
     @mock.patch('hostcfgd.subprocess.Popen')
-    def test_restart_memory_statistics_failure(self, mock_popen):
+    def test_restart_memory_statistics_failure(self, mock_popen, mock_sleep):
         """
         Test failed restart of memory statistics daemon.
         Ensures proper error handling when daemon fails to start.
         """
         mock_popen.side_effect = Exception("Failed to start")
-        with mock.patch('hostcfgd.syslog.syslog') as mock_syslog:
+        with mock.patch('hostcfgd.syslog.syslog') as mock_syslog, \
+             mock.patch.object(self.mem_stat_cfg, 'get_memory_statistics_pid', return_value=None):
             self.mem_stat_cfg.restart_memory_statistics()
+            mock_sleep.assert_called_once_with(1)
+            mock_popen.assert_called_once_with([self.mem_stat_cfg.DAEMON_EXEC_PATH])
             mock_syslog.assert_any_call(mock.ANY, "MemoryStatisticsCfg: Failed to start MemoryStatisticsDaemon: Failed to start")
 
     # Group 4: PID Management Tests
