@@ -138,10 +138,10 @@ class ControlPlaneAclManager(logger.Logger):
 
     UPDATE_DELAY_SECS = 0.5
 
+    VXLAN_UDP_PORT = '4789'
+
     DualToR = False
     bfdAllowed = False
-    VxlanAllowed = False
-    VxlanSrcIP = ""
     RedfishAllowed = False
     DhcpServerSyslogAllowed = False
     # a map from dpu name to port
@@ -155,6 +155,15 @@ class ControlPlaneAclManager(logger.Logger):
         self.lock = {}
         self.num_changes = {}
         self.thread_exceptions = {}
+
+        # VXLAN_TUNNEL name -> src_ip, written with every namespace lock held so a rebuild
+        # sees one stable value. Per namespace: the src_ips whose 4789 ACCEPT rule is in
+        # INPUT, guarded by that namespace's lock, which the ACL rebuild holds while it
+        # flushes and refills INPUT.
+        self.vxlan_src_ips = {}
+        self.vxlan_installed = {}
+        self.vxlan_failed = set()
+        self.vxlan_last_retry = 0.0
 
         # Initialize update-thread-specific data for default namespace
         self.update_thread[DEFAULT_NAMESPACE] = None
@@ -711,9 +720,9 @@ class ControlPlaneAclManager(logger.Logger):
         if self.bfdAllowed:
             iptables_cmds += self.get_bfd_iptable_commands(namespace)
 
-        if self.VxlanAllowed:
-            fvs = swsscommon.FieldValuePairs([("src_ip", self.VxlanSrcIP)])
-            iptables_cmds += self.get_vxlan_port_iptable_commands(namespace, fvs)
+        # The loopback ACCEPT is rule 1 here, so position 2 directly follows it
+        for src_ip in sorted(set(self.vxlan_src_ips.values())):
+            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] + self.vxlan_rule(src_ip, ['-I', 'INPUT', '2']))
 
         for dpu, port in self.dashHaPortMap.items():
             iptables_cmds += self.make_dash_ha_rules(namespace, port)
@@ -984,6 +993,9 @@ class ControlPlaneAclManager(logger.Logger):
             self.log_info("  " + ' '.join(cmd))
 
         self.run_commands(iptables_cmds)
+        self.vxlan_installed[namespace] = set(src_ip for src_ip in set(self.vxlan_src_ips.values())
+                                              if self.vxlan_rule_state(namespace, src_ip) == 0)
+        self.vxlan_failed = set(f for f in self.vxlan_failed if f[0] != namespace)
 
         self.update_control_plane_nat_acls(namespace, service_to_source_ip_map, config_db_connector)
 
@@ -1075,58 +1087,114 @@ class ControlPlaneAclManager(logger.Logger):
         if iptables_cmds:
             self.run_commands(iptables_cmds)
 
+    def vxlan_rule(self, src_ip, action):
+        """Builds the 4789 ACCEPT rule for a VTEP source IP with the given action, e.g. ['-C', 'INPUT']"""
+        ipt = 'ip6tables' if isinstance(ipaddress.ip_address(src_ip), ipaddress.IPv6Address) else 'iptables'
+        return self.exclude_mgmt_port([ipt] + action + ['-p', 'udp', '-d', src_ip, '--dport', self.VXLAN_UDP_PORT, '-j', 'ACCEPT'])
 
-    def get_vxlan_port_iptable_commands(self, namespace, data):
-        iptables_cmds = []
-        for fv in data:
-            if (fv[0] == "src_ip"):
-                self.VxlanSrcIP = fv[1]
-                break
+    def run_command_rc(self, cmd):
+        proc = subprocess.Popen(cmd, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (stdout, stderr) = proc.communicate()
+        return proc.returncode, stdout or "", stderr or ""
 
-        if not self.VxlanSrcIP:
-            self.log_info("Received vxlan tunnel configuration without source ip")
-            return iptables_cmds
+    def get_input_insert_position(self, namespace, ipt):
+        """
+        Returns the INPUT position right after the loopback ACCEPT rule, which every
+        rebuild installs first; position 1 if that rule is not there.
+        """
+        lo_src = '::1/128' if ipt == 'ip6tables' else '127.0.0.1/32'
+        rc, stdout, _ = self.run_command_rc(self.iptables_cmd_ns_prefix[namespace] + [ipt, '-S', 'INPUT'])
+        if rc == 0:
+            rules = [line.split() for line in stdout.splitlines() if line.startswith('-A INPUT ')]
+            for pos, rule in enumerate(rules, start=1):
+                if '-i' in rule and rule[rule.index('-i') + 1] == 'lo' and \
+                        '-s' in rule and rule[rule.index('-s') + 1] == lo_src and rule[-2:] == ['-j', 'ACCEPT']:
+                    return str(pos + 1)
+        return '1'
 
-        # Add iptables/ip6tables commands to allow VxLAN packets
-        ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
-        if isinstance(ip_addr, ipaddress.IPv6Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['ip6tables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
-        elif isinstance(ip_addr, ipaddress.IPv4Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['iptables', '-I', 'INPUT', '2', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
+    def vxlan_rule_state(self, namespace, src_ip):
+        """Returns the iptables -C result: 0 present, 1 absent, other values an error"""
+        return self.run_command_rc(self.iptables_cmd_ns_prefix[namespace] + self.vxlan_rule(src_ip, ['-C', 'INPUT']))[0]
 
-        return iptables_cmds
+    def log_vxlan_failure(self, namespace, src_ip, op, cmd, detail):
+        # Once per failure streak: a failed change is retried every second
+        if (namespace, src_ip, op) not in self.vxlan_failed:
+            self.vxlan_failed.add((namespace, src_ip, op))
+            self.log_error("Error running command '{}': {}".format(cmd, detail))
 
-    def allow_vxlan_port(self, namespace, data):
-        iptables_cmds = self.get_vxlan_port_iptable_commands(namespace, data)
-        if not iptables_cmds:
-            return False
-        self.run_commands(iptables_cmds)
-        self.log_info("Enabled vxlan port for source ip " + self.VxlanSrcIP)
-        self.VxlanAllowed = True
-
-    def block_vxlan_port(self, namespace):
-        if not self.VxlanSrcIP:
-            self.log_info("Cannot remove vxlan tunnel configuration without source ip")
-            return False
-
-        iptables_cmds = []
-
-        # Remove iptables/ip6tables commands that allow VxLAN packets
-        ip_addr = ipaddress.ip_address(self.VxlanSrcIP)
-        if isinstance(ip_addr, ipaddress.IPv6Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['ip6tables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
-        elif isinstance(ip_addr, ipaddress.IPv4Address):
-            iptables_cmds.append(self.iptables_cmd_ns_prefix[namespace] +
-                    self.exclude_mgmt_port(['iptables', '-D', 'INPUT', '-p', 'udp', '-d', self.VxlanSrcIP, '--dport', '4789', '-j', 'ACCEPT']))
-
-        self.run_commands(iptables_cmds)
-        self.VxlanAllowed = False
-        self.log_info("Disabled vxlan port for source ip " + self.VxlanSrcIP)
-        self.VxlanSrcIP = ""
+    def add_vxlan_rule(self, namespace, src_ip):
+        prefix = self.iptables_cmd_ns_prefix[namespace]
+        if self.vxlan_rule_state(namespace, src_ip) != 0:
+            ipt = self.vxlan_rule(src_ip, [])[0]
+            cmd = prefix + self.vxlan_rule(src_ip, ['-I', 'INPUT', self.get_input_insert_position(namespace, ipt)])
+            rc, _, stderr = self.run_command_rc(cmd)
+            if rc != 0:
+                self.log_vxlan_failure(namespace, src_ip, 'add', cmd, stderr.strip())
+                return False
+        self.vxlan_failed.discard((namespace, src_ip, 'add'))
         return True
+
+    def remove_vxlan_rule(self, namespace, src_ip):
+        prefix = self.iptables_cmd_ns_prefix[namespace]
+        # Removes every copy, so a duplicate can never keep the port open
+        for _ in range(16):
+            state = self.vxlan_rule_state(namespace, src_ip)
+            if state == 1:
+                self.vxlan_failed.discard((namespace, src_ip, 'del'))
+                return True
+            cmd = prefix + self.vxlan_rule(src_ip, ['-D', 'INPUT'])
+            rc, _, stderr = self.run_command_rc(cmd) if state == 0 else (state, '', 'check failed')
+            if rc != 0:
+                self.log_vxlan_failure(namespace, src_ip, 'del', cmd, stderr.strip())
+                return False
+        return False
+
+    def vxlan_rules_pending(self):
+        wanted = set(self.vxlan_src_ips.values())
+        return any(self.vxlan_installed.get(ns, set()) != wanted for ns in self.config_db_map)
+
+    def sync_vxlan_rules(self, namespace):
+        """Brings the 4789 ACCEPT rules of the namespace in line with VXLAN_TUNNEL"""
+        with self.lock[namespace]:
+            wanted = set(self.vxlan_src_ips.values())
+            installed = self.vxlan_installed.setdefault(namespace, set())
+            for src_ip in sorted(installed - wanted):
+                if self.remove_vxlan_rule(namespace, src_ip):
+                    installed.discard(src_ip)
+                    self.log_info("Disabled vxlan port for source ip " + src_ip)
+            for src_ip in sorted(wanted - installed):
+                if self.add_vxlan_rule(namespace, src_ip):
+                    installed.add(src_ip)
+                    self.log_info("Enabled vxlan port for source ip " + src_ip)
+
+    def sync_all_vxlan_rules(self):
+        for namespace in list(self.config_db_map.keys()):
+            self.sync_vxlan_rules(namespace)
+
+    def update_vxlan_tunnel(self, key, op, fvs):
+        src_ip = dict(fvs).get('src_ip', '') if op == 'SET' else ''
+        if src_ip:
+            try:
+                # Canonical form: iptables matches addresses by value, so two spellings must not diverge
+                src_ip = str(ipaddress.ip_address(src_ip))
+            except ValueError:
+                self.log_error("Ignoring vxlan tunnel '{}' with invalid source ip '{}'".format(key, src_ip))
+                src_ip = ''
+        elif op == 'SET':
+            self.log_info("Received vxlan tunnel configuration without source ip")
+        # Fixed order, and update threads only ever hold their own namespace's lock: no deadlock
+        locks = [self.lock[ns] for ns in sorted(self.config_db_map.keys())]
+        for lock in locks:
+            lock.acquire()
+        try:
+            if src_ip:
+                self.vxlan_src_ips[key] = src_ip
+            else:
+                self.vxlan_src_ips.pop(key, None)
+        finally:
+            for lock in reversed(locks):
+                lock.release()
+        self.sync_all_vxlan_rules()
 
     def allow_redfish(self):
         self.RedfishAllowed = True
@@ -1306,6 +1374,12 @@ class ControlPlaneAclManager(logger.Logger):
                     os.kill(os.getpid(), signal.SIGKILL)
 
             (state, selectableObj) = sel.select(SELECT_TIMEOUT_MS)
+
+            # Retry a failed VxLAN rule change, at most once a second
+            if time.monotonic() - self.vxlan_last_retry >= 1 and self.vxlan_rules_pending():
+                self.vxlan_last_retry = time.monotonic()
+                self.sync_all_vxlan_rules()
+
             # Continue if select is timeout or selectable object is not return
             if state != swsscommon.Select.OBJECT:
                 continue
@@ -1360,10 +1434,7 @@ class ControlPlaneAclManager(logger.Logger):
                     key, op, fvs = subscribe_vxlan_table.pop()
                     if not key:
                         break
-                    if op == 'SET' and not self.VxlanAllowed:
-                        self.allow_vxlan_port(namespace, fvs)
-                    elif op == 'DEL' and self.VxlanAllowed:
-                        self.block_vxlan_port(namespace)
+                    self.update_vxlan_tunnel(key, op, fvs)
 
                 while True:
                     key, op, fvs = subscribe_dpu_table.pop()
