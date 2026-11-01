@@ -142,6 +142,42 @@ class TestDebugArtifactCollector:
         with mock.patch("debug_info.DebugArtifactCollector._run_command", side_effect=[(1, "", "err"), (1, "", "err")]):
             DebugArtifactCollector._collect_counter_artifacts(str(fake_dir), "ut_", "x86_64")
 
+    def test_counter_dump_uses_database_name(self):
+        with mock.patch("debug_info.DebugArtifactCollector._run_command",
+                        return_value=(0, "", "")) as run:
+            DebugArtifactCollector._collect_counter_artifacts(
+                self.base_path, "ut_", "x86_64")
+        dumps = [call.args[0] for call in run.call_args_list
+                 if "sonic-db-dump" in call.args[0]]
+        assert len(dumps) == 1
+        assert dumps[0].startswith(
+            "docker exec -i database sonic-db-dump -t unix_socket -n COUNTERS_DB -y > ")
+        assert dumps[0].endswith("/counter_db.json")
+
+    def test_database_dumps_keep_names_and_output_files(self):
+        with mock.patch("debug_info.ARTIFACT_DIR", self.base_path), \
+             mock.patch("debug_info.DebugArtifactCollector._collect_host_files"), \
+             mock.patch("debug_info.DebugArtifactCollector._collect_teamdctl_data"), \
+             mock.patch("debug_info.DebugArtifactCollector._run_command",
+                        return_value=(0, "", "")) as run:
+            rc, _ = DebugArtifactCollector.collect_artifacts(
+                '{"level": "critical"}', "now", "x86_64", "switch")
+        assert rc == 0
+        commands = [call.args[0] for call in run.call_args_list]
+        for database, filename in (("APPL_DB", "appl_db.json"),
+                                   ("ASIC_DB", "asic_db.json"),
+                                   ("CONFIG_DB", "config_db.json")):
+            assert any(command.startswith(
+                "docker exec -i database sonic-db-dump -t unix_socket -n {} -y > ".format(database))
+                       and command.endswith("/" + filename) for command in commands)
+        vidtorid = [command for command in commands
+                    if command.endswith("/vidtorid.txt")]
+        assert len(vidtorid) == 1
+        assert vidtorid[0].startswith(
+            "docker exec -i database redis-cli -s /var/run/redis/redis.sock "
+            "-n 1 hgetall VIDTORID > ")
+        assert not any(" redis-dump " in command for command in commands)
+
     def test_save_persistent_storage_flag_exists(self):
         fake_flag = os.path.join(self.base_path, "nv.tmp")
         with open(fake_flag, "w") as f:
