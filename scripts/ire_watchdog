@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+import argparse
+import logging
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PORT_CONFIG_GLOB = '/usr/share/sonic/device/*/*/port_config.ini'
+SYNCD_CONTAINER = 'syncd'
+BCMCMD = ['docker', 'exec', SYNCD_CONTAINER, 'bcmcmd']
+COUNTER_REG = 'IRE_DATA_PATH_CRC_ERROR_COUNTER'
+POLL_INTERVAL_SEC = 1.0
+BCMCMD_TIMEOUT_SEC = 5.0
+SHUTDOWN_CMD = ['sudo', 'config', 'interface', 'shutdown']
+
+# IRE_DATA_PATH_CRC_ERROR_COUNTER.IRE3[0x169]=42: <DATA_PATH_CRC_ERROR_COUNTER=0x2a>
+# Value before the colon may be decimal (e.g. =0) or hex (e.g. =0x42); accept either.
+LINE_RE = re.compile(
+    r'IRE_DATA_PATH_CRC_ERROR_COUNTER\.IRE(\d+)\[[^\]]+\]=(0x[0-9a-fA-F]+|\d+)'
+)
+
+
+class SyncdUnavailable(Exception):
+    """syncd container is not running or otherwise unreachable."""
+
+
+class PlatformNotSupported(Exception):
+    """ASIC doesn't expose IRE_DATA_PATH_CRC_ERROR_COUNTER (i.e. not DNX)."""
+
+
+def _parse_int(s: str) -> int:
+    return int(s, 16) if s.startswith('0x') else int(s)
+
+
+def setup_logging(verbose: bool) -> None:
+    """Log to stderr only.
+
+    When run under systemd (the production case), the unit file declares
+    ``StandardError=journal`` and ``SyslogIdentifier=ire_watchdog``, so
+    everything written to stderr is captured by journald, tagged correctly,
+    and forwarded to /var/log/syslog by rsyslog. A direct SysLogHandler
+    would cause messages to be logged twice with mangled identifiers
+    (``ire_watchdogire_watchdog[PID]:``), so we don't use one.
+
+    When run interactively (e.g. ``--dry-run``), stderr output goes to
+    the terminal as expected.
+    """
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+
+
+def find_port_config() -> Path:
+    """Locate port_config.ini under the running hwsku."""
+    try:
+        hwsku = subprocess.run(
+            ['sonic-cfggen', '-d', '-v', 'DEVICE_METADATA.localhost.hwsku'],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+        platform = subprocess.run(
+            ['sonic-cfggen', '-d', '-v', 'DEVICE_METADATA.localhost.platform'],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+        path = Path(f'/usr/share/sonic/device/{platform}/{hwsku}/port_config.ini')
+        if path.exists():
+            return path
+    except Exception as e:
+        logging.warning(f'sonic-cfggen probe failed: {e}, falling back to glob')
+
+    matches = sorted(Path('/').glob(PORT_CONFIG_GLOB.lstrip('/')))
+    if not matches:
+        raise RuntimeError(f'no port_config.ini found under {PORT_CONFIG_GLOB}')
+    return matches[0]
+
+
+def build_port_to_core(port_config: Path) -> dict[str, int]:
+    """Parse port_config.ini and return {EthernetX: core_id}."""
+    port_to_core: dict[str, int] = {}
+    header: list[str] | None = None
+    for line in port_config.read_text().splitlines():
+        line = line.strip()
+        if not line or (line.startswith('#') and 'name' not in line):
+            continue
+        if line.startswith('#'):
+            header = line.lstrip('#').split()
+            continue
+        if header is None:
+            raise RuntimeError(f'no header in {port_config}')
+        fields = line.split()
+        if len(fields) < len(header):
+            continue
+        row = dict(zip(header, fields))
+        name = row.get('name')
+        core_id = row.get('core_id')
+        if name and core_id and core_id.isdigit():
+            port_to_core[name] = int(core_id)
+    if not port_to_core:
+        raise RuntimeError(f'no port->core mappings parsed from {port_config}')
+    return port_to_core
+
+
+def _is_syncd_unavailable_error(stderr: str) -> bool:
+    """Heuristics for stderr indicating syncd container isn't usable."""
+    s = stderr.lower()
+    return (
+        'is not running' in s
+        or 'no such container' in s
+        or 'error response from daemon' in s
+        or 'cannot connect to the docker daemon' in s
+    )
+
+
+def _is_unknown_register_output(output: str) -> bool:
+    """Heuristics for bcmcmd output indicating the register doesn't exist
+    on this ASIC (non-DNX platform). The bcm shell typically responds with
+    'Symbol not found' or similar when given an unknown register name."""
+    s = output.lower()
+    return (
+        'symbol not found' in s
+        or 'symbol unknown' in s
+        or 'unknown symbol' in s
+        or 'no such symbol' in s
+        or 'not a valid register' in s
+    )
+
+
+def syncd_running() -> bool:
+    """Quick check: is the syncd container in the running state?"""
+    try:
+        r = subprocess.run(
+            ['docker', 'inspect', '--format', '{{.State.Running}}', SYNCD_CONTAINER],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.returncode == 0 and r.stdout.strip() == 'true'
+    except Exception:
+        return False
+
+
+def _reap_leaked_bcmcmd() -> None:
+    """Kill bcmcmd processes left inside syncd by previous timeouts.
+
+    `docker exec` does NOT propagate SIGKILL into the container, so when
+    `subprocess.run(timeout=...)` fires we leak one bcmcmd process per call.
+    Worse, if the bcm shell is in a non-default mode (e.g. cint) every
+    queued `getreg` blocks until a human exits that mode, so the orphan
+    count grows monotonically.
+
+    Pattern-match on our specific command line so we only reap our own
+    orphans. An interactive `bcmcmd` session a human may have open shows
+    up as bare `bcmcmd` (no args) and won't match.
+    """
+    try:
+        subprocess.run(
+            ['docker', 'exec', SYNCD_CONTAINER, 'pkill', '-9', '-f',
+             f'bcmcmd.*getreg.*{COUNTER_REG}'],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        # Best-effort cleanup — never let reap failures crash the daemon.
+        pass
+
+
+def read_counters() -> dict[int, int]:
+    """Read IRE_DATA_PATH_CRC_ERROR_COUNTER and return {core_id: count}.
+
+    Raises SyncdUnavailable if syncd is not running.
+    Raises RuntimeError on other bcmcmd/parsing failures (including
+    timeouts; the orphan bcmcmd inside syncd is reaped before re-raising).
+    """
+    try:
+        out = subprocess.run(
+            BCMCMD + [f'getreg {COUNTER_REG}'],
+            capture_output=True, text=True, timeout=BCMCMD_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as e:
+        _reap_leaked_bcmcmd()
+        raise RuntimeError(f'bcmcmd timed out after {BCMCMD_TIMEOUT_SEC}s') from e
+    except FileNotFoundError as e:
+        raise SyncdUnavailable(f'docker binary not found: {e}')
+
+    if out.returncode != 0:
+        stderr = out.stderr.strip()
+        if _is_syncd_unavailable_error(stderr) or not syncd_running():
+            raise SyncdUnavailable(stderr or 'syncd container not running')
+        raise RuntimeError(f'bcmcmd failed (rc={out.returncode}): {stderr}')
+
+    # On non-DNX platforms, bcmcmd accepts the command but reports an unknown
+    # symbol. Treat as "platform not supported" and let the caller exit clean.
+    if _is_unknown_register_output(out.stdout) or _is_unknown_register_output(out.stderr):
+        raise PlatformNotSupported(
+            f'{COUNTER_REG} is not a valid register on this ASIC'
+        )
+
+    counters: dict[int, int] = {}
+    for line in out.stdout.splitlines():
+        m = LINE_RE.search(line)
+        if m:
+            counters[int(m.group(1))] = _parse_int(m.group(2))
+    if not counters:
+        # Empty/garbage output sometimes seen during syncd start before bcm
+        # shell is ready. Distinguish from "syncd is fine but parser broke".
+        if not syncd_running():
+            raise SyncdUnavailable('syncd not running during read')
+        raise RuntimeError(f'no counters parsed from bcmcmd output: {out.stdout!r}')
+    return counters
+
+
+def shut_ports(ports: list[str]) -> list[tuple[str, bool, str]]:
+    """Shut down ports via `sudo config interface shutdown`.
+
+    Persists admin-down state in config_db across reboots — operator must
+    explicitly run `sudo config interface startup EthernetX` to revert.
+
+    Returns [(port, ok, msg)].
+    """
+    results = []
+    for port in ports:
+        try:
+            r = subprocess.run(
+                SHUTDOWN_CMD + [port],
+                capture_output=True, text=True, timeout=15,
+            )
+            msg = (r.stderr.strip() or r.stdout.strip())
+            results.append((port, r.returncode == 0, msg))
+        except subprocess.TimeoutExpired:
+            results.append((port, False, 'timeout'))
+        except Exception as e:
+            results.append((port, False, repr(e)))
+    return results
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description='IRE data-path CRC error watchdog (poll-register mode)'
+    )
+    p.add_argument('--interval', type=float, default=POLL_INTERVAL_SEC,
+                   help='polling interval in seconds (default: 1.0)')
+    p.add_argument('--dry-run', action='store_true',
+                   help='log what would be shut down but do not execute')
+    p.add_argument('--verbose', action='store_true',
+                   help='enable debug logging')
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    setup_logging(args.verbose)
+
+    log = logging.getLogger()
+    log.info(f'starting ire_watchdog (poll mode, interval={args.interval}s, dry_run={args.dry_run})')
+
+    port_config = find_port_config()
+    log.info(f'port config: {port_config}')
+    port_to_core = build_port_to_core(port_config)
+    core_to_ports: dict[int, list[str]] = {}
+    for port, core in port_to_core.items():
+        core_to_ports.setdefault(core, []).append(port)
+    for core, ports in sorted(core_to_ports.items()):
+        ports.sort(key=lambda p: int(p.removeprefix('Ethernet')) if p.removeprefix('Ethernet').isdigit() else 9999)
+        log.info(f'core {core}: {len(ports)} ports ({ports[0]}..{ports[-1]})')
+
+    # Establish baseline. The counter can be non-zero at boot (e.g. SDK init);
+    # we only act on increments above this baseline. If syncd isn't running
+    # yet (e.g. daemon started before swss.service), wait for it. If the
+    # register doesn't exist on this ASIC (non-DNX), exit cleanly so systemd
+    # marks the unit as inactive rather than failing.
+    baseline: dict[int, int] | None = None
+    while baseline is None:
+        try:
+            baseline = read_counters()
+        except PlatformNotSupported as e:
+            log.info(f'platform does not support IRE CRC counter, exiting: {e}')
+            return 0
+        except SyncdUnavailable as e:
+            log.warning(f'syncd not available, retrying baseline read in 5s: {e}')
+            time.sleep(5)
+        except Exception as e:
+            log.error(f'failed to read baseline: {e}; retrying in 5s')
+            time.sleep(5)
+    log.info(f'baseline counters: {baseline}')
+
+    latched_cores: set[int] = set()
+    consecutive_errors = 0
+    syncd_was_down = False
+
+    while True:
+        try:
+            current = read_counters()
+            if syncd_was_down:
+                log.info('syncd is back, resuming polling')
+                syncd_was_down = False
+            consecutive_errors = 0
+        except SyncdUnavailable as e:
+            if not syncd_was_down:
+                log.warning(f'syncd unavailable, polling will resume when it returns: {e}')
+                syncd_was_down = True
+            time.sleep(args.interval)
+            continue
+        except Exception as e:
+            consecutive_errors += 1
+            level = logging.WARNING if consecutive_errors < 5 else logging.ERROR
+            # Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s. Keeps
+            # us responsive to transient blips but stops piling on if the
+            # bcm shell is wedged in cint mode or similar — every queued
+            # bcmcmd inside syncd is another orphan to reap.
+            backoff = min(args.interval * (2 ** min(consecutive_errors - 1, 6)),
+                          60.0)
+            log.log(level, f'read failed ({consecutive_errors}x): {e}; '
+                           f'sleeping {backoff:.1f}s before retry')
+            time.sleep(backoff)
+            continue
+
+        for core, count in sorted(current.items()):
+            base = baseline.get(core, 0)
+            if count > base and core not in latched_cores:
+                ports = sorted(core_to_ports.get(core, []),
+                               key=lambda p: int(p.removeprefix('Ethernet')) if p.removeprefix('Ethernet').isdigit() else 9999)
+                log.critical(
+                    f'IRE_DATA_PATH_CRC_ERROR_COUNTER.IRE{core} '
+                    f'increment detected: baseline={base} current={count}; '
+                    f'shutting {len(ports)} ports on core {core}: {ports}; '
+                    f'manual operator recovery required'
+                )
+                if args.dry_run:
+                    log.warning(f'DRY RUN: would shut {ports}')
+                else:
+                    results = shut_ports(ports)
+                    for port, ok, msg in results:
+                        if ok:
+                            log.info(f'  shut {port}: OK')
+                        else:
+                            log.error(f'  shut {port}: FAILED: {msg}')
+                latched_cores.add(core)
+
+        time.sleep(args.interval)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
