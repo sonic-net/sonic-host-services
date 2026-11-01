@@ -125,7 +125,7 @@ class DebugArtifactCollector(host_service.HostModule):
     COUNTER_CMDS = [
         "top -b -n 1 -w 500 > {}/top.txt",
         ('docker exec -i database '
-        'sonic-db-dump -n COUNTERS_DB -y > {}/counter_db.json'),
+        'sonic-db-dump -t unix_socket -n COUNTERS_DB -y > {}/counter_db.json'),
     ]
     counter_artifact_dir = os.path.join(
         directory,
@@ -270,11 +270,11 @@ class DebugArtifactCollector(host_service.HostModule):
     ]
     DB_CMDS = [
         ('docker exec -i database '
-        'sonic-db-dump -n APPL_DB -y > {}/appl_db.json'),
+        'sonic-db-dump -t unix_socket -n APPL_DB -y > {}/appl_db.json'),
         ('docker exec -i database '
-        'sonic-db-dump -n ASIC_DB -y > {}/asic_db.json'),
+        'sonic-db-dump -t unix_socket -n ASIC_DB -y > {}/asic_db.json'),
         ('docker exec -i database '
-        'sonic-db-dump -n CONFIG_DB -y > {}/config_db.json'),
+        'sonic-db-dump -t unix_socket -n CONFIG_DB -y > {}/config_db.json'),
         ('docker exec -i database '
         'redis-cli -s /var/run/redis/redis.sock -n 1 hgetall VIDTORID > {}/vidtorid.txt'),
     ]

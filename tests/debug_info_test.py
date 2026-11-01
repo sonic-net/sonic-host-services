@@ -151,7 +151,7 @@ class TestDebugArtifactCollector:
                  if "sonic-db-dump" in call.args[0]]
         assert len(dumps) == 1
         assert dumps[0].startswith(
-            "docker exec -i database sonic-db-dump -n COUNTERS_DB -y > ")
+            "docker exec -i database sonic-db-dump -t unix_socket -n COUNTERS_DB -y > ")
         assert dumps[0].endswith("/counter_db.json")
 
     def test_database_dumps_keep_names_and_output_files(self):
@@ -168,7 +168,7 @@ class TestDebugArtifactCollector:
                                    ("ASIC_DB", "asic_db.json"),
                                    ("CONFIG_DB", "config_db.json")):
             assert any(command.startswith(
-                "docker exec -i database sonic-db-dump -n {} -y > ".format(database))
+                "docker exec -i database sonic-db-dump -t unix_socket -n {} -y > ".format(database))
                        and command.endswith("/" + filename) for command in commands)
         vidtorid = [command for command in commands
                     if command.endswith("/vidtorid.txt")]
