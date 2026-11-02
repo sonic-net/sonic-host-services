@@ -391,6 +391,25 @@ class ControlPlaneAclManager(logger.Logger):
 
         return allow_internal_chassis_midplane_traffic
 
+    def generate_allow_bmc_link_traffic(self):
+        bmc_data = device_info.get_bmc_data()
+        if not bmc_data:
+            return []
+
+        # bmc_if_addr is the switch-host end of the link and bmc_addr the BMC end.
+        if device_info.is_switch_host():
+            local_ip, peer_ip = bmc_data.get("bmc_if_addr"), bmc_data.get("bmc_addr")
+        elif device_info.is_switch_bmc():
+            local_ip, peer_ip = bmc_data.get("bmc_addr"), bmc_data.get("bmc_if_addr")
+        else:
+            return []
+
+        intf = bmc_data.get("bmc_if_name")
+        if not (intf and local_ip and peer_ip):
+            return []
+
+        return [['iptables', '-A', 'INPUT', '-i', intf, '-s', peer_ip, '-d', local_ip, '-j', 'ACCEPT']]
+
     def generate_allow_internal_docker_ip_traffic_commands(self, namespace):
         allow_internal_docker_ip_cmds = []
 
@@ -724,6 +743,10 @@ class ControlPlaneAclManager(logger.Logger):
 
         # Add iptables commands to allow internal chasiss midplane traffic
         iptables_cmds += self.generate_allow_internal_chasis_midplane_traffic(namespace, config_db_connector)
+
+        # Add iptables commands to allow internal BMC link traffic
+        if not namespace:
+            iptables_cmds += self.generate_allow_bmc_link_traffic()
 
         # Add iptables/ip6tables commands to allow all incoming packets from established
         # connections or new connections which are related to established connections
