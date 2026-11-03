@@ -1,6 +1,7 @@
 import builtins
 import io
 import os
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -235,17 +236,52 @@ class TestSwitchPlatformInit(unittest.TestCase):
 
   def test_write_sw_bootloader_paths(self):
     platform = ppi.SwitchPlatformInit()
-    platform.run_command = mock.MagicMock()
-    platform.run_command.return_value = '1.1.1'
     platform.state_db = mock.MagicMock()
-    platform.populate_version_dictionary = mock.MagicMock()
-    platform.populate_version_dictionary.return_value = {
-        'onie_version': '2020.11',
-        'onie_kernel_version': '4.9.581',
-    }
-    platform.write_sw_bootloader_paths()
+    with mock.patch.object(
+        builtins, 'open', mock.mock_open(read_data='1.1.1\n')
+    ) as mock_open:
+      platform.write_sw_bootloader_paths()
+    mock_open.assert_called_once_with(ppi.BIOS_VERSION_FILE, 'r')
     platform.state_db.hset.assert_any_call(
         ppi.SW_COMP_INFO_BOOTLOADER, ppi.SOFTWARE_VERSION, '1.1.1'
+    )
+
+  def test_write_sw_bootloader_paths_without_dmi(self):
+    # The kernel does not create the DMI sysfs entries when the firmware does
+    # not populate the SMBIOS tables.
+    platform = ppi.SwitchPlatformInit()
+    platform.state_db = mock.MagicMock()
+    with mock.patch.object(
+        builtins,
+        'open',
+        side_effect=FileNotFoundError(2, 'No such file or directory'),
+    ):
+      platform.write_sw_bootloader_paths()
+    platform.state_db.hset.assert_has_calls([
+        mock.call(ppi.SW_COMP_INFO_BOOTLOADER, ppi.NAME, ppi.BOOT_LOADER_LC),
+        mock.call(ppi.SW_COMP_INFO_BOOTLOADER, ppi.PARENT, ppi.CHASSIS),
+        mock.call(
+            ppi.SW_COMP_INFO_BOOTLOADER,
+            ppi.SOFTWARE_VERSION,
+            ppi.NOT_APPLICABLE,
+        ),
+        mock.call(ppi.SW_COMP_INFO_BOOTLOADER, ppi.TYPE, ppi.BOOT_LOADER_UC),
+    ])
+
+  def test_get_bios_version_empty(self):
+    platform = ppi.SwitchPlatformInit()
+    with mock.patch.object(builtins, 'open', mock.mock_open(read_data='\n')):
+      self.assertEqual(platform.get_bios_version(), ppi.NOT_APPLICABLE)
+
+  def test_write_paths_without_version_dictionaries(self):
+    # populate_version_dictionaries() did not run or failed.
+    platform = ppi.SwitchPlatformInit()
+    platform.state_db = mock.MagicMock()
+    platform.write_chassis_info_paths()
+    platform.write_sw_network_stack_paths()
+    platform.write_sw_os_paths()
+    platform.state_db.hset.assert_any_call(
+        ppi.SW_COMP_INFO_STACK0, ppi.OPER_STATUS, ppi.ACTIVE
     )
 
   def test_write_sw_network_stack_paths(self):
@@ -421,6 +457,64 @@ class TestSwitchPlatformInit(unittest.TestCase):
     platform.state_db = mock.MagicMock()
     platform.write_switchinit_done()
     platform.state_db.hset.assert_called_once_with(
+        ppi.SWITCH_PLATFORM_INIT_TBL,
+        ppi.SWITCH_PLATFORM_READY,
+        ppi.SWITCH_PLATFORM_READY,
+    )
+
+  def test_main_continues_after_a_failed_step(self):
+    platform = mock.create_autospec(ppi.SwitchPlatformInit, instance=True)
+    platform.write_sw_bootloader_paths.side_effect = RuntimeError('failure')
+    with mock.patch.object(
+        ppi, 'SwitchPlatformInit', return_value=platform
+    ), mock.patch.object(ppi, 'logger') as mock_logger:
+      ppi.main()
+    for step in (
+        platform.write_cpu_path_appl_state_db,
+        platform.populate_version_dictionaries,
+        platform.write_chassis_info_paths,
+        platform.write_sw_bootloader_paths,
+        platform.write_sw_network_stack_paths,
+        platform.write_sw_os_paths,
+        platform.write_system_paths,
+        platform.write_switchinit_done,
+    ):
+      step.assert_called_once_with()
+    mock_logger.exception.assert_called_once()
+
+  def test_main_on_platform_without_dmi(self):
+    # Regression: on platforms without DMI the BIOS version could not be read,
+    # main() raised and SWITCH_PLATFORM_INIT|ready was never written.
+    db = self.connector.return_value
+    real_open = builtins.open
+
+    def fake_open(file, *args, **kwargs):
+      if file == ppi.BIOS_VERSION_FILE:
+        raise FileNotFoundError(2, 'No such file or directory', file)
+      return real_open(file, *args, **kwargs)
+
+    def fake_run_command(command):
+      if command == ['sonic-installer', 'list']:
+        return (
+            'Current: SONiC-OS-image1\n'
+            'Next: SONiC-OS-image1\n'
+            'Available:\n'
+            'SONiC-OS-image1\n'
+        )
+      if command == ['cat', ppi.BIOS_VERSION_FILE]:
+        raise subprocess.CalledProcessError(1, command)
+      raise AssertionError(f'Unexpected command: {command}')
+
+    with mock.patch.object(
+        builtins, 'open', side_effect=fake_open
+    ), mock.patch.object(
+        ppi.SwitchPlatformInit, 'run_command', side_effect=fake_run_command
+    ):
+      ppi.main()
+    db.hset.assert_any_call(
+        ppi.SW_COMP_INFO_BOOTLOADER, ppi.SOFTWARE_VERSION, ppi.NOT_APPLICABLE
+    )
+    db.hset.assert_any_call(
         ppi.SWITCH_PLATFORM_INIT_TBL,
         ppi.SWITCH_PLATFORM_READY,
         ppi.SWITCH_PLATFORM_READY,
