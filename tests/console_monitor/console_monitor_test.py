@@ -17,6 +17,7 @@ import posix
 import sys
 import time
 import copy
+import errno
 import tempfile
 import termios
 import types
@@ -421,6 +422,312 @@ class TestDCEService(TestCase):
         self.assertEqual(received_frames[0].seq, 10)
 
 
+class TestProxyOutputBackpressure(TestCase):
+    """Device output must survive a slow nonblocking PTM consumer."""
+
+    def setUp(self):
+        self.proxy = console_monitor.ProxyService("1")
+        self.proxy.running = True
+        self.proxy.ser_fd = 10
+        self.proxy.ptm_fd = 11
+        self.proxy._wake_r = 12
+        self.proxy._last_heartbeat_time = time.monotonic()
+        self.proxy.mirror_manager = mock.Mock()
+
+    @parameterized.expand([
+        ("partial_write", 2),
+        ("would_block", BlockingIOError(errno.EAGAIN, "PTM full")),
+        ("interrupted", InterruptedError(errno.EINTR, "interrupted")),
+    ])
+    def test_output_is_retried_without_loss(self, _, first_result):
+        proxy = self.proxy
+        delivered = bytearray()
+        attempts = 0
+        iterations = 0
+
+        def write(fd, data):
+            nonlocal attempts
+            self.assertEqual(fd, proxy.ptm_fd)
+            attempts += 1
+            if attempts == 1:
+                if isinstance(first_result, OSError):
+                    raise first_result
+                written = first_result
+            else:
+                written = len(data)
+            delivered.extend(data[:written])
+            return written
+
+        def ready(read_fds, write_fds, error_fds, timeout):
+            nonlocal iterations
+            iterations += 1
+            if iterations == 4:
+                proxy.running = False
+            return [], write_fds, []
+
+        with mock.patch.object(console_monitor.os, "write", side_effect=write), \
+                mock.patch.object(console_monitor.select, "select", side_effect=ready), \
+                mock.patch.object(proxy, "_write_log") as write_log:
+            proxy._on_user_data_received(b"abcdef")
+            proxy._run_loop()
+
+        self.assertEqual(delivered, b"abcdef")
+        mirrored = b"".join(call.args[1] for call in proxy.mirror_manager.submit.call_args_list)
+        self.assertEqual(mirrored, b"abcdef")
+        write_log.assert_called_once_with(b"abcdef")
+
+    def test_partial_writes_preserve_chunk_order(self):
+        proxy = self.proxy
+        with mock.patch.object(proxy, "_write_log") as write_log, \
+                mock.patch.object(console_monitor.os, "write", side_effect=[
+                    2, BlockingIOError(errno.EAGAIN, "PTM full"), 9,
+                ]) as write:
+            proxy._on_user_data_received(b"first")
+            proxy._on_user_data_received(b"second")
+            proxy._flush_ptm_tx()
+            self.assertEqual(proxy._ptm_tx_pending, b"rstsecond")
+            proxy._flush_ptm_tx()
+            self.assertEqual(proxy._ptm_tx_pending, b"rstsecond")
+            proxy._flush_ptm_tx()
+            proxy._flush_ptm_tx()
+
+        self.assertEqual(write.call_args_list, [
+            mock.call(11, b"firstsecond"),
+            mock.call(11, b"rstsecond"),
+            mock.call(11, b"rstsecond"),
+        ])
+        self.assertFalse(proxy._ptm_tx_pending)
+        self.assertEqual(proxy.mirror_manager.submit.call_args_list, [
+            mock.call("rx", b"fi"), mock.call("rx", b"rstsecond"),
+        ])
+        self.assertEqual(write_log.call_args_list, [
+            mock.call(b"first"), mock.call(b"second"),
+        ])
+
+    @parameterized.expand([
+        ("ordinary_bytes", b"x"),
+        ("escape_bytes", bytes([console_monitor.SpecialChar.DLE])),
+    ])
+    def test_queue_is_bounded_to_one_serial_read_and_filter_tail(self, _, byte):
+        proxy = self.proxy
+        proxy.filter = console_monitor.FrameFilter(on_user_data=proxy._on_user_data_received)
+        tail = b"a" * (console_monitor.MAX_FRAME_BUFFER_SIZE - 1)
+        proxy.filter.process(tail)
+        payload = byte * 4096
+
+        with mock.patch.object(console_monitor.os, "read", return_value=payload) as read:
+            proxy._on_serial_read()
+            self.assertLessEqual(len(proxy._ptm_tx_pending), 4096 + len(tail))
+            self.assertTrue(proxy._ptm_tx_pending)
+            for _ in range(10):
+                proxy._on_serial_read()
+            read.assert_called_once_with(10, 4096)
+
+        with mock.patch.object(console_monitor.os, "write", side_effect=lambda fd, data: len(data)):
+            proxy._flush_ptm_tx()
+            proxy.filter.on_timeout()
+            proxy._flush_ptm_tx()
+
+        mirrored = b"".join(call.args[1] for call in proxy.mirror_manager.submit.call_args_list)
+        self.assertEqual(mirrored, tail + payload)
+        self.assertFalse(proxy._ptm_tx_pending)
+
+    def test_readiness_pauses_and_resumes_serial_without_expiring_split_heartbeat(self):
+        proxy = self.proxy
+        frames = []
+        heartbeat = console_monitor.Frame.create_heartbeat(42).build()
+        split = len(heartbeat) // 2
+        proxy.filter = console_monitor.FrameFilter(
+            on_frame=frames.append, on_user_data=proxy._on_user_data_received,
+        )
+        proxy.filter.process(b"output" + heartbeat[:split])
+        proxy._last_heartbeat_time = 1
+        proxy._last_serial_data_time = 1
+        proxy._last_data_activity = 1
+        iterations = 0
+
+        def ready(read_fds, write_fds, error_fds, timeout):
+            nonlocal iterations
+            iterations += 1
+            if iterations <= 2:
+                self.assertNotIn(proxy.ser_fd, read_fds)
+                self.assertIn(proxy.ptm_fd, read_fds)
+                self.assertIn(proxy._wake_r, read_fds)
+                self.assertEqual(write_fds, [proxy.ptm_fd])
+                self.assertGreater(timeout, 0)
+                self.assertTrue(proxy.filter.in_frame)
+                return ([proxy.ptm_fd], [], []) if iterations == 1 else ([], write_fds, [])
+            self.assertIn(proxy.ser_fd, read_fds)
+            self.assertEqual(write_fds, [])
+            if iterations == 3:
+                return [proxy.ser_fd], [], []
+            proxy.running = False
+            return [], [], []
+
+        with mock.patch.object(console_monitor.time, "monotonic", return_value=1000), \
+                mock.patch.object(console_monitor.select, "select", side_effect=ready), \
+                mock.patch.object(console_monitor.os, "read", return_value=heartbeat[split:]), \
+                mock.patch.object(console_monitor.os, "write", return_value=6) as write, \
+                mock.patch.object(proxy, "_on_ptm_read") as ptm_read, \
+                mock.patch.object(proxy, "_update_state") as update_state:
+            proxy._run_loop()
+
+        ptm_read.assert_called_once()
+        update_state.assert_not_called()
+        write.assert_called_once_with(11, b"output")
+        self.assertEqual([frame.seq for frame in frames], [42])
+        self.assertFalse(proxy.filter.has_pending_data())
+
+    def test_real_nonblocking_pipe_preserves_1000_lines(self):
+        proxy = self.proxy
+        serial_r, serial_w = os.pipe()
+        output_r, output_w = os.pipe()
+        proxy.ser_fd = serial_r
+        proxy.ptm_fd = output_w
+        frames = []
+        proxy.filter = console_monitor.FrameFilter(
+            on_frame=frames.append, on_user_data=proxy._on_user_data_received,
+        )
+        lines = [f"LINE_{i:04d} ".encode() + b"0123456789" * 10 + b"\n" for i in range(1000)]
+        expected = b"".join(lines)
+        raw = b"".join(lines[:500]) + console_monitor.Frame.create_heartbeat(42).build()
+        raw += b"".join(lines[500:])
+        received = bytearray()
+
+        def drain(size):
+            try:
+                received.extend(os.read(output_r, size))
+            except BlockingIOError:
+                pass
+
+        def forward_pending():
+            attempts = 0
+            while proxy._ptm_tx_pending:
+                attempts += 1
+                self.assertLess(attempts, 100)
+                proxy._flush_ptm_tx()
+                drain(1024)
+
+        try:
+            for fd in (serial_r, serial_w, output_r, output_w):
+                console_monitor.set_nonblocking(fd)
+            # Fill the real kernel buffer before any console output is forwarded.
+            with self.assertRaises(BlockingIOError):
+                while True:
+                    os.write(output_w, b"z" * 4096)
+            os.write(serial_w, raw[:4096])
+            proxy._on_serial_read()
+            pending = bytes(proxy._ptm_tx_pending)
+            self.assertTrue(pending)
+            proxy._flush_ptm_tx()
+            self.assertEqual(proxy._ptm_tx_pending, pending)
+            while True:
+                try:
+                    os.read(output_r, 4096)
+                except BlockingIOError:
+                    break
+
+            forward_pending()
+            for offset in range(4096, len(raw), 4096):
+                chunk = raw[offset:offset + 4096]
+                self.assertEqual(os.write(serial_w, chunk), len(chunk))
+                proxy._on_serial_read()
+                forward_pending()
+            proxy.filter.on_timeout()
+            forward_pending()
+            drain(len(expected))
+
+            self.assertEqual(received, expected)
+            self.assertEqual(len(received.splitlines()), 1000)
+            self.assertEqual([frame.seq for frame in frames], [42])
+            mirrored = b"".join(call.args[1] for call in proxy.mirror_manager.submit.call_args_list)
+            self.assertEqual(mirrored, expected)
+        finally:
+            for fd in (serial_r, serial_w, output_r, output_w):
+                os.close(fd)
+
+    def test_zero_write_stops_with_explicit_error(self):
+        proxy = self.proxy
+        proxy._on_user_data_received(b"output")
+        with mock.patch.object(console_monitor.os, "write", return_value=0), \
+                self.assertLogs(console_monitor.log, level="ERROR") as logs:
+            proxy._flush_ptm_tx()
+        self.assertFalse(proxy.running)
+        self.assertTrue(proxy._ptm_write_failed)
+        self.assertEqual(proxy._ptm_tx_pending, b"output")
+        self.assertIn("PTM write made no progress", logs.output[0])
+        proxy.mirror_manager.submit.assert_not_called()
+
+    def test_stop_wakes_loop_while_output_is_pending(self):
+        proxy = self.proxy
+        proxy._wake_w = 13
+        proxy._on_user_data_received(b"output")
+
+        def stop(read_fds, write_fds, error_fds, timeout):
+            self.assertIn(proxy._wake_r, read_fds)
+            self.assertNotIn(proxy.ser_fd, read_fds)
+            proxy.stop()
+            return [proxy._wake_r], [], []
+
+        with mock.patch.object(console_monitor.select, "select", side_effect=stop), \
+                mock.patch.object(console_monitor.os, "write", return_value=1) as write:
+            proxy._run_loop()
+        write.assert_called_once_with(13, b"x")
+        self.assertEqual(proxy._ptm_tx_pending, b"output")
+
+    def test_permanent_write_error_returns_failure_for_systemd_restart(self):
+        proxy = self.proxy
+
+        def fail_output():
+            proxy._on_user_data_received(b"output")
+            proxy._flush_ptm_tx()
+
+        with mock.patch.multiple(
+            proxy,
+            _get_udev_prefix=mock.Mock(return_value=True),
+            _wait_for_config=mock.Mock(return_value=True),
+            _wait_for_device=mock.Mock(return_value=True),
+            _wait_for_ptm=mock.Mock(return_value=True),
+            _initialize=mock.Mock(return_value=True),
+            _run_loop=mock.Mock(side_effect=fail_output),
+            _cleanup=mock.Mock(),
+        ), mock.patch.object(console_monitor.os, "write", side_effect=OSError(errno.EIO, "PTM failed")), \
+                self.assertLogs(console_monitor.log, level="ERROR"):
+            self.assertEqual(proxy.run(), console_monitor.EXIT_SERVICE_START_FAILED)
+
+    @parameterized.expand([
+        ("blocked", BlockingIOError(errno.EAGAIN, "PTM full"), 11),
+        ("partial", 2, 9),
+    ])
+    def test_shutdown_reports_undelivered_output(self, _, result, remaining):
+        proxy = self.proxy
+        proxy._on_user_data_received(b"first")
+        proxy.filter = console_monitor.FrameFilter(on_user_data=proxy._on_user_data_received)
+        proxy.filter.process(b"second")
+        kwargs = {"side_effect": result} if isinstance(result, OSError) else {"return_value": result}
+        with mock.patch.object(console_monitor.os, "write", **kwargs) as write, \
+                mock.patch.object(console_monitor.os, "close"), \
+                self.assertLogs(console_monitor.log, level="WARNING") as logs:
+            proxy._cleanup()
+        write.assert_called_once_with(11, b"firstsecond")
+        self.assertIn(f"Discarding {remaining} bytes", logs.output[0])
+        self.assertFalse(proxy._ptm_tx_pending)
+
+    def test_shutdown_drains_user_output_but_not_partial_control_frame(self):
+        proxy = self.proxy
+        mirror_manager = proxy.mirror_manager
+        heartbeat = console_monitor.Frame.create_heartbeat(42).build()
+        proxy.filter = console_monitor.FrameFilter(on_user_data=proxy._on_user_data_received)
+        proxy.filter.process(b"output" + heartbeat[:len(heartbeat) // 2])
+        with mock.patch.object(console_monitor.os, "write", return_value=6) as write, \
+                mock.patch.object(console_monitor.os, "close"):
+            proxy._cleanup()
+        write.assert_called_once_with(11, b"output")
+        self.assertEqual(mirror_manager.method_calls, [
+            mock.call.submit("rx", b"output"), mock.call.shutdown(),
+        ])
+
+
 class TestProxyMirrorHooks(TestCase):
     """The proxy mirrors only bytes successfully forwarded on each path."""
 
@@ -444,6 +751,8 @@ class TestProxyMirrorHooks(TestCase):
 
         with mock.patch.object(console_monitor.os, "write", return_value=4):
             service._on_user_data_received(b"boot")
+            service.mirror_manager.submit.assert_not_called()
+            service._flush_ptm_tx()
 
         service.mirror_manager.submit.assert_called_once_with("rx", b"boot")
 
@@ -1255,13 +1564,15 @@ class TestProxyServiceRuntime(TestCase):
         self.assertEqual(proxy._current_oper_state, "Up")
     
     def test_proxy_service_on_user_data_received(self):
-        """Test _on_user_data_received writes to PTM."""
+        """Test _on_user_data_received queues output for a writable PTM."""
         proxy = console_monitor.ProxyService(link_id="1")
         proxy.ptm_fd = 10  # Mock fd
         
-        with mock.patch('os.write') as mock_write:
+        with mock.patch('os.write', return_value=9) as mock_write:
             proxy._on_user_data_received(b"test data")
-            
+            mock_write.assert_not_called()
+            proxy._flush_ptm_tx()
+
             mock_write.assert_called_once_with(10, b"test data")
     
     def test_proxy_service_check_heartbeat_timeout(self):
@@ -2210,10 +2521,10 @@ class TestProxyServicePhases(TestCase):
         proxy._wake_w = -1
         proxy.ser_fd = -1
         proxy.ptm_fd = 10
-        proxy.filter = mock.Mock()
-        proxy.filter.flush.return_value = b"remaining data"
+        proxy.filter = console_monitor.FrameFilter(on_user_data=proxy._on_user_data_received)
+        proxy.filter.process(b"remaining data")
         
-        with mock.patch('os.write') as mock_write:
+        with mock.patch('os.write', return_value=14) as mock_write:
             with mock.patch('os.close'):
                 proxy._cleanup()
                 
@@ -3532,16 +3843,23 @@ class TestProxyServiceRunLoop(TestCase):
 
 
 class TestProxyServiceUserDataOSError(TestCase):
-    """Test ProxyService _on_user_data_received OSError handling."""
+    """Test ProxyService output forwarding and logging error handling."""
     
     def test_on_user_data_received_write_error(self):
-        """Test _on_user_data_received handles write OSError."""
+        """Test a permanent output error stops the proxy without silently losing data."""
         proxy = console_monitor.ProxyService(link_id="1")
         proxy.ptm_fd = 10
+        proxy.running = True
         
-        with mock.patch('os.write', side_effect=OSError("Write failed")):
-            # Should not raise
+        with mock.patch('os.write', side_effect=OSError(errno.EIO, "Write failed")), \
+                self.assertLogs(console_monitor.log, level="ERROR") as logs:
             proxy._on_user_data_received(b"test data")
+            proxy._flush_ptm_tx()
+
+        self.assertFalse(proxy.running)
+        self.assertTrue(proxy._ptm_write_failed)
+        self.assertEqual(proxy._ptm_tx_pending, b"test data")
+        self.assertIn("Failed to forward console output to PTM", logs.output[0])
 
     def test_on_user_data_received_logs_output(self):
         """Test _on_user_data_received writes device output to the log file."""
@@ -3551,6 +3869,7 @@ class TestProxyServiceUserDataOSError(TestCase):
 
         with mock.patch('os.write', side_effect=lambda fd, buf: len(buf)) as mock_write:
             proxy._on_user_data_received(b"device output")
+            proxy._flush_ptm_tx()
 
             mock_write.assert_any_call(12, b"device output")
             mock_write.assert_any_call(10, b"device output")
