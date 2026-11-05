@@ -1570,9 +1570,9 @@ class NtpCfg(object):
         # NTP config should be taken at boot-time by chrony
         # services.
         self.cache = {
-            'global': ntp_global_conf.get('global', {}),
-            'servers': ntp_server_conf,
-            'keys': ntp_key_conf
+            'global': copy.deepcopy(ntp_global_conf.get('global', {})),
+            'servers': copy.deepcopy(ntp_server_conf.copy()),
+            'keys': copy.deepcopy(ntp_key_conf.copy())
         }
 
     def handle_ntp_source_intf_chg(self, intf_name):
@@ -1627,7 +1627,7 @@ class NtpCfg(object):
             return
 
         # Update the Local Cache
-        self.cache[key] = data
+        self.cache[key] = copy.deepcopy(data)
 
     def ntp_srv_key_update(self, ntp_servers: dict, ntp_keys: dict):
         """Update NTP server/key configuration
@@ -1668,8 +1668,8 @@ class NtpCfg(object):
             return
 
         # Updating the cache
-        self.cache['servers'] = ntp_servers
-        self.cache['keys'] = ntp_keys
+        self.cache['servers'] = copy.deepcopy(ntp_servers)
+        self.cache['keys'] = copy.deepcopy(ntp_keys)
 
 class PamLimitsCfg(object):
     """
