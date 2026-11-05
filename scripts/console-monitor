@@ -801,7 +801,7 @@ class ProxyService:
         """Phase 5 init: open serial port, PTM, connect to Redis"""
         try:
             # Connect to STATE_DB
-            self.state_db = DBConnector("STATE_DB", 0)
+            self.state_db = DBConnector("STATE_DB", 0, False, "", True)
             self.state_table = Table(self.state_db, CONSOLE_PORT_TABLE)
 
             # Create wakeup pipe for signal handling
