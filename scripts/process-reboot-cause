@@ -46,7 +46,7 @@ sonic_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER)
 def read_reboot_cause_files_and_save_to_db(device='npu'):
     # Connect State DB
     if device == 'npu':
-        db = swsscommon.SonicV2Connector(host=REDIS_HOSTIP)
+        db = swsscommon.SonicV2Connector(use_unix_socket_path=True, authenticate=True)
         table = db.STATE_DB
         history_dir = REBOOT_CAUSE_HISTORY_DIR
     else:
