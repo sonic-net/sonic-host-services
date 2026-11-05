@@ -1571,8 +1571,8 @@ class NtpCfg(object):
         # services.
         self.cache = {
             'global': copy.deepcopy(ntp_global_conf.get('global', {})),
-            'servers': copy.deepcopy(ntp_server_conf.copy()),
-            'keys': copy.deepcopy(ntp_key_conf.copy())
+            'servers': copy.deepcopy(ntp_server_conf),
+            'keys': copy.deepcopy(ntp_key_conf)
         }
 
     def handle_ntp_source_intf_chg(self, intf_name):
