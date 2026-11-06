@@ -429,12 +429,13 @@ class TestReboot(object):
         mock_is_switch_host.assert_called_once_with()
         mock_platform_data.assert_not_called()
 
-    def test_strict_halt_checks_fall_back_on_unreadable_identity(self, caplog):
+    def test_strict_halt_checks_stay_strict_on_unreadable_identity(self, caplog):
+        # An unreadable identity is not a legacy device: the checks stay strict.
         with mock.patch(
             "host_modules.reboot.device_info.is_switch_host",
             side_effect=RuntimeError("unexpected identity failure"),
-        ), caplog.at_level(logging.INFO):
-            assert host_reboot.is_strict_halt_check_enabled() is False
+        ), caplog.at_level(logging.WARNING):
+            assert host_reboot.is_strict_halt_check_enabled() is True
 
         assert any("unexpected identity failure" in record.message for record in caplog.records)
 
@@ -749,6 +750,69 @@ class TestReboot(object):
             mock_populate.assert_called_once_with(
                 False, TIME, "Halt reboot did not complete", REBOOT_METHOD_HALT_BOOT_ENUM,
                 RebootStatus.STATUS_FAILURE
+            )
+
+    def test_tagged_halt_with_unreadable_identity_does_not_report_success_on_probe_error(self, caplog):
+        # Lookup failure on a tagged HALT, probe error: the check stays
+        # unanswered, so no success is reported and no cause is written.
+        self.reboot_module.active_request_message = (
+            "BMC pre-shutdown request [bmc-req:12345678-1234-4234-8234-123456789abc]")
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("reboot.device_info.is_switch_host",
+                       side_effect=RuntimeError("unexpected identity failure")),
+            mock.patch("reboot.psutil.process_iter", return_value=[]),
+            mock.patch("reboot.docker.from_env", side_effect=Exception("Docker error")) as mock_docker,
+            mock.patch("reboot.write_graceful_shutdown_reboot_cause") as mock_write_cause,
+            mock.patch("time.sleep") as mock_sleep,
+            mock.patch("time.monotonic", side_effect=[0, 0, 5]),
+            mock.patch("time.time", return_value=TIME),
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=5),
+            caplog.at_level(logging.WARNING),
+        ):
+            strict_checks = is_strict_halt_check_enabled()
+            self.reboot_module.execute_reboot(
+                REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=strict_checks
+            )
+
+            assert strict_checks is True
+            assert mock_docker.call_count == 2
+            mock_sleep.assert_called_once_with(5)
+            mock_write_cause.assert_not_called()
+            mock_populate.assert_called_once_with(
+                False, TIME, "Halt completion check could not be answered",
+                REBOOT_METHOD_HALT_BOOT_ENUM, RebootStatus.STATUS_FAILURE
+            )
+            assert any("unexpected identity failure" in record.message for record in caplog.records)
+
+    def test_tagged_halt_with_unreadable_identity_persists_the_cause_before_success(self):
+        # Same lookup failure, probes answer: the cause is written before success.
+        self.reboot_module.active_request_message = (
+            "BMC pre-shutdown request [bmc-req:12345678-1234-4234-8234-123456789abc]")
+        with (
+            mock.patch("reboot._run_command", return_value=(0, [], [])),
+            mock.patch("reboot.device_info.is_switch_host",
+                       side_effect=RuntimeError("unexpected identity failure")),
+            mock.patch("time.monotonic", side_effect=[0, 0]),
+            mock.patch("reboot.Reboot.is_halt_command_running", return_value=False) as mock_halt_running,
+            mock.patch("reboot.Reboot.is_container_running", return_value=False) as mock_pmon_running,
+            mock.patch("reboot.write_graceful_shutdown_reboot_cause") as mock_write_cause,
+            mock.patch("reboot.Reboot.populate_reboot_status_flag") as mock_populate,
+            mock.patch("reboot.get_halt_services_timeout", return_value=60),
+        ):
+            strict_checks = is_strict_halt_check_enabled()
+            self.reboot_module.execute_reboot(
+                REBOOT_METHOD_HALT_BOOT_ENUM, strict_checks=strict_checks
+            )
+
+            assert strict_checks is True
+            mock_halt_running.assert_called_once_with(strict_checks=True)
+            mock_pmon_running.assert_called_once_with("pmon", strict_checks=True)
+            mock_write_cause.assert_called_once_with()
+            mock_populate.assert_called_once_with(
+                False, 0, "Halt reboot completed", REBOOT_METHOD_HALT_BOOT_ENUM,
+                RebootStatus.STATUS_SUCCESS
             )
 
     def test_execute_reboot_dpu_errors_keep_legacy_success(self):

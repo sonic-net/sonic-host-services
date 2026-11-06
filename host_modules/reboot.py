@@ -138,15 +138,19 @@ def get_halt_services_timeout():
 
 
 def is_strict_halt_check_enabled():
-    """Enable strict completion checks on a switch host."""
+    """Strict completion checks unless the device is positively not a switch host.
+
+    An unreadable identity stays strict: a BMC-tagged HALT must not take the
+    permissive path because of a lookup failure.
+    """
     try:
         return device_info.is_switch_host()
     except Exception as e:
-        logger.info(
-            "%s: Failed to resolve switch-host identity: %s. Using non-strict checks",
+        logger.warning(
+            "%s: Failed to resolve switch-host identity: %s. Using strict checks",
             MOD_NAME, e
         )
-        return False
+        return True
 
 
 class Reboot(host_service.HostModule):
