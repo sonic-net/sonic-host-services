@@ -75,6 +75,10 @@ class SwitchPlatformInit:
   """Initialize platform-specific gNMI CONFIG_DB and STATE_DB paths."""
 
   def __init__(self):
+    # Defaults, so that the write steps still work when populating the version
+    # dictionaries fails (see main()).
+    self.primary_version_dict = {}
+    self.alternate_versions_dict = {}
     try:
       self.config_db = self._connect_redis("CONFIG_DB")
       self.state_db = self._connect_redis("STATE_DB")
@@ -251,9 +255,30 @@ class SwitchPlatformInit:
     """
     self.state_db.hset(SW_COMP_INFO_BOOTLOADER, NAME, BOOT_LOADER_LC)
     self.state_db.hset(SW_COMP_INFO_BOOTLOADER, PARENT, CHASSIS)
-    bios_version = self.run_command(["cat", BIOS_VERSION_FILE])
-    self.state_db.hset(SW_COMP_INFO_BOOTLOADER, SOFTWARE_VERSION, bios_version)
+    self.state_db.hset(
+        SW_COMP_INFO_BOOTLOADER, SOFTWARE_VERSION, self.get_bios_version()
+    )
     self.state_db.hset(SW_COMP_INFO_BOOTLOADER, TYPE, BOOT_LOADER_UC)
+
+  def get_bios_version(self) -> str:
+    """Gets the BIOS version exposed by the kernel DMI interface.
+
+    Not every platform exposes DMI data: when the firmware does not populate
+    the SMBIOS tables, the kernel does not create the DMI sysfs entries and
+    BIOS_VERSION_FILE does not exist.
+
+    Returns:
+      The BIOS version, or NOT_APPLICABLE if it is not available.
+    """
+    try:
+      with open(BIOS_VERSION_FILE, "r") as f:
+        bios_version = f.read().strip()
+    except (OSError, ValueError) as error:
+      logger.warning(
+          "Unable to read BIOS version from %s: %s", BIOS_VERSION_FILE, error
+      )
+      return NOT_APPLICABLE
+    return bios_version or NOT_APPLICABLE
 
   def populate_active_network_stack(self) -> None:
     """Write SW comp info elements to STATE_DB: SW_COMP_INFO|network_stack0
@@ -481,13 +506,30 @@ class SwitchPlatformInit:
 def main() -> None:
   """Write SWITCH platform specific init info to STATE/APPL_STATE_DB."""
   platform = SwitchPlatformInit()
-  platform.write_cpu_path_appl_state_db()
-  platform.populate_version_dictionaries()
-  platform.write_chassis_info_paths()
-  platform.write_sw_bootloader_paths()
-  platform.write_sw_network_stack_paths()
-  platform.write_sw_os_paths()
-  platform.write_system_paths()
+  # Each step populates an independent set of paths. A step that fails, e.g.
+  # because the platform does not provide some of the data, must not prevent
+  # the remaining paths and the ready flag from being written, nor leave the
+  # oneshot service in the failed state.
+  steps = (
+      platform.write_cpu_path_appl_state_db,
+      platform.populate_version_dictionaries,
+      platform.write_chassis_info_paths,
+      platform.write_sw_bootloader_paths,
+      platform.write_sw_network_stack_paths,
+      platform.write_sw_os_paths,
+      platform.write_system_paths,
+  )
+  failed_steps = []
+  for step in steps:
+    try:
+      step()
+    except Exception:
+      logger.exception("Switch platform init step %s failed", step.__name__)
+      failed_steps.append(step.__name__)
+  if failed_steps:
+    logger.error(
+        "Switch platform init completed with failed steps: %s", failed_steps
+    )
   platform.write_switchinit_done()
 
 
