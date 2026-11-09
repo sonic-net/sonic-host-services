@@ -891,7 +891,7 @@ def test_local_action_recheck_and_artifact_lifecycle():
     assert (item.rule_id, item.component_name) in orchestrator.pending
     assert not database.values
 
-    # A higher-severity action candidate reserves publication ownership.
+    # An eligible lower-severity rule publishes while an action candidate waits.
     with open("tests/dldd/fixtures/valid-redis-rule.json") as stream:
         document = json.load(stream)
     lower = deepcopy(document["signatures"][0])
@@ -927,7 +927,9 @@ def test_local_action_recheck_and_artifact_lifecycle():
     orchestrator.process_event(evidence(low, EvaluationResultType.MATCH, 1))
 
     assert (high.rule_id, high.component_name) in orchestrator.pending
-    assert not database.values
+    published = database.values["FAULT_INFO|PSU|SYMPTOM_OVER_THRESHOLD"]
+    assert published["rule_id"] == str(low.rule_id)
+    assert published["status"] == "ACTIVE"
 
     # Missing recheck evidence retries, then preserves the active fault.
     rules = load_rules("tests/dldd/fixtures/valid-redis-rule.json")

@@ -36,6 +36,20 @@ class ShellFreeResult:
         return self.stderr.decode(encoding, errors)
 
 
+class ShellFreeTimeout(subprocess.TimeoutExpired):
+    """A command timeout with bounded partial output and truncation metadata."""
+
+    def __init__(
+        self, command: Sequence[str], timeout: float,
+        stdout: bytes, stderr: bytes, limit: int,
+    ) -> None:
+        super().__init__(
+            command, timeout, output=stdout[:limit], stderr=stderr[:limit]
+        )
+        self.stdout_truncated = len(stdout) > limit
+        self.stderr_truncated = len(stderr) > limit
+
+
 def _run_bounded_process(
     command: Sequence[str], timeout: Optional[float], limit: int
 ) -> subprocess.CompletedProcess[bytes]:
@@ -77,8 +91,10 @@ def _run_bounded_process(
                 pass
             process.wait()
             if isinstance(error, subprocess.TimeoutExpired):
-                error.output = bytes(output[0][:limit])
-                error.stderr = bytes(output[1][:limit])
+                raise ShellFreeTimeout(
+                    command, error.timeout, bytes(output[0]), bytes(output[1]),
+                    limit,
+                ) from error
             raise
     return subprocess.CompletedProcess(
         command, returncode, bytes(output[0]), bytes(output[1])

@@ -18,6 +18,7 @@ from contextlib import contextmanager
 
 DEFAULT_CATALOG_PATH = "/var/lib/sonic/healthz/catalog.sqlite3"
 DEFAULT_MAX_EVENTS = 4096
+DEFAULT_MAX_TRANSITIONS = 10000
 MAX_CATALOG_BYTES = 32 * 1024 * 1024
 DEFAULT_SOURCE_RETAIN_SECONDS = 24 * 60 * 60
 SOURCE_PRUNE_GRACE_SECONDS = 60
@@ -113,6 +114,7 @@ class HealthzCatalog:
             raise ValueError("max_events must be positive")
         self.path = os.fspath(path)
         self.max_events = max_events
+        self._max_transitions = DEFAULT_MAX_TRANSITIONS
         self._lock = threading.RLock()
         directory = os.path.dirname(os.path.abspath(self.path))
         if os.path.islink(directory):
@@ -189,6 +191,13 @@ class HealthzCatalog:
                 name TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS transition_history (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                producer TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                transition_id TEXT NOT NULL,
+                UNIQUE(producer, source_key, transition_id)
+            );
             """
         )
         # Keep events and acknowledgements from the previous DLDD-specific
@@ -222,6 +231,8 @@ class HealthzCatalog:
                     "DELETE FROM metadata WHERE name='gap_first_available_id'"
                 )
             self._set_meta("sources_migrated", "1")
+        with self._transaction():
+            self._prune_transition_history()
 
     def close(self):
         with self._lock:
@@ -355,8 +366,29 @@ class HealthzCatalog:
             "AND retain_until<=?", (int(time.time()) - SOURCE_PRUNE_GRACE_SECONDS,),
         )
 
+    def _prune_transition_history(self):
+        count = self._db.execute("SELECT COUNT(*) FROM transition_history").fetchone()[0]
+        if count > self._max_transitions:
+            self._db.execute(
+                "DELETE FROM transition_history WHERE seq IN ("
+                "SELECT seq FROM transition_history ORDER BY seq LIMIT ?)",
+                (count - self._max_transitions,),
+            )
+
+    def _remember_transition(self, producer, source_key, transition_id):
+        self._db.execute(
+            "INSERT INTO transition_history(producer,source_key,transition_id) "
+            "VALUES(?,?,?)", (producer, source_key, transition_id),
+        )
+        self._prune_transition_history()
+
     def apply_transition(self, stream_id, transition):
-        """Apply one generic transition; return False for an idempotent replay."""
+        """Deduplicate the latest 10,000 distinct accepted tuples by default.
+
+        Retries do not refresh this FIFO window. The current source ID remains
+        protected while its membership exists, including after catalog upgrade.
+        Observation records use only their stream checkpoint.
+        """
         _stream_parts(stream_id)
         if transition.get("kind") == "observation":
             producer = _text(transition["producer"], "producer")
@@ -419,9 +451,16 @@ class HealthzCatalog:
             ).fetchone()
             if prior and prior["component"] != component:
                 raise ValueError("Healthz source changed component")
-            if prior and prior["last_transition_id"] == transition_id:
+            latest = prior and prior["last_transition_id"] == transition_id
+            known = self._db.execute(
+                "SELECT 1 FROM transition_history WHERE producer=? "
+                "AND source_key=? AND transition_id=?",
+                (producer, source_key, transition_id),
+            ).fetchone()
+            if latest:
                 if prior["active"] != active:
                     raise ValueError("Healthz transition ID changed status")
+            if latest or known:
                 self._set_meta(_CHECKPOINT, stream_id)
                 return False
 
@@ -488,6 +527,7 @@ class HealthzCatalog:
                 "unhealthy_count=excluded.unhealthy_count",
                 (component, "UNHEALTHY" if new_count else "HEALTHY", last, count),
             )
+            self._remember_transition(producer, source_key, transition_id)
             self._set_meta(_CHECKPOINT, stream_id)
             self._prune()
             return True

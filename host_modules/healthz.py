@@ -444,6 +444,8 @@ class Healthz(host_service.HostModule):
             return 0, json.dumps(self.artifacts.reserve(), separators=(",", ":"))
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             return errno.EINVAL, str(error)
+        except BlockingIOError as error:
+            return errno.EBUSY, str(error)
         except Exception:
             LOGGER.exception("Healthz artifact reservation failed")
             return errno.EIO, "Healthz artifact reservation failed"
@@ -459,6 +461,8 @@ class Healthz(host_service.HostModule):
             return 0, json.dumps(result, separators=(",", ":"))
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             return errno.EINVAL, str(error)
+        except BlockingIOError as error:
+            return errno.EBUSY, str(error)
         except FileNotFoundError as error:
             return errno.ENOENT, str(error)
         except Exception:
@@ -491,6 +495,8 @@ class Healthz(host_service.HostModule):
                                  separators=(",", ":"))
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             return errno.EINVAL, str(error)
+        except BlockingIOError as error:
+            return errno.EBUSY, str(error)
         except Exception:
             LOGGER.exception("Healthz artifact failure update failed")
             return errno.EIO, "Healthz artifact failure update failed"

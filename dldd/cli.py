@@ -365,5 +365,4 @@ def main(argv=None) -> int:
         return clear_state(args)
     # argparse rejects unknown subcommands, so the only remaining choices are
     # the explicit ``run`` command and the backward-compatible empty command.
-    run_service()
-    return 0
+    return run_service()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import io
 import json
 import os
@@ -12,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 
 
 ARTIFACT_DIRECTORY = "/var/lib/sonic/healthz/artifacts"
@@ -75,6 +78,38 @@ class HealthzArtifacts:
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
             raise ValueError("Healthz artifact directory must be owned by the service")
         os.chmod(self.directory, 0o700)
+        try:
+            with self._storage_lock():
+                self._remove_stages()
+        except BlockingIOError as error:
+            if error.errno != errno.EBUSY:
+                raise
+
+    @contextmanager
+    def _storage_lock(self):
+        """Allow one mutating operation and one archive stage per directory."""
+        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY |
+                             os.O_NOFOLLOW)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise BlockingIOError(errno.EBUSY,
+                                      "Healthz artifact store is busy") from error
+            yield
+        finally:
+            os.close(descriptor)
+
+    def _remove_stages(self):
+        removed = False
+        for name in os.listdir(self.directory):
+            if name.startswith(".healthz-") and name.endswith(".tmp"):
+                path = os.path.join(self.directory, name)
+                if stat.S_ISREG(os.lstat(path).st_mode):
+                    os.unlink(path)
+                    removed = True
+        if removed:
+            self._fsync_directory()
 
     def _archive(self, artifact_id):
         if not isinstance(artifact_id, str) or not ARTIFACT_NAME.fullmatch(artifact_id):
@@ -127,9 +162,6 @@ class HealthzArtifacts:
                     markers.append((name[1:-len(".pending")], path))
             elif ARTIFACT_NAME.fullmatch(name) and stat.S_ISREG(info.st_mode):
                 archives.append((info.st_mtime, path))
-            elif name.startswith(".healthz-") and name.endswith(".tmp"):
-                if stat.S_ISREG(info.st_mode) and now - info.st_mtime >= PENDING_SECONDS:
-                    os.unlink(path)
         archive_ids = {os.path.basename(path) for _, path in archives}
         pending = 0
         for artifact_id, marker in markers:
@@ -152,7 +184,8 @@ class HealthzArtifacts:
                 os.unlink(path)
 
     def reserve(self):
-        with self._lock:
+        with self._lock, self._storage_lock():
+            self._remove_stages()
             self._prune()
             requested_at = int(time.time())
             while True:
@@ -187,7 +220,8 @@ class HealthzArtifacts:
             if name in names or (metadata is not None and name == "metadata.json"):
                 raise ValueError("duplicate archive member name")
             names.add(name)
-        with self._lock:
+        with self._lock, self._storage_lock():
+            self._remove_stages()
             archive_path = self._archive(artifact_id)
             if self._state(artifact_id) == "COMPLETED":
                 return {"artifact_id": artifact_id, "location": archive_path}
@@ -240,7 +274,8 @@ class HealthzArtifacts:
             return {"artifact_id": artifact_id, "location": archive_path}
 
     def fail(self, artifact_id):
-        with self._lock:
+        with self._lock, self._storage_lock():
+            self._remove_stages()
             if self._state(artifact_id) == "COMPLETED":
                 return
             try:

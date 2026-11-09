@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import count
 from queue import Empty, Full, PriorityQueue, Queue
 from typing import Callable, Dict, Mapping, Optional, Set
@@ -15,6 +15,7 @@ from typing import Callable, Dict, Mapping, Optional, Set
 from .adapters import DataSourceAdapter
 from .bounded_calls import start_daemon_workers
 from .planner import monitor_type_for_source, work_items_for_dse_expansion
+from .rule_schema.errors import bound_diagnostic
 from .runtime import (
     EvaluationResult,
     EvaluationResultType,
@@ -280,9 +281,16 @@ class MonitorThread(threading.Thread):
         self.wall_clock = wall_clock
         self._sequence = 0
         self._next_poll = self.clock()
-        self._async_completions: Queue[AsyncCollectionCompletion] = Queue()
-        self._async_jobs = {}
+        self._async_completions = plan._async_completions
+        self._async_jobs = plan._async_jobs
+        self._async_commands = plan._async_commands
+        self._async_tokens_by_key = {
+            job[0]: token for token, job in self._async_jobs.items()
+        }
         self._dse_templates_by_child: Dict[str, Set[str]] = {}
+        for template_id, expansion in plan.expansion_state_by_key.items():
+            for key in expansion.child_keys:
+                self._dse_templates_by_child.setdefault(key, set()).add(template_id)
         self.diagnostics = deque(maxlen=32)
         async_work = any(
             item.async_collection
@@ -295,8 +303,11 @@ class MonitorThread(threading.Thread):
             raise ValueError(
                 "async collection work requires a shared collection pool"
             )
-        for state in self.plan.state_by_key.values():
-            if state.state == MonitorWorkState.COLLECTING:
+        for key, state in self.plan.state_by_key.items():
+            if (
+                state.state == MonitorWorkState.COLLECTING
+                and key not in self._async_tokens_by_key
+            ):
                 self._transition(state, MonitorWorkState.READY)
                 state.next_sample_due = None
         self.progress_at = self.clock()
@@ -435,6 +446,20 @@ class MonitorThread(threading.Thread):
         ):
             return False
 
+        token = self._async_tokens_by_key.get(command.correlation_key)
+        if token is not None:
+            # Keep the running call's generation until its completion arrives.
+            previous_state = self._async_jobs[token][2]
+            if (
+                command.command == MonitorCommandType.RECHECK_ONCE
+                and previous_state == MonitorWorkState.RECHECK_REQUESTED
+                and command.correlation_key not in self._async_commands
+            ):
+                state.hold_deadline = command.hold_deadline
+            else:
+                self._async_commands[command.correlation_key] = command
+            return True
+
         if command.command == MonitorCommandType.RESUME:
             target = command.target_state
             if target not in (MonitorWorkState.READY, MonitorWorkState.DEGRADED):
@@ -519,11 +544,39 @@ class MonitorThread(threading.Thread):
             result = adapter.expand(template)
             items = work_items_for_dse_expansion(template, result)
         except Exception as error:
-            state.last_error = str(error)
+            state.last_error = bound_diagnostic(str(error) or type(error).__name__, 512)
+            state.consecutive_failure_count += 1
             state.unchanged_scans = 0
             state.next_expansion_due = now + DSE_EXPANSION_FAST_INTERVAL
+            attempted_at = self.wall_clock()
+            status = RuleRuntimeStatus(
+                state="DEGRADED",
+                rule_id=template.item.rule_id,
+                rule_name=template.item.rule_name,
+                event_id=template.item.event_id,
+                component_name=template.item.component_name,
+                source_id=template.item.source_id,
+                correlation_key=template.item.correlation_key,
+                reason=state.last_error,
+                error_category="DSE_EXPANSION_ERROR",
+                failure_count=state.consecutive_failure_count,
+                last_attempt_timestamp=attempted_at,
+            )
+            try:
+                self.evidence_queue.put_nowait(
+                    DSEExpansionEvent(
+                        monitor_id=self.plan.monitor_id,
+                        plan_generation=self.plan.plan_generation,
+                        template_id=template_id,
+                        signature=template.signature,
+                        observed_at=attempted_at,
+                        runtime_status=status,
+                    )
+                )
+            except Full:
+                LOGGER.error("DSE expansion status queue is full for %s", template_id)
             self._record_diagnostic(
-                "DSE expansion failed: {}".format(error),
+                "DSE expansion failed: {}".format(state.last_error),
                 "EXPANSION",
                 template_id=template_id,
             )
@@ -567,7 +620,10 @@ class MonitorThread(threading.Thread):
                 removed.append(key)
 
         # Publish the first successful inventory, including an empty one.
-        if added or removed or changed:
+        if (
+            added or removed or changed
+            or state.consecutive_failure_count or state.last_error
+        ):
             event = DSEExpansionEvent(
                 monitor_id=self.plan.monitor_id,
                 plan_generation=self.plan.plan_generation,
@@ -622,6 +678,7 @@ class MonitorThread(threading.Thread):
             )
         state.last_expansion_timestamp = self.wall_clock()
         state.last_error = ""
+        state.consecutive_failure_count = 0
         # Pending retirements keep inventory on the fast scan interval.
         state.unchanged_scans = (
             0 if changed or deferred_removal else state.unchanged_scans + 1
@@ -708,6 +765,8 @@ class MonitorThread(threading.Thread):
         self.drain_async_completions()
 
     def _submit_async_collection(self, key, state, item) -> bool:
+        if key in self._async_tokens_by_key:
+            return False
         from_recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
         previous_state = state.state
         adapter = self.adapters[item.source_type]
@@ -736,6 +795,7 @@ class MonitorThread(threading.Thread):
             previous_state,
             state.work_state_generation,
         )
+        self._async_tokens_by_key[key] = token
         return True
 
     def drain_async_completions(self) -> None:
@@ -749,6 +809,8 @@ class MonitorThread(threading.Thread):
                 if pending is None:
                     continue
                 key, item, previous_state, generation = pending
+                self._async_tokens_by_key.pop(key, None)
+                command = self._async_commands.pop(key, None)
                 state = self.plan.state_by_key.get(key)
                 if (
                     state is None
@@ -762,6 +824,12 @@ class MonitorThread(threading.Thread):
                     )
                     continue
                 self._transition(state, previous_state)
+                if command is not None:
+                    self.apply_command(
+                        replace(command, expected_work_state_generation=None)
+                    )
+                    if command.command != MonitorCommandType.RESUME:
+                        continue
                 self._handle_result(
                     key,
                     state,

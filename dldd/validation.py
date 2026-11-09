@@ -68,6 +68,12 @@ MAX_SERIALIZED_DIAGNOSTIC_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_MESSAGE_BYTES = 1024
 MAX_DIAGNOSTIC_PATH_BYTES = 2048
 MAX_DIAGNOSTIC_IDENTITY_BYTES = 256
+
+
+class RuleNotApplicable(ValueError):
+    """A valid signature does not target the current product or software."""
+
+
 class CompatibilityMatcher(object, metaclass=ABCMeta):
     """Platform-owned matching contract for product and software versions."""
 
@@ -120,11 +126,8 @@ if yaml is not None:
                 except TypeError:
                     duplicate = False
                 if duplicate:
-                    raise yaml.constructor.ConstructorError(
-                        "while constructing a mapping",
-                        node.start_mark,
-                        "found duplicate key {!r}".format(key),
-                        key_node.start_mark,
+                    raise RulesParseError(
+                        "duplicate YAML mapping key", key_node.start_mark.line + 1
                     )
                 try:
                     keys.add(key)
@@ -160,9 +163,7 @@ def _reject_duplicate_json_pairs(pairs):
     result = {}
     for name, value in pairs:
         if name in result:
-            raise RulesParseError(
-                "duplicate JSON key {!r}".format(name)
-            )
+            raise RulesParseError("duplicate JSON mapping key")
         result[name] = value
     return result
 
@@ -400,16 +401,14 @@ def _serialized_size(payload):
     )
 
 
-def _raw_issue_size(issue):
-    return _serialized_size(
-        {
-            "scope": "file",
-            "code": issue.code,
-            "message": issue.message,
-            "path": issue.path,
-            "line": None,
-        }
-    )
+def _raw_issue_size(issue, source_lines, identity=None):
+    size = _serialized_size(vars(_to_validation_issue(issue, "file", source_lines)))
+    if identity is not None:
+        name, rule_id, _version = identity
+        size += _serialized_size(vars(
+            _to_validation_issue(issue, "rule", source_lines, name, rule_id)
+        ))
+    return size + 2
 
 
 def _truncation_issue(path):
@@ -420,23 +419,75 @@ def _truncation_issue(path):
     )
 
 
-def _limit_file_issues(raw):
-    marker = _truncation_issue("$")
-    marker_size = _raw_issue_size(marker)
-    selected: List[ContractIssue] = []
-    used_bytes = 0
+def _issue_rule_index(issue):
+    prefix = "$.signatures["
+    if issue.path.startswith(prefix):
+        try:
+            index = int(issue.path[len(prefix):].split("]", 1)[0])
+            return index if index >= 0 else None
+        except ValueError:
+            pass
+    return None
+
+
+def _limit_file_issues(raw, source_lines, identities):
+    """Reserve per-rule markers before filling the shared diagnostic budget."""
+
+    groups: Dict[Optional[int], List[ContractIssue]] = {}
     for issue in raw:
-        bounded = _bounded_issue(issue)
-        size = _raw_issue_size(bounded)
-        if (
-            len(selected) + 1 >= MAX_ISSUES_PER_CANDIDATE
-            or used_bytes + size + marker_size
-            > MAX_SERIALIZED_DIAGNOSTIC_BYTES
-        ):
-            selected.append(marker)
-            break
-        selected.append(bounded)
-        used_bytes += size
+        index = _issue_rule_index(issue)
+        group = index if index in identities else None
+        groups.setdefault(group, []).append(_bounded_issue(issue))
+    markers = {
+        group: _truncation_issue(
+            "$.signatures[{}]".format(group) if group is not None else "$"
+        ) for group in groups
+    }
+
+    def size(issue, group):
+        return _raw_issue_size(issue, source_lines, identities.get(group))
+
+    def reserved_size():
+        return _serialized_size({"file_errors": [], "broken_rules": []}) + sum(
+            size(markers[group], group) for group in groups
+        ) + sum(
+            _serialized_size({
+                "rule_name": name, "rule_id": rule_id,
+                "rule_version": version, "issues": [],
+            }) + 1 for name, rule_id, version in identities.values()
+        )
+
+    used_bytes = reserved_size()
+    if used_bytes > MAX_SERIALIZED_DIAGNOSTIC_BYTES:
+        identities.update({
+            index: (bound_identity(name, 64), rule_id, bound_identity(version, 64))
+            for index, (name, rule_id, version) in identities.items()
+        })
+        used_bytes = reserved_size()
+    used_count = len(groups)
+    selected = []
+    for group in sorted(groups, key=lambda value: -1 if value is None else value):
+        issues = groups[group]
+        truncated = any(issue.code == "validation_issues_truncated" for issue in issues)
+        details = [issue for issue in issues if issue.code != "validation_issues_truncated"]
+        keep_marker = True
+        for offset, issue in enumerate(details):
+            complete = offset == len(details) - 1 and not truncated
+            next_count = used_count + 1 - int(complete)
+            next_bytes = used_bytes + size(issue, group) - (
+                size(markers[group], group) if complete else 0
+            )
+            if (
+                next_count > MAX_ISSUES_PER_CANDIDATE
+                or next_bytes > MAX_SERIALIZED_DIAGNOSTIC_BYTES
+            ):
+                break
+            selected.append(issue)
+            used_count, used_bytes = next_count, next_bytes
+            if complete:
+                keep_marker = False
+        if keep_marker:
+            selected.append(markers[group])
     return tuple(selected)
 
 
@@ -460,7 +511,7 @@ def _to_file_issues(raw, source_lines=None):
     source_lines = source_lines or {}
     return tuple(
         _to_validation_issue(issue, "file", source_lines)
-        for issue in _limit_file_issues(raw)
+        for issue in raw
     )
 
 
@@ -471,21 +522,22 @@ def _file_failure(schema_version, raw_issues, source_lines, document=None):
         if isinstance(document, Mapping)
         else ()
     )
+    identities: Dict[int, Tuple[str, Optional[int], str]] = {}
+    for issue in raw_issues:
+        index = _issue_rule_index(issue)
+        if index is not None and index < len(signatures):
+            identities.setdefault(index, _rule_identity(signatures[index], index))
+    raw_issues = _limit_file_issues(raw_issues, source_lines, identities)
     grouped: Dict[int, List[ContractIssue]] = {}
     for issue in raw_issues:
-        prefix = "$.signatures["
-        if not issue.path.startswith(prefix):
-            continue
-        try:
-            index = int(issue.path[len(prefix) :].split("]", 1)[0])
-            _ = signatures[index]
-        except (ValueError, IndexError, TypeError):
+        index = _issue_rule_index(issue)
+        if index is None or index not in identities:
             continue
         grouped.setdefault(index, []).append(issue)
     for index, issues in sorted(grouped.items()):
         broken.append(
             _to_broken(
-                _rule_identity(signatures[index], index), issues, source_lines
+                identities[index], issues, source_lines
             )
         )
     return ValidationResult(
@@ -606,11 +658,11 @@ def materialize_signature(signature, context=None):
     if context.product_id is not None and not context.compatibility_matcher.product_matches(
         context.product_id, signature.metadata.product_ids
     ):
-        raise ValueError("rule does not apply to product {!r}".format(context.product_id))
+        raise RuleNotApplicable("rule does not apply to product {!r}".format(context.product_id))
     if context.software_version is not None and not context.compatibility_matcher.software_matches(
         context.software_version, signature.metadata.sw_versions
     ):
-        raise ValueError("rule does not apply to software {!r}".format(context.software_version))
+        raise RuleNotApplicable("rule does not apply to software {!r}".format(context.software_version))
 
     materialized = []
     for event in signature.conditions.events:
@@ -765,7 +817,7 @@ def validate_document(
     except (RulesParseError, RecursionError, UnicodeError) as error:
         return _file_failure(
             version,
-            (ContractIssue("parse_error", str(error), "$"),),
+            (ContractIssue("parse_error", _parse_error_message(error), "$"),),
             source_lines,
         )
     registry = contract_registry or DEFAULT_CONTRACT_REGISTRY
@@ -780,7 +832,9 @@ def validate_document(
     try:
         validated_document = contract.validate_document(document)
     except ValidationError as error:
-        normalized = normalize_validation_error(error)
+        normalized = normalize_validation_error(
+            error, max_total_issues=MAX_ISSUES_PER_CANDIDATE
+        )
         return _file_failure(
             canonical_version, normalized, source_lines, document
         )
@@ -838,7 +892,7 @@ def validate_document(
                 source_lines,
                 document,
             )
-        except ValueError as error:
+        except RuleNotApplicable as error:
             broken.append(
                 _to_broken(
                     _rule_identity(raw, index),
@@ -852,6 +906,17 @@ def validate_document(
                 )
             )
             continue
+        except ValueError as error:
+            return _file_failure(
+                canonical_version,
+                (ContractIssue(
+                    code="materialization_failed",
+                    message=str(error),
+                    path=base_path + ".signature",
+                ),),
+                source_lines,
+                document,
+            )
         signatures.append(signature)
         materialized.append(result)
 
@@ -898,6 +963,20 @@ def _parse_error_line(error):
     return getattr(error, "line", None) or getattr(error, "lineno", None)
 
 
+def _parse_error_message(error):
+    if isinstance(error, RulesParseError):
+        return bound_diagnostic(str(error), MAX_DIAGNOSTIC_MESSAGE_BYTES)
+    if isinstance(error, UnicodeError):
+        return "rules source must be valid UTF-8 text"
+    if isinstance(error, OSError):
+        return "unable to read rules source"
+    if isinstance(error, RecursionError):
+        return "rules document exceeds supported nesting"
+    if isinstance(error, TypeError):
+        return "rules source must be text, bytes, a path, or a readable stream"
+    return "invalid YAML or JSON"
+
+
 def _parse_document_with_lines(source):
     text = _load_text(source)
     try:
@@ -934,9 +1013,11 @@ def _parse_document_with_lines(source):
         _enforce_document_limits(document)
         source_lines = _build_source_lines(node)
         return document, source_lines or {"$": 1}
+    except RulesParseError:
+        raise
     except Exception as error:
         raise RulesParseError(
-            "invalid YAML or JSON: {}".format(error),
+            "invalid YAML or JSON",
             _parse_error_line(error),
         )
     finally:
@@ -965,21 +1046,13 @@ def load_rules(
         RecursionError,
         json.JSONDecodeError,
     ) as error:
-        line = getattr(error, "line", None)
+        line = _parse_error_line(error)
         if line is None and isinstance(error, UnicodeError):
             line = 1
-        issue = ValidationIssue(
-            scope="file",
-            code="parse_error",
-            message=str(error),
-            path="$",
-            line=line,
-        )
-        return ValidationResult(
-            schema_version=None,
-            ruleset=None,
-            file_errors=(issue,),
-            source_lines=({"$": line} if line is not None else {}),
+        return _file_failure(
+            None,
+            (ContractIssue("parse_error", _parse_error_message(error), "$"),),
+            {"$": line} if line is not None else {},
         )
     return validate_document(
         document,

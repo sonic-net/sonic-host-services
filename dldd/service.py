@@ -51,6 +51,8 @@ from .validation import (
 
 
 LOGGER = logging.getLogger(__name__)
+# Declared successful by dldd.service, distinct from an ordinary operator stop.
+NOT_CONFIGURED_EXIT_STATUS = 3
 
 
 class TelemetryUnavailable(RuntimeError):
@@ -257,6 +259,7 @@ class DLDDService:
         self.config_thread: Optional[threading.Thread] = None
         self._state_fingerprint: Optional[str] = None
         self.fatal_reason = ""
+        self._exit_status = 0
         self.startup_broken = ()
         self._serial_cache: Dict[Tuple[str, str], str] = {}
 
@@ -358,6 +361,7 @@ class DLDDService:
         return client
 
     def start(self) -> None:
+        self._exit_status = 0
         self.config = self._load_config()
         telemetry = TelemetryPublisher(
             self.state_db, self.config, serial_resolver=self._component_serial
@@ -374,6 +378,7 @@ class DLDDService:
         except NoRulesAvailable:
             # The watcher restarts DLDD when the first rules file arrives.
             LOGGER.info("no DLDD rules source is present; stopping cleanly")
+            self._exit_status = NOT_CONFIGURED_EXIT_STATUS
             self.stop_event.set()
             return
         except Exception as error:
@@ -578,7 +583,7 @@ class DLDDService:
             monitor.fault_evidence_ack_timeout = updated.fault_evidence_ack_timeout
             monitor.source_recovery_samples = updated.source_recovery_samples
 
-    def run(self) -> None:
+    def run(self) -> int:
         telemetry_failures = 0
         next_heartbeat = time.monotonic()
         watchdog_interval = _watchdog_interval()
@@ -618,6 +623,7 @@ class DLDDService:
             clean_shutdown = True
         finally:
             self.shutdown(clean_shutdown=clean_shutdown)
+        return self._exit_status
 
     def _supervise_monitors(self) -> None:
         if self.adapters is None or self.evidence_queue is None:
@@ -747,7 +753,7 @@ class DLDDService:
             )
 
 
-def run_service() -> None:
+def run_service() -> int:
     """Run the DLDD service with signal-driven graceful shutdown."""
 
     stop_event = threading.Event()
@@ -757,4 +763,4 @@ def run_service() -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    DLDDService(stop_event=stop_event).run()
+    return DLDDService(stop_event=stop_event).run()

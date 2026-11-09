@@ -146,6 +146,7 @@ class DSEExpansionState:
     next_expansion_due: Optional[float] = None
     last_expansion_timestamp: Optional[float] = None
     last_error: str = ""
+    consecutive_failure_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,7 @@ class DSEExpansionEvent:
     removed_keys: Tuple[str, ...] = ()
     present_instances: Tuple[str, ...] = ()
     observed_at: float = field(default_factory=time.time)
+    runtime_status: Optional[RuleRuntimeStatus] = None
 
 
 @dataclass
@@ -221,6 +223,15 @@ class MonitorExecutionPlan:
         init=False,
         repr=False,
         compare=False,
+    )
+    _async_completions: Queue = field(
+        default_factory=Queue, init=False, repr=False, compare=False
+    )
+    _async_jobs: Dict[str, Tuple[str, MonitorWorkItem, MonitorWorkState, int]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _async_commands: Dict[str, MonitorControlCommand] = field(
+        default_factory=dict, init=False, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:

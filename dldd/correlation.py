@@ -359,7 +359,9 @@ class FaultArbiter:
         self._active[identity] = execution
         self._detected_at.setdefault(identity, detected_at)
 
-    def update(self, decision: CorrelationDecision) -> Optional[SignatureExecution]:
+    def update(
+        self, decision: CorrelationDecision, *, detected_at: Optional[float] = None
+    ) -> Optional[SignatureExecution]:
         metadata = decision.execution.signature.metadata
         identity = (
             decision.execution.component_name,
@@ -369,7 +371,10 @@ class FaultArbiter:
         fault_key = identity[:2]
         if decision.active:
             self._active[identity] = decision.execution
-            self._detected_at.setdefault(identity, decision.event.event_timestamp)
+            self._detected_at.setdefault(
+                identity,
+                decision.event.event_timestamp if detected_at is None else detected_at,
+            )
         else:
             self._active.pop(identity, None)
             self._detected_at.pop(identity, None)

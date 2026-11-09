@@ -285,6 +285,25 @@ class PrimaryOrchestrator:
             or event.plan_generation != plan.plan_generation
         ):
             raise ValueError("DSE expansion belongs to an unknown plan")
+        status = event.runtime_status
+        if status is not None:
+            self.broken_rules[status.correlation_key] = {
+                "rule": status.rule_name,
+                "version": event.signature.metadata.version,
+                "rule_id": status.rule_id,
+                "correlation_key": status.correlation_key,
+                "reason": "dse_expansion_error: {}".format(
+                    bound_diagnostic(status.reason, 512)
+                ),
+                "error_category": "DSE_EXPANSION_ERROR",
+                "failure_count": status.failure_count,
+                "state": "DEGRADED",
+                "last_attempt": event.observed_at,
+            }
+            return
+        template = plan.templates_by_key.get(event.template_id)
+        if template is not None:
+            self.broken_rules.pop(template.item.correlation_key, None)
         self._dse_instances_by_template[event.template_id] = set(
             event.present_instances
         )
@@ -363,6 +382,7 @@ class PrimaryOrchestrator:
                 if (
                     broken.get("rule_id") == event.signature.metadata.id
                     and key not in self.work_items
+                    and broken.get("error_category") != "DSE_EXPANSION_ERROR"
                 ):
                     self.broken_rules.pop(key, None)
         if event.removed_keys:
@@ -1009,8 +1029,6 @@ class PrimaryOrchestrator:
             last_confirmed_at=decision.event.event_timestamp,
         )
         self.pending[identity] = pending
-        # Reserve fault ownership while local remediation runs.
-        self.arbiter.update(decision)
         self._record_candidate(decision, pending)
         for key in execution.work_keys:
             self._command_key(
@@ -1746,7 +1764,11 @@ class PrimaryOrchestrator:
         else:
             self.next_active_recheck.pop(identity, None)
 
-        winner = self.arbiter.update(decision)
+        winner = (
+            self.arbiter.update(decision, detected_at=episode_started_at)
+            if episode_started_at is not None
+            else self.arbiter.update(decision)
+        )
         fault_key = (execution.component_name, metadata.symptom)
         prior_owner = self.published_by_key.get(fault_key)
         if status == "ACTIVE" and winner is not None:
@@ -1794,7 +1816,7 @@ class PrimaryOrchestrator:
             if winner is not None:
                 winner_id = winner.signature.metadata.id
                 alternate = self.faults.get((winner_id, execution.component_name))
-                if alternate is not None:
+                if alternate is not None and alternate.status == "ACTIVE":
                     alternate.origin_time = existing.origin_time
                     alternate.occurrences = existing.occurrences
                     self.published_by_key[fault_key] = winner_id

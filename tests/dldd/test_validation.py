@@ -1082,7 +1082,7 @@ class ComparatorHook(FakeHook):
 
 
 @pytest.mark.parametrize(
-    "context, expected",
+    "context, expected, file_valid",
     (
         pytest.param(
             ValidationContext(
@@ -1090,6 +1090,7 @@ class ComparatorHook(FakeHook):
                 software_version="202311.3.0.1",
             ),
             "does not apply to product",
+            True,
             id="product-mismatch",
         ),
         pytest.param(
@@ -1098,16 +1099,17 @@ class ComparatorHook(FakeHook):
                 require_compatibility_identity=True,
             ),
             "product identity is unavailable",
+            False,
             id="missing-product",
         ),
     ),
 )
-def test_platform_compatibility_and_identity_fail_only_the_affected_rule(
-    context, expected
+def test_platform_applicability_and_required_identity_have_distinct_scope(
+    context, expected, file_valid
 ):
     result = validate_document(load_fixture(), context=context)
 
-    assert result.file_valid
+    assert result.file_valid is file_valid
     assert not result.activation_valid
     assert expected in result.broken_rules[0].issues[0].message
 

@@ -1,6 +1,10 @@
 """Generic host Healthz archive lifecycle and path safety."""
 
+import errno
 import os
+from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -186,44 +190,116 @@ class TestHealthzArtifacts(unittest.TestCase):
         self.assertEqual(reopened.status(third), "PENDING")
         self.assertFalse(os.path.exists(marker))
 
-    def test_concurrent_stores_do_not_replace_completed_archive(self):
-        first_source = os.path.join(self.root, "first.txt")
-        second_source = os.path.join(self.root, "second.txt")
-        for path, content in ((first_source, "first"),
-                              (second_source, "second")):
-            with open(path, "w") as output:
-                output.write(content)
+    def test_active_writer_survives_reopen_and_competing_mutations(self):
+        source = os.path.join(self.root, "log.txt")
+        with open(source, "w") as output:
+            output.write("original writer")
         artifact_id = self.store.reserve()["artifact_id"]
-        second_store = HealthzArtifacts(self.directory, max_artifacts=2,
-                                        max_bytes=4096)
-        second_staged = threading.Event()
-        allow_second = threading.Event()
+        staged = threading.Event()
+        resume = threading.Event()
         file_info = healthz_artifacts._file_info
 
-        def pause_second(path):
-            if path == second_source:
-                second_staged.set()
-                if not allow_second.wait(5):
-                    raise TimeoutError("first submission did not finish")
+        def pause_writer(path):
+            staged.set()
+            if not resume.wait(5):
+                raise TimeoutError("writer did not resume")
             return file_info(path)
 
         with patch("host_modules.healthz_artifacts._file_info",
-                   side_effect=pause_second):
+                   side_effect=pause_writer):
             with ThreadPoolExecutor(max_workers=1) as pool:
-                second = pool.submit(second_store.submit, artifact_id,
-                                     [{"path": second_source, "name": "log.txt"}])
+                writer = pool.submit(self.store.submit, artifact_id,
+                                     [{"path": source, "name": "log.txt"}])
                 try:
-                    self.assertTrue(second_staged.wait(5))
-                    first = self.store.submit(artifact_id, [
-                        {"path": first_source, "name": "log.txt"}])
+                    self.assertTrue(staged.wait(5))
+                    stages = list(Path(self.directory).glob("*.tmp"))
+                    self.assertEqual(len(stages), 1)
+                    other = HealthzArtifacts(self.directory, max_artifacts=2,
+                                             max_bytes=4096)
+                    self.assertTrue(stages[0].exists())
+                    for call in (other.reserve,
+                                 lambda: other.submit(artifact_id, []),
+                                 lambda: other.fail(artifact_id)):
+                        with self.assertRaises(BlockingIOError) as busy:
+                            call()
+                        self.assertEqual(busy.exception.errno, errno.EBUSY)
+                    self.assertEqual(other.status(artifact_id), "PENDING")
+                    self.assertTrue(stages[0].exists())
                 finally:
-                    allow_second.set()
-                self.assertEqual(second.result(timeout=5), first)
+                    resume.set()
+                result = writer.result(timeout=5)
 
-        with tarfile.open(first["location"], "r:gz") as archive:
-            self.assertEqual(archive.extractfile("log.txt").read(), b"first")
+        self.assertEqual(other.submit(artifact_id, []), result)
+        with tarfile.open(result["location"], "r:gz") as archive:
+            self.assertEqual(archive.extractfile("log.txt").read(), b"original writer")
         self.assertEqual(self.store.status(artifact_id), "COMPLETED")
         self.assertFalse(os.path.exists(self.store._pending(artifact_id)))
+        self.assertEqual(list(Path(self.directory).glob("*.tmp")), [])
+
+    def test_final_file_appearing_during_submit_is_not_replaced(self):
+        source = os.path.join(self.root, "log.txt")
+        with open(source, "w") as output:
+            output.write("new collection")
+        artifact_id = self.store.reserve()["artifact_id"]
+        final = self.store._archive(artifact_id)
+        file_info = healthz_artifacts._file_info
+
+        def publish_existing(path):
+            with open(final, "wb") as output:
+                output.write(b"existing archive")
+            return file_info(path)
+
+        with patch("host_modules.healthz_artifacts._file_info",
+                   side_effect=publish_existing):
+            self.store.submit(artifact_id, [{"path": source, "name": "log.txt"}])
+        with open(final, "rb") as stream:
+            self.assertEqual(stream.read(), b"existing archive")
+        self.assertEqual(list(Path(self.directory).glob("*.tmp")), [])
+
+    def test_crash_stages_are_removed_on_reopen_and_same_store_retry(self):
+        source = os.path.join(self.root, "log.txt")
+        with open(source, "w") as output:
+            output.write("tiny crash fixture\n" * 20)
+        program = """
+import os, sys, tarfile
+sys.path.insert(0, sys.argv[1])
+from host_modules.healthz_artifacts import HealthzArtifacts
+original_addfile = tarfile.TarFile.addfile
+def crash_after_member(self, info, fileobj=None):
+    result = original_addfile(self, info, fileobj)
+    if info.name == 'log.txt':
+        self.fileobj.flush()
+        os._exit(41)
+    return result
+tarfile.TarFile.addfile = crash_after_member
+store = HealthzArtifacts(sys.argv[2], max_artifacts=2, max_bytes=4096)
+store.submit(sys.argv[3], [{'path': sys.argv[4], 'name': 'log.txt'}])
+"""
+        package_root = str(Path(healthz_artifacts.__file__).resolve().parents[1])
+        environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        for reopen in (False, True):
+            with self.subTest(reopen=reopen):
+                artifact_id = self.store.reserve()["artifact_id"]
+                for _ in range(3):
+                    child = subprocess.run(
+                        [sys.executable, "-B", "-c", program, package_root,
+                         self.directory, artifact_id, source],
+                        env=environment, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(child.returncode, 41, child.stderr)
+                    self.assertEqual(len(list(Path(self.directory).glob("*.tmp"))), 1)
+                    if reopen:
+                        self.store = HealthzArtifacts(self.directory, max_artifacts=2,
+                                                      max_bytes=4096)
+                        self.assertEqual(list(Path(self.directory).glob("*.tmp")), [])
+                    self.assertEqual(self.store.status(artifact_id), "PENDING")
+                result = self.store.submit(artifact_id, [
+                    {"path": source, "name": "log.txt"}])
+                self.assertEqual(self.store.status(artifact_id), "COMPLETED")
+                self.assertEqual(list(Path(self.directory).glob("*.tmp")), [])
+                with tarfile.open(result["location"], "r:gz") as archive:
+                    member = archive.extractfile("log.txt")
+                    assert member is not None
+                    self.assertEqual(member.read(), b"tiny crash fixture\n" * 20)
 
 
 if __name__ == "__main__":

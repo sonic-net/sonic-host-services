@@ -80,6 +80,7 @@ class Feature(object):
         self.name = feature_name
         self.state = self._get_feature_table_key_render_value(feature_cfg.get('state'), device_config or {}, ['enabled', 'disabled', 'always_enabled', 'always_disabled'])
         self.auto_restart = feature_cfg.get('auto_restart', 'disabled')
+        self.runtime_type = feature_cfg.get('runtime_type', 'container')
         self.delayed = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('delayed', 'False'), device_config or {}, ['True', 'False']))
         self.has_global_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_global_scope', 'True'), device_config or {}, ['True', 'False']))
         self.has_per_asic_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_per_asic_scope', 'False'), device_config or {}, ['True', 'False']))
@@ -209,11 +210,13 @@ class FeatureHandler(object):
         # the next called self.update_feature_state will start it again. If it will fail
         # again the auto restart will kick-in. Another order may leave it in failed state
         # and not auto restart.
-        if self._cached_config[feature_name].auto_restart != feature.auto_restart:
-            syslog.syslog(syslog.LOG_INFO, "Auto-restart status of feature '{}' is changed from '{}' to '{}' ..."
-                            .format(feature_name, self._cached_config[feature_name].auto_restart, feature.auto_restart))
+        if (self._cached_config[feature_name].auto_restart != feature.auto_restart
+                or self._cached_config[feature_name].runtime_type != feature.runtime_type):
+            syslog.syslog(syslog.LOG_INFO, "Restart policy of feature '{}' changed (runtime {}, auto-restart {})"
+                            .format(feature_name, feature.runtime_type, feature.auto_restart))
             self.update_systemd_config(feature)
             self._cached_config[feature_name].auto_restart = feature.auto_restart
+            self._cached_config[feature_name].runtime_type = feature.runtime_type
 
         # Enable/disable the container service if the feature state was changed from its previous state.
         if self._cached_config[feature_name].state != feature.state:
@@ -417,8 +420,14 @@ class FeatureHandler(object):
         if device_type == 'SpineRouter' and is_dependent_service:
             syslog.syslog(syslog.LOG_INFO, "Skipped setting Restart field in systemd for {}".format(feature_config.name))
             restart_field_str = "no"
+        elif "enabled" not in feature_config.auto_restart:
+            restart_field_str = "no"
         else:
-            restart_field_str = "always" if "enabled" in feature_config.auto_restart else "no"
+            # Host services can intentionally exit successfully, for example
+            # when optional configuration has not been provisioned yet.
+            restart_field_str = (
+                "on-failure" if feature_config.runtime_type == "host" else "always"
+            )
 
         feature_systemd_config = "[Service]\nRestart={}\n".format(restart_field_str)
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config)

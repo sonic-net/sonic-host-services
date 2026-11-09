@@ -209,11 +209,12 @@ def test_main_dispatches_primary_commands(monkeypatch, argv, target, status):
         "clear_state",
         lambda args: calls.append(("clear", args.all)) or 8,
     )
-    monkeypatch.setattr(
-        dldd_cli,
-        "run_service",
-        lambda: calls.append(("run", None)),
-    )
+
+    def run_service() -> int:
+        calls.append(("run", None))
+        return 0
+
+    monkeypatch.setattr(dldd_cli, "run_service", run_service)
 
     assert dldd_cli.main(argv) == status
     assert calls == [

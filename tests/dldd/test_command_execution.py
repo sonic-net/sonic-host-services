@@ -43,7 +43,8 @@ def test_real_command_timeout_cleans_up_descendants(tmp_path, parent_exits):
     script = (
         "import subprocess, sys, time; "
         "subprocess.Popen([sys.executable, '-c', {!r}]); "
-        "print('started', flush=True); time.sleep({})".format(
+        "print('started', flush=True); "
+        "print('diagnostic', file=sys.stderr, flush=True); time.sleep({})".format(
             child, 0 if parent_exits else 5
         )
     )
@@ -51,6 +52,7 @@ def test_real_command_timeout_cleans_up_descendants(tmp_path, parent_exits):
     with pytest.raises(subprocess.TimeoutExpired) as error:
         run_shell_free([sys.executable, "-c", script], timeout=0.2)
     assert error.value.stdout == b"started\n"
+    assert error.value.stderr == b"diagnostic\n"
     assert time.monotonic() - started < 2
     time.sleep(0.8)
     assert not marker.exists()

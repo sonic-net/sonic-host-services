@@ -429,6 +429,48 @@ class TestFeatureHandler(TestCase):
             feature_handler.update_systemd_config(feature)
             mock_reload.assert_called_once()
 
+    @parameterized.expand([
+        ('host', 'enabled', 'on-failure'),
+        ('host', 'disabled', 'no'),
+        ('container', 'enabled', 'always'),
+        ('container', 'disabled', 'no'),
+    ])
+    @patchfs
+    def test_restart_drop_in_preserves_host_success(self, runtime_type, auto_restart, expected, fs):
+        """Exercise the actual generated drop-in, not just the base unit."""
+        feature_handler = featured.FeatureHandler.__new__(featured.FeatureHandler)
+        feature_handler._device_config = {}
+        feature_handler.SYSTEMD_SERVICE_CONF_DIR = '/run/systemd/system/{}.service.d'
+        fs.create_dir('/run/systemd/system')
+        feature = featured.Feature('diagnostic', {
+            'runtime_type': runtime_type,
+            'auto_restart': auto_restart,
+        })
+        with mock.patch.object(feature_handler, 'get_multiasic_feature_instances',
+                               return_value=(['diagnostic'], ['service'])):
+            feature_handler.update_systemd_config(feature, reload=False)
+
+        with open('/run/systemd/system/diagnostic.service.d/auto_restart.conf') as drop_in:
+            assert drop_in.read() == '[Service]\nRestart={}\n'.format(expected)
+
+    def test_runtime_change_refreshes_restart_policy(self):
+        feature_handler = featured.FeatureHandler.__new__(featured.FeatureHandler)
+        feature_handler._device_config = {}
+        feature_handler._device_running_config = {}
+        feature_handler._cached_config = {
+            'diagnostic': featured.Feature('diagnostic', {
+                'state': 'enabled', 'auto_restart': 'enabled',
+            }),
+        }
+        with mock.patch.object(feature_handler, 'update_systemd_config') as update:
+            feature_handler.handler('diagnostic', 'SET', {
+                'state': 'enabled', 'auto_restart': 'enabled', 'runtime_type': 'host',
+            })
+
+        update.assert_called_once()
+        assert update.call_args.args[0].runtime_type == 'host'
+        assert feature_handler._cached_config['diagnostic'].runtime_type == 'host'
+
     def test_sync_state_field_empty_table(self):
         """With no features, daemon-reload still fires and no services are started."""
         mock_db = mock.MagicMock()

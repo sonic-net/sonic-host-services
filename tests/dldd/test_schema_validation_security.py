@@ -302,16 +302,24 @@ def test_diagnostic_redaction_bounding_and_identity_contract():
 
     result = validate_document(document, materialize=False)
     serialized = json.dumps(
-        [asdict(item) for item in result.broken_rules],
+        {
+            "file_errors": [asdict(item) for item in result.file_errors],
+            "broken_rules": [asdict(item) for item in result.broken_rules],
+        },
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
 
-    assert len(result.broken_rules) == 1
+    assert len(result.broken_rules) == len(signatures)
     assert sum(len(item.issues) for item in result.broken_rules) <= (
         MAX_ISSUES_PER_CANDIDATE
     )
     assert len(serialized) <= MAX_SERIALIZED_DIAGNOSTIC_BYTES
+    assert all(
+        len(rule.issues) == 64
+        or any(issue.code == "validation_issues_truncated" for issue in rule.issues)
+        for rule in result.broken_rules
+    )
 
 
 def test_expression_limits_and_stable_source_diagnostics():
@@ -359,14 +367,14 @@ def test_source_parsing_rejects_ambiguous_nonfinite_and_oversized_input():
         (
             '{"schema_version":"0.0.1",'
             '"schema_version":"0.0.1","signatures":[]}',
-            "duplicate JSON key 'schema_version'",
+            "duplicate JSON mapping key",
             None,
         ),
         (
             "schema_version: '0.0.1'\n"
             "schema_version: '0.0.1'\n"
             "signatures: []\n",
-            "found duplicate key 'schema_version'",
+            "duplicate YAML mapping key",
             2,
         ),
     ):

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import re
-from typing import Iterable, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -322,18 +322,35 @@ def normalize_validation_error(
     *,
     base_path: str = "$",
     max_issues: int = DEFAULT_MAX_ISSUES,
+    max_total_issues: Optional[int] = None,
     max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
     max_path_bytes: int = DEFAULT_MAX_PATH_BYTES,
 ) -> Tuple[ContractIssue, ...]:
     """Convert a Pydantic failure to deterministic, redacted DLDD issues."""
 
-    normalized = []
+    normalized: List[ContractIssue] = []
+    group_counts: Dict[str, int] = {}
+    truncated_groups = set()
     raw_errors = error.errors(
         include_url=False,
         include_context=False,
         include_input=False,
     )
-    for item in raw_errors[:max_issues]:
+    for item in raw_errors:
+        location = item.get("loc", ())
+        group_path = base_path
+        if (
+            len(location) >= 2 and location[0] == "signatures"
+            and isinstance(location[1], int)
+        ):
+            group_path = _json_path(base_path, location[:2])
+        count = group_counts.get(group_path, 0)
+        if count >= max_issues or (
+            max_total_issues is not None and len(normalized) >= max_total_issues
+        ):
+            truncated_groups.add(group_path)
+            continue
+        group_counts[group_path] = count + 1
         error_type = str(item.get("type", "invalid_value"))
         if error_type in _CUSTOM_CODES:
             code = error_type
@@ -346,7 +363,7 @@ def normalize_validation_error(
                 code=code,
                 message=bound_diagnostic(message, max_message_bytes),
                 path=bound_path(
-                    _json_path(base_path, item.get("loc", ())), max_path_bytes
+                    _json_path(base_path, location), max_path_bytes
                 ),
             )
         )
@@ -354,14 +371,13 @@ def normalize_validation_error(
     result = tuple(
         sorted(set(normalized), key=lambda issue: (issue.path, issue.code, issue.message))
     )
-    if len(raw_errors) > max_issues:
-        result += (
-            ContractIssue(
-                code="validation_issues_truncated",
-                message="additional validation issues were omitted",
-                path=base_path,
-            ),
-        )
+    result += tuple(
+        ContractIssue(
+            code="validation_issues_truncated",
+            message="additional validation issues were omitted",
+            path=path,
+        ) for path in sorted(truncated_groups)
+    )
     return result
 
 

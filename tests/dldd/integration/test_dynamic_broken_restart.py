@@ -401,7 +401,17 @@ def test_unrelated_inventory_failure_does_not_preserve_retired_broken_child(
         eventually(lambda: hook.failed_expansion_calls >= 1)
         orchestrator = restarted.service.orchestrator
         assert orchestrator is not None
-        eventually(lambda: not orchestrator.broken_rules)
+        eventually(
+            lambda: broken["correlation_key"] not in orchestrator.broken_rules
+        )
+        eventually(
+            lambda: any(
+                record.get("rule") == UNRELATED_RULE_NAME
+                and record.get("state") == "DEGRADED"
+                and record.get("error_category") == "DSE_EXPANSION_ERROR"
+                for record in tuple(orchestrator.broken_rules.values())
+            )
+        )
         assert _monitor_state(restarted.service, broken["correlation_key"]) is None
         assert hook.callback_counts(BROKEN_INSTANCE) == broken_calls
         eventually(lambda: not _persisted_state(environment)["broken_rules"])

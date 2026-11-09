@@ -453,6 +453,22 @@ class TestHealthzDbus(unittest.TestCase):
             {"artifact_id": artifact_id}))[0], 0)
         self.assertTrue(os.path.isfile(os.path.join(self.artifacts, artifact_id)))
 
+    def test_artifact_mutation_contention_returns_ebusy(self):
+        artifact_id = "healthz-" + "a" * 32 + ".tar.gz"
+        for method, request, operation in (
+            (self.endpoint.reserve_artifact, {}, "reserve"),
+            (self.endpoint.submit_artifact,
+             {"artifact_id": artifact_id, "paths": []}, "submit"),
+            (self.endpoint.fail_artifact, {"artifact_id": artifact_id}, "fail"),
+        ):
+            with self.subTest(operation=operation):
+                error = BlockingIOError(errno.EBUSY, "Healthz artifact store is busy")
+                with mock.patch.object(self.endpoint.artifacts, operation,
+                                       side_effect=error):
+                    code, body = method(json.dumps(request))
+                self.assertEqual(code, errno.EBUSY)
+                self.assertIn("Healthz artifact store is busy", body)
+
     def test_reservation_prunes_acknowledged_archive_but_retains_its_event(self):
         self.endpoint.artifacts.max_artifacts = 2
         artifacts = []

@@ -17,6 +17,7 @@ from .bounded_calls import BoundedCallGate, start_daemon_workers
 from .command_execution import (
     DEFAULT_MAX_OUTPUT_BYTES,
     ShellFreeResult,
+    ShellFreeTimeout,
     build_i2c_argv,
     run_shell_free,
 )
@@ -24,6 +25,8 @@ from .hooks import VendorHookRegistry, operation_hook_name
 from .models import Operation
 from .rule_schema.errors import bound_diagnostic
 from .timestamps import floor_timestamp_fields
+
+_COMMAND_CLEANUP_GRACE = 1.0
 
 
 @dataclass(frozen=True)
@@ -53,9 +56,13 @@ def _output_bytes(value: Any) -> bytes:
 def _capture_action_output(
     value: Any, limit: int
 ) -> Tuple[Tuple[str, str, str], Tuple[str, ...]]:
-    shell_result = value if isinstance(value, ShellFreeResult) else None
+    shell_result = (
+        value if isinstance(value, (ShellFreeResult, ShellFreeTimeout)) else None
+    )
     if shell_result is not None:
         output = ActionOutput(shell_result.stdout, shell_result.stderr)
+    elif isinstance(value, subprocess.TimeoutExpired):
+        output = ActionOutput(value.stdout, value.stderr)
     elif isinstance(value, ActionOutput):
         output = value
     else:
@@ -302,17 +309,23 @@ class ActionRunner:
                 sequence_state = "EXECUTION_ERROR"
                 stderr = last_error
             else:
+                limit = DEFAULT_MAX_OUTPUT_BYTES
                 try:
                     call_timeout = float(timeout)
+                    wait_timeout = call_timeout
+                    if action.get("type") == "cli" and not callable(
+                        action.get("executor")
+                    ):
+                        wait_timeout += _COMMAND_CLEANUP_GRACE
+                    limit = int(
+                        action.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+                    )
                     call = self._call_gate.start(
                         partial(self.executor.execute, action, call_timeout),
                         "action execution capacity is exhausted by timed-out "
                         "vendor calls",
                     )
-                    value = call.result(timeout=call_timeout)
-                    limit = int(
-                        action.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
-                    )
+                    value = call.result(timeout=wait_timeout)
                     (stdout, stderr, output_result), truncated = (
                         _capture_action_output(value, limit)
                     )
@@ -323,7 +336,7 @@ class ActionRunner:
                                 str(action.get("type", "")).upper(), returncode
                             )
                             sequence_state = "EXECUTION_ERROR"
-                except (TimeoutError, subprocess.TimeoutExpired):
+                except (TimeoutError, subprocess.TimeoutExpired) as error:
                     if call is not None:
                         call.cancel()
                     last_error = "action timed out after {} seconds".format(
@@ -331,6 +344,10 @@ class ActionRunner:
                     )
                     sequence_state = "TIMED_OUT"
                     stderr = last_error
+                    if isinstance(error, subprocess.TimeoutExpired):
+                        (stdout, stderr, output_result), truncated = (
+                            _capture_action_output(error, limit)
+                        )
                 except Exception as error:
                     last_error = bound_diagnostic(str(error), 512)
                     sequence_state = "EXECUTION_ERROR"
