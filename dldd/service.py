@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import signal
+import socket
 import threading
 import time
 from queue import Queue
@@ -57,6 +59,27 @@ class TelemetryUnavailable(RuntimeError):
 
 TELEMETRY_FAILURE_LIMIT = 3
 TELEMETRY_RETRY_INTERVAL = 1
+MONITOR_PROGRESS_TIMEOUT = 120
+
+
+def _watchdog_interval() -> float:
+    if not os.environ.get("NOTIFY_SOCKET"):
+        return 0
+    try:
+        if int(os.environ.get("WATCHDOG_PID", os.getpid())) != os.getpid():
+            return 0
+        return max(0, min(30, int(os.environ.get("WATCHDOG_USEC", "0")) / 2_000_000))
+    except ValueError:
+        return 0
+
+
+def _notify_watchdog() -> None:
+    address = os.environ["NOTIFY_SOCKET"]
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as channel:
+        channel.setblocking(False)
+        channel.sendto(b"WATCHDOG=1", address)
 
 
 _SCHEMA_ISSUE_CODES = frozenset(
@@ -558,6 +581,8 @@ class DLDDService:
     def run(self) -> None:
         telemetry_failures = 0
         next_heartbeat = time.monotonic()
+        watchdog_interval = _watchdog_interval()
+        next_watchdog = next_heartbeat
         clean_shutdown = False
         try:
             self.start()
@@ -584,6 +609,11 @@ class DLDDService:
                                     TELEMETRY_FAILURE_LIMIT
                                 )
                             )
+                if watchdog_interval:
+                    now = time.monotonic()
+                    if now >= next_watchdog:
+                        _notify_watchdog()
+                        next_watchdog = now + watchdog_interval
                 self.stop_event.wait(0 if processed else 0.2)
             clean_shutdown = True
         finally:
@@ -593,7 +623,15 @@ class DLDDService:
         if self.adapters is None or self.evidence_queue is None:
             return
         for monitor in tuple(self.monitors):
-            if monitor.is_alive() or self.stop_event.is_set():
+            if self.stop_event.is_set():
+                continue
+            if monitor.is_alive():
+                if time.monotonic() - monitor.progress_at > MONITOR_PROGRESS_TIMEOUT:
+                    self.fatal_reason = "DLDD monitor {} made no progress for {} seconds".format(
+                        monitor.plan.monitor_id, MONITOR_PROGRESS_TIMEOUT
+                    )
+                    self._publish_status()
+                    raise RuntimeError(self.fatal_reason)
                 continue
             LOGGER.error("restarting stopped DLDD monitor %s", monitor.plan.monitor_id)
             replacement = self._new_monitor(monitor.plan)

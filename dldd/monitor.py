@@ -299,6 +299,7 @@ class MonitorThread(threading.Thread):
             if state.state == MonitorWorkState.COLLECTING:
                 self._transition(state, MonitorWorkState.READY)
                 state.next_sample_due = None
+        self.progress_at = self.clock()
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -348,10 +349,12 @@ class MonitorThread(threading.Thread):
 
     def run(self) -> None:
         while not self.stop_event.is_set():
+            self.progress_at = self.clock()
             try:
                 self.run_once()
             except Exception:
                 LOGGER.exception("unhandled monitor cycle error in %s", self.plan.monitor_id)
+            self.progress_at = self.clock()
             self.stop_event.wait(0.2)
 
     def run_once(self) -> None:
@@ -494,6 +497,7 @@ class MonitorThread(threading.Thread):
         if adapter is None:
             return
         for template_id in sorted(self.plan.templates_by_key):
+            self.progress_at = self.clock()
             state = self.plan.expansion_state_by_key[template_id]
             if (
                 state.next_expansion_due is not None
@@ -642,6 +646,7 @@ class MonitorThread(threading.Thread):
         cycle_now = self.clock() if now is None else now
         items = self.plan.item_snapshot()
         for key in sorted(items):
+            self.progress_at = self.clock()
             state = self.plan.state_by_key[key]
             recheck = state.state == MonitorWorkState.RECHECK_REQUESTED
             key_now = self.clock() if respect_schedule else cycle_now

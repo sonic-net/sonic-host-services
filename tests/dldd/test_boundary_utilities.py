@@ -172,6 +172,21 @@ def test_bounded_call_failure_cancellation_and_capacity_contract():
         pytest.fail("bounded callback did not release its capacity")
 
 
+def test_bounded_call_thread_start_failure_releases_capacity(monkeypatch):
+    gate = BoundedCallGate(1, "dldd-test")
+    original_start = threading.Thread.start
+
+    def fail_start(_thread):
+        raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    with pytest.raises(RuntimeError, match="cannot start thread"):
+        gate.start(lambda: "not started", "busy")
+
+    monkeypatch.setattr(threading.Thread, "start", original_start)
+    assert gate.start(lambda: "recovered", "busy").result(timeout=2) == "recovered"
+
+
 def test_atomic_write_cleans_up_when_stream_open_fails(tmp_path, monkeypatch):
     destination = tmp_path / "destination"
     closed = []
@@ -240,21 +255,18 @@ def test_sonic_hash_reader_factory_dependency_and_lazy_connector_contract(
     with pytest.raises(SonicHashReaderError, match="swsscommon is unavailable"):
         SonicHashReader().read("STATE_DB", "KEY")
 
-    connector = RecordingConnector(
-        {("STATE_DB", "TABLE|KEY"): {"value": "42"}}
+    client = SimpleNamespace(hgetall=lambda key: {b"value": b"42"})
+    databases = []
+    monkeypatch.setattr(
+        "dldd.sonic_hash.create_redis_client",
+        lambda database: databases.append(database) or client,
     )
-    hosts = []
-    package = ModuleType("swsscommon")
-    package.swsscommon = SimpleNamespace(
-        SonicV2Connector=lambda host: hosts.append(host) or connector
-    )
-    monkeypatch.setitem(sys.modules, "swsscommon", package)
 
     reader = SonicHashReader()
 
     assert reader.read("STATE_DB", "TABLE|KEY") == {"value": "42"}
-    assert hosts == ["127.0.0.1"]
-    assert connector.connections == [("STATE_DB", False)]
+    assert reader.read("STATE_DB", "TABLE|KEY") == {"value": "42"}
+    assert databases == ["STATE_DB"]
 
 
 def test_platform_identity_detection(monkeypatch):

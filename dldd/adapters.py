@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import glob
 import json
+import os
+import stat
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
@@ -276,6 +278,9 @@ class RedisAdapter(DataSourceAdapter):
 
 class FileAdapter(DataSourceAdapter):
     source_type = "file"
+    MAX_FILE_BYTES = 1024 * 1024
+    MAX_MATCHED_FILES = 128
+    MAX_SAMPLE_BYTES = 4 * 1024 * 1024
     FORMATS = frozenset(
         ("text", "string", "raw", "json", "yaml", "integer", "int", "float", "boolean")
     )
@@ -293,16 +298,50 @@ class FileAdapter(DataSourceAdapter):
 
     def get_value(self, item: MonitorWorkItem) -> Any:
         pattern = str(item.source["file"])
-        paths = sorted(glob.glob(pattern))
+        paths: list[str] = []
+        for path in glob.iglob(pattern):
+            if len(paths) == self.MAX_MATCHED_FILES:
+                raise AdapterError(
+                    "file source exceeds {} matched files: {}".format(
+                        self.MAX_MATCHED_FILES, pattern
+                    )
+                )
+            paths.append(path)
         if not paths:
             raise SourceUnavailable("file source does not exist: {}".format(pattern))
-        values = [self._read_path(path, item) for path in paths]
+        values = []
+        remaining = self.MAX_SAMPLE_BYTES
+        for path in sorted(paths):
+            content = self._read_path(path, min(self.MAX_FILE_BYTES, remaining))
+            remaining -= len(content)
+            text = content.decode(item.source.get("encoding", "utf-8"))
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
+            values.append(self._parse_content(text, item))
         return values[0] if len(values) == 1 else values
 
     @staticmethod
-    def _read_path(path: str, item: MonitorWorkItem) -> Any:
-        with open(path, "r", encoding=item.source.get("encoding", "utf-8")) as stream:
-            content = stream.read()
+    def _read_path(path: str, max_bytes: int) -> bytes:
+        # Follow sysfs and ordinary symlinks, then check the opened target. Opening
+        # nonblocking avoids waiting for a writer before a FIFO can be rejected.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise AdapterError("file source is not a regular file: {}".format(path))
+            content = bytearray()
+            # Read actual bytes: sysfs can advertise zero size for readable data.
+            while len(content) <= max_bytes:
+                chunk = os.read(descriptor, max_bytes + 1 - len(content))
+                if not chunk:
+                    break
+                content.extend(chunk)
+        finally:
+            os.close(descriptor)
+        if len(content) > max_bytes:
+            raise AdapterError("file source byte limit exceeded: {}".format(path))
+        return bytes(content)
+
+    @staticmethod
+    def _parse_content(content: str, item: MonitorWorkItem) -> Any:
         format_name = str(item.source.get("format", "text")).lower()
         if format_name in ("text", "string", "raw"):
             parsed = content.strip()

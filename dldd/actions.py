@@ -18,7 +18,6 @@ from .command_execution import (
     DEFAULT_MAX_OUTPUT_BYTES,
     ShellFreeResult,
     build_i2c_argv,
-    run_checked_shell_free,
     run_shell_free,
 )
 from .hooks import VendorHookRegistry, operation_hook_name
@@ -192,24 +191,25 @@ class ActionExecutor:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired("i2c{}".format(operation), timeout)
-            outputs.append(
-                ActionExecutor._execute_i2c_bus(
-                    path,
-                    operation,
-                    self.hooks.resolve_i2c_bus(bus, path),
-                    remaining,
-                )
+            result = ActionExecutor._execute_i2c_bus(
+                path,
+                operation,
+                self.hooks.resolve_i2c_bus(bus, path),
+                remaining,
             )
+            if result.returncode:
+                return result
+            outputs.append(result.stdout_text().strip())
         return outputs[0] if len(outputs) == 1 else outputs
 
     @staticmethod
     def _execute_i2c_bus(
         path: Mapping[str, Any], operation: str, bus: Any, timeout: float
-    ) -> str:
-        return run_checked_shell_free(
+    ) -> ShellFreeResult:
+        return run_shell_free(
             build_i2c_argv(path, operation=operation, bus=bus),
             timeout=timeout,
-        ).strip()
+        )
 
 
 class ActionRunner:
@@ -319,7 +319,9 @@ class ActionRunner:
                     if isinstance(value, ShellFreeResult):
                         returncode = value.returncode
                         if returncode:
-                            last_error = "CLI action exited {}".format(returncode)
+                            last_error = "{} action exited {}".format(
+                                str(action.get("type", "")).upper(), returncode
+                            )
                             sequence_state = "EXECUTION_ERROR"
                 except (TimeoutError, subprocess.TimeoutExpired):
                     if call is not None:

@@ -23,6 +23,8 @@ from .timestamps import floor_timestamp_fields
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_ARTIFACT_DIRECTORY = "/var/lib/sonic/dldd/artifacts"
+# Internal deadline when a rule does not specify an artifact-query timeout.
+DEFAULT_QUERY_TIMEOUT = 30.0
 _HEALTHZ_BUS = "org.SONiC.HostService.healthz"
 _HEALTHZ_PATH = "/org/SONiC/HostService/healthz"
 _MAX_PATHS = 128
@@ -118,12 +120,19 @@ class HostHealthzArtifactClient(HealthzArtifactClient):
             artifact_id = reserved["artifact_id"]
             if not isinstance(artifact_id, str) or not artifact_id:
                 raise ValueError("Healthz returned an invalid artifact ID")
-            reference = ArtifactReference(
-                artifact_id,
-                float(reserved["requested_at"]),
-                str(reserved["location"]),
-            )
-            self._jobs.put_nowait((artifact_id,) + job_data)
+            try:
+                reference = ArtifactReference(
+                    artifact_id,
+                    float(reserved["requested_at"]),
+                    str(reserved["location"]),
+                )
+                self._jobs.put_nowait((artifact_id,) + job_data)
+            except Exception:
+                try:
+                    self.fail_artifact(artifact_id)
+                except Exception:
+                    LOGGER.exception("unable to release Healthz reservation %s", artifact_id)
+                raise
         return reference
 
     def artifact_status(self, artifact_id: str) -> Optional[str]:
@@ -260,10 +269,11 @@ class HostHealthzArtifactClient(HealthzArtifactClient):
     def _run_bounded_query(self, query: Mapping[str, Any]) -> Any:
         timeout = query.get("timeout")
         if timeout is None:
-            return self.query_runner(query)
+            timeout = DEFAULT_QUERY_TIMEOUT
         timeout = float(timeout)
         if timeout <= 0:
             raise ValueError("artifact query timeout must be positive")
+        query = dict(query, timeout=timeout)
         result = self._query_gate.start(
             lambda: self.query_runner(query),
             "artifact query capacity is exhausted by timed-out vendor calls",

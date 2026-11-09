@@ -14,7 +14,9 @@ from .config import DLDDConfig
 from .ownership import DLDD_FAULT_PRODUCER
 from .rule_schema.errors import bound_diagnostic
 from .runtime import FaultRecord
-from .sonic_hash import SonicHashReader, decode_db_hash, decode_db_text
+from .sonic_hash import (
+    SonicHashReader, create_redis_client, decode_db_hash, decode_db_text,
+)
 from .timestamps import floor_timestamp, floor_timestamp_fields
 
 
@@ -235,31 +237,7 @@ class SonicStateDB(StateDB):
 
     def _db(self):
         if self._redis_client is None:
-            try:
-                import redis
-                from swsscommon import swsscommon
-            except ImportError as error:
-                raise RuntimeError(
-                    "STATE_DB dependencies are unavailable: {}".format(error)
-                )
-
-            database = "STATE_DB"
-            database_key = swsscommon.SonicDBKey()
-            database_id = swsscommon.SonicDBConfig.getDbId(
-                database, database_key
-            )
-            socket_path = swsscommon.SonicDBConfig.getDbSock(
-                database, database_key
-            )
-            connection = {"db": database_id}
-            if socket_path:
-                connection["unix_socket_path"] = socket_path
-            else:
-                connection.update(
-                    host=swsscommon.SonicDBConfig.getDbHostname(database, database_key),
-                    port=swsscommon.SonicDBConfig.getDbPort(database, database_key),
-                )
-            self._redis_client = redis.Redis(**connection)
+            self._redis_client = create_redis_client("STATE_DB")
         return self._redis_client
 
     def hset(self, key: str, values: Mapping[str, Any]) -> None:

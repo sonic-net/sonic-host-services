@@ -51,9 +51,13 @@ class BoundedCallGate:
             finally:
                 self._slots.release()
 
-        threading.Thread(
-            target=invoke,
-            name=self._thread_name,
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=invoke,
+                name=self._thread_name,
+                daemon=True,
+            ).start()
+        except BaseException:
+            self._slots.release()
+            raise
         return result

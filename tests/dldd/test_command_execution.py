@@ -56,27 +56,33 @@ def test_real_command_timeout_cleans_up_descendants(tmp_path, parent_exits):
     assert not marker.exists()
 
 
-def test_failed_cli_action_keeps_output_out_of_routine_telemetry():
+@pytest.mark.parametrize("action_type", ["cli", "i2c"])
+def test_failed_command_action_keeps_output_out_of_routine_telemetry(tmp_path, action_type):
+    script = (
+        "import sys; print('stdout-marker'); "
+        "sys.stderr.write('stderr-marker'); sys.exit(7)"
+    )
+    if action_type == "cli":
+        action = {"type": "cli", "argv": [sys.executable, "-c", script], "timeout": 5}
+    else:
+        tool = tmp_path / "i2c-tool"
+        tool.write_text("#!" + sys.executable + "\n" + script + "\n")
+        tool.chmod(0o700)
+        action = {"type": "i2c", "timeout": 5, "path": {
+            "executable": str(tool), "bus": "6", "chip_addr": "0x58",
+            "i2c_type": "get", "command": "0x7a", "size": "b"}}
     runner = ActionRunner(ActionExecutor(), max_workers=1)
     try:
         result = runner.submit(
             "TEST",
-            ({
-                "type": "cli",
-                "argv": [
-                    sys.executable, "-c",
-                    "import sys; print('stdout-marker'); "
-                    "sys.stderr.write('stderr-marker'); sys.exit(7)",
-                ],
-                "timeout": 5,
-            },),
+            (action,),
             None,
         ).result(timeout=10)
     finally:
         runner.shutdown()
 
     assert result.state == "EXECUTION_ERROR"
-    assert result.last_error == "CLI action exited 7"
+    assert result.last_error == action_type.upper() + " action exited 7"
     routine = json.dumps(result.actions[0].as_payload())
     assert "stdout-marker" not in routine and "stderr-marker" not in routine
     artifact = result.actions[0].as_artifact_payload(0)

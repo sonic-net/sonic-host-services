@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dldd.actions import ActionExecutor, ActionOutput, ActionRunner
 from dldd.artifacts import HostHealthzArtifactClient
-from dldd.command_execution import run_shell_free
+from dldd.command_execution import ShellFreeResult, run_shell_free
 from dldd.hooks import VendorHook, VendorHookRegistry
 from dldd.models import Operation
 from host_modules.healthz_artifacts import HealthzArtifacts
@@ -255,16 +255,26 @@ def test_log_is_staged_before_healthz_opens_it(tmp_path):
 
 
 def test_failed_dldd_collection_releases_healthz_reservation(tmp_path):
-    def fail(_unused):
+    executed = []
+
+    def fail(operation):
+        executed.append(operation.command)
         raise RuntimeError("vendor query failed")
 
     healthz = RecordingHealthz(tmp_path)
-    client = HostHealthzArtifactClient(query_runner=fail, healthz_call=healthz)
+    client = HostHealthzArtifactClient(healthz_call=healthz, max_workers=1)
     try:
-        reference = client.request({}, (), ({"type": "vendor"},))
+        query = Operation(type="dse", command="test:collect()", executor=fail)
+        reference = client.request({}, (), (query.as_runtime_payload(),))
         client._jobs.join()
+        assert executed == ["test:collect()"]
         assert healthz.failed == [reference.artifact_id]
         assert healthz.submitted == []
+
+        recovered = Operation(type="dse", executor=lambda _operation: "recovered")
+        client.request({}, (), (recovered.as_runtime_payload(),))
+        client._jobs.join()
+        assert healthz.submitted[0][1]["queries/000.txt"] == b"recovered"
     finally:
         client.shutdown()
 
@@ -323,9 +333,9 @@ def test_i2c_action_uses_vendor_logical_bus_resolution(monkeypatch):
 
     def run(argv, **kwargs):
         calls.append(argv)
-        return "0x01\n"
+        return ShellFreeResult(tuple(argv), 0, b"0x01\n", b"")
 
-    monkeypatch.setattr("dldd.actions.run_checked_shell_free", run)
+    monkeypatch.setattr("dldd.actions.run_shell_free", run)
     hooks = VendorHookRegistry()
     hooks.register("i2c", I2CBusHook())
     output = ActionExecutor(hooks=hooks)._execute_i2c(

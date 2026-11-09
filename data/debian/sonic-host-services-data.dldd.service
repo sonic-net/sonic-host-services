@@ -10,6 +10,9 @@ StartLimitAction=none
 
 [Service]
 Type=simple
+NotifyAccess=main
+WatchdogSec=120
+WatchdogSignal=SIGKILL
 ExecStartPre=/usr/bin/install -d -m 0750 /var/lib/sonic/dldd/inbox /var/lib/sonic/dldd/rules /var/lib/sonic/dldd/artifacts
 ExecStart=/usr/local/bin/dldd run
 Restart=on-failure
