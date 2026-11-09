@@ -182,13 +182,14 @@ class CorrelationEngine:
         key_timestamp = state.key_timestamps.get(event.correlation_key)
         if result_type == EvaluationResultType.MATCH:
             if key_timestamp is None or timestamp >= key_timestamp:
-                insort(state.matches, timestamp)
                 state.matching_keys[event.correlation_key] = True
                 state.key_timestamps[event.correlation_key] = timestamp
                 if state.last_match is None or timestamp >= state.last_match:
                     state.last_match = timestamp
                     state.snapshot = self._snapshot(event)
-            elif state.matching_keys.get(event.correlation_key, False):
+            if event_definition.match_period and state.matching_keys.get(
+                event.correlation_key, False
+            ):
                 insort(state.matches, timestamp)
         elif key_timestamp is None or timestamp >= key_timestamp:
             state.matching_keys[event.correlation_key] = False

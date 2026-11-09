@@ -13,6 +13,7 @@ from dldd.actions import ActionSequenceResult
 from dldd.artifacts import ArtifactReference
 from dldd.config import DLDDConfig
 from dldd.correlation import CorrelationEngine
+from dldd.monitor import MonitorThread
 from dldd.orchestrator import PrimaryOrchestrator, Reconciliation
 from dldd.planner import build_plans
 from dldd.runtime import (
@@ -23,6 +24,7 @@ from dldd.runtime import (
     FaultEvidenceEvent,
     MonitorWorkState,
     RuleRuntimeStatus,
+    SourceAvailability,
 )
 from dldd.telemetry import TelemetryPublisher
 from dldd.validation import load_rules
@@ -1882,6 +1884,53 @@ def test_owned_recheck_source_recovery_and_runtime_status_lifecycle():
     )
     assert orchestrator.source_status[item.source_id]["state"] == "SUSPENDED"
     assert queue.empty()
+
+
+def test_automatic_reconciliation_keeps_broken_keys_suspended():
+    for partial in (False, True):
+        fixture = debounced_fixture("1 OR 2") if partial else runtime_fixture()
+        orchestrator, bundle, item, database, clock = fixture
+        identity, record = active_record(orchestrator, item)
+        key = item.correlation_key
+        orchestrator.broken_rules[key] = {"state": "BROKEN", "rule_id": item.rule_id}
+        orchestrator._source_failure_keys[item.source_id] = {key}
+        orchestrator.source_status[item.source_id] = {"state": "UNAVAILABLE"}
+        plan = bundle.monitor_plans["redis"]
+        state = plan.state_by_key[key]
+        state.state = MonitorWorkState.BROKEN
+        state.source_status = SourceAvailability.UNAVAILABLE
+        sampled = []
+
+        def collect(work):
+            sampled.append(work.correlation_key)
+            return EvaluationResult(
+                EvaluationResultType.NO_MATCH,
+                value=CollectedValue(0, 0),
+                completed_at=1000 + clock[0],
+            )
+
+        monitor = MonitorThread(
+            plan, {"redis": SimpleNamespace(collect=collect)},
+            orchestrator.evidence_queue,
+            clock=lambda: clock[0], wall_clock=lambda: 1000 + clock[0],
+        )
+        for _ in range(2):
+            orchestrator.next_active_recheck[identity] = clock[0]
+            orchestrator.tick()
+            monitor.drain_control_queue()
+            monitor.poll_once()
+            orchestrator.process_batch()
+            monitor.drain_control_queue()
+            assert state.state == MonitorWorkState.BROKEN
+            assert orchestrator.broken_rules[key]["state"] == "BROKEN"
+            assert key not in sampled
+            assert identity not in orchestrator.reconciliation
+            assert identity in orchestrator.uncertain_faults
+            assert record.status == "ACTIVE" and record.stale_source
+            assert database.values[record.redis_key]["source_stale"] == "true"
+            clock[0] += orchestrator.config.active_fault_recheck_interval
+        assert bool(sampled) is partial
+        assert not orchestrator.service_diagnostics
 
 
 def test_inactive_and_uncertain_reconciliation_publication():

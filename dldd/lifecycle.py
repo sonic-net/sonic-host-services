@@ -7,7 +7,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import tempfile
 import time
 from contextlib import contextmanager
@@ -18,10 +17,11 @@ from .filesystem import (
     atomic_copy,
     atomic_write_json,
     load_json_object,
+    read_bounded,
     unlink_if_exists,
 )
 from .timestamps import floor_timestamp, floor_timestamp_fields
-
+from .validation import MAX_SOURCE_BYTES
 
 LOGGER = logging.getLogger(__name__)
 
@@ -98,11 +98,9 @@ class ActivationResult:
 
 
 def sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
     with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return "sha256:{}".format(digest.hexdigest())
+        content = read_bounded(stream, MAX_SOURCE_BYTES)
+    return "sha256:{}".format(hashlib.sha256(content).hexdigest())
 
 
 def _file_identity(file_stat) -> Tuple[int, int, int, int]:
@@ -328,7 +326,7 @@ class RuleGenerationManager:
             ) as destination:
                 descriptor = -1
                 before = os.fstat(source.fileno())
-                shutil.copyfileobj(source, destination, 1024 * 1024)
+                destination.write(read_bounded(source, MAX_SOURCE_BYTES))
                 destination.flush()
                 os.fsync(destination.fileno())
                 after = os.fstat(source.fileno())
@@ -354,10 +352,15 @@ class RuleGenerationManager:
             if not os.path.isfile(self.paths.inbox):
                 candidates.append(("inbox", self.paths.inbox))
             else:
-                checksum = sha256_file(self.paths.inbox)
+                try:
+                    checksum = sha256_file(self.paths.inbox)
+                except RuntimeError:
+                    candidates.append(("inbox", self.paths.inbox))
+                    checksum = ""
                 watcher = load_json_object(self.paths.watcher_state)
                 if (
-                    checksum == watcher.get("last_restart_checksum")
+                    checksum
+                    and checksum == watcher.get("last_restart_checksum")
                     and checksum
                     != manifest.get("last_attempted_inbox_checksum")
                 ):
@@ -452,8 +455,8 @@ class RuleGenerationManager:
         versioned = os.path.join(
             self.paths.rules_dir, "dld_rules.{}.yaml".format(generation)
         )
-        atomic_copy(source_path, versioned)
-        atomic_copy(versioned, self.paths.active)
+        atomic_copy(source_path, versioned, max_bytes=MAX_SOURCE_BYTES)
+        atomic_copy(versioned, self.paths.active, max_bytes=MAX_SOURCE_BYTES)
         return versioned
 
     def _archive_failed(self, source_path: str, checksum: str, source: str) -> None:
@@ -468,7 +471,7 @@ class RuleGenerationManager:
             int(self.clock()), source, checksum_id
         )
         destination = os.path.join(self.paths.rules_dir, name)
-        atomic_copy(source_path, destination)
+        atomic_copy(source_path, destination, max_bytes=MAX_SOURCE_BYTES)
 
     def _prune_generations(self, manifest: Mapping[str, Any]) -> None:
         prefix = "dld_rules."

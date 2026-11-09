@@ -426,6 +426,11 @@ class MonitorThread(threading.Thread):
         ):
             LOGGER.warning("discarding stale work-state command %s", command.command_id)
             return False
+        if state.state == MonitorWorkState.BROKEN and (
+            command.command != MonitorCommandType.SUSPEND
+            or command.target_state != MonitorWorkState.BROKEN
+        ):
+            return False
 
         if command.command == MonitorCommandType.RESUME:
             target = command.target_state

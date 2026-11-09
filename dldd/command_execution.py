@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import selectors
+import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Type
-
 
 DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 
@@ -33,6 +36,55 @@ class ShellFreeResult:
         return self.stderr.decode(encoding, errors)
 
 
+def _run_bounded_process(
+    command: Sequence[str], timeout: Optional[float], limit: int
+) -> subprocess.CompletedProcess[bytes]:
+    """Drain both pipes while retaining at most one overflow byte per stream."""
+
+    output = [bytearray(), bytearray()]
+    with subprocess.Popen(
+        command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    ) as process:
+        assert process.stdout is not None and process.stderr is not None
+        deadline = None if timeout is None else time.monotonic() + timeout
+        try:
+            with selectors.DefaultSelector() as selector:
+                for index, stream in enumerate((process.stdout, process.stderr)):
+                    selector.register(stream, selectors.EVENT_READ, index)
+                while selector.get_map():
+                    remaining = (
+                        None if deadline is None
+                        else max(0, deadline - time.monotonic())
+                    )
+                    if remaining == 0 and timeout is not None:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    for key, _events in selector.select(remaining):
+                        data = os.read(key.fd, 64 * 1024)
+                        if not data:
+                            selector.unregister(key.fileobj)
+                            continue
+                        buffer = output[key.data]
+                        buffer.extend(data[:max(0, limit + 1 - len(buffer))])
+            remaining = (
+                None if deadline is None else max(0, deadline - time.monotonic())
+            )
+            returncode = process.wait(timeout=remaining)
+        except BaseException as error:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            if isinstance(error, subprocess.TimeoutExpired):
+                error.output = bytes(output[0][:limit])
+                error.stderr = bytes(output[1][:limit])
+            raise
+    return subprocess.CompletedProcess(
+        command, returncode, bytes(output[0]), bytes(output[1])
+    )
+
+
 def run_shell_free(
     argv: Sequence[str],
     *,
@@ -53,14 +105,13 @@ def run_shell_free(
         or max_output_bytes <= 0
     ):
         raise ValueError("max_output_bytes must be a positive integer")
-    completed = (runner or subprocess.run)(
-        list(command),
-        shell=False,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-    )
+    if runner is None:
+        completed = _run_bounded_process(list(command), timeout, max_output_bytes)
+    else:
+        completed = runner(
+            list(command), shell=False, check=False, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=timeout,
+        )
     stdout = _bounded_bytes(completed.stdout, max_output_bytes + 1)
     stderr = _bounded_bytes(completed.stderr, max_output_bytes + 1)
     return ShellFreeResult(

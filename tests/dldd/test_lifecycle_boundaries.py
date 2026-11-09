@@ -12,7 +12,10 @@ from dldd.lifecycle import (
     CandidateValidation,
     RuleGenerationManager,
     RulePaths,
+    sha256_file,
 )
+from dldd.validation import MAX_SOURCE_BYTES
+from dldd.watcher import RulesWatcher
 
 
 def _paths(tmp_path):
@@ -129,6 +132,75 @@ def test_post_validation_failure_cleanup_attempt_and_archive_contract(
     assert attempt["activation_result"] == "FAILED"
     assert "promotion failed" in attempt["reason"]
     assert "unable to archive failed packaged candidate" in caplog.text
+
+
+def test_rule_source_limit_precedes_staging_and_watcher_restart(tmp_path):
+    paths = _case_paths(tmp_path, "oversized")
+    with open(paths.packaged, "wb") as stream:
+        stream.truncate(MAX_SOURCE_BYTES + 1)
+    manager = RuleGenerationManager(paths, _valid, "platform")
+
+    with pytest.raises(RuntimeError, match="exceeds"):
+        manager.activate()
+
+    manifest = json.loads(open(paths.manifest, encoding="utf-8").read())
+    assert "exceeds" in manifest["last_attempt"]["reason"]
+    assert not list((tmp_path / "oversized" / "rules").glob("*.yaml"))
+    assert not list((tmp_path / "oversized" / "rules").glob(".dld_rules.candidate.*"))
+
+    os.makedirs(os.path.dirname(paths.inbox))
+    with open(paths.inbox, "wb") as stream:
+        stream.truncate(MAX_SOURCE_BYTES + 1)
+    restarts = []
+    watcher = RulesWatcher(
+        paths.inbox, paths.lock, paths.watcher_state,
+        settle_time=0, restart=lambda: restarts.append(True),
+    )
+    assert watcher.check_once() is False
+    assert watcher.check_once() is False
+    assert restarts == []
+    state = json.loads(open(paths.watcher_state, encoding="utf-8").read())
+    assert "exceeds" in state["last_restart_error"]
+    with pytest.raises(RuntimeError, match="exceeds"):
+        sha256_file(paths.inbox)
+
+
+def test_growing_rule_source_stays_bounded_and_preserves_active(
+    tmp_path, monkeypatch
+):
+    paths = _case_paths(tmp_path, "growing")
+    os.makedirs(paths.rules_dir)
+    os.makedirs(os.path.dirname(paths.inbox))
+    with open(paths.active, "w", encoding="utf-8") as stream:
+        stream.write("active")
+    with open(paths.inbox, "wb") as stream:
+        stream.truncate(MAX_SOURCE_BYTES + 1)
+    manager = RuleGenerationManager(paths, _valid, "platform")
+    original_fstat = os.fstat
+
+    def stale_size(descriptor):
+        stat = original_fstat(descriptor)
+        return SimpleNamespace(
+            st_dev=stat.st_dev, st_ino=stat.st_ino,
+            st_size=5 if stat.st_size > MAX_SOURCE_BYTES else stat.st_size,
+            st_mtime_ns=stat.st_mtime_ns,
+        )
+
+    monkeypatch.setattr(dldd_lifecycle.os, "fstat", stale_size)
+    with pytest.raises(RuntimeError, match="exceeds"):
+        manager._stage_candidate(paths.inbox)
+    assert not list((tmp_path / "growing" / "rules").glob(".dld_rules.candidate.*"))
+    with pytest.raises(RuntimeError, match="exceeds"):
+        sha256_file(paths.inbox)
+    with pytest.raises(RuntimeError, match="exceeds"):
+        manager._archive_failed(paths.inbox, "sha256:oversized", "inbox")
+
+    result = manager.activate()
+    assert result.source == "active"
+    assert open(paths.active, encoding="utf-8").read() == "active"
+    manifest = json.loads(open(paths.manifest, encoding="utf-8").read())
+    assert any("exceeds" in item["reason"] for item in manifest["activation_attempts"])
+    assert not list((tmp_path / "growing" / "rules").glob("dld_rules.failed.*"))
 
 
 def test_failed_archive_and_generation_retention_contract(tmp_path):

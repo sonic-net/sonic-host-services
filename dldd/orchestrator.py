@@ -1047,6 +1047,12 @@ class PrimaryOrchestrator:
             ),
         )
 
+    def _recheckable_keys(self, keys) -> Set[str]:
+        return {
+            key for key in keys
+            if self.broken_rules.get(key, {}).get("state") != "BROKEN"
+        }
+
     def _request_rechecks(
         self,
         keys,
@@ -1074,6 +1080,13 @@ class PrimaryOrchestrator:
     ) -> None:
         """Retry an owned recheck once, then complete it conservatively."""
 
+        keys = self._recheckable_keys(state.outstanding_rechecks)
+        if keys != state.outstanding_rechecks:
+            state.outstanding_rechecks = keys
+            state.recheck_failed = True
+            if not keys:
+                complete(identity, state)
+                return
         if (
             not state.outstanding_rechecks
             or state.recheck_deadline is None
@@ -1159,9 +1172,9 @@ class PrimaryOrchestrator:
                 and pending.wait_until is not None
                 and now >= pending.wait_until
             ):
-                pending.outstanding_rechecks = set(
-                    pending.execution.work_keys
-                )
+                keys = set(pending.execution.work_keys)
+                pending.outstanding_rechecks = self._recheckable_keys(keys)
+                pending.recheck_failed |= pending.outstanding_rechecks != keys
                 pending.phase = "RECHECKING"
                 pending.recheck_attempts = 1
                 pending.recheck_deadline = (
@@ -1172,6 +1185,8 @@ class PrimaryOrchestrator:
                     "post_action_recheck",
                     pending.hold_deadline,
                 )
+                if not pending.outstanding_rechecks:
+                    self._complete_pending(identity, pending)
             if pending.phase == "RECHECKING":
                 self._retry_or_timeout_rechecks(
                     identity,
@@ -1426,7 +1441,8 @@ class PrimaryOrchestrator:
         record = self.faults.get(identity)
         if record is not None and record.status == "ACTIVE":
             self.correlation.restore_active(*identity, record.events)
-        keys = set(execution.work_keys)
+        all_keys = set(execution.work_keys)
+        keys = self._recheckable_keys(all_keys)
         now = self.clock()
         deadline = now + self.config.fault_evidence_ack_timeout
         hold_deadline = (
@@ -1435,11 +1451,14 @@ class PrimaryOrchestrator:
         self.reconciliation[identity] = Reconciliation(
             execution,
             keys,
+            recheck_failed=keys != all_keys,
             reason=reason,
             hold_deadline=hold_deadline,
             recheck_deadline=deadline,
         )
         self._request_rechecks(keys, reason, hold_deadline)
+        if not keys:
+            self._complete_reconciliation(identity, self.reconciliation[identity])
 
     def _complete_reconciliation(self, identity, reconciliation) -> None:
         decision = reconciliation.last_decision

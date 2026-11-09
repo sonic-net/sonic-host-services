@@ -142,6 +142,26 @@ def test_registration_and_temporal_correlation_contract():
     ).active
 
 
+def test_current_state_sampling_does_not_accumulate_match_history():
+    work = item()
+    engine = CorrelationEngine({})
+    engine.register_work_item(signature(), work, "generation")
+
+    for timestamp in range(2000):
+        decision = engine.consume(
+            evidence(work, EvaluationResultType.MATCH, timestamp, raw=timestamp)
+        )
+        assert decision.active
+
+    state = engine._events[(work.rule_id, work.component_name, work.event_id)]
+    assert not state.matches
+    assert state.last_match == 1999
+    assert decision.event_snapshots[0]["value_read"] == 1999
+    assert not engine.consume(
+        evidence(work, EvaluationResultType.NO_MATCH, 2000)
+    ).active
+
+
 def test_component_retirement_preserves_other_instance_state():
     engine = CorrelationEngine({})
     rule = signature()

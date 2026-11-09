@@ -23,6 +23,7 @@ from .command_execution import (
 )
 from .hooks import VendorHookRegistry, operation_hook_name
 from .models import Operation
+from .rule_schema.errors import bound_diagnostic
 from .timestamps import floor_timestamp_fields
 
 
@@ -97,7 +98,7 @@ class ActionResult:
             "completed_at": self.completed_at,
         }
         if self.error:
-            payload["error"] = self.error
+            payload["error"] = bound_diagnostic(self.error, 512)
         return floor_timestamp_fields(payload)
 
     def as_artifact_payload(self, index: int) -> Optional[Mapping[str, Any]]:
@@ -318,9 +319,7 @@ class ActionRunner:
                     if isinstance(value, ShellFreeResult):
                         returncode = value.returncode
                         if returncode:
-                            last_error = "CLI action exited {}: {}".format(
-                                returncode, stderr
-                            )
+                            last_error = "CLI action exited {}".format(returncode)
                             sequence_state = "EXECUTION_ERROR"
                 except (TimeoutError, subprocess.TimeoutExpired):
                     if call is not None:
@@ -331,7 +330,7 @@ class ActionRunner:
                     sequence_state = "TIMED_OUT"
                     stderr = last_error
                 except Exception as error:
-                    last_error = str(error)
+                    last_error = bound_diagnostic(str(error), 512)
                     sequence_state = "EXECUTION_ERROR"
                     stderr = last_error
             results.append(

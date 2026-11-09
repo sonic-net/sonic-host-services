@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import tempfile
-from typing import Any, Callable, Dict, IO, Mapping
+from typing import IO, Any, Callable, Dict, Mapping, Optional
 
 
 def _fsync_directory(directory: str) -> None:
@@ -62,12 +62,26 @@ def atomic_write_json(path: str, document: Mapping[str, Any]) -> None:
     )
 
 
-def atomic_copy(source_path: str, destination_path: str) -> None:
+def read_bounded(stream: IO[bytes], max_bytes: int) -> bytes:
+    """Read a file without accepting more than the caller's byte budget."""
+
+    content = stream.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise RuntimeError("source exceeds {} bytes".format(max_bytes))
+    return content
+
+
+def atomic_copy(
+    source_path: str, destination_path: str, max_bytes: Optional[int] = None
+) -> None:
     """Atomically copy a regular file and durably publish the destination."""
 
     def copy_to(destination_stream: IO[Any]) -> None:
         with open(source_path, "rb") as source_stream:
-            shutil.copyfileobj(source_stream, destination_stream, 1024 * 1024)
+            if max_bytes is None:
+                shutil.copyfileobj(source_stream, destination_stream, 1024 * 1024)
+            else:
+                destination_stream.write(read_bounded(source_stream, max_bytes))
 
     _atomic_replace(destination_path, "wb", copy_to)
 

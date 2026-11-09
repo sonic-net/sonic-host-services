@@ -2,6 +2,8 @@ from __future__ import absolute_import
 
 import json
 
+import pytest
+
 from dldd.filesystem import atomic_copy, atomic_write_json, load_json_object
 
 
@@ -50,3 +52,22 @@ def test_load_json_object_contract(tmp_path):
     for contents in ("{", "[]"):
         path.write_text(contents)
         assert load_json_object(str(path)) == {}
+
+
+def test_atomic_copy_byte_limit_preserves_destination(tmp_path):
+    source = tmp_path / "source.yaml"
+    destination = tmp_path / "active.yaml"
+    destination.write_bytes(b"active")
+    source.write_bytes(b"oversized")
+
+    with pytest.raises(RuntimeError, match="exceeds 3 bytes"):
+        atomic_copy(str(source), str(destination), max_bytes=3)
+    assert destination.read_bytes() == b"active"
+    assert not list(tmp_path.glob(".dldd-*"))
+
+    source.write_bytes(b"new")
+    atomic_copy(str(source), str(destination), max_bytes=3)
+    assert destination.read_bytes() == b"new"
+    source.write_bytes(b"")
+    atomic_copy(str(source), str(destination), max_bytes=0)
+    assert destination.read_bytes() == b""

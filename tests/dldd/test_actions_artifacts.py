@@ -1,11 +1,12 @@
-from pathlib import Path
 import json
 import subprocess
 import tarfile
 import threading
+from pathlib import Path
 
 from dldd.actions import ActionExecutor, ActionOutput, ActionRunner
 from dldd.artifacts import HostHealthzArtifactClient
+from dldd.command_execution import run_shell_free
 from dldd.hooks import VendorHook, VendorHookRegistry
 from dldd.models import Operation
 from host_modules.healthz_artifacts import HealthzArtifacts
@@ -105,7 +106,10 @@ def test_dse_and_cli_action_outputs_are_bounded_and_submitted(tmp_path, monkeypa
             argv, 7, stdout=b"cli-output", stderr=b"cli-warning"
         )
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(
+        "dldd.actions.run_shell_free",
+        lambda argv, **kwargs: run_shell_free(argv, runner=run, **kwargs),
+    )
     dse_action = Operation(
         type="dse",
         command="test:repair()",
@@ -319,9 +323,9 @@ def test_i2c_action_uses_vendor_logical_bus_resolution(monkeypatch):
 
     def run(argv, **kwargs):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout=b"0x01\n", stderr=b"")
+        return "0x01\n"
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("dldd.actions.run_checked_shell_free", run)
     hooks = VendorHookRegistry()
     hooks.register("i2c", I2CBusHook())
     output = ActionExecutor(hooks=hooks)._execute_i2c(

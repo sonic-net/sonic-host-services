@@ -372,6 +372,10 @@ def test_monitor_command_state_transitions():
     assert state.state == MonitorWorkState.BROKEN
     assert state.hold_deadline is None
     assert state.recheck_not_before is None
+    for command in (MonitorCommandType.RESUME, MonitorCommandType.HOLD,
+                    MonitorCommandType.RECHECK_ONCE):
+        assert not monitor.apply_command(replace(base, command=command))
+        assert state.state == MonitorWorkState.BROKEN
 
     # Bootstrap commands are plan-owned and carry no evidence generation.
     item = work_item()

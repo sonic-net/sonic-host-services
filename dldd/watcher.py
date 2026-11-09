@@ -9,7 +9,7 @@ import time
 from typing import Callable, Optional
 
 from .filesystem import atomic_write_json, load_json_object
-from .lifecycle import sha256_file
+from .lifecycle import MAX_SOURCE_BYTES, sha256_file
 from .timestamps import floor_timestamp
 
 
@@ -49,6 +49,16 @@ class RulesWatcher:
         now = self.clock()
         state = load_json_object(self.state_path)
         observation = {"size": stat.st_size, "mtime": stat.st_mtime}
+        if stat.st_size > MAX_SOURCE_BYTES:
+            state.update(
+                observation=observation,
+                first_seen=now,
+                last_restart_error=(
+                    "rules source exceeds {} bytes".format(MAX_SOURCE_BYTES)
+                ),
+            )
+            atomic_write_json(self.state_path, state)
+            return False
         previous = state.get("observation", {})
         first_seen = state.get("first_seen", now)
         if previous != observation:
@@ -58,7 +68,12 @@ class RulesWatcher:
         if now - first_seen < self.settle_time:
             return False
 
-        checksum = sha256_file(self.inbox_path)
+        try:
+            checksum = sha256_file(self.inbox_path)
+        except RuntimeError as error:
+            state["last_restart_error"] = str(error)
+            atomic_write_json(self.state_path, state)
+            return False
         if checksum == state.get("last_restart_checksum"):
             return False
 
@@ -66,6 +81,7 @@ class RulesWatcher:
         os.makedirs(os.path.dirname(self.lock_path), mode=0o755, exist_ok=True)
         with open(self.lock_path, "a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            state.pop("last_restart_error", None)
             state["last_restart_checksum"] = checksum
             state["last_restart_requested_at"] = floor_timestamp(now)
             atomic_write_json(self.state_path, state)
