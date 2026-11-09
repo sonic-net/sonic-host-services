@@ -26,7 +26,7 @@ def test_installed_service_bounds_resources_and_contains_process_failures():
         "CPUWeight": "10",
         "MemoryAccounting": "yes",
         "MemoryHigh": "256M",
-        "MemoryMax": "512M",
+        "MemoryMax": "1G",
         "MemorySwapMax": "0",
         "TasksAccounting": "yes",
         "TasksMax": "128",

@@ -187,7 +187,7 @@ the [Healthz overview](healthz-overview.md).
 ## SONiC integration
 
 - The packaged DLDD unit accounts CPU, memory, and tasks and sets an aggregate
-  `CPUQuota=100%`, `CPUWeight=10`, `MemoryHigh=256M`, `MemoryMax=512M`,
+  `CPUQuota=100%`, `CPUWeight=10`, `MemoryHigh=256M`, `MemoryMax=1G`,
   `MemorySwapMax=0`, `TasksMax=128`, and per-process `LimitNOFILE=1024`.
   Affinity is not pinned; platform overrides use normal systemd drop-ins.
   The resource profile must be qualified with the target workload.
