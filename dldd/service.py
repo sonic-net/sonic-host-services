@@ -459,7 +459,7 @@ class DLDDService:
             )
         for record in persisted.get("broken_rules", ()):
             key = record.get("correlation_key")
-            if key in bundle.work_items and record.get("state") == "BROKEN":
+            if isinstance(key, str) and record.get("state") == "BROKEN":
                 orchestrator.restore_broken_work(key, record)
         if not self._reconcile_existing_faults_at_startup():
             return

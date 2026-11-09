@@ -609,6 +609,17 @@ class MonitorThread(threading.Thread):
         retained = state.child_keys - set(relinquished)
         state.child_keys = retained | set(desired)
         state.binding_fingerprint = fingerprint
+        if self.plan.initial_broken_keys and all(
+            self.plan.expansion_state_by_key[key].binding_fingerprint is not None
+            for key, candidate in self.plan.templates_by_key.items()
+            if candidate.item.rule_id == template.item.rule_id
+        ):
+            # Match the primary's per-rule inventory boundary. An unrelated
+            # rule's failed expansion must not retain a retired child's seed.
+            self.plan.initial_broken_keys = frozenset(
+                identity for identity in self.plan.initial_broken_keys
+                if identity[0] != template.item.rule_id
+            )
         state.last_expansion_timestamp = self.wall_clock()
         state.last_error = ""
         # Pending retirements keep inventory on the fast scan interval.

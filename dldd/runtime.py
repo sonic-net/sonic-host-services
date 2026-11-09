@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from queue import Queue
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Mapping, Optional, Set, Tuple
 from urllib.parse import quote
 
 from .models import ValueConfig, frozen_mapping
@@ -214,6 +214,8 @@ class MonitorExecutionPlan:
         default_factory=dict
     )
     polling_intervals: Mapping[str, float] = field(default_factory=dict)
+    # Immutable startup input, populated before the monitor takes state ownership.
+    initial_broken_keys: FrozenSet[Tuple[int, str]] = field(default_factory=frozenset)
     _structure_lock: Any = field(
         default_factory=threading.RLock,
         init=False,
@@ -222,6 +224,7 @@ class MonitorExecutionPlan:
     )
 
     def __post_init__(self) -> None:
+        self.initial_broken_keys = frozenset(self.initial_broken_keys)
         defaults = self.polling_intervals or {
             source_group: self.polling_interval
             for source_group in ("redis", "file", "common")
@@ -270,8 +273,20 @@ class MonitorExecutionPlan:
         with self._structure_lock:
             self.expanded_items_by_key[item.correlation_key] = item
             self.state_by_key.setdefault(
-                item.correlation_key, MonitorWorkStateRecord()
+                item.correlation_key,
+                MonitorWorkStateRecord(
+                    state=(
+                        MonitorWorkState.BROKEN
+                        if (item.rule_id, item.correlation_key) in self.initial_broken_keys
+                        else MonitorWorkState.READY
+                    )
+                ),
             )
+            # The seed belongs only to this child's first runtime lifetime.
+            if (item.rule_id, item.correlation_key) in self.initial_broken_keys:
+                self.initial_broken_keys = self.initial_broken_keys - frozenset(
+                    ((item.rule_id, item.correlation_key),)
+                )
 
     def remove_expanded_item(self, key: str) -> None:
         with self._structure_lock:

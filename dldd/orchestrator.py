@@ -169,7 +169,25 @@ class PrimaryOrchestrator:
         self._config_updates.put(config)
 
     def restore_broken_work(self, key: str, record: Mapping[str, Any]) -> None:
-        """Restore one persisted broken work item before monitors start."""
+        """Restore static work or retain a dynamic child until its inventory."""
+
+        if key not in self.work_items:
+            rule_id = record.get("rule_id")
+            if (
+                not isinstance(rule_id, int)
+                or rule_id not in self.dynamic_signatures
+            ):
+                return
+            # DSE children do not exist until the monitor's first inventory.
+            # Keep their durable failure in the same primary-owned registry.
+            self.broken_rules[key] = record
+            for plan in self.plans.values():
+                if any(
+                    template.item.rule_id == rule_id
+                    for template in plan.templates_by_key.values()
+                ):
+                    plan.initial_broken_keys = plan.initial_broken_keys | frozenset(((rule_id, key),))
+            return
 
         self.broken_rules[key] = record
         self._command_key(
@@ -282,6 +300,12 @@ class PrimaryOrchestrator:
             self.correlation.register_work_item(
                 event.signature, item, event.plan_generation
             )
+            if self.broken_rules.get(item.correlation_key, {}).get("state") == "BROKEN":
+                self._command_key(
+                    item.correlation_key,
+                    MonitorWorkState.BROKEN,
+                    "restored broken dynamic rule after unclean restart",
+                )
             identity = (item.rule_id, item.component_name)
             added_identities.add(identity)
             self._dse_retirement_candidates.discard(identity)
@@ -329,6 +353,18 @@ class PrimaryOrchestrator:
         )
         for identity in sorted(candidates):
             self._retire_absent_dse_fault(identity, event)
+        template_ids = self._dse_template_ids_by_rule.get(
+            event.signature.metadata.id, set()
+        )
+        if template_ids.issubset(self._dse_instances_by_template):
+            # The initial complete inventory may prove a crash-retained child
+            # absent without ever producing a normal removed-key event.
+            for key, broken in tuple(self.broken_rules.items()):
+                if (
+                    broken.get("rule_id") == event.signature.metadata.id
+                    and key not in self.work_items
+                ):
+                    self.broken_rules.pop(key, None)
         if event.removed_keys:
             self._refresh_fault_source_staleness()
 
@@ -513,6 +549,19 @@ class PrimaryOrchestrator:
 
     def process_event(self, event: FaultEvidenceEvent) -> None:
         result_type = event.result.result
+        if (
+            self.broken_rules.get(event.correlation_key, {}).get("state") == "BROKEN"
+            and result_type != EvaluationResultType.SOURCE_RECOVERED
+        ):
+            # Expansion and its first sample can already be queued together.
+            # A successful late sample cannot revive a durable BROKEN child.
+            # Explicit source-recovery evidence retains its recovery contract.
+            self._command_key(
+                event.correlation_key,
+                MonitorWorkState.BROKEN,
+                "discarded evidence for broken work",
+            )
+            return
         identity = (event.signature_id, event.component_name)
         quarantine_reason = ""
         pending_reason = ""
