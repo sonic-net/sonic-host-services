@@ -61,7 +61,7 @@ LINUX_DEFAULT_PASS_WARN_AGE = 7
 
 # Ssh min-max values
 SSH_INT_VALUES=[ "authentication_retries", "login_timeout", "inactivity_timeout", "max_sessions" ]
-SSH_MIN_VALUES={"authentication_retries": 3, "login_timeout": 1, "ports": 1,
+SSH_MIN_VALUES={"authentication_retries": 1, "login_timeout": 1, "ports": 1,
                 "inactivity_timeout": 0, "max_sessions": 0}
 SSH_MAX_VALUES={"authentication_retries": 100, "login_timeout": 600,
                 "ports": 65535, "inactivity_timeout": 35000,
