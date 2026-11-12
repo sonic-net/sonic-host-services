@@ -33,6 +33,7 @@ PAM_PASSWORD_CONF = "/etc/pam.d/common-password"
 PAM_PASSWORD_CONF_TEMPLATE = "/usr/share/sonic/templates/common-password.j2"
 SSH_CONFG = "/etc/ssh/sshd_config"
 SSH_CONFG_TMP = SSH_CONFG + ".tmp"
+SSH_CONFG_DEFAULT = SSH_CONFG + ".default"
 NSS_TACPLUS_CONF = "/etc/tacplus_nss.conf"
 NSS_TACPLUS_CONF_TEMPLATE = "/usr/share/sonic/templates/tacplus_nss.conf.j2"
 NSS_RADIUS_CONF = "/etc/radius_nss.conf"
@@ -75,7 +76,6 @@ SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries",
                   "ciphers": "Ciphers",
                   "kex_algorithms": "KexAlgorithms",
                   "macs": "MACs"}
-# Wildcard listeners restored whenever listen_addresses is absent/removed
 SSH_DEFAULT_LISTEN_ADDRESSES = [ "0.0.0.0", "::" ]
 
 ACCOUNT_NAME = 0 # index of account name
@@ -1173,28 +1173,7 @@ class PasswHardening(object):
 class SshServer(object):
     def __init__(self):
         self.policies = {}
-        # Tracks whether listen_addresses is currently applied, so its
-        # removal (leaving the field absent) can restore the wildcards.
-        # Initialized from the on-disk sshd_config (rather than always
-        # False) so a hostcfgd restart doesn't lose track of a
-        # previously-applied restriction and leave stale ListenAddress
-        # lines in place until an unrelated policy write occurs.
-        self.listen_addresses_configured = self.is_listen_addresses_configured()
-
-    def is_listen_addresses_configured(self):
-        # A non-wildcard "ListenAddress" line in the live sshd_config means
-        # listen_addresses is currently restricting sshd.
-        if not os.path.exists(SSH_CONFG):
-            return False
-        try:
-            with open(SSH_CONFG, 'r') as f:
-                for line in f:
-                    match = re.match(r'^ListenAddress\s+(\S+)\s*$', line)
-                    if match and match.group(1) not in SSH_DEFAULT_LISTEN_ADDRESSES:
-                        return True
-        except OSError:
-            syslog.syslog(syslog.LOG_ERR, "Failed to read {} to determine listen_addresses state".format(SSH_CONFG))
-        return False
+        self.restart_pending = False
 
     def load(self, policies_conf):
         if 'POLICIES' in policies_conf:
@@ -1202,17 +1181,15 @@ class SshServer(object):
         else:
             self.policies = {}
 
+        # sshd may have started before a configured listen address existed.
+        self.restart_pending = bool(self.policies)
+
         self.modify_conf_file()
 
     def modify_conf_file(self):
         ssh_policies = {}
         ssh_policies.update(self.policies)
-
-        # set new SSH server policies. Also run when listen_addresses was
-        # previously applied so the wildcard listeners get restored even if
-        # no other policy is currently configured.
-        if len(ssh_policies) > 0 or self.listen_addresses_configured:
-            self.set_policies(ssh_policies)
+        self.set_policies(ssh_policies)
 
     def policies_update(self, key, data, modify_conf=True):
         syslog.syslog(syslog.LOG_DEBUG, "ssh_policies_update - key: {}".format(key))
@@ -1325,16 +1302,9 @@ class SshServer(object):
         self._replace_listen_addresses(canonical_addresses)
         return True
 
-    def restore_default_listen_addresses(self):
-        # Restore the IPv4/IPv6 wildcard listeners once listen_addresses is
-        # removed (either alone or via deleting the whole POLICIES row).
-        self._replace_listen_addresses(SSH_DEFAULT_LISTEN_ADDRESSES)
-
     def _replace_listen_addresses(self, addresses):
-        # Shared by handle_listen_addresses_set and
-        # restore_default_listen_addresses: drop all existing
-        # ListenAddress/#ListenAddress lines and re-insert one per given
-        # address at the anchor computed before the deletion.
+        # Drop all existing ListenAddress/#ListenAddress lines and re-insert
+        # one per given address at the anchor computed before the deletion.
         mode, line_num = self.get_listen_address_insert_line(SSH_CONFG_TMP)
         sed_cmd = 'i' if mode == 'before' else 'a'
         modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
@@ -1342,15 +1312,63 @@ class SshServer(object):
         for addr in addresses:
             modify_single_file_inplace(SSH_CONFG_TMP, [f'{line_num} {sed_cmd} ListenAddress {addr}'])
 
+    def _ensure_default_conf(self):
+        # Kept beside sshd_config so it shares the per-image overlay lifetime.
+        # An empty copy is unusable, so it is taken again.
+        if os.path.exists(SSH_CONFG_DEFAULT) and os.path.getsize(SSH_CONFG_DEFAULT) > 0:
+            return True
+        tmp = SSH_CONFG_DEFAULT + ".tmp"
+        try:
+            copy2(SSH_CONFG, tmp)
+            self._durable_rename(tmp, SSH_CONFG_DEFAULT)
+            syslog.syslog(syslog.LOG_NOTICE, "Saved {} as {}".format(SSH_CONFG, SSH_CONFG_DEFAULT))
+        except OSError as e:
+            syslog.syslog(syslog.LOG_ERR, "Failed to save {} as {}: {}".format(SSH_CONFG, SSH_CONFG_DEFAULT, e))
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return False
+        return True
+
+    def _durable_rename(self, src, dst):
+        with open(src, 'rb') as f:
+            os.fsync(f.fileno())
+        os.rename(src, dst)
+        dir_fd = os.open(os.path.dirname(dst), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    def _same_content(self, file1, file2):
+        if not os.path.exists(file2):
+            return False
+        with open(file1, 'rb') as f1, open(file2, 'rb') as f2:
+            return f1.read() == f2.read()
+
+    def _get_listen_addresses(self, file_path):
+        addresses = []
+        if not os.path.exists(file_path):
+            return addresses
+        with open(file_path, 'r') as f:
+            for line in f:
+                match = re.match(r'^ListenAddress\s+(\S+)\s*$', line)
+                if match:
+                    addresses.append(match.group(1))
+        return addresses
+
     def set_policies(self, ssh_policies):
         # Ssh server flow
-        # The ssh_policies from CONFIG_DB will be set in the ssh config files /etc/ssh/sshd_config
-        copy2(SSH_CONFG, SSH_CONFG_TMP)
+        # sshd_config is rebuilt from SSH_CONFG_DEFAULT plus the ssh_policies
+        # from CONFIG_DB, so anything not configured keeps the image value.
+        if not self._ensure_default_conf():
+            return
+        copy2(SSH_CONFG_DEFAULT, SSH_CONFG_TMP)
 
         for key, value in ssh_policies.items():
             if key == 'ports':
                 if not self.handle_ports_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
+                    os.remove(SSH_CONFG_TMP)
                     return
                 continue
 
@@ -1363,13 +1381,15 @@ class SshServer(object):
                     # previous listen_addresses state untouched.
                     syslog.syslog(syslog.LOG_WARNING,
                                   "Ssh listen_addresses is empty - ignoring, keeping previous configuration")
+                    previous = self._get_listen_addresses(SSH_CONFG)
+                    if previous:
+                        self._replace_listen_addresses(previous)
                     continue
                 if not self.handle_listen_addresses_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong listen_addresses configuration")
                     if os.path.exists(SSH_CONFG_TMP):
                         os.remove(SSH_CONFG_TMP)
                     return
-                self.listen_addresses_configured = True
                 continue
 
             if key in SSH_INT_VALUES and (int(value) < SSH_MIN_VALUES.get(key, 65535) or
@@ -1400,20 +1420,19 @@ class SshServer(object):
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
 
-        if 'listen_addresses' not in ssh_policies and self.listen_addresses_configured:
-            # listen_addresses was configured previously and is now absent
-            # (removed alone, or via deleting the whole POLICIES row).
-            # Actively restore both IPv4/IPv6 wildcard listeners.
-            self.restore_default_listen_addresses()
-            self.listen_addresses_configured = False
+        if not self.restart_pending and self._same_content(SSH_CONFG_TMP, SSH_CONFG):
+            os.remove(SSH_CONFG_TMP)
+            return
 
         ssh_verify_res = subprocess.run(['sudo', 'sshd', '-T', '-f', SSH_CONFG_TMP], capture_output=True)
         if ssh_verify_res.returncode == 0:
-            os.rename(SSH_CONFG_TMP, SSH_CONFG)
+            self._durable_rename(SSH_CONFG_TMP, SSH_CONFG)
             try:
                 run_cmd(['systemctl', 'restart', 'ssh'],
                         log_err=True, raise_exception=True)
+                self.restart_pending = False
             except Exception:
+                self.restart_pending = True
                 # `sshd -T` only validates syntax - it doesn't bind any
                 # addresses - so a listen_addresses value that was
                 # assigned at validation time but got removed before this

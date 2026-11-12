@@ -59,6 +59,7 @@ class SshServerCheckConfigMixin(object):
         sop_path_common = sample_output_path + "/" +  test_name
         hostcfgd.SSH_CONFG = op_path + "/sshd_config"
         hostcfgd.SSH_CONFG_TMP = hostcfgd.SSH_CONFG + ".tmp"
+        hostcfgd.SSH_CONFG_DEFAULT = hostcfgd.SSH_CONFG + ".default"
         shutil.rmtree(op_path, ignore_errors=True)
         os.mkdir(op_path)
 
@@ -300,14 +301,15 @@ class TestHostcfgdSSHServerListenAddresses(SshServerCheckConfigMixin, TestCase):
 
     def _make_ssh_server(self, config_dir):
         """ Build an SshServer with sshd_config seeded from the shared
-            listen_addresses baseline (commented wildcards), pointed at a
-            fresh, isolated config_dir. """
+            listen_addresses baseline (explicit wildcards, as the image
+            ships), pointed at a fresh, isolated config_dir. """
         os.makedirs(config_dir, exist_ok=True)
         shutil.copyfile(
             sample_output_path + "/SSH_SERVER_LISTEN_ADDRESSES/sshd_config.old",
             config_dir + "/sshd_config")
         hostcfgd.SSH_CONFG = config_dir + "/sshd_config"
         hostcfgd.SSH_CONFG_TMP = hostcfgd.SSH_CONFG + ".tmp"
+        hostcfgd.SSH_CONFG_DEFAULT = hostcfgd.SSH_CONFG + ".default"
         return hostcfgd.SshServer()
 
     def _listen_address_lines(self, path):
@@ -546,6 +548,173 @@ class TestHostcfgdSSHServerListenAddresses(SshServerCheckConfigMixin, TestCase):
         self.assertTrue(any(
             "equivalent to default" in call.args[-1]
             for call in mock_syslog.call_args_list))
+
+
+class TestHostcfgdSSHServerRestoreDefaults(TestCase):
+    """
+        Removing SSH_SERVER|POLICIES, or a single field of it, returns
+        sshd_config to the image's values.
+    """
+    POLICIES = {
+        "authentication_retries": "5",
+        "login_timeout": "60",
+        "ports": "222",
+        "inactivity_timeout": "20",
+        "permit_root_login": "no",
+        "password_authentication": "false",
+        "ciphers": ["aes256-gcm@openssh.com"],
+        "kex_algorithms": ["curve25519-sha256"],
+        "macs": ["hmac-sha2-512"],
+    }
+
+    def setUp(self):
+        self.config_dir = output_path + "/" + self._testMethodName
+        shutil.rmtree(self.config_dir, ignore_errors=True)
+        os.makedirs(self.config_dir)
+        self.image_conf = sample_output_path + "/SSH_SERVER/sshd_config.old"
+        shutil.copyfile(self.image_conf, self.config_dir + "/sshd_config")
+        hostcfgd.SSH_CONFG = self.config_dir + "/sshd_config"
+        hostcfgd.SSH_CONFG_TMP = hostcfgd.SSH_CONFG + ".tmp"
+        hostcfgd.SSH_CONFG_DEFAULT = hostcfgd.SSH_CONFG + ".default"
+        patcher = mock.patch.object(hostcfgd, 'run_cmd')
+        self.mock_run_cmd = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _read(self, path):
+        with open(path) as f:
+            return f.read()
+
+    def _lines(self, path, name):
+        with open(path) as f:
+            return [line.rstrip('\n') for line in f if re.match(r'^#?' + name + r'\b', line)]
+
+    def test_row_delete_restores_image_config(self):
+        ssh_server = hostcfgd.SshServer()
+        ssh_server.policies_update('POLICIES', dict(self.POLICIES))
+        self.assertNotEqual(self._read(hostcfgd.SSH_CONFG), self._read(self.image_conf))
+
+        ssh_server.policies_update('POLICIES', {})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), self._read(self.image_conf))
+        self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_TMP))
+
+    def test_field_delete_restores_image_value(self):
+        ssh_server = hostcfgd.SshServer()
+        ssh_server.policies_update('POLICIES', {"authentication_retries": "5", "login_timeout": "60"})
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "MaxAuthTries"), ["MaxAuthTries 5"])
+
+        ssh_server.policies_update('POLICIES', {"login_timeout": "60"})
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "MaxAuthTries"),
+                         self._lines(self.image_conf, "MaxAuthTries"))
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "LoginGraceTime"), ["LoginGraceTime 60"])
+
+    def test_field_delete_restores_image_ports(self):
+        ssh_server = hostcfgd.SshServer()
+        ssh_server.policies_update('POLICIES', {"ports": "222,22", "login_timeout": "60"})
+        self.assertEqual(sorted(self._lines(hostcfgd.SSH_CONFG, "Port")), ["Port 22", "Port 222"])
+
+        ssh_server.policies_update('POLICIES', {"login_timeout": "60"})
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "Port"),
+                         self._lines(self.image_conf, "Port"))
+
+    def test_restart_with_empty_config_restores_image_config(self):
+        hostcfgd.SshServer().policies_update('POLICIES', dict(self.POLICIES))
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "MaxAuthTries"), ["MaxAuthTries 5"])
+
+        hostcfgd.SshServer().load({})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), self._read(self.image_conf))
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG_DEFAULT), self._read(self.image_conf))
+
+    def test_restart_with_reduced_config(self):
+        hostcfgd.SshServer().policies_update('POLICIES', dict(self.POLICIES))
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "MaxAuthTries"), ["MaxAuthTries 5"])
+
+        hostcfgd.SshServer().load({'POLICIES': {"login_timeout": "60"}})
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "MaxAuthTries"),
+                         self._lines(self.image_conf, "MaxAuthTries"))
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "LoginGraceTime"), ["LoginGraceTime 60"])
+
+    def test_empty_config_leaves_sshd_alone(self):
+        hostcfgd.SshServer().load({})
+        self.mock_run_cmd.assert_not_called()
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), self._read(self.image_conf))
+        self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_TMP))
+
+    def test_existing_default_is_kept(self):
+        with open(hostcfgd.SSH_CONFG_DEFAULT, 'w') as f:
+            f.write(self._read(self.image_conf))
+        with open(hostcfgd.SSH_CONFG, 'a') as f:
+            f.write("MaxSessions 7\n")
+
+        hostcfgd.SshServer().load({})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG_DEFAULT), self._read(self.image_conf))
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), self._read(self.image_conf))
+
+    def test_empty_default_is_retaken(self):
+        open(hostcfgd.SSH_CONFG_DEFAULT, 'w').close()
+
+        hostcfgd.SshServer().policies_update('POLICIES', {"authentication_retries": "5"})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG_DEFAULT), self._read(self.image_conf))
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "MaxAuthTries"), ["MaxAuthTries 5"])
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "PermitRootLogin"),
+                         self._lines(self.image_conf, "PermitRootLogin"))
+
+    def test_failed_restart_is_retried(self):
+        ssh_server = hostcfgd.SshServer()
+        with mock.patch.object(hostcfgd, 'run_cmd', side_effect=Exception("restart failed")):
+            ssh_server.policies_update('POLICIES', {"authentication_retries": "5"})
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "MaxAuthTries"), ["MaxAuthTries 5"])
+
+        self.mock_run_cmd.reset_mock()
+        ssh_server.policies_update('POLICIES', {"authentication_retries": "5"})
+        ssh_server.policies_update('POLICIES', {"authentication_retries": "5"})
+        self.mock_run_cmd.assert_called_once()
+
+    def test_startup_with_config_restarts_ssh_once(self):
+        hostcfgd.SshServer().policies_update('POLICIES', {"authentication_retries": "5"})
+        before = self._read(hostcfgd.SSH_CONFG)
+        self.mock_run_cmd.reset_mock()
+
+        ssh_server = hostcfgd.SshServer()
+        ssh_server.load({'POLICIES': {"authentication_retries": "5"}})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), before)
+        self.mock_run_cmd.assert_called_once()
+
+        ssh_server.policies_update('POLICIES', {"authentication_retries": "5"})
+        self.mock_run_cmd.assert_called_once()
+
+    def test_listen_addresses_removed_restores_commented_default(self):
+        with mock.patch.object(hostcfgd, 'get_dut_ip_addresses', return_value={"10.0.0.1"}):
+            ssh_server = hostcfgd.SshServer()
+            ssh_server.policies_update('POLICIES', {"listen_addresses": ["10.0.0.1"]})
+            self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "ListenAddress"), ["ListenAddress 10.0.0.1"])
+
+            ssh_server.policies_update('POLICIES', {})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), self._read(self.image_conf))
+
+    def test_empty_listen_addresses_kept_across_restart(self):
+        with mock.patch.object(hostcfgd, 'get_dut_ip_addresses', return_value={"10.0.0.1"}):
+            hostcfgd.SshServer().policies_update('POLICIES', {"listen_addresses": ["10.0.0.1"]})
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "ListenAddress"), ["ListenAddress 10.0.0.1"])
+
+        hostcfgd.SshServer().load({'POLICIES': {"listen_addresses": [""]}})
+        self.assertEqual(self._lines(hostcfgd.SSH_CONFG, "ListenAddress"), ["ListenAddress 10.0.0.1"])
+
+    def test_invalid_update_keeps_current_config(self):
+        ssh_server = hostcfgd.SshServer()
+        ssh_server.policies_update('POLICIES', {"authentication_retries": "5"})
+        before = self._read(hostcfgd.SSH_CONFG)
+
+        ssh_server.policies_update('POLICIES', {"ports": "0"})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), before)
+        self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_TMP))
+
+    def test_default_copy_failure_leaves_config(self):
+        ssh_server = hostcfgd.SshServer()
+        with mock.patch.object(hostcfgd.SshServer, '_durable_rename', side_effect=OSError("disk full")):
+            ssh_server.policies_update('POLICIES', {"authentication_retries": "5"})
+        self.assertEqual(self._read(hostcfgd.SSH_CONFG), self._read(self.image_conf))
+        self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_DEFAULT))
+        self.assertFalse(os.path.exists(hostcfgd.SSH_CONFG_DEFAULT + ".tmp"))
 
 
 class TestGetDutIpAddresses(TestCase):
