@@ -253,6 +253,32 @@ class TestHostcfgdSSHServer(SshServerCheckConfigMixin, TestCase):
         self.check_config(test_name, test_data, "modify_all")
 
 
+class TestHostcfgdSSHServerAuthenticationRetries(TestCase):
+    """ authentication_retries is applied across the full YANG range (1..100). """
+
+    def _apply(self, value):
+        config_dir = output_path + "/authentication_retries_" + value
+        shutil.rmtree(config_dir, ignore_errors=True)
+        os.makedirs(config_dir)
+        shutil.copyfile(sample_output_path + "/SSH_SERVER/sshd_config.old",
+                        config_dir + "/sshd_config")
+        hostcfgd.SSH_CONFG = config_dir + "/sshd_config"
+        hostcfgd.SSH_CONFG_TMP = hostcfgd.SSH_CONFG + ".tmp"
+        hostcfgd.SshServer().policies_update(
+            'POLICIES', {"authentication_retries": value, "login_timeout": "60"})
+        with open(hostcfgd.SSH_CONFG) as f:
+            return [line.strip() for line in f
+                    if line.startswith(('MaxAuthTries', 'LoginGraceTime'))]
+
+    @parameterized.expand([("1",), ("2",), ("100",)])
+    def test_in_range_applied(self, value):
+        self.assertEqual(self._apply(value), ["LoginGraceTime 60", "MaxAuthTries " + value])
+
+    @parameterized.expand([("0",), ("101",)])
+    def test_out_of_range_ignored(self, value):
+        self.assertEqual(self._apply(value), ["LoginGraceTime 60"])
+
+
 class TestHostcfgdSSHServerListenAddresses(SshServerCheckConfigMixin, TestCase):
     """
         Test hostcfgd daemon - SSHServer listen_addresses (ADO 29390131)
