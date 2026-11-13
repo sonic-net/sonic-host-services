@@ -150,7 +150,8 @@ class MockSubscriberStateTable():
 
 
 class MockDBConnector():
-    def __init__(self, db, val, tcpFlag=False, name=None):
+    def __init__(self, db, val, tcpFlag=False, name=None, authenticate=False):
+        self.init_args = (db, val, tcpFlag, name, authenticate)
         self.data = {}
 
     def hget(self, key, field):

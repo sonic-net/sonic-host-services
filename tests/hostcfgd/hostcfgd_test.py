@@ -253,9 +253,10 @@ class TestHostcfgdDaemon(TestCase):
         with mock.patch.object(hostcfgd, 'ConfigDBConnector') as config_db_connector, \
                 mock.patch.object(hostcfgd.swsscommon, 'RestartWaiter') as restart_waiter:
             restart_waiter.isAdvancedBootInProgress.return_value = False
-            hostcfgd.HostConfigDaemon()
+            daemon = hostcfgd.HostConfigDaemon()
 
-        config_db_connector.assert_called_once_with(use_unix_socket_path=True)
+        assert daemon.state_db_conn.init_args == ("STATE_DB", 0, False, "", True)
+        config_db_connector.assert_called_once_with(use_unix_socket_path=True, authenticate=True)
         config_db_connector.return_value.connect.assert_called_once_with(
             wait_for_init=True, retry_on=True)
 

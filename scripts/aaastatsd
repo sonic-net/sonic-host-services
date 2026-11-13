@@ -217,7 +217,7 @@ class RadiusStatistics:
 
 class AAAStatsDaemon:
     def __init__(self):
-        self.config_db = ConfigDBConnector()
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
 
