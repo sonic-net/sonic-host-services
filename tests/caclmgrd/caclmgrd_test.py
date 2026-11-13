@@ -139,8 +139,6 @@ class TestCaclmgrd(TestCase):
         manager.num_changes = {"": 2}
         manager.update_thread = {"": None}
         manager.bfdAllowed = False
-        manager.VxlanAllowed = True
-        manager.VxlanSrcIP = ""
         manager.MUX_CABLE_TABLE = "MUX_CABLE_TABLE"
         manager.BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
         manager.VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL_TABLE"
@@ -152,8 +150,7 @@ class TestCaclmgrd(TestCase):
         manager.removeSelectable = MagicMock()
         manager.update_control_plane_acls = MagicMock()
         manager.allow_bfd_protocol = MagicMock()
-        manager.allow_vxlan_port = MagicMock()
-        manager.block_vxlan_port = MagicMock()
+        manager.update_vxlan_tunnel = MagicMock()
         manager.update_dhcp_acl_for_mark_change = MagicMock()
         manager.update_dhcp_acl = MagicMock()
         manager.setup_dhcp_chain = MagicMock()
@@ -166,8 +163,7 @@ class TestCaclmgrd(TestCase):
         # Asserting the method calls
         manager.update_control_plane_acls.assert_called()
         manager.allow_bfd_protocol.assert_called()
-        manager.allow_vxlan_port.assert_not_called()
-        manager.block_vxlan_port.assert_not_called()
+        manager.update_vxlan_tunnel.assert_not_called()
         manager.update_dhcp_acl_for_mark_change.assert_called()
         manager.update_dhcp_acl.assert_called()
         manager.setup_dhcp_chain.assert_called()
@@ -246,8 +242,6 @@ class TestCaclmgrd(TestCase):
         manager.num_changes = {"": 2}
         manager.update_thread = {"": threading.Thread()}
         manager.bfdAllowed = False
-        manager.VxlanAllowed = True
-        manager.VxlanSrcIP = ""
         manager.MUX_CABLE_TABLE = "MUX_CABLE_TABLE"
         manager.BFD_SESSION_TABLE = "BFD_SESSION_TABLE"
         manager.VXLAN_TUNNEL_TABLE = "VXLAN_TUNNEL_TABLE"
@@ -259,8 +253,7 @@ class TestCaclmgrd(TestCase):
         manager.removeSelectable = MagicMock()
         manager.allow_bfd_protocol = MagicMock()
         manager.update_control_plane_acls = MagicMock()
-        manager.allow_vxlan_port = MagicMock()
-        manager.block_vxlan_port = MagicMock()
+        manager.update_vxlan_tunnel = MagicMock()
         manager.update_dhcp_acl_for_mark_change = MagicMock()
         manager.update_dhcp_acl = MagicMock()
         manager.setup_dhcp_chain = MagicMock()
