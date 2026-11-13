@@ -2559,11 +2559,11 @@ class TestProxyServicePhases(TestCase):
         proxy.running = True
         proxy.ptm_fd = 10
         proxy.ser_fd = 11
-        
+
         with mock.patch('os.read', return_value=b"user input"):
             with mock.patch('os.write') as mock_write:
                 proxy._on_ptm_read()
-                
+
                 mock_write.assert_called_once_with(11, b"user input")
 
     def test_proxy_on_ptm_read_does_not_log_input(self):
@@ -2963,9 +2963,47 @@ class TestLogrotateConfig(TestCase):
             "/var/log/console1.log\npostrotate",
             "/var/log/{console}.log",
             '/var/log/console1".log',
+            "/var/log/../console1.log",
+            "/var/../log/console1.log",
         ):
             with self.assertRaises(ValueError):
                 console_monitor.build_logrotate_config(path, "10M", 5)
+
+    def test_validate_log_file_path_rejects_dotdot(self):
+        for path in (
+            "/var/log/../console.log",
+            "/var/../log/console.log",
+            "/../var/log/console.log",
+            "/var/log/console/..",
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                console_monitor.validate_log_file_path(path)
+            self.assertIn("..", str(ctx.exception))
+
+    def test_validate_log_file_path_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "target.log")
+            link = os.path.join(tmpdir, "link.log")
+            with open(target, "w"):
+                pass
+            os.symlink(target, link)
+            with self.assertRaises(ValueError) as ctx:
+                console_monitor.validate_log_file_path(link)
+            self.assertIn("symlink", str(ctx.exception))
+
+            real_dir = os.path.join(tmpdir, "realdir")
+            os.mkdir(real_dir)
+            link_dir = os.path.join(tmpdir, "linkdir")
+            os.symlink(real_dir, link_dir)
+            nested = os.path.join(link_dir, "console.log")
+            with self.assertRaises(ValueError) as ctx:
+                console_monitor.validate_log_file_path(nested)
+            self.assertIn("symlink", str(ctx.exception))
+
+    def test_validate_log_file_path_accepts_normal_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "console-0.log")
+            self.assertEqual(console_monitor.validate_log_file_path(path), path)
 
     def test_build_logrotate_config_rejects_unsafe_size(self):
         for size in ("10m", "big", "10M\npostrotate", "10M;reboot"):
@@ -2984,6 +3022,55 @@ class TestLogrotateConfig(TestCase):
             console_monitor.default_log_file("0"),
             "/var/log/console-0.log",
         )
+
+
+class TestRsyslogImfileConfig(TestCase):
+    """Tests for runtime rsyslog imfile helpers."""
+
+    def test_build_rsyslog_imfile_input_uses_link_id_tag(self):
+        content = console_monitor.build_rsyslog_imfile_input("/var/log/custom-console.log", "3")
+        self.assertIn('File="/var/log/custom-console.log"', content)
+        self.assertIn('Tag="console-monitor-logging-3:"', content)
+        self.assertNotIn('ruleset=', content)
+        self.assertIn('reopenOnTruncate="on"', content)
+        self.assertIn('persistStateInterval="100"', content)
+
+    def test_build_rsyslog_imfile_config_dedupes_paths(self):
+        content = console_monitor.build_rsyslog_imfile_config([
+            ("0", "/var/log/console-0.log"),
+            ("0", "/var/log/console-0.log"),
+            ("1", "/var/log/custom.log"),
+        ])
+        self.assertNotIn('module(load="imfile"', content)
+        self.assertEqual(content.count('File="/var/log/console-0.log"'), 1)
+        self.assertEqual(content.count('Tag="console-monitor-logging-0:"'), 1)
+        self.assertEqual(content.count('File="/var/log/custom.log"'), 1)
+        self.assertEqual(content.count('Tag="console-monitor-logging-1:"'), 1)
+
+    def test_build_rsyslog_imfile_config_rejects_unsafe_path(self):
+        for path in (
+            "var/log/console1.log",
+            "/var/log/console 1.log",
+            "/var/log/console1.log\ninput(type=\"imfile\"",
+            "/var/log/{console}.log",
+            '/var/log/console1".log',
+            "/var/log/../console1.log",
+            "/var/../log/console1.log",
+        ):
+            with self.assertRaises(ValueError):
+                console_monitor.build_rsyslog_imfile_config([("0", path)])
+
+    def test_build_rsyslog_imfile_config_rejects_unsafe_link_id(self):
+        with self.assertRaises(ValueError):
+            console_monitor.build_rsyslog_imfile_config([('1"; stop', "/var/log/console-1.log")])
+
+    def test_rsyslog_imfile_conf_path(self):
+        with mock.patch.object(console_monitor, 'RSYSLOG_DIR', '/etc/rsyslog.d'):
+            self.assertEqual(
+                console_monitor.rsyslog_imfile_conf_path(),
+                "/etc/rsyslog.d/11-console-logging-files.conf",
+            )
+
 
 class TestConsoleLoggingCoverage(TestCase):
     """Tests for console logging configuration and runtime paths."""
@@ -3161,20 +3248,26 @@ class TestConsoleLoggingCoverage(TestCase):
             with open(existing_conf, 'w') as conf_file:
                 conf_file.write("keep me")
 
-            with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
-                service = console_monitor.DCEService()
-                service.config_db = MockConfigDb()
-                service.active_links = {"0"}
-                service.config_db.get_entry = mock.Mock(side_effect=RuntimeError("db error"))
-                with mock.patch.object(service, '_stop_link') as mock_stop:
-                    service._sync()
+            rsyslog_conf = os.path.join(tmpdir, "11-console-logging-files.conf")
+            with open(rsyslog_conf, 'w') as conf_file:
+                conf_file.write("keep me too")
 
-                mock_stop.assert_not_called()
-                self.assertEqual(service.active_links, {"0"})
-                self.assertTrue(os.path.exists(existing_conf))
+            with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
+                with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                    service = console_monitor.DCEService()
+                    service.config_db = MockConfigDb()
+                    service.active_links = {"0"}
+                    service.config_db.get_entry = mock.Mock(side_effect=RuntimeError("db error"))
+                    with mock.patch.object(service, '_stop_link') as mock_stop:
+                        service._sync()
+
+                    mock_stop.assert_not_called()
+                    self.assertEqual(service.active_links, {"0"})
+                    self.assertTrue(os.path.exists(existing_conf))
+                    self.assertTrue(os.path.exists(rsyslog_conf))
 
     def test_sync_keeps_logrotate_when_feature_lookup_fails_after_enabled_check(self):
-        """CONSOLE_SWITCH read succeeds in _sync then fails in _sync_logrotate_configs."""
+        """CONSOLE_SWITCH read succeeds in _sync then fails in logrotate/rsyslog sync."""
         MockConfigDb.set_config_db({
             "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
             "CONSOLE_PORT": {
@@ -3190,26 +3283,32 @@ class TestConsoleLoggingCoverage(TestCase):
             with open(existing_conf, 'w') as conf_file:
                 conf_file.write("keep me")
 
+            rsyslog_conf = os.path.join(tmpdir, "11-console-logging-files.conf")
+            with open(rsyslog_conf, 'w') as conf_file:
+                conf_file.write("keep me too")
+
             with mock.patch.object(console_monitor, 'LOGROTATE_DIR', tmpdir):
-                service = console_monitor.DCEService()
-                service.config_db = MockConfigDb()
-                service.active_links = {"0"}
-                real_get_entry = service.config_db.get_entry
-                call_count = {"n": 0}
+                with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                    service = console_monitor.DCEService()
+                    service.config_db = MockConfigDb()
+                    service.active_links = {"0"}
+                    real_get_entry = service.config_db.get_entry
+                    call_count = {"n": 0}
 
-                def get_entry(table, key):
-                    call_count["n"] += 1
-                    if call_count["n"] > 1:
-                        raise RuntimeError("db error")
-                    return real_get_entry(table, key)
+                    def get_entry(table, key):
+                        call_count["n"] += 1
+                        if call_count["n"] > 1:
+                            raise RuntimeError("db error")
+                        return real_get_entry(table, key)
 
-                service.config_db.get_entry = get_entry
-                with mock.patch.object(service, '_stop_link') as mock_stop:
-                    service._sync()
+                    service.config_db.get_entry = get_entry
+                    with mock.patch.object(service, '_stop_link') as mock_stop:
+                        service._sync()
 
-                mock_stop.assert_not_called()
-                self.assertEqual(service.active_links, {"0"})
-                self.assertTrue(os.path.exists(existing_conf))
+                    mock_stop.assert_not_called()
+                    self.assertEqual(service.active_links, {"0"})
+                    self.assertTrue(os.path.exists(existing_conf))
+                    self.assertTrue(os.path.exists(rsyslog_conf))
 
     def test_console_port_handler_del_logs_warning(self):
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
@@ -3266,10 +3365,11 @@ class TestConsoleLoggingCoverage(TestCase):
         MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"]["log_file"] = "/var/log/test.log"
 
         with mock.patch.object(service, '_sync_logrotate_configs'):
-            with mock.patch.object(service, '_restart_link', return_value=True) as mock_restart:
-                service._sync()
+            with mock.patch.object(service, '_sync_rsyslog_imfile_configs'):
+                with mock.patch.object(service, '_restart_link', return_value=True) as mock_restart:
+                    service._sync()
 
-                mock_restart.assert_called_once_with("1")
+                    mock_restart.assert_called_once_with("1")
 
     @parameterized.expand([
         ("logrotate_size_only", {"logrotate_size": "20M"}, "20M", "10"),
@@ -3299,13 +3399,14 @@ class TestConsoleLoggingCoverage(TestCase):
         MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"].update(port_updates)
 
         with mock.patch.object(service, '_sync_logrotate_configs'):
-            with mock.patch.object(service, '_restart_link', return_value=True) as mock_restart:
-                service._sync()
+            with mock.patch.object(service, '_sync_rsyslog_imfile_configs'):
+                with mock.patch.object(service, '_restart_link', return_value=True) as mock_restart:
+                    service._sync()
 
-                mock_restart.assert_not_called()
-                self.assertEqual(service._config_cache["1"]["logrotate_size"], expected_size)
-                self.assertEqual(service._config_cache["1"]["logrotate_count"], expected_count)
-                self.assertEqual(service._config_cache["1"]["baud"], 9600)
+                    mock_restart.assert_not_called()
+                    self.assertEqual(service._config_cache["1"]["logrotate_size"], expected_size)
+                    self.assertEqual(service._config_cache["1"]["logrotate_count"], expected_count)
+                    self.assertEqual(service._config_cache["1"]["baud"], 9600)
 
     def test_sync_logrotate_uses_default_log_file(self):
         MockConfigDb.set_config_db({
@@ -3407,6 +3508,198 @@ class TestConsoleLoggingCoverage(TestCase):
                 service._sync_logrotate_configs()
 
                 self.assertTrue(mock_error.called)
+
+    def test_sync_rsyslog_imfile_uses_link_id_tag(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/custom-line0.log",
+                },
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                with mock.patch.object(service, '_reload_rsyslog') as mock_reload:
+                    service._sync_rsyslog_imfile_configs()
+
+                conf_path = os.path.join(tmpdir, "11-console-logging-files.conf")
+                with open(conf_path, 'r') as conf_file:
+                    content = conf_file.read()
+                self.assertIn('File="/var/log/custom-line0.log"', content)
+                self.assertIn('Tag="console-monitor-logging-0:"', content)
+                self.assertNotIn('Tag="console-io', content)
+                mock_reload.assert_called_once()
+
+    def test_sync_rsyslog_imfile_skips_reload_when_unchanged(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/custom-line0.log",
+                },
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                with mock.patch.object(service, '_reload_rsyslog') as mock_reload:
+                    service._sync_rsyslog_imfile_configs()
+                    service._sync_rsyslog_imfile_configs()
+                self.assertEqual(mock_reload.call_count, 1)
+
+    def test_sync_rsyslog_imfile_removes_config_when_logging_disabled(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/custom-line0.log",
+                },
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                with mock.patch.object(console_monitor.os, 'remove', posix.remove):
+                    service = console_monitor.DCEService()
+                    service.config_db = MockConfigDb()
+                    with mock.patch.object(service, '_reload_rsyslog') as mock_reload:
+                        service._sync_rsyslog_imfile_configs()
+                        conf_path = os.path.join(tmpdir, "11-console-logging-files.conf")
+                        self.assertTrue(os.path.exists(conf_path))
+
+                        MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["0"]["logging_enabled"] = "no"
+                        service._sync_rsyslog_imfile_configs()
+
+                        self.assertFalse(os.path.exists(conf_path))
+                        self.assertEqual(mock_reload.call_count, 2)
+
+    def test_sync_rsyslog_configs_skips_create_when_feature_disabled(self):
+        """When console_mgmt is off, remove the rsyslog drop-in and do not create a new one."""
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "no"}},
+            "CONSOLE_PORT": {
+                "1": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console1.log",
+                },
+            },
+        })
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                with mock.patch.object(console_monitor.os, 'remove', posix.remove):
+                    stale_conf = os.path.join(tmpdir, "11-console-logging-files.conf")
+                    with open(stale_conf, 'w') as conf_file:
+                        conf_file.write("stale")
+
+                    service = console_monitor.DCEService()
+                    service.config_db = MockConfigDb()
+                    with mock.patch.object(service, '_reload_rsyslog'):
+                        service._sync_rsyslog_imfile_configs()
+
+                    self.assertFalse(os.path.exists(stale_conf))
+
+    def test_sync_rsyslog_skips_removal_when_config_read_fails(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console0.log",
+                },
+            },
+        })
+        with tempfile.TemporaryDirectory() as tmpdir:
+            existing_conf = os.path.join(tmpdir, "11-console-logging-files.conf")
+            with open(existing_conf, 'w') as conf_file:
+                conf_file.write("keep me")
+
+            with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                with mock.patch.object(service, '_get_logging_configs', return_value=None):
+                    with mock.patch.object(service, '_reload_rsyslog') as mock_reload:
+                        service._sync_rsyslog_imfile_configs()
+
+                self.assertTrue(os.path.exists(existing_conf))
+                mock_reload.assert_not_called()
+
+    def test_sync_rsyslog_skips_removal_when_feature_status_lookup_fails(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console0.log",
+                },
+            },
+        })
+        with tempfile.TemporaryDirectory() as tmpdir:
+            existing_conf = os.path.join(tmpdir, "11-console-logging-files.conf")
+            with open(existing_conf, 'w') as conf_file:
+                conf_file.write("keep me")
+
+            with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                service.config_db.get_entry = mock.Mock(side_effect=RuntimeError("db error"))
+                with mock.patch.object(service, '_reload_rsyslog') as mock_reload:
+                    service._sync_rsyslog_imfile_configs()
+
+                self.assertTrue(os.path.exists(existing_conf))
+                mock_reload.assert_not_called()
+
+    def test_sync_rsyslog_uses_default_log_file(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                },
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(console_monitor, 'RSYSLOG_DIR', tmpdir):
+                service = console_monitor.DCEService()
+                service.config_db = MockConfigDb()
+                with mock.patch.object(service, '_reload_rsyslog'):
+                    service._sync_rsyslog_imfile_configs()
+
+                conf_path = os.path.join(tmpdir, "11-console-logging-files.conf")
+                with open(conf_path, 'r') as conf_file:
+                    content = conf_file.read()
+                self.assertIn('File="/var/log/console-0.log"', content)
+                self.assertIn('Tag="console-monitor-logging-0:"', content)
+
+    def test_sync_rsyslog_write_failure(self):
+        MockConfigDb.set_config_db({
+            "CONSOLE_SWITCH": {"console_mgmt": {"enabled": "yes"}},
+            "CONSOLE_PORT": {
+                "0": {
+                    "logging_enabled": "yes",
+                    "log_file": "/var/log/console0.log",
+                },
+            },
+        })
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+
+        with mock.patch('builtins.open', side_effect=OSError("permission denied")):
+            with mock.patch.object(console_monitor.log, 'error') as mock_error:
+                with mock.patch.object(service, '_reload_rsyslog') as mock_reload:
+                    service._sync_rsyslog_imfile_configs()
+
+                self.assertTrue(mock_error.called)
+                mock_reload.assert_not_called()
 
     def test_sync_logrotate_keeps_valid_ports_when_one_entry_malformed(self):
         MockConfigDb.set_config_db({
@@ -3684,6 +3977,7 @@ class TestConsoleLoggingCoverage(TestCase):
             '/var/log/console1".log',
             r"/var/log/console1\.log",
             "/var/log/console 1.log",
+            "/var/log/../console1.log",
         ):
             proxy.log_fd = -1
             proxy._logging_status = None
