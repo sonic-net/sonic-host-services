@@ -111,6 +111,15 @@ DEFAULT_BAUD = 9600
 LOGROTATE_DIR = "/etc/logrotate.d"
 LOGROTATE_CONF_PREFIX = "console-monitor-logging-"
 DEFAULT_LOG_FILE_TEMPLATE = "/var/log/console-{}.log"
+# Runtime rsyslog imfile inputs for each configured log_file.
+# Named 11-* so drop-in include order cannot parse input() before imfile
+# is loaded by 10-console-logging.conf.
+RSYSLOG_DIR = "/etc/rsyslog.d"
+RSYSLOG_IMFILE_CONF = "11-console-logging-files.conf"
+# Same prefix as LOGROTATE_CONF_PREFIX so Tag is console-monitor-logging-<link_id>:
+RSYSLOG_TAG_PREFIX = LOGROTATE_CONF_PREFIX
+# Safe subset for Tag="console-monitor-logging-<link_id>:".
+RSYSLOG_TAG_LINK_ID_PATTERN = re.compile(r'^[A-Za-z0-9._-]+$')
 # NOTE: Keep these defaults aligned with src/sonic-utilities/config/console.py
 # (DEFAULT_LOGROTATE_SIZE / DEFAULT_LOGROTATE_COUNT).
 DEFAULT_LOGROTATE_SIZE = "10M"
@@ -546,7 +555,12 @@ def default_log_file(link_id: str) -> str:
 
 
 def validate_log_file_path(path: str) -> str:
-    """Reject log_file values that are unsafe to open or emit in a logrotate stanza."""
+    """Reject log_file values that are unsafe to open or emit in generated conf.
+
+    The same path is interpolated into a logrotate stanza and into an rsyslog
+    imfile File= parameter, so whitespace, quotes, braces, control
+    characters, '..' components, and symlink paths are rejected for both.
+    """
     if not isinstance(path, str) or not path:
         raise ValueError("log file path must be a non-empty string")
     if not os.path.isabs(path):
@@ -559,6 +573,13 @@ def validate_log_file_path(path: str) -> str:
         raise ValueError("log file path must not contain control characters")
     if any(ch in path for ch in ('"', "'", '`', '\\')):
         raise ValueError("log file path must not contain quotes or backslashes")
+    if any(part == '..' for part in path.split(os.sep)):
+        raise ValueError("log file path must not contain '..'")
+    current = os.sep
+    for part in path.strip(os.sep).split(os.sep):
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("log file path must not contain a symlink")
     return path
 
 
@@ -585,6 +606,56 @@ def build_logrotate_config(log_file: str, size: str, count: int) -> str:
         f"    copytruncate\n"
         f"}}\n"
     )
+
+
+def validate_rsyslog_tag_link_id(link_id: str) -> str:
+    """Reject link_id values that are unsafe to interpolate into an imfile Tag."""
+    if not isinstance(link_id, str) or not RSYSLOG_TAG_LINK_ID_PATTERN.fullmatch(link_id):
+        raise ValueError(f"invalid rsyslog tag link_id '{link_id}'")
+    return link_id
+
+
+def rsyslog_imfile_conf_path() -> str:
+    """Return the rsyslog drop-in path: /etc/rsyslog.d/11-console-logging-files.conf."""
+    return os.path.join(RSYSLOG_DIR, RSYSLOG_IMFILE_CONF)
+
+
+def build_rsyslog_imfile_input(log_file: str, link_id: str) -> str:
+    """Build one imfile input for a console log file, tagged with link_id."""
+    quoted_path = validate_log_file_path(log_file)
+    tag_id = validate_rsyslog_tag_link_id(link_id)
+    return (
+        f'input(type="imfile"\n'
+        f'      File="{quoted_path}"\n'
+        f'      Tag="{RSYSLOG_TAG_PREFIX}{tag_id}:"\n'
+        f'      Facility="local6"\n'
+        f'      Severity="info"\n'
+        f'      addMetadata="on"\n'
+        f'      reopenOnTruncate="on"\n'
+        f'      readTimeout="2"\n'
+        f'      persistStateInterval="100"\n'
+        f'      freshStartTail="off"\n'
+        f'      fileNotFoundError="off")\n'
+    )
+
+
+def build_rsyslog_imfile_config(log_files) -> str:
+    """Build imfile inputs for unique, validated console log file paths.
+
+    log_files is an iterable of (link_id, log_file) pairs. Duplicate paths
+    keep the first link_id so one file is not tailed twice. imfile itself
+    is loaded by the static 10-console-logging.conf drop-in, which is
+    included before this 11-* file.
+    """
+    unique = []
+    seen = set()
+    for link_id, path in log_files:
+        validated = validate_log_file_path(path)
+        tag_id = validate_rsyslog_tag_link_id(str(link_id))
+        if validated not in seen:
+            seen.add(validated)
+            unique.append((tag_id, validated))
+    return "".join(build_rsyslog_imfile_input(path, tag_id) for tag_id, path in unique)
 
 
 # ============================================================
@@ -1270,7 +1341,7 @@ class DCEService:
         """Return True/False when console_mgmt is readable, or None on lookup failure.
 
         None must not be treated as disabled: callers skip destructive work
-        (stopping proxies, deleting logrotate confs) when the read fails.
+        (stopping proxies, deleting logrotate/rsyslog confs) when the read fails.
         """
         try:
             entry = self.config_db.get_entry(CONSOLE_SWITCH_TABLE, "console_mgmt")
@@ -1322,6 +1393,7 @@ class DCEService:
                 self.active_links.clear()
                 self._config_cache.clear()
             self._sync_logrotate_configs()
+            self._sync_rsyslog_imfile_configs()
             return
 
         # Get configuration
@@ -1360,14 +1432,16 @@ class DCEService:
             self._config_cache[link_id] = new_config
 
         self._sync_logrotate_configs()
+        self._sync_rsyslog_imfile_configs()
         log.info(f"DCE: Sync complete, {len(self.active_links)} links active")
 
     def _get_logging_configs(self) -> Optional[Dict[str, dict]]:
         """Get console logging configuration for all ports with logging enabled.
 
         Returns None if CONFIG_DB cannot be read so callers can skip
-        destructive logrotate reconciliation. An empty dict means the table
-        was read successfully and no ports currently have logging enabled.
+        destructive logrotate and rsyslog reconciliation. An empty dict means
+        the table was read successfully and no ports currently have logging
+        enabled.
         """
         configs = {}
         try:
@@ -1444,6 +1518,91 @@ class DCEService:
             self._logrotate_links = desired_links
         except Exception as e:
             log.error(f"DCE: Failed to sync logrotate configs: {e}")
+
+    def _reload_rsyslog(self) -> None:
+        """Restart rsyslog so a new or removed imfile drop-in is loaded."""
+        try:
+            result = subprocess.run(
+                ['systemctl', 'restart', 'rsyslog'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                log.error(
+                    f"DCE: Failed to restart rsyslog: {result.stderr.strip()}"
+                )
+            else:
+                log.info("DCE: Restarted rsyslog to apply console imfile config")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.error(f"DCE: Failed to restart rsyslog: {e}")
+
+    def _sync_rsyslog_imfile_configs(self) -> None:
+        """Create or remove rsyslog imfile inputs for configured log files.
+
+        Skip destructive reconciliation when CONSOLE_SWITCH or CONSOLE_PORT
+        cannot be read. An empty logging set (feature off or no ports enabled)
+        removes the managed drop-in. Unchanged content does not restart rsyslog.
+        File= and Tag= values are validated before interpolation.
+        """
+        try:
+            enabled = self._check_feature_enabled()
+            if enabled is None:
+                log.error("DCE: Skipping rsyslog imfile sync; failed to read console_mgmt status")
+                return
+            if enabled:
+                logging_configs = self._get_logging_configs()
+                if logging_configs is None:
+                    log.error("DCE: Skipping rsyslog imfile sync; CONFIG_DB read failed")
+                    return
+            else:
+                logging_configs = {}
+
+            log_files = [
+                (link_id, logging_configs[link_id]["log_file"])
+                for link_id in sorted(logging_configs)
+            ]
+            conf_path = rsyslog_imfile_conf_path()
+            conf_content = build_rsyslog_imfile_config(log_files)
+
+            existing = None
+            try:
+                with open(conf_path, 'r') as conf_file:
+                    existing = conf_file.read()
+            except OSError:
+                existing = None
+
+            # If no ports have logging enabled, remove rsyslog conf file
+            if not conf_content:
+                if existing is None:
+                    return
+                try:
+                    os.remove(conf_path)
+                    log.info(f"DCE: Removed rsyslog imfile config: {conf_path}")
+                except OSError as e:
+                    log.error(
+                        f"DCE: Failed to remove rsyslog imfile config {conf_path}: {e}"
+                    )
+                    return
+                self._reload_rsyslog()
+                return
+
+            if existing == conf_content:
+                return
+
+            try:
+                with open(conf_path, 'w') as conf_file:
+                    conf_file.write(conf_content)
+                log.info(f"DCE: Updated rsyslog imfile config: {conf_path}")
+            except OSError as e:
+                log.error(
+                    f"DCE: Failed to write rsyslog imfile config {conf_path}: {e}"
+                )
+                return
+
+            self._reload_rsyslog()
+        except Exception as e:
+            log.error(f"DCE: Failed to sync rsyslog imfile configs: {e}")
 
     def _start_link(self, link_id: str) -> bool:
         """Start pty-bridge and proxy for a link (pty-bridge first, then proxy)"""
