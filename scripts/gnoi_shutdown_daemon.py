@@ -337,7 +337,7 @@ def main():
     config_db = daemon_base.db_connect("CONFIG_DB", use_tcp=False)
 
     # Also connect ConfigDBConnector for pubsub support (has get_redis_client method)
-    config_db_connector = swsscommon.ConfigDBConnector()
+    config_db_connector = swsscommon.ConfigDBConnector(use_unix_socket_path=True)
     config_db_connector.connect(wait_for_init=False)
 
     # Get chassis instance for accessing ModuleBase APIs

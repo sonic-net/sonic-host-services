@@ -156,7 +156,7 @@ class TestGnoiShutdownDaemon(unittest.TestCase):
                 gnoi_shutdown_daemon.main()
 
         # Verify initialization
-        mock_db_connect.assert_has_calls([call("STATE_DB", use_tcp=False, authenticate=True), call("CONFIG_DB", use_tcp=False, authenticate=True)])
+        mock_db_connect.assert_has_calls([call("STATE_DB", use_tcp=False, authenticate=True), call("CONFIG_DB", use_tcp=False)])
         mock_gnoi_reboot_handler.assert_called_with(mock_state_db, mock_config_db, mock_chassis)
 
         # Verify that a thread was created to handle the transition
