@@ -166,11 +166,11 @@ class FeatureHandler(object):
             namespaces = device_info.get_namespaces()
             for ns in namespaces:
                 #Connect to ConfigDB in each namespace
-                self.ns_cfg_db[ns] = ConfigDBConnector(use_unix_socket_path=True, namespace=ns)
+                self.ns_cfg_db[ns] = ConfigDBConnector(use_unix_socket_path=True, authenticate=True, namespace=ns)
                 self.ns_cfg_db[ns].connect(wait_for_init=True, retry_on=True)
 
                 #Connect to stateDB in each namespace
-                db_conn = DBConnector(STATE_DB, 0, False, ns)
+                db_conn = DBConnector(STATE_DB, 0, False, ns, True)
                 self.ns_feature_state_tbl[ns] = Table(db_conn, FEATURE_TBL)
 
             # A namespace that never publishes (e.g. a fabric ASIC without portsyncd)
@@ -790,7 +790,7 @@ class FeatureHandler(object):
 class FeatureDaemon:
     def __init__(self):
         self.cfg_db_conn = DBConnector(CFG_DB, 0)
-        self.state_db_conn = DBConnector(STATE_DB, 0)
+        self.state_db_conn = DBConnector(STATE_DB, 0, False, "", True)
         self.appl_db_conn = DBConnector(APPL_DB, 0)
         self.callbacks = dict() # selectable <-> callback map
         self.subscriber_map = dict() # subscriber <-> fd map
@@ -798,7 +798,7 @@ class FeatureDaemon:
         if swsscommon.RestartWaiter.isAdvancedBootInProgress(self.state_db_conn):
             self.advanced_boot = True
             swsscommon.RestartWaiter.waitAdvancedBootDone()
-        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True, authenticate=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         self.selector = swsscommon.Select()
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')

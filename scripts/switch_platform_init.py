@@ -85,7 +85,7 @@ class SwitchPlatformInit:
 
   @staticmethod
   def _connect_redis(db_name):
-    return DBConnector(db_name, 0, False)
+    return DBConnector(db_name, 0, False, "", True)
 
   def populate_version_dictionaries(self):
     """Populate the version dictionaries for the primary and alternate versions."""
