@@ -264,6 +264,7 @@ class TestHostcfgdSSHServerAuthenticationRetries(TestCase):
                         config_dir + "/sshd_config")
         hostcfgd.SSH_CONFG = config_dir + "/sshd_config"
         hostcfgd.SSH_CONFG_TMP = hostcfgd.SSH_CONFG + ".tmp"
+        hostcfgd.SSH_CONFG_DEFAULT = hostcfgd.SSH_CONFG + ".default"
         hostcfgd.SshServer().policies_update(
             'POLICIES', {"authentication_retries": value, "login_timeout": "60"})
         with open(hostcfgd.SSH_CONFG) as f:
