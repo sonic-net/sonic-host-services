@@ -38,6 +38,20 @@ class TestSystemdService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
+    def test_service_restart_gnmi_allowed_telemetry_rejected(self, MockInit, MockBusName, MockSystemBus):
+        systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0, stderr=b"")
+            ret, msg = systemd_service_stub.restart_service("gnmi")
+            assert ret == 0
+            assert "gnmi" in mock_run.call_args[0][0]
+        ret, msg = systemd_service_stub.restart_service("telemetry")
+        assert ret == 1
+        assert "Dbus does not support" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
     def test_service_restart_empty(self, MockInit, MockBusName, MockSystemBus):
         service = ""
         systemd_service_stub = systemd_service.SystemdService(systemd_service.MOD_NAME)

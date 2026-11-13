@@ -179,7 +179,7 @@ def radius_server_entry_valid(server):
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
 OPENSSL_FIPS_CONFIG_FILE = '/etc/fips/fips_enable'
-DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
+DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'gnmi.service', 'restapi']
 
 # MISC Constants
 CFG_DB = "CONFIG_DB"
