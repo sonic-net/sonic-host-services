@@ -27,6 +27,7 @@ from host_modules import (
     reboot, 
     showtech, 
     ssh_mgmt,
+    ssl_profile,
     systemd_service
 )
 
@@ -45,7 +46,8 @@ def register_dbus(enable_debug_executor=False):
         'gnoi_reset': gnoi_reset.GnoiReset('gnoi_reset'),
         'ssh_mgmt': ssh_mgmt.SshMgmt('ssh_mgmt'),
         'gnsi_console': gnsi_console.GnsiConsole('gnsi_console'),
-        'glome': glome.Glome('glome')
+        'glome': glome.Glome('glome'),
+        'ssl_profile': ssl_profile.SslProfile('ssl_profile'),
         }
     if enable_debug_executor:
         print(
