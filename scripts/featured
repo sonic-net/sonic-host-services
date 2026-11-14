@@ -138,7 +138,7 @@ class FeatureHandler(object):
     FEATURE_STATE_ENABLED = "enabled"
     FEATURE_STATE_DISABLED = "disabled"
     FEATURE_STATE_FAILED = "failed"
-    FEATURE_EXCLUSION_LIST = {"frr_bmp"}
+    FEATURE_EXCLUSION_LIST = {"telemetry", "frr_bmp"}
 
     def __init__(self, config_db, feature_state_table, device_config, is_advanced_boot):
         self._config_db = config_db
