@@ -3,7 +3,7 @@
 Console Monitor Service
 
 Unified Console Monitor service with four modes:
-- pty-bridge: PTY Bridge service that creates a PTY pair using socat
+- pty-bridge: PTY Bridge service that links two PTYs with one socat per direction
 - dce: DCE service that manages pty-bridge and proxy processes via systemctl
 - proxy: Proxy service for a single serial port (runs as independent process)
 - dte: DTE service that sends heartbeat frames
@@ -473,7 +473,7 @@ def set_nonblocking(fd: int) -> None:
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
-def configure_serial(fd: int, baud: int) -> None:
+def configure_serial(fd: int, baud: int, flow_control: bool = False) -> None:
     """Configure serial port parameters"""
     attrs = termios.tcgetattr(fd)
     attrs[0] &= ~(termios.IGNBRK | termios.BRKINT | termios.PARMRK |
@@ -482,6 +482,12 @@ def configure_serial(fd: int, baud: int) -> None:
     attrs[1] &= ~termios.OPOST
     attrs[2] &= ~(termios.CSIZE | termios.PARENB)
     attrs[2] |= (termios.CS8 | termios.CREAD | termios.CLOCAL)
+    # Set CRTSCTS either way: the kernel keeps termios across opens, so relying
+    # on the driver default would inherit whatever the previous owner left.
+    if flow_control:
+        attrs[2] |= termios.CRTSCTS
+    else:
+        attrs[2] &= ~termios.CRTSCTS
     attrs[3] &= ~(termios.ECHO | termios.ECHONL | termios.ICANON |
                   termios.ISIG | termios.IEXTEN)
     attrs[6][termios.VMIN] = 0
@@ -588,8 +594,34 @@ def build_logrotate_config(log_file: str, size: str, count: int) -> str:
 
 
 # ============================================================
-# PTY Bridge (runs as independent process, exec socat)
+# PTY Bridge (runs as independent process, exec bash supervising socat)
 # ============================================================
+
+# A single bidirectional socat blocks in write() on one PTY and stops reading
+# the other, which can deadlock the console when the UART uses RTS/CTS. Run
+# one socat per direction instead. If either exits, stop the other and exit
+# non-zero so systemd restarts the whole bridge with fresh PTYs.
+PTY_BRIDGE_SUPERVISOR = '''
+pts_link=$1 pts_dev=$2 ptm_link=$3 ptm_dev=$4 pts_master=$5 ptm_master=$6
+cleanup() {
+    kill $up $down 2>/dev/null
+    [ "$(readlink "$pts_link")" = "$pts_dev" ] && rm -f "$pts_link"
+    [ "$(readlink "$ptm_link")" = "$ptm_dev" ] && rm -f "$ptm_link"
+}
+# Exit 128+signal like socat, so Restart=on-failure restarts the bridge after
+# a stray signal.
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 131' QUIT
+trap 'cleanup; exit 143' TERM
+socat -d -d -u FD:$pts_master FD:$ptm_master & up=$!
+socat -d -d -u FD:$ptm_master FD:$pts_master & down=$!
+wait -n $up $down
+echo "$0 socat exited, stopping bridge" >&2
+cleanup
+exit 1
+'''
+
 
 def run_pty_bridge(link_id: str) -> int:
     """
@@ -597,9 +629,11 @@ def run_pty_bridge(link_id: str) -> int:
 
     This function:
     1. Gets udev prefix (uses default if not available)
-    2. Executes socat to create a PTY pair, replacing current process
+    2. Creates two raw PTY pairs and symlinks their slave ends
+    3. Executes bash running one socat per direction between the two PTY
+       masters (PTY_BRIDGE_SUPERVISOR), replacing current process
 
-    The socat command creates two linked PTY devices:
+    The symlinks are:
     - /dev/{prefix}{link_id}-PTS (for user applications like picocom)
     - /dev/{prefix}{link_id}-PTM (for SerialProxy)
     """
@@ -614,22 +648,37 @@ def run_pty_bridge(link_id: str) -> int:
 
     log.info(f"[PTYBridge:{link_id}] Creating PTY pair: {pts_path} <-> {ptm_path}")
 
-    # Build socat command
-    # socat creates two linked PTYs with symlinks
-    socat_args = [
-        'socat',
-        '-d', '-d',  # Debug output
-        f'PTY,raw,echo=0,link={pts_path},mode=666',
-        f'PTY,raw,echo=0,link={ptm_path},mode=666',
+    try:
+        pts_master, pts_slave = os.openpty()
+        ptm_master, ptm_slave = os.openpty()
+        for link, slave in ((pts_path, pts_slave), (ptm_path, ptm_slave)):
+            tty.setraw(slave)
+            os.chmod(os.ttyname(slave), 0o666)
+            if os.path.lexists(link):
+                os.unlink(link)
+            os.symlink(os.ttyname(slave), link)
+        # The slaves stay open across exec so a master never reads EIO
+        # while no user or proxy has its end open.
+        for fd in (pts_master, pts_slave, ptm_master, ptm_slave):
+            os.set_inheritable(fd, True)
+    except OSError as e:
+        log.error(f"[PTYBridge:{link_id}] Failed to create PTY pairs: {e}")
+        return EXIT_SERVICE_START_FAILED
+
+    bash_args = [
+        'bash', '-c', PTY_BRIDGE_SUPERVISOR, f'[PTYBridge:{link_id}]',
+        pts_path, os.ttyname(pts_slave), ptm_path, os.ttyname(ptm_slave),
+        str(pts_master), str(ptm_master),
     ]
 
-    log.info(f"[PTYBridge:{link_id}] Exec: {' '.join(socat_args)}")
+    log.info(f"[PTYBridge:{link_id}] Exec: socat -u FD:{pts_master} FD:{ptm_master} "
+             f"and socat -u FD:{ptm_master} FD:{pts_master}")
 
-    # Replace current process with socat
+    # Replace current process with the bash supervisor
     try:
-        os.execvp('socat', socat_args)
+        os.execvp('bash', bash_args)
     except Exception as e:
-        log.error(f"[PTYBridge:{link_id}] Failed to exec socat: {e}")
+        log.error(f"[PTYBridge:{link_id}] Failed to exec bash: {e}")
         return EXIT_SERVICE_START_FAILED
 
     # Should never reach here
@@ -668,6 +717,7 @@ class ProxyService:
 
         # Configuration (obtained in wait phases)
         self.baud: int = DEFAULT_BAUD
+        self.flow_control: bool = False
         self.device_path: str = ""
         self.ptm_path: str = ""
         self.logging_enabled: bool = False
@@ -685,6 +735,10 @@ class ProxyService:
         self.filter: Optional[FrameFilter] = None
         self._ptm_tx_pending = bytearray()
         self._ptm_write_failed = False
+        # Bytes already consumed from PTM but not yet accepted by the UART.
+        # Keep at most one PTM read pending so UART backpressure propagates
+        # through socat/PTY to picocom and SSH.
+        self._serial_tx_pending = bytearray()
 
         # State tracking
         self._current_oper_state: Optional[str] = None
@@ -758,7 +812,9 @@ class ProxyService:
                 self.baud = int(entry.get('baud_rate', DEFAULT_BAUD))
                 self.logging_enabled = entry.get('logging_enabled', 'no') == 'yes'
                 self.log_file_path = entry.get('log_file') or default_log_file(self.link_id)
+                self.flow_control = entry.get('flow_control', '0') == '1'
                 log.info(f"[{self.link_id}] Config loaded: baud={self.baud}, "
+                         f"flow_control={'enabled' if self.flow_control else 'disabled'}, "
                          f"logging={'enabled' if self.logging_enabled else 'disabled'}, "
                          f"log_file={self.log_file_path}")
                 log.debug(f"[{self.link_id}] Full CONSOLE_PORT entry: {entry}")
@@ -810,7 +866,7 @@ class ProxyService:
 
             # Open serial port
             self.ser_fd = os.open(self.device_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-            configure_serial(self.ser_fd, self.baud)
+            configure_serial(self.ser_fd, self.baud, self.flow_control)
 
             # Open PTM
             self.ptm_fd = os.open(self.ptm_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
@@ -871,13 +927,24 @@ class ProxyService:
                     else:
                         select_timeout = 0
 
-                read_fds = [self.ptm_fd, self._wake_r]
+                # Stop reading a side while bytes for the other side are pending,
+                # so a full UART or PTM backpressures its sender instead of
+                # growing the queue.
+                read_fds = [self._wake_r]
                 if not self._ptm_tx_pending:
                     read_fds.append(self.ser_fd)
-                write_fds = [self.ptm_fd] if self._ptm_tx_pending else []
+                if not self._serial_tx_pending:
+                    read_fds.append(self.ptm_fd)
+                write_fds = []
+                if self._ptm_tx_pending:
+                    write_fds.append(self.ptm_fd)
+                if self._serial_tx_pending:
+                    write_fds.append(self.ser_fd)
+
                 readable, writable, _ = select.select(
                     read_fds,
-                    write_fds, [],
+                    write_fds,
+                    [],
                     select_timeout
                 )
 
@@ -900,6 +967,8 @@ class ProxyService:
 
                 if self.ptm_fd in writable:
                     self._flush_ptm_tx()
+                if self.ser_fd in writable:
+                    self._flush_serial_tx()
 
                 # Check heartbeat timeout
                 self._check_heartbeat_timeout()
@@ -990,17 +1059,28 @@ class ProxyService:
             pass
 
     def _on_ptm_read(self) -> None:
-        """PTM data read callback"""
-        if not self.running:
+        """Move one PTM chunk into the pending UART queue."""
+        if not self.running or self._serial_tx_pending:
             return
         try:
             data = os.read(self.ptm_fd, 4096)
             if data:
-                written = os.write(self.ser_fd, data)
-                if written and self.mirror_manager:
-                    self.mirror_manager.submit("tx", data[:written])
+                self._serial_tx_pending.extend(data)
         except (BlockingIOError, OSError):
             pass
+
+    def _flush_serial_tx(self) -> None:
+        """Write pending PTM data without losing partial/EAGAIN writes."""
+        if not self.running or not self._serial_tx_pending:
+            return
+        try:
+            written = os.write(self.ser_fd, self._serial_tx_pending)
+        except BlockingIOError:
+            return
+        if written > 0:
+            if self.mirror_manager:
+                self.mirror_manager.submit("tx", bytes(self._serial_tx_pending[:written]))
+            del self._serial_tx_pending[:written]
 
     def _on_frame_received(self, frame: Frame) -> None:
         """Frame received callback"""
@@ -1296,6 +1376,7 @@ class DCEService:
                     "log_file": entry.get("log_file") or default_log_file(key_str),
                     "logrotate_size": entry.get("logrotate_size", DEFAULT_LOGROTATE_SIZE),
                     "logrotate_count": str(entry.get("logrotate_count", DEFAULT_LOGROTATE_COUNT)),
+                    "flow_control": entry.get("flow_control", "0"),
                 }
         except Exception as e:
             log.error(f"DCE: Failed to get configs: {e}")
@@ -1832,7 +1913,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  console-monitor pty-bridge 1        # Run PTY bridge for link 1 (exec socat)
+  console-monitor pty-bridge 1        # Run PTY bridge for link 1 (socat per direction)
   console-monitor dce -l debug        # Run DCE service with debug logging
   console-monitor proxy 1             # Run proxy for link 1
   console-monitor proxy -l debug 2    # Run proxy for link 2 with debug logging
@@ -1844,7 +1925,7 @@ Examples:
     subparsers = parser.add_subparsers(dest='mode', help='Service mode')
 
     # PTY Bridge subcommand
-    pty_bridge_parser = subparsers.add_parser('pty-bridge', help='Run PTY bridge for a port (exec socat)')
+    pty_bridge_parser = subparsers.add_parser('pty-bridge', help='Run PTY bridge for a port (socat per direction)')
     pty_bridge_parser.add_argument('-l', '--log-level',
                                    choices=['debug', 'info', 'warning', 'error', 'critical'],
                                    default='info', help='Set log level (default: info)')
