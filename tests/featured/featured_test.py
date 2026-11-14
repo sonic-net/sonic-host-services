@@ -1578,14 +1578,18 @@ class TestAbsentFeature(TestCase):
         self.assertNotIn('swss', self.handler._features_pending_config)
         self.state_table.set.assert_called_with('swss', [('state', 'enabled')])
 
-    @parameterized.expand([('write',), ('reload',)])
+    @parameterized.expand([
+        (failure, auto_restart)
+        for failure in ('write', 'reload')
+        for auto_restart in ('enabled', 'disabled')
+    ])
     @patchfs
-    def test_skipped_config_failure_blocks_start_until_retry(self, failure, fs):
+    def test_skipped_config_failure_blocks_start_until_retry(self, failure, auto_restart, fs):
         fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
         self.handler.sync_state_field({'swss': self.config})
         self.run.reset_mock()
         self.load_state = 'loaded'
-        self.config['state'] = 'enabled'
+        self.config.update(state='enabled', auto_restart=auto_restart)
         if failure == 'write':
             with mock.patch('featured.open', side_effect=OSError('write failed')):
                 self.handler.handler('swss', 'SET', self.config)
@@ -1600,18 +1604,39 @@ class TestAbsentFeature(TestCase):
 
         self.assertIn('swss', self.handler._features_pending_config)
         self.assertIn('swss', self.handler._features_pending_update)
+        self.assertEqual(self.handler._cached_config['swss'].state, 'disabled')
+        self.assertEqual(self.handler._cached_config['swss'].auto_restart, 'enabled')
         self.state_table.set.assert_called_with('swss', [('state', 'failed')])
         self.assertTrue(any(c.args[0] == featured.syslog.LOG_ERR
                             for c in self.log.call_args_list))
+        if failure == 'write':
+            self.assertTrue(any('swss' in c.args[1] and 'write failed' in c.args[1]
+                                for c in self.log.call_args_list))
 
-        self.run.side_effect = None
+        config_path = os.path.join(
+            self.handler.SYSTEMD_SERVICE_CONF_DIR.format('swss'), 'auto_restart.conf')
+        observed_configs = []
+
+        def run_systemctl(cmd, **kwargs):
+            if cmd[2] in ('daemon-reload', 'start'):
+                with open(config_path) as config_file:
+                    observed_configs.append((cmd[2], config_file.read()))
+            return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+        self.run.side_effect = run_systemctl
         self.run.reset_mock()
         self.handler.handler('swss', 'SET', self.config)
 
+        expected_config = '[Service]\nRestart={}\n'.format(
+            'always' if auto_restart == 'enabled' else 'no')
+        self.assertEqual(observed_configs, [
+            ('daemon-reload', expected_config), ('start', expected_config)])
         commands = [invocation.args[0][2] for invocation in self.run.call_args_list]
         self.assertEqual(commands, ['daemon-reload', 'unmask', 'enable', 'start'])
         self.assertNotIn('swss', self.handler._features_pending_config)
         self.assertNotIn('swss', self.handler._features_pending_update)
+        self.assertEqual(self.handler._cached_config['swss'].state, 'enabled')
+        self.assertEqual(self.handler._cached_config['swss'].auto_restart, auto_restart)
         self.state_table.set.assert_called_with('swss', [('state', 'enabled')])
 
     @parameterized.expand([('success', False), ('failure', True)])
