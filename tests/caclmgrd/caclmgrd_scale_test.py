@@ -9,6 +9,7 @@ from pyfakefs.fake_filesystem_unittest import patchfs
 
 from .test_scale_vectors import CACLMGRD_SCALE_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
+from .iptables_restore_util import expand_restore_calls, assert_calls_in, assert_restore_only
 from unittest.mock import MagicMock, patch
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
@@ -39,6 +40,7 @@ class TestCaclmgrdScale(TestCase):
                 popen_mock = mock.Mock()
                 popen_attrs = test_data["popen_attributes"]
                 popen_mock.configure_mock(**popen_attrs)
+                popen_mock.returncode = 0
                 mocked_subprocess.Popen.return_value = popen_mock
                 mocked_subprocess.PIPE = -1
 
@@ -48,4 +50,6 @@ class TestCaclmgrdScale(TestCase):
                 caclmgrd_daemon = self.caclmgrd.ControlPlaneAclManager("caclmgrd")
                 caclmgrd_daemon.num_changes[''] = 150
                 caclmgrd_daemon.check_and_update_control_plane_acls('', 150)
-                mocked_subprocess.Popen.assert_has_calls(test_data["expected_subprocess_calls"], any_order=True)
+                popen_calls = expand_restore_calls(mocked_subprocess.mock_calls)
+                assert_restore_only(self, mocked_subprocess.Popen.call_args_list)
+                assert_calls_in(self, test_data["expected_subprocess_calls"], popen_calls)

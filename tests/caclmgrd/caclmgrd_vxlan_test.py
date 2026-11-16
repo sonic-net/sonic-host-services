@@ -9,6 +9,7 @@ from unittest import TestCase, mock
 from pyfakefs.fake_filesystem_unittest import patchfs
 
 from tests.common.mock_configdb import MockConfigDb
+from .iptables_restore_util import restore_text_to_commands
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
 
@@ -35,8 +36,25 @@ class FakeProc(object):
         self.returncode = returncode
         self._out = (stdout, stderr)
 
-    def communicate(self):
+    def communicate(self, input=None):
         return self._out
+
+
+class FakeRestoreProc(object):
+    """'<binary>-restore --noflush': applies its input as one transaction, or nothing"""
+    def __init__(self, ipt, binary):
+        self.ipt, self.binary = ipt, binary
+        self.returncode = None
+
+    def communicate(self, input=None):
+        saved = {k: list(v) for k, v in self.ipt.chains.items()}
+        for cmd in restore_text_to_commands(self.binary, input or ''):
+            if self.ipt.apply(cmd).returncode != 0:
+                self.ipt.chains = saved
+                self.returncode = 1
+                return ('', '{}-restore: line failed\n'.format(self.binary))
+        self.returncode = 0
+        return ('', '')
 
 
 def canonical(spec):
@@ -63,6 +81,11 @@ class FakeIptables(object):
 
     def popen(self, cmd, **kwargs):
         self.calls.append(list(cmd))
+        if cmd[0] in ('iptables-restore', 'ip6tables-restore'):
+            return FakeRestoreProc(self, cmd[0][:-len('-restore')])
+        return self.apply(cmd)
+
+    def apply(self, cmd):
         ipt = cmd[0]
         if ipt not in self.chains or len(cmd) < 2:
             return FakeProc(0)
