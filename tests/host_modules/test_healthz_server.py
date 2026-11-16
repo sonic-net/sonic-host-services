@@ -28,8 +28,6 @@ def _registration_namespace(healthz_constructor):
         "systemd_service": ("SystemdService", "systemd"),
         "image_service": ("ImageService", "image_service"),
         "docker_service": ("DockerService", "docker_service"),
-        "file_service": ("FileService", "file_stat"),
-        "debug_service": ("DebugExecutor", "debug_service"),
         "debug_info": ("DebugArtifactCollector", "debug_info"),
         "gnoi_reset": ("GnoiReset", "gnoi_reset"),
         "ssh_mgmt": ("SshMgmt", "ssh_mgmt"),

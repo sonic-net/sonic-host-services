@@ -17,6 +17,7 @@ from tests.common.mock_configdb import MockConfigDb, MockDBConnector
 from pyfakefs.fake_filesystem_unittest import patchfs
 from deepdiff import DeepDiff
 from unittest.mock import call
+from contextlib import ExitStack
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
@@ -29,6 +30,78 @@ hostcfgd = load_module_from_source('hostcfgd', hostcfgd_path)
 hostcfgd.ConfigDBConnector = MockConfigDb
 hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
+
+
+class TestAaaServerFields(TestCase):
+    def test_valid_values(self):
+        self.assertTrue(hostcfgd.aaa_server_fields_safe({
+            'ip': '192.0.2.1', 'bind_dn': 'cn=User Name,dc=example',
+            'priority': 1,
+        }))
+        self.assertTrue(hostcfgd.aaa_server_fields_safe(
+            {'ip': '192.0.2.1', 'nas_id': 'switch-1'},
+            hostcfgd.RADIUS_CONFIG_TOKEN_FIELDS))
+
+    @parameterized.expand([(10,), (13,), (0,)])
+    def test_invalid_values(self, codepoint):
+        self.assertFalse(hostcfgd.aaa_server_fields_safe({
+            'field': 'line' + chr(codepoint) + 'break',
+        }))
+
+    @parameterized.expand([('switch retry=0',), ('switch\tretry=0',)])
+    def test_radius_pam_token_separators_are_rejected(self, nas_id):
+        self.assertFalse(hostcfgd.aaa_server_fields_safe(
+            {'nas_id': nas_id}, hostcfgd.RADIUS_CONFIG_TOKEN_FIELDS))
+
+    def test_tacplus_config_separator_is_rejected(self):
+        self.assertFalse(hostcfgd.aaa_server_fields_safe(
+            {'passkey': 'secret,timeout=0'},
+            hostcfgd.TACPLUS_CONFIG_TOKEN_FIELDS, token_delimiters=','))
+
+    def test_invalid_server_fields_do_not_reach_templates(self):
+        aaa = hostcfgd.AaaCfg(None)
+        aaa.tacplus_global = {'src_ip': '192.0.2.1\nsource'}
+        aaa.tacplus_servers = {
+            '192.0.2.11': {'priority': '1', 'passkey': 'invalid\nkey'},
+            '192.0.2.12': {'priority': '1', 'passkey': 'validkey'},
+        }
+        aaa.radius_servers = {
+            '192.0.2.21': {'passkey': 'invalid\rkey'},
+            '192.0.2.22': {'passkey': 'validkey'},
+            '192.0.2.23': {'nas_id': 'switch\tretry=0'},
+        }
+        aaa.ldap_servers = {
+            '192.0.2.31': {'priority': '1', 'bind_dn': 'invalid\x00dn'},
+            '192.0.2.32': {'priority': '1', 'bind_dn': 'cn=Valid User'},
+        }
+
+        with ExitStack() as stack:
+            environment = stack.enter_context(mock.patch.object(hostcfgd.jinja2, 'Environment'))
+            generated = stack.enter_context(mock.patch.object(hostcfgd, 'generate_file_from_template'))
+            stack.enter_context(mock.patch.object(hostcfgd, 'open', mock.mock_open(), create=True))
+            stack.enter_context(mock.patch.object(hostcfgd.os.path, 'isfile', return_value=False))
+            stack.enter_context(mock.patch.object(hostcfgd.os.path, 'exists', return_value=True))
+            stack.enter_context(mock.patch.object(hostcfgd.os, 'chmod'))
+            stack.enter_context(mock.patch.object(hostcfgd.os, 'rename'))
+            stack.enter_context(mock.patch.object(hostcfgd.subprocess, 'check_call'))
+            stack.enter_context(mock.patch.object(aaa, 'modify_single_file'))
+            stack.enter_context(mock.patch.object(aaa, 'notify_audisp_tacplus_reload_config'))
+            stack.enter_context(mock.patch.object(aaa, 'get_interface_ip', return_value=''))
+
+            aaa.modify_conf_file()
+
+        render_calls = environment.return_value.get_template.return_value.render.call_args_list
+        rendered = [server['ip'] for entry in render_calls
+                    for server in entry[1].get('servers', [])]
+        self.assertIn('192.0.2.12', rendered)
+        self.assertIn('192.0.2.22', rendered)
+        self.assertNotIn('192.0.2.11', rendered)
+        self.assertNotIn('192.0.2.21', rendered)
+        self.assertNotIn('192.0.2.23', rendered)
+        self.assertTrue(all(entry[1].get('src_ip') is None for entry in render_calls))
+
+        ldap_servers = generated.call_args_list[0][0][3]['servers']
+        self.assertEqual([server['ip'] for server in ldap_servers], ['192.0.2.32'])
 
 
 class TesNtpCfgd(TestCase):
@@ -175,6 +248,16 @@ class TestHostcfgdDaemon(TestCase):
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
         self.get_dev_meta.stop()
+
+    def test_config_db_connection_uses_unix_socket(self):
+        with mock.patch.object(hostcfgd, 'ConfigDBConnector') as config_db_connector, \
+                mock.patch.object(hostcfgd.swsscommon, 'RestartWaiter') as restart_waiter:
+            restart_waiter.isAdvancedBootInProgress.return_value = False
+            hostcfgd.HostConfigDaemon()
+
+        config_db_connector.assert_called_once_with(use_unix_socket_path=True)
+        config_db_connector.return_value.connect.assert_called_once_with(
+            wait_for_init=True, retry_on=True)
 
     def test_loopback_events(self):
         MockConfigDb.set_config_db(HOSTCFG_DAEMON_CFG_DB)

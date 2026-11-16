@@ -3,11 +3,13 @@
 import copy
 import ipaddress
 import os
+import socket
 import sys
 import subprocess
 import syslog
 import signal
 import re
+import socket
 import jinja2
 import psutil
 import time
@@ -73,6 +75,8 @@ SSH_CONFIG_NAMES={"authentication_retries": "MaxAuthTries",
                   "ciphers": "Ciphers",
                   "kex_algorithms": "KexAlgorithms",
                   "macs": "MACs"}
+# Wildcard listeners restored whenever listen_addresses is absent/removed
+SSH_DEFAULT_LISTEN_ADDRESSES = [ "0.0.0.0", "::" ]
 
 ACCOUNT_NAME = 0 # index of account name
 AGE_DICT = { 'MAX_DAYS': {'REGEX_DAYS': r'^PASS_MAX_DAYS[ \t]*(?P<max_days>-?\d*)', 'DAYS': 'max_days', 'CHAGE_FLAG': '-M '},
@@ -87,6 +91,7 @@ LIMITS_CONF = "/etc/security/limits.conf"
 TACPLUS_SERVER_PASSKEY_DEFAULT = ""
 TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
 TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+TACPLUS_TRACEID_AUTHORIZATION_DEFAULT = False
 
 # RADIUS
 RADIUS_SERVER_AUTH_PORT_DEFAULT = "1812"
@@ -96,6 +101,80 @@ RADIUS_SERVER_TIMEOUT_DEFAULT = "5"
 RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
+
+
+TACPLUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'tcp_port', 'passkey', 'auth_type', 'timeout', 'vrf', 'src_ip'))
+RADIUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'auth_port', 'passkey', 'auth_type', 'retransmit', 'timeout',
+     'nas_ip', 'nas_id', 'src_ip', 'vrf'))
+
+
+def aaa_server_fields_safe(server, token_fields=(), token_delimiters=''):
+    """Reject line controls and separators in values rendered as config tokens."""
+    for field, value in server.items():
+        if not isinstance(value, str):
+            continue
+        if re.search(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', value):
+            return False
+        if field in token_fields and (any(char.isspace() for char in value) or
+                                      any(char in value for char in token_delimiters)):
+            return False
+    return True
+
+
+def _radius_host_valid(host):
+    if not isinstance(host, str) or not host or any(ord(char) < 33 or ord(char) == 127 for char in host):
+        return False
+
+    try:
+        if '%' in host:
+            address, scope = host.split('%', 1)
+            if '%' in scope or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', scope):
+                return False
+            ipaddress.IPv6Address(address)
+        else:
+            ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        if '%' in host:
+            return False
+
+    # Reject non-canonical IPv4 forms before applying DNS hostname syntax.
+    try:
+        socket.inet_aton(host)
+        return False
+    except OSError:
+        pass
+
+    hostname = host[:-1] if host.endswith('.') else host
+    if not hostname or len(hostname) > 253:
+        return False
+    label_pattern = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?')
+    return all(label_pattern.fullmatch(label) for label in hostname.split('.'))
+
+
+def radius_server_entry_valid(server):
+    try:
+        if not _radius_host_valid(server['ip']):
+            raise ValueError('invalid host')
+        if not isinstance(server['auth_port'], str) or not re.fullmatch(r'[0-9]+', server['auth_port']):
+            raise ValueError('invalid auth_port')
+        auth_port = int(server['auth_port'])
+        if not 1 <= auth_port <= 65535:
+            raise ValueError('auth_port out of range')
+        server['auth_port'] = str(auth_port)
+        return True
+    except (KeyError, ValueError) as error:
+        syslog.syslog(
+            syslog.LOG_ERR,
+            'RADIUS_SERVER: skipping invalid server entry '
+            '(ip={!r}, auth_port={!r}): {}'.format(
+                server.get('ip'), server.get('auth_port'), error
+            )
+        )
+        return False
+
 
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
@@ -277,6 +356,23 @@ def is_match(pattern, file_path):
     return res_match
 
 
+def get_dut_ip_addresses():
+    """ Return the set of IPv4/IPv6 addresses (canonical form) currently
+        assigned to any interface (including loopback) on this device. """
+    assigned_addresses = set()
+    for addrs in psutil.net_if_addrs().values():
+        for snic in addrs:
+            if snic.family not in (socket.AF_INET, socket.AF_INET6):
+                continue
+            # Strip IPv6 zone id (e.g. "fe80::1%eth0") before parsing
+            address = snic.address.split('%')[0]
+            try:
+                assigned_addresses.add(ipaddress.ip_address(address).compressed)
+            except ValueError:
+                continue
+    return assigned_addresses
+
+
 class Iptables(object):
     def __init__(self):
         '''
@@ -366,7 +462,8 @@ class AaaCfg(object):
         self.tacplus_global_default = {
             'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
             'timeout': TACPLUS_SERVER_TIMEOUT_DEFAULT,
-            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT
+            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT,
+            'traceid_authorization': TACPLUS_TRACEID_AUTHORIZATION_DEFAULT
         }
         self.tacplus_global = {}
         self.tacplus_servers = {}
@@ -467,6 +564,8 @@ class AaaCfg(object):
     def tacacs_global_update(self, key, data, modify_conf=True):
         if key == 'global':
             self.tacplus_global = data
+            if 'traceid_authorization' in self.tacplus_global:
+                self.tacplus_global['traceid_authorization'] = is_true(self.tacplus_global['traceid_authorization'])
             if modify_conf:
                 self.modify_conf_file()
 
@@ -650,10 +749,12 @@ class AaaCfg(object):
         ldap_global = self.ldap_global_default.copy()
         ldap_global.update(self.ldap_global)
 
-        if 'src_ip' in tacplus_global:
-            src_ip = tacplus_global['src_ip']
-        else:
-            src_ip = None
+        if 'src_ip' in tacplus_global and not aaa_server_fields_safe(
+                {'src_ip': tacplus_global['src_ip']}, TACPLUS_CONFIG_TOKEN_FIELDS,
+                token_delimiters=','):
+            syslog.syslog(syslog.LOG_ERR, "TACPLUS: invalid source address; ignoring")
+            tacplus_global.pop('src_ip')
+        src_ip = tacplus_global.get('src_ip')
 
         servers_conf = []
         if self.tacplus_servers:
@@ -661,6 +762,10 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
+                if not aaa_server_fields_safe(
+                        server, TACPLUS_CONFIG_TOKEN_FIELDS, token_delimiters=','):
+                    syslog.syslog(syslog.LOG_ERR, "TACPLUS_SERVER: invalid field; ignoring entry")
+                    continue
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -699,6 +804,11 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
                         del server['src_ip']
 
+                if not aaa_server_fields_safe(server, RADIUS_CONFIG_TOKEN_FIELDS):
+                    syslog.syslog(syslog.LOG_ERR, "RADIUS_SERVER: invalid field; ignoring entry")
+                    continue
+                if not radius_server_entry_valid(server):
+                    continue
                 radsrvs_conf.append(server)
             radsrvs_conf = sorted(radsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -709,6 +819,9 @@ class AaaCfg(object):
                 server = ldap_global.copy()
                 server['ip'] = addr
                 server.update(self.ldap_servers[addr])
+                if not aaa_server_fields_safe(server):
+                    syslog.syslog(syslog.LOG_ERR, "LDAP_SERVER: invalid field; ignoring entry")
+                    continue
                 ldapsrvs_conf.append(server)
             ldapsrvs_conf = sorted(ldapsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -808,7 +921,8 @@ class AaaCfg(object):
                                         local_accounting=local_accounting_conf,
                                         tacacs_accounting=tacacs_accounting_conf,
                                         local_authorization=local_authorization_conf,
-                                        tacacs_authorization=tacacs_authorization_conf)
+                                        tacacs_authorization=tacacs_authorization_conf,
+                                        traceid_authorization=tacplus_global['traceid_authorization'])
         with open(NSS_TACPLUS_CONF, 'w') as f:
             f.write(nss_tacplus_conf)
 
@@ -891,6 +1005,20 @@ class PasswHardening(object):
         if data == {}:
             self.passw_policies = {}
         else:
+            if key == 'POLICIES':
+                data = data.copy()
+                # history_cnt=0 is the existing way to disable password history.
+                for field, minimum, maximum in (('len_min', 1, 32),
+                                                ('history_cnt', 0, 100)):
+                    if field in data:
+                        value = str(data[field])
+                        if (not re.fullmatch(r'[0-9]+', value, re.ASCII) or
+                                len(value) > 10 or not minimum <= int(value) <= maximum):
+                            syslog.syslog(syslog.LOG_ERR,
+                                          'PASSW_HARDENING: invalid {} value; ignoring policy update'
+                                          .format(field))
+                            return
+                        data[field] = str(int(value))
             if 'reject_user_passw_match' in data:
                 data['reject_user_passw_match'] = is_true(data['reject_user_passw_match'])
             if 'lower_class' in data:
@@ -1045,6 +1173,28 @@ class PasswHardening(object):
 class SshServer(object):
     def __init__(self):
         self.policies = {}
+        # Tracks whether listen_addresses is currently applied, so its
+        # removal (leaving the field absent) can restore the wildcards.
+        # Initialized from the on-disk sshd_config (rather than always
+        # False) so a hostcfgd restart doesn't lose track of a
+        # previously-applied restriction and leave stale ListenAddress
+        # lines in place until an unrelated policy write occurs.
+        self.listen_addresses_configured = self.is_listen_addresses_configured()
+
+    def is_listen_addresses_configured(self):
+        # A non-wildcard "ListenAddress" line in the live sshd_config means
+        # listen_addresses is currently restricting sshd.
+        if not os.path.exists(SSH_CONFG):
+            return False
+        try:
+            with open(SSH_CONFG, 'r') as f:
+                for line in f:
+                    match = re.match(r'^ListenAddress\s+(\S+)\s*$', line)
+                    if match and match.group(1) not in SSH_DEFAULT_LISTEN_ADDRESSES:
+                        return True
+        except OSError:
+            syslog.syslog(syslog.LOG_ERR, "Failed to read {} to determine listen_addresses state".format(SSH_CONFG))
+        return False
 
     def load(self, policies_conf):
         if 'POLICIES' in policies_conf:
@@ -1058,8 +1208,10 @@ class SshServer(object):
         ssh_policies = {}
         ssh_policies.update(self.policies)
 
-        # set new SSH server policies.
-        if len(ssh_policies) > 0:
+        # set new SSH server policies. Also run when listen_addresses was
+        # previously applied so the wildcard listeners get restored even if
+        # no other policy is currently configured.
+        if len(ssh_policies) > 0 or self.listen_addresses_configured:
             self.set_policies(ssh_policies)
 
     def policies_update(self, key, data, modify_conf=True):
@@ -1069,9 +1221,36 @@ class SshServer(object):
             if 'ports' in data:
                 data['ports'] = data['ports'].split(',')
             self.policies = data
+        else:
+            # Key/row removed (e.g. whole POLICIES row deleted) - drop the
+            # stale policy state instead of silently re-applying it.
+            self.policies = {}
 
         if modify_conf:
             self.modify_conf_file()
+
+    # Return where ListenAddress directives should be inserted, computed
+    # *before* any existing ListenAddress/#ListenAddress lines are deleted:
+    # ('before', N) - insert with sed 'i' before line N. N is the first
+    # existing ListenAddress/#ListenAddress line if one exists (preserving
+    # today's insertion point regardless of whether such lines are
+    # consecutive or interleaved with other directives), otherwise the
+    # first "Match" line, since directives inside a Match block only apply
+    # to matching connections rather than globally.
+    # ('after', N) - no ListenAddress line and no Match block exist, so
+    # append with sed 'a' after line N, the last line of the file.
+    # get_line_num_of_pattern()'s fallback (last line seen) isn't a
+    # meaningful insertion point on its own, so it's not relied on here.
+    def get_listen_address_insert_line(self, file_path):
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines):
+            if re.match(r'^(#)?ListenAddress\b', line):
+                return 'before', i + 1  # sed line numbers are 1-based
+        for i, line in enumerate(lines):
+            if re.match(r'^Match\b', line):
+                return 'before', i + 1
+        return 'after', len(lines)
 
     # return first line apperience of pattern - else return number of lines in the file
     def get_line_num_of_pattern(self, pattern, file_path, find_commented=False):
@@ -1107,6 +1286,62 @@ class SshServer(object):
             modify_single_file_inplace(SSH_CONFG_TMP, [f'{str(port_line_num)} i Port {str(port_num)}'])
         return True
 
+    def handle_listen_addresses_set(self, values_list):
+        if len(values_list) == 0:
+            # YANG intentionally allows an empty leaf-list (no min-elements);
+            # the application layer is the one that rejects it as unusable.
+            syslog.syslog(syslog.LOG_WARNING, "Ssh listen_addresses is empty - at least one address is required")
+            return False
+
+        # Duplicate addresses are rejected outright (rather than silently
+        # de-duplicated) so operators get explicit, deterministic feedback.
+        canonical_addresses = []
+        seen_addresses = set()
+        for addr in values_list:
+            try:
+                canonical = ipaddress.ip_address(str(addr)).compressed
+            except ValueError:
+                syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is not a valid IP address".format(addr))
+                return False
+            if canonical in seen_addresses:
+                syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is a duplicate address".format(addr))
+                return False
+            seen_addresses.add(canonical)
+            canonical_addresses.append(canonical)
+
+        # Every configured address must currently be assigned to the DUT
+        # (management or loopback interfaces included). The wildcards are
+        # exempt since they mean "all interfaces" rather than a specific one.
+        # Reject the whole update if any other address isn't currently assigned.
+        assigned_addresses = get_dut_ip_addresses()
+        for addr in canonical_addresses:
+            if addr in SSH_DEFAULT_LISTEN_ADDRESSES:
+                syslog.syslog(syslog.LOG_WARNING, "Ssh listen_addresses includes wildcard {} - equivalent to default (all interfaces)".format(addr))
+                continue
+            if addr not in assigned_addresses:
+                syslog.syslog(syslog.LOG_ERR, "Ssh listen_addresses value '{}' is not currently assigned to any interface on this device".format(addr))
+                return False
+
+        self._replace_listen_addresses(canonical_addresses)
+        return True
+
+    def restore_default_listen_addresses(self):
+        # Restore the IPv4/IPv6 wildcard listeners once listen_addresses is
+        # removed (either alone or via deleting the whole POLICIES row).
+        self._replace_listen_addresses(SSH_DEFAULT_LISTEN_ADDRESSES)
+
+    def _replace_listen_addresses(self, addresses):
+        # Shared by handle_listen_addresses_set and
+        # restore_default_listen_addresses: drop all existing
+        # ListenAddress/#ListenAddress lines and re-insert one per given
+        # address at the anchor computed before the deletion.
+        mode, line_num = self.get_listen_address_insert_line(SSH_CONFG_TMP)
+        sed_cmd = 'i' if mode == 'before' else 'a'
+        modify_single_file_inplace(SSH_CONFG_TMP, ['-E', "/^(#)?ListenAddress .*$/d"])
+
+        for addr in addresses:
+            modify_single_file_inplace(SSH_CONFG_TMP, [f'{line_num} {sed_cmd} ListenAddress {addr}'])
+
     def set_policies(self, ssh_policies):
         # Ssh server flow
         # The ssh_policies from CONFIG_DB will be set in the ssh config files /etc/ssh/sshd_config
@@ -1117,6 +1352,24 @@ class SshServer(object):
                 if not self.handle_ports_set(value):
                     syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong port configuration")
                     return
+                continue
+
+            if key == 'listen_addresses':
+                # raw_to_typed() splits an empty stored leaf-list ("") into
+                # [''], not []; treat both as empty.
+                if value in ([], ['']):
+                    # YANG allows an empty leaf-list; ignore this field only
+                    # (don't abort unrelated policy changes) and keep the
+                    # previous listen_addresses state untouched.
+                    syslog.syslog(syslog.LOG_WARNING,
+                                  "Ssh listen_addresses is empty - ignoring, keeping previous configuration")
+                    continue
+                if not self.handle_listen_addresses_set(value):
+                    syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config files - wrong listen_addresses configuration")
+                    if os.path.exists(SSH_CONFG_TMP):
+                        os.remove(SSH_CONFG_TMP)
+                    return
+                self.listen_addresses_configured = True
                 continue
 
             if key in SSH_INT_VALUES and (int(value) < SSH_MIN_VALUES.get(key, 65535) or
@@ -1147,6 +1400,13 @@ class SshServer(object):
             else:
                 syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - wrong key {}".format(key))
 
+        if 'listen_addresses' not in ssh_policies and self.listen_addresses_configured:
+            # listen_addresses was configured previously and is now absent
+            # (removed alone, or via deleting the whole POLICIES row).
+            # Actively restore both IPv4/IPv6 wildcard listeners.
+            self.restore_default_listen_addresses()
+            self.listen_addresses_configured = False
+
         ssh_verify_res = subprocess.run(['sudo', 'sshd', '-T', '-f', SSH_CONFG_TMP], capture_output=True)
         if ssh_verify_res.returncode == 0:
             os.rename(SSH_CONFG_TMP, SSH_CONFG)
@@ -1154,7 +1414,18 @@ class SshServer(object):
                 run_cmd(['systemctl', 'restart', 'ssh'],
                         log_err=True, raise_exception=True)
             except Exception:
-                syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
+                # `sshd -T` only validates syntax - it doesn't bind any
+                # addresses - so a listen_addresses value that was
+                # assigned at validation time but got removed before this
+                # reload (e.g. an interface/IP flap) will pass `sshd -T`
+                # and only surface here as a restart failure. Call that
+                # out explicitly so operators aren't left chasing a
+                # generic error.
+                if 'listen_addresses' in ssh_policies:
+                    syslog.syslog(syslog.LOG_ERR, "Failed to update sshd config file - ssh restart failed; if listen_addresses was just changed, "
+                                                   "verify each address is still assigned to an interface on this device")
+                else:
+                    syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file')
         else:
             syslog.syslog(syslog.LOG_ERR, f'Failed to update sshd config file - sshd -T returned {ssh_verify_res.returncode} with error {ssh_verify_res.stderr.decode()}')
             os.remove(SSH_CONFG_TMP)
@@ -1304,9 +1575,9 @@ class NtpCfg(object):
         # NTP config should be taken at boot-time by chrony
         # services.
         self.cache = {
-            'global': ntp_global_conf.get('global', {}),
-            'servers': ntp_server_conf,
-            'keys': ntp_key_conf
+            'global': copy.deepcopy(ntp_global_conf.get('global', {})),
+            'servers': copy.deepcopy(ntp_server_conf),
+            'keys': copy.deepcopy(ntp_key_conf)
         }
 
     def handle_ntp_source_intf_chg(self, intf_name):
@@ -1361,7 +1632,7 @@ class NtpCfg(object):
             return
 
         # Update the Local Cache
-        self.cache[key] = data
+        self.cache[key] = copy.deepcopy(data)
 
     def ntp_srv_key_update(self, ntp_servers: dict, ntp_keys: dict):
         """Update NTP server/key configuration
@@ -1402,8 +1673,8 @@ class NtpCfg(object):
             return
 
         # Updating the cache
-        self.cache['servers'] = ntp_servers
-        self.cache['keys'] = ntp_keys
+        self.cache['servers'] = copy.deepcopy(ntp_servers)
+        self.cache['keys'] = copy.deepcopy(ntp_keys)
 
 class PamLimitsCfg(object):
     """
@@ -2163,7 +2434,7 @@ class HostConfigDaemon:
             swsscommon.RestartWaiter.waitAdvancedBootDone()
         # Just a sanity check to verify if the CONFIG_DB has been initialized
         # before moving forward
-        self.config_db = ConfigDBConnector()
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
 

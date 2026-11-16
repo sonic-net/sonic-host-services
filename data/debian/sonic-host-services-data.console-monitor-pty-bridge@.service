@@ -11,6 +11,11 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+# pty-bridge exec()s socat, so socat -- not python -- is this unit's main
+# process. socat catches SIGTERM and exits 143 (128+15) rather than dying from
+# the signal, which systemd scores as a failure. Without this, every normal stop
+# (config console disable, or a proxy restart) left the unit in "failed" state.
+SuccessExitStatus=143
 
 [Install]
 WantedBy=sonic.target
