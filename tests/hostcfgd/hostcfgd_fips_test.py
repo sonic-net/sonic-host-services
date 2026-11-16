@@ -33,6 +33,7 @@ hostcfgd.DBConnector = MockDBConnector
 hostcfgd.Table = mock.Mock()
 running_services = [{"unit":"ssh.service","load":"loaded","active":"active","sub":"running","description":"OpenBSD Secure Shell server"},
             {"unit":"restapi.service","load":"loaded","active":"active","sub":"running","description":"SONiC Restful API Service"},
+            {"unit":"telemetry.service","load":"loaded","active":"active","sub":"running","description":"Telemetry container"},
             {"unit":"gnmi.service","load":"loaded","active":"active","sub":"running","description":"GNMI container"}]
 
 class TestHostcfgdFIPS(TestCase):
@@ -77,6 +78,7 @@ class TestHostcfgdFIPS(TestCase):
         host_config_daemon.fips_config_handler("FIPS", '', self.test_data)
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service ssh.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service restapi.')
+        mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service telemetry.service.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service gnmi.service.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: skipped to configure the enforce option False, since the config has already been set.')
         mock_syslog.assert_called_with(original_syslog.LOG_DEBUG, 'FipsCfg: update fips option complete.')
@@ -97,6 +99,7 @@ class TestHostcfgdFIPS(TestCase):
         host_config_daemon.fips_config_handler("FIPS", '', self.test_data)
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service ssh.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service restapi.')
+        mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service telemetry.service.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service gnmi.service.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: skipped to configure the enforce option False, since the config has already been set.')
         mock_syslog.assert_called_with(original_syslog.LOG_DEBUG, 'FipsCfg: update fips option complete.')
@@ -115,6 +118,7 @@ class TestHostcfgdFIPS(TestCase):
         host_config_daemon.fips_config_handler("FIPS", '', self.test_data)
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service ssh.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service restapi.')
+        mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service telemetry.service.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: restart service gnmi.service.')
         mock_syslog.assert_any_call(original_syslog.LOG_INFO, 'FipsCfg: update the FIPS enforce option True.')
         mock_syslog.assert_called_with(original_syslog.LOG_DEBUG, 'FipsCfg: update fips option complete.')
