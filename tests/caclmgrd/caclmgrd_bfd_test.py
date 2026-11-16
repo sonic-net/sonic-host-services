@@ -9,6 +9,7 @@ from pyfakefs.fake_filesystem_unittest import patchfs
 
 from .test_bfd_vectors import CACLMGRD_BFD_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
+from .iptables_restore_util import expand_restore_calls, assert_calls_in, assert_restore_only
 from unittest.mock import MagicMock, patch
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
@@ -50,8 +51,13 @@ class TestCaclmgrdBfd(TestCase):
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_bfd_subprocess_calls"], any_order=True)
                 caclmgrd_daemon.bfdAllowed = True
                 mocked_subprocess.Popen.reset_mock()
+                popen_mock.returncode = 0  # the rebuild's restore succeeds
                 caclmgrd_daemon.num_changes[''] = 1
                 caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
+
+                popen_calls = expand_restore_calls(mocked_subprocess.mock_calls)
+                assert_restore_only(self, mocked_subprocess.Popen.call_args_list)
+                assert_calls_in(self, test_data["expected_bfd_subprocess_calls"], popen_calls)
 
                 #Ensure BFD rules are installed before ip2me rules to avoid traffic loss during update of control plane acl rules
                 bfd_ipv4_idx = 0
@@ -59,7 +65,7 @@ class TestCaclmgrdBfd(TestCase):
                 ip2me_ipv4_idx = 0
                 ip2me_ipv6_idx = 0
                 idx = 0
-                for call in mocked_subprocess.Popen.call_args_list:
+                for call in popen_calls:
                     if test_data["expected_subprocess_calls"][0] == call:
                         bfd_ipv4_idx = idx
                     elif test_data["expected_subprocess_calls"][1] == call:

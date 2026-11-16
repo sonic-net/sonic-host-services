@@ -9,6 +9,7 @@ from pyfakefs.fake_filesystem_unittest import patchfs
 
 from .test_dash_ha_vectors import CACLMGRD_DASH_HA_TEST_VECTOR
 from tests.common.mock_configdb import MockConfigDb
+from .iptables_restore_util import expand_restore_calls, assert_calls_in, assert_restore_only
 from unittest.mock import MagicMock, patch
 
 DBCONFIG_PATH = '/var/run/redis/sonic-db/database_config.json'
@@ -60,8 +61,11 @@ class TestCaclmgrdDashHa(TestCase):
                 mocked_subprocess.Popen.assert_has_calls(test_data["expected_del_subprocess_calls"], any_order=True)
                 
                 caclmgrd_daemon.update_dash_ha_rules('', "dpu0", "SET", test_data["input_add"])
-                mocked_subprocess.Popen.reset_mock()
+                mocked_subprocess.reset_mock()
+                popen_mock.returncode = 0
                 caclmgrd_daemon.num_changes[''] = 1
                 caclmgrd_daemon.check_and_update_control_plane_acls('', 1)
-                mocked_subprocess.Popen.assert_has_calls(test_data["expected_add_subprocess_calls"], any_order=True)
+                assert_restore_only(self, mocked_subprocess.Popen.call_args_list)
+                assert_calls_in(self, test_data["expected_add_subprocess_calls"],
+                                expand_restore_calls(mocked_subprocess.mock_calls))
 

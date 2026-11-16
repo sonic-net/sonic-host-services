@@ -259,6 +259,63 @@ class ControlPlaneAclManager(logger.Logger):
             if output is not None: return output
         return ""
 
+    @staticmethod
+    def iptables_restore_input(commands, prefix, binary):
+        """
+        Translates <binary> commands into '<binary>-restore --noflush' input, keeping
+        each table's commands in order; None when one cannot be expressed in it.
+        """
+        tables = {}
+        for cmd in commands:
+            if list(cmd[:len(prefix) + 1]) != prefix + [binary]:
+                return None
+            args = list(cmd[len(prefix) + 1:])
+            table = 'filter'
+            if args[:1] == ['-t']:
+                if len(args) < 3:
+                    return None
+                table, args = args[1], args[2:]
+            if not args or '-t' in args or '--table' in args:
+                return None
+            words = []
+            for arg in args:
+                if not arg or any(c in arg for c in '"\\\n\r\0'):
+                    return None
+                words.append('"{}"'.format(arg) if any(c.isspace() for c in arg) else arg)
+            tables.setdefault(table, []).append(' '.join(words))
+        return ''.join('*{}\n{}\nCOMMIT\n'.format(table, '\n'.join(lines)) for table, lines in tables.items())
+
+    def run_iptables_commands_atomically(self, namespace, commands):
+        """
+        Applies a rebuilt rule set as one restore transaction per address family, so the
+        conntrack match is never absent (flushing it stops connection tracking).
+        Falls back to one by one per family when translation or the restore fails.
+        """
+        prefix = self.iptables_cmd_ns_prefix[namespace]
+        by_binary = {'iptables': [], 'ip6tables': []}
+        for cmd in commands:
+            binary = cmd[len(prefix)] if list(cmd[:len(prefix)]) == prefix and len(cmd) > len(prefix) else None
+            if binary not in by_binary:
+                self.log_error("unexpected command '{}'; applying the rule set one by one".format(' '.join(cmd)))
+                self.run_commands(commands)
+                return
+            by_binary[binary].append(cmd)
+        for binary, cmds in by_binary.items():
+            if not cmds:
+                continue
+            text = self.iptables_restore_input(cmds, prefix, binary)
+            if text is None:
+                self.log_error("{} commands not expressible in restore syntax; applying them one by one".format(binary))
+                self.run_commands(cmds)
+                continue
+            proc = subprocess.Popen(prefix + [binary + '-restore', '--noflush', '--wait=30'], universal_newlines=True,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (stdout, stderr) = proc.communicate(input=text)
+            if proc.returncode != 0:
+                self.log_error("{}-restore failed (rc {}): {}; applying the {} commands one by one".format(
+                    binary, proc.returncode, (stderr or '').strip(), binary))
+                self.run_commands(cmds)
+
     def run_commands_pipe(self, *args):
         """
         Run commands connected by shell pipes in a secure way without invoking shell injections.
@@ -1006,7 +1063,7 @@ class ControlPlaneAclManager(logger.Logger):
         for cmd in iptables_cmds:
             self.log_info("  " + ' '.join(cmd))
 
-        self.run_commands(iptables_cmds)
+        self.run_iptables_commands_atomically(namespace, iptables_cmds)
 
         self.update_control_plane_nat_acls(namespace, service_to_source_ip_map, config_db_connector)
 
