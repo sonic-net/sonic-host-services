@@ -38,7 +38,7 @@ daemonize = "0.5"
 libc = "0.2"
 
 # Python psutil equivalent
-psutil = "3.2.2"
+psutil = "5.0.0"
 
 # Process filesystem access
 procfs = "0.17"
