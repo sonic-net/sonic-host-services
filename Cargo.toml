@@ -22,7 +22,7 @@ unused_import_braces = 'warn'
 
 [workspace.dependencies]
 # System info and SONiC database
-sysinfo = "0.35.0"
+sysinfo = "0.40.0"
 swss-common = { git = "https://github.com/sonic-net/sonic-swss-common", branch = "master" }
 
 # Regex and pattern matching
@@ -41,7 +41,7 @@ libc = "0.2"
 psutil = "3.2.2"
 
 # Process filesystem access
-procfs = "0.17"
+procfs = "0.18"
 
 # Logging
 tracing = { version = "0.1", features = ["log"] }
