@@ -108,6 +108,30 @@ class ImageService(host_service.HostModule):
                 return errno.ENOENT, msg
         return result.returncode, msg
 
+    @host_service.method(
+        host_service.bus_name(MOD_NAME), in_signature="s", out_signature="is"
+    )
+    def set_default(self, image):
+        """
+        Set the image to be used for all subsequent boots.
+
+        Args:
+            image: The name of the image to set as the default.
+        """
+        logger.info("Setting the default boot image to {}".format(image))
+        cmd = ["/usr/local/bin/sonic-installer", "set-default", image]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        msg = "Default boot image set to {}".format(image)
+        if result.returncode:
+            logger.error("Failed to set default boot image: {}".format(result.stderr.decode()))
+            msg = result.stderr.decode()
+            # sonic-installer might not return a proper error code, so we need to check the message.
+            if "not" in msg.lower() and ("exist" in msg.lower() or "found" in msg.lower()):
+                return errno.ENOENT, msg
+        else:
+            logger.info(msg)
+        return result.returncode, msg
+
 
     def _parse_sonic_installer_list(self, output):
         """
