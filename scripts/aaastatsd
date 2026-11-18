@@ -59,8 +59,9 @@ class RadiusStatsFileHandler(FileSystemEventHandler):
     def __init__(self, radiusStatsInstance):
         self.radiusStatsInstance = radiusStatsInstance
 
-    def on_any_event(self, event):
-        # print("RadiusStatsFileHandler.on_any_event()")
+    def on_modified(self, event):
+        # Only synchronize content modifications. Reading a statistics file
+        # generates open and close events, which must not trigger another read.
         if event.is_directory:
             return None
 
@@ -138,6 +139,7 @@ class RadiusStatistics:
         for row in radius_conf:
             self.radius_server_update(row, radius_conf[row])
 
+        self.remove_stale_stats()
 
         self.counters_db = ConfigDBConnector()
         self.counters_db.db_connect('COUNTERS_DB', wait_for_init=False,
@@ -153,33 +155,62 @@ class RadiusStatistics:
 
     def radius_global_update(self, key, data):
         if key == 'global':
-            self.radius_global.update(data)
+            self.radius_global = {'statistics': 'False'}
+            if data:
+                self.radius_global.update(data)
 
         for addr in self.radius_servers:
             self.create_file(addr)
 
-    def radius_server_update(self, key, data):
-        if data == {}:
-            if key in self.radius_servers:
-                del self.radius_servers[key]
-        else:
-            self.radius_servers[key] = data
+    def statistics_enabled(self):
+        return str(self.radius_global.get('statistics', 'False')).lower() == 'true'
 
+    def radius_server_update(self, key, data):
+        if not data:
+            self.radius_servers.pop(key, None)
+            self.remove_stats(key)
+            return
+
+        self.radius_servers[key] = data
         self.create_file(key)
 
-    def create_file(self, addr):
-        # print( "RadiusStatistics.create_file({})".format(addr))
+    def update_counters_db(self, srv, entry):
+        counters_db = ConfigDBConnector()
+        counters_db.db_connect('COUNTERS_DB', wait_for_init=False,
+		retry_on=False)
+        counters_db.set_entry('RADIUS_SERVER_STATS', srv, entry)
+        counters_db.close(counters_db.COUNTERS_DB)
+
+    def remove_stats(self, addr):
         stats_file = radius_stats_file_path(addr)
         if stats_file is None:
             return
 
-        if self.radius_global['statistics'] == 'False':
-            if os.path.exists(stats_file):
-                os.unlink(stats_file)
-        else:
-            open(stats_file, 'a').close()
-            os.chmod(stats_file, 0o644)
-            self.handle_update(addr)
+        if os.path.exists(stats_file):
+            os.unlink(stats_file)
+        self.update_counters_db(addr, None)
+
+    def remove_stale_stats(self):
+        if not os.path.isdir(RADIUS_PAM_AUTH_CONF_STATS_DIR):
+            return
+
+        for addr in os.listdir(RADIUS_PAM_AUTH_CONF_STATS_DIR):
+            if addr not in self.radius_servers:
+                self.remove_stats(addr)
+
+    def create_file(self, addr):
+        # print( "RadiusStatistics.create_file({})".format(addr))
+        if not self.statistics_enabled():
+            self.remove_stats(addr)
+            return
+
+        stats_file = radius_stats_file_path(addr)
+        if stats_file is None:
+            return
+
+        open(stats_file, 'a').close()
+        os.chmod(stats_file, 0o644)
+        self.handle_update(addr)
 
     def handle_clear(self):
         # print( "RadiusStatistics.handle_clear()")
@@ -192,7 +223,7 @@ class RadiusStatistics:
 
     def handle_update(self, srv):
         # print( "RadiusStatistics.handle_update({})".format(srv))
-        if self.radius_global['statistics'] == 'False':
+        if not self.statistics_enabled():
             return
 
         stats_file = radius_stats_file_path(srv)
@@ -207,13 +238,7 @@ class RadiusStatistics:
                 radius_counters = lines[0].split(' ')
                 entry = dict(zip(self.radius_counter_names, radius_counters))
 
-        counters_db = ConfigDBConnector()
-        counters_db.db_connect('COUNTERS_DB', wait_for_init=False,
-		retry_on=False)
-
-        counters_db.set_entry('RADIUS_SERVER_STATS', srv, entry)
-
-        counters_db.close(counters_db.COUNTERS_DB)
+        self.update_counters_db(srv, entry)
 
 class AAAStatsDaemon:
     def __init__(self):
