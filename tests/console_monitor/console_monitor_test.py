@@ -18,6 +18,9 @@ import sys
 import time
 import copy
 import errno
+import shutil
+import signal
+import subprocess
 import tempfile
 import termios
 import types
@@ -221,10 +224,12 @@ class TestDCEService(TestCase):
         self.assertEqual(configs["1"]["log_file"], "/var/log/console-1.log")
         self.assertEqual(configs["1"]["logrotate_size"], "10M")
         self.assertEqual(configs["1"]["logrotate_count"], "10")
+        self.assertEqual(configs["1"]["flow_control"], "0")
         
         # Verify port 2 config
         self.assertIn("2", configs)
         self.assertEqual(configs["2"]["baud"], 115200)
+        self.assertEqual(configs["2"]["flow_control"], "1")
         
         # Verify port 3 config
         self.assertIn("3", configs)
@@ -741,6 +746,8 @@ class TestProxyMirrorHooks(TestCase):
         with mock.patch.object(console_monitor.os, "read", return_value=b"show\n"), \
                 mock.patch.object(console_monitor.os, "write", return_value=5):
             service._on_ptm_read()
+            service.mirror_manager.submit.assert_not_called()
+            service._flush_serial_tx()
 
         service.mirror_manager.submit.assert_called_once_with("tx", b"show\n")
 
@@ -1415,6 +1422,36 @@ class TestUtilityFunctions(TestCase):
             os.close(master)
             os.close(slave)
     
+    def test_configure_serial_enables_hardware_flow_control(self):
+        """Test configure_serial sets CRTSCTS when flow control is enabled."""
+        master, slave = os.openpty()
+
+        try:
+            console_monitor.configure_serial(master, 9600, True)
+
+            attrs = termios.tcgetattr(master)
+            self.assertTrue(attrs[2] & termios.CRTSCTS)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_configure_serial_clears_stale_hardware_flow_control(self):
+        """Test configure_serial clears CRTSCTS left over from a previous owner."""
+        master, slave = os.openpty()
+
+        try:
+            attrs = termios.tcgetattr(master)
+            attrs[2] |= termios.CRTSCTS
+            termios.tcsetattr(master, termios.TCSANOW, attrs)
+
+            console_monitor.configure_serial(master, 9600, False)
+
+            attrs = termios.tcgetattr(master)
+            self.assertFalse(attrs[2] & termios.CRTSCTS)
+        finally:
+            os.close(master)
+            os.close(slave)
+
     def test_configure_pty(self):
         """Test configure_pty sets raw mode and disables echo."""
         master, slave = os.openpty()
@@ -1879,6 +1916,31 @@ class TestDCEServiceExtended(TestCase):
             self.assertGreater(MockSubprocess.get_stopped_count(), 0)
             self.assertGreater(MockSubprocess.get_started_count(), 0)
     
+    def test_dce_sync_restarts_link_on_flow_control_change(self):
+        """Test _sync restarts services when flow control changes."""
+        initial_config = copy.deepcopy(DCE_3_LINKS_ENABLED_CONFIG_DB)
+        MockConfigDb.set_config_db(initial_config)
+
+        service = console_monitor.DCEService()
+        service.config_db = MockConfigDb()
+        service.active_links = set()
+        service._config_cache = {}
+
+        with mock.patch('subprocess.run', MockSubprocess.mock_run):
+            service._sync()
+
+            self.assertEqual(service._config_cache["1"]["flow_control"], "0")
+
+            MockConfigDb.CONFIG_DB["CONSOLE_PORT"]["1"]["flow_control"] = "1"
+
+            MockSubprocess.reset()
+
+            service._sync()
+
+            self.assertEqual(service._config_cache["1"]["flow_control"], "1")
+            self.assertGreater(MockSubprocess.get_stopped_count(), 0)
+            self.assertGreater(MockSubprocess.get_started_count(), 0)
+
     def test_dce_stop_stops_all_links(self):
         """Test stop() stops all active links."""
         MockConfigDb.set_config_db(DCE_3_LINKS_ENABLED_CONFIG_DB)
@@ -2365,24 +2427,163 @@ class TestFrameParseEdgeCases(TestCase):
 
 class TestPTYBridgeFunction(TestCase):
     """Tests for run_pty_bridge function."""
-    
+
+    TTY_NAMES = {11: '/dev/pts/4', 13: '/dev/pts/5'}
+
+    def _run_bridge(self, lexists=False, openpty=None, execvp=None):
+        """Run run_pty_bridge("1") with PTY and filesystem calls mocked."""
+        mocks = {}
+        with mock.patch.object(console_monitor, 'get_udev_prefix', return_value="C0-"), \
+             mock.patch('os.openpty', side_effect=openpty or [(10, 11), (12, 13)]), \
+             mock.patch('os.ttyname', side_effect=self.TTY_NAMES.get), \
+             mock.patch('tty.setraw') as mocks['setraw'], \
+             mock.patch('os.chmod') as mocks['chmod'], \
+             mock.patch('os.path.lexists', return_value=lexists), \
+             mock.patch('os.unlink') as mocks['unlink'], \
+             mock.patch('os.symlink') as mocks['symlink'], \
+             mock.patch('os.set_inheritable') as mocks['set_inheritable'], \
+             mock.patch('os.execvp', side_effect=execvp) as mocks['execvp']:
+            result = console_monitor.run_pty_bridge("1")
+        return result, mocks
+
     def test_run_pty_bridge_builds_correct_paths(self):
-        """Test run_pty_bridge builds correct PTY paths."""
-        with mock.patch.object(console_monitor, 'get_udev_prefix', return_value="C0-"):
-            with mock.patch('os.execvp') as mock_exec:
-                mock_exec.side_effect = OSError("Exec failed")
-                
-                result = console_monitor.run_pty_bridge("1")
-                
-                self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
-    
+        """Test run_pty_bridge links raw PTY slaves and execs the bash supervisor."""
+        result, mocks = self._run_bridge()
+
+        mocks['setraw'].assert_has_calls([mock.call(11), mock.call(13)])
+        mocks['chmod'].assert_has_calls([mock.call('/dev/pts/4', 0o666),
+                                         mock.call('/dev/pts/5', 0o666)])
+        mocks['symlink'].assert_has_calls([mock.call('/dev/pts/4', '/dev/C0-1-PTS'),
+                                           mock.call('/dev/pts/5', '/dev/C0-1-PTM')])
+        mocks['unlink'].assert_not_called()
+        self.assertEqual(sorted(c.args for c in mocks['set_inheritable'].call_args_list),
+                         [(10, True), (11, True), (12, True), (13, True)])
+
+        mocks['execvp'].assert_called_once()
+        file, args = mocks['execvp'].call_args.args
+        self.assertEqual(file, 'bash')
+        self.assertEqual(args[:3], ['bash', '-c', console_monitor.PTY_BRIDGE_SUPERVISOR])
+        self.assertEqual(args[4:], ['/dev/C0-1-PTS', '/dev/pts/4',
+                                    '/dev/C0-1-PTM', '/dev/pts/5', '10', '12'])
+        # Only reached because execvp is mocked
+        self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
+
+    def test_run_pty_bridge_replaces_stale_links(self):
+        """Test run_pty_bridge removes leftover symlinks before creating new ones."""
+        _, mocks = self._run_bridge(lexists=True)
+
+        mocks['unlink'].assert_has_calls([mock.call('/dev/C0-1-PTS'),
+                                          mock.call('/dev/C0-1-PTM')])
+
+    def test_run_pty_bridge_pty_failure(self):
+        """Test run_pty_bridge returns error when PTY setup fails."""
+        result, mocks = self._run_bridge(openpty=OSError("out of ptys"))
+
+        self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
+        mocks['execvp'].assert_not_called()
+
     def test_run_pty_bridge_exec_failure(self):
         """Test run_pty_bridge returns error when exec fails."""
-        with mock.patch.object(console_monitor, 'get_udev_prefix', return_value="C0-"):
-            with mock.patch('os.execvp', side_effect=FileNotFoundError("socat not found")):
-                result = console_monitor.run_pty_bridge("test")
-                
-                self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
+        result, _ = self._run_bridge(execvp=FileNotFoundError("bash not found"))
+
+        self.assertEqual(result, console_monitor.EXIT_SERVICE_START_FAILED)
+
+
+class TestPTYBridgeSupervisor(TestCase):
+    """Runs PTY_BRIDGE_SUPERVISOR in bash with a fake socat on PATH."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.pids_file = os.path.join(self.tmpdir, 'pids')
+        fake_socat = os.path.join(self.tmpdir, 'socat')
+        with open(fake_socat, 'w') as f:
+            # Args are: -d -d -u FD:<src> FD:<dst>
+            f.write('#!/bin/sh\n'
+                    'echo $$ >> "$PIDS_FILE"\n'
+                    '[ "$4" = "FD:$EXIT_FD" ] && exit 3\n'
+                    'exec sleep 30\n')
+        os.chmod(fake_socat, 0o755)
+        self.pts_link = os.path.join(self.tmpdir, 'C0-1-PTS')
+        self.ptm_link = os.path.join(self.tmpdir, 'C0-1-PTM')
+        os.symlink('/dev/pts/4', self.pts_link)
+        os.symlink('/dev/pts/5', self.ptm_link)
+
+    def tearDown(self):
+        for pid in self._pids():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _start(self, exit_fd=''):
+        env = dict(os.environ, PIDS_FILE=self.pids_file, EXIT_FD=exit_fd,
+                   PATH=self.tmpdir + os.pathsep + os.environ.get('PATH', ''))
+        return subprocess.Popen(
+            ['bash', '-c', console_monitor.PTY_BRIDGE_SUPERVISOR, '[PTYBridge:1]',
+             self.pts_link, '/dev/pts/4', self.ptm_link, '/dev/pts/5', '7', '9'],
+            env=env, stderr=subprocess.PIPE)
+
+    def _pids(self):
+        try:
+            with open(self.pids_file) as f:
+                return [int(line) for line in f.read().split()]
+        except FileNotFoundError:
+            return []
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            with open(f'/proc/{pid}/stat') as f:
+                return f.read().rsplit(')', 1)[1].split()[0] not in ('Z', 'X')
+        except FileNotFoundError:
+            return False
+
+    def _assert_cleaned_up(self):
+        self.assertFalse(os.path.lexists(self.pts_link))
+        self.assertFalse(os.path.lexists(self.ptm_link))
+        for pid in self._pids():
+            self.assertFalse(self._alive(pid))
+
+    def test_socat_exit_stops_bridge(self):
+        """Test one socat exiting stops the other, removes links and exits 1."""
+        proc = self._start(exit_fd='7')
+        _, err = proc.communicate(timeout=10)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn(b'[PTYBridge:1] socat exited', err)
+        self._assert_cleaned_up()
+
+    def test_signal_stops_bridge_like_socat(self):
+        """Test HUP/INT/QUIT/TERM stop both socats, remove links and exit 128+signal like socat."""
+        for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
+            with self.subTest(signal=sig.name):
+                for link, dev in ((self.pts_link, '/dev/pts/4'), (self.ptm_link, '/dev/pts/5')):
+                    if not os.path.lexists(link):
+                        os.symlink(dev, link)
+                started = len(self._pids())
+                proc = self._start()
+                deadline = time.monotonic() + 10
+                while len(self._pids()) < started + 2 and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertEqual(len(self._pids()), started + 2)
+
+                proc.send_signal(sig)
+                proc.communicate(timeout=10)
+
+                self.assertEqual(proc.returncode, 128 + sig)
+                self._assert_cleaned_up()
+
+    def test_links_replaced_by_newer_bridge_are_kept(self):
+        """Test cleanup leaves symlinks that no longer point at this bridge's PTYs."""
+        os.unlink(self.ptm_link)
+        os.symlink('/dev/pts/9', self.ptm_link)
+        proc = self._start(exit_fd='9')
+        proc.communicate(timeout=10)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertFalse(os.path.lexists(self.pts_link))
+        self.assertEqual(os.readlink(self.ptm_link), '/dev/pts/9')
 
 
 class TestProxyServicePhases(TestCase):
@@ -2403,6 +2604,30 @@ class TestProxyServicePhases(TestCase):
             self.assertEqual(proxy.baud, 115200)
             mock_cdb.assert_called_once_with(use_unix_socket_path=True)
     
+    def test_proxy_wait_for_config_reads_flow_control(self):
+        """Test _wait_for_config picks up flow_control from CONFIG_DB."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+
+        mock_config_db = mock.Mock()
+        mock_config_db.get_entry.return_value = {"baud_rate": "9600", "flow_control": "1"}
+
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db):
+            self.assertTrue(proxy._wait_for_config())
+            self.assertTrue(proxy.flow_control)
+
+    def test_proxy_wait_for_config_flow_control_defaults_disabled(self):
+        """Test flow_control stays disabled when the field is absent."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.running = True
+
+        mock_config_db = mock.Mock()
+        mock_config_db.get_entry.return_value = {"baud_rate": "9600"}
+
+        with mock.patch.object(console_monitor, 'ConfigDBConnector', return_value=mock_config_db):
+            self.assertTrue(proxy._wait_for_config())
+            self.assertFalse(proxy.flow_control)
+
     def test_proxy_wait_for_config_stops_when_not_running(self):
         """Test _wait_for_config returns False when stopped."""
         proxy = console_monitor.ProxyService(link_id="1")
@@ -2480,6 +2705,26 @@ class TestProxyServicePhases(TestCase):
         self.assertTrue(result)
         self.assertIsNotNone(proxy.filter)
     
+    @mock.patch.object(console_monitor, 'MirrorControlServer')
+    @mock.patch.object(console_monitor, 'MirrorManager')
+    @mock.patch.object(console_monitor, 'set_nonblocking')
+    @mock.patch('os.open', return_value=12)
+    @mock.patch('os.pipe', return_value=(10, 11))
+    @mock.patch.object(console_monitor, 'Table')
+    @mock.patch.object(console_monitor, 'DBConnector')
+    @mock.patch.object(console_monitor, 'configure_serial')
+    def test_proxy_initialize_applies_flow_control(self, mock_configure_serial, *_):
+        """Test _initialize hands the configured flow control to the UART."""
+        proxy = console_monitor.ProxyService(link_id="1")
+        proxy.device_path = "/dev/test"
+        proxy.ptm_path = "/dev/test-PTM"
+        proxy.baud = 115200
+        proxy.flow_control = True
+
+        self.assertTrue(proxy._initialize())
+
+        mock_configure_serial.assert_called_once_with(12, 115200, True)
+
     def test_proxy_initialize_failure(self):
         """Test _initialize returns False on error."""
         proxy = console_monitor.ProxyService(link_id="1")
@@ -2554,31 +2799,49 @@ class TestProxyServicePhases(TestCase):
             proxy._on_serial_read()
     
     def test_proxy_on_ptm_read(self):
-        """Test _on_ptm_read forwards data to serial."""
+        """Test _on_ptm_read queues PTM data; _flush_serial_tx writes it."""
         proxy = console_monitor.ProxyService(link_id="1")
         proxy.running = True
         proxy.ptm_fd = 10
         proxy.ser_fd = 11
-        
+
+        # os.write receives the live pending buffer, so copy it at call time.
+        writes = []
+
+        def record_write(fd, data):
+            writes.append((fd, bytes(data)))
+            return len(data)
+
         with mock.patch('os.read', return_value=b"user input"):
-            with mock.patch('os.write') as mock_write:
+            with mock.patch('os.write', side_effect=record_write):
                 proxy._on_ptm_read()
-                
-                mock_write.assert_called_once_with(11, b"user input")
+                self.assertEqual(writes, [])
+                self.assertEqual(bytes(proxy._serial_tx_pending), b"user input")
+
+                proxy._flush_serial_tx()
+                self.assertEqual(writes, [(11, b"user input")])
+                self.assertEqual(bytes(proxy._serial_tx_pending), b"")
 
     def test_proxy_on_ptm_read_does_not_log_input(self):
-        """Test _on_ptm_read forwards to serial without logging (echo is logged on serial read)."""
+        """Test PTM input is forwarded to serial without logging (echo is logged on serial read)."""
         proxy = console_monitor.ProxyService(link_id="1")
         proxy.running = True
         proxy.ptm_fd = 10
         proxy.ser_fd = 11
         proxy.log_fd = 12
 
-        with mock.patch('os.read', return_value=b"user input"):
-            with mock.patch('os.write') as mock_write:
-                proxy._on_ptm_read()
+        writes = []
 
-                mock_write.assert_called_once_with(11, b"user input")
+        def record_write(fd, data):
+            writes.append((fd, bytes(data)))
+            return len(data)
+
+        with mock.patch('os.read', return_value=b"user input"):
+            with mock.patch('os.write', side_effect=record_write):
+                proxy._on_ptm_read()
+                proxy._flush_serial_tx()
+
+                self.assertEqual(writes, [(11, b"user input")])
     
     def test_proxy_on_ptm_read_handles_blocking_error(self):
         """Test _on_ptm_read handles BlockingIOError gracefully."""
