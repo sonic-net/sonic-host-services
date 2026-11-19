@@ -910,6 +910,7 @@ class TestDeviceMetaCfgLoad(TestCase):
 
         mock_run_cmd_output.side_effect = [
             b'/usr/share/zoneinfo/UTC',
+            b'',
         ]
 
         self.devmeta_cfg.load(dev_meta)
@@ -922,6 +923,52 @@ class TestDeviceMetaCfgLoad(TestCase):
 
         expected_calls = [
             call(['docker', 'exec', 'lldp', 'readlink', '/etc/localtime']),
+            call(['docker', 'exec', 'lldp', 'pgrep', 'rsyslogd']),
+        ]
+        mock_run_cmd_output.assert_has_calls(expected_calls, any_order=False)
+
+        expected_syslog_calls = [
+            call(mock.ANY, 'DeviceMetaCfg: Changing timezone of lldp to America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Applied timezone America/New_York'),
+            call(mock.ANY, 'DeviceMetaCfg: Restarted rsyslog after timezone change')
+        ]
+        mock_syslog.assert_has_calls(expected_syslog_calls, any_order=False)
+
+    @mock.patch('hostcfgd.os.path.realpath')
+    @mock.patch('hostcfgd.run_cmd')
+    @mock.patch('hostcfgd.run_cmd_output')
+    @mock.patch('hostcfgd.syslog.syslog')
+    def test_load_initial_timezone_different_from_current_rsyslog_running(self, mock_syslog, mock_run_cmd_output, mock_run_cmd, mock_realpath):
+        """ Test initial timezone setting when desired timezone differs from current. """
+        mock_realpath.side_effect = [
+            '/usr/share/zoneinfo/UTC',
+            '/usr/share/zoneinfo/America/New_York'
+        ]
+        dev_meta = {
+            'localhost': {
+                'hostname': 'test-host',
+                'timezone': 'America/New_York'
+            }
+        }
+
+        mock_run_cmd_output.side_effect = [
+            b'/usr/share/zoneinfo/UTC',
+            b'48',
+            b'dependent-startup                EXITED    Nov 19 01:55 AM',
+        ]
+
+        self.devmeta_cfg.load(dev_meta)
+
+        expected_calls = [
+            call(['timedatectl', 'set-timezone', 'America/New_York']),
+            call(['systemctl', 'restart', 'rsyslog'], True, False)
+        ]
+        mock_run_cmd.assert_has_calls(expected_calls, any_order=False)
+
+        expected_calls = [
+            call(['docker', 'exec', 'lldp', 'readlink', '/etc/localtime']),
+            call(['docker', 'exec', 'lldp', 'pgrep', 'rsyslogd']),
+            call(['docker', 'exec', 'lldp', 'supervisorctl', 'status', 'dependent-startup']),
         ]
         mock_run_cmd_output.assert_has_calls(expected_calls, any_order=False)
 
