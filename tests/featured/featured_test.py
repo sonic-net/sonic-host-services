@@ -2345,8 +2345,8 @@ class TestPendingFeatureUpdates(TestCase):
     @parameterized.expand([('enabled',), ('disabled',)])
     def test_excluded_feature_does_not_leave_retry_pending(self, state):
         cfg = {'state': state}
-        self.config['FEATURE']['telemetry'] = cfg.copy()
-        self.unit_states['telemetry.service'] = 'enabled'
-        self.handler.sync_state_field({'telemetry': cfg})
+        self.config['FEATURE']['frr_bmp'] = cfg.copy()
+        self.unit_states['frr_bmp.service'] = 'enabled'
+        self.handler.sync_state_field({'frr_bmp': cfg})
         assert self.commands == []
-        assert 'telemetry' not in self.handler._features_pending_update
+        assert 'frr_bmp' not in self.handler._features_pending_update
