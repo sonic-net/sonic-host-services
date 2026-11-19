@@ -369,6 +369,7 @@ class TestHostcfgdDaemon(TestCase):
         daemon.iptables = mock.MagicMock()
         daemon.passwcfg = mock.MagicMock()
         daemon.dnscfg = mock.MagicMock()
+        daemon.sshscfg = mock.MagicMock()
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
         daemon.register_callbacks()
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
@@ -473,6 +474,7 @@ class TestHostcfgdDaemon(TestCase):
         daemon.iptables = mock.MagicMock()
         daemon.passwcfg = mock.MagicMock()
         daemon.dnscfg = mock.MagicMock()
+        daemon.sshscfg = mock.MagicMock()
         daemon.load(HOSTCFG_DAEMON_INIT_CFG_DB)
         with mock.patch('hostcfgd.check_output_pipe') as mocked_check_output:
             with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
