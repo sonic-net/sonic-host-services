@@ -923,7 +923,7 @@ class TestDeviceMetaCfgLoad(TestCase):
 
         expected_calls = [
             call(['docker', 'exec', 'lldp', 'readlink', '/etc/localtime']),
-            call(['docker', 'exec', 'lldp', 'pgrep', 'rsyslogd']),
+            call(['docker', 'exec', 'lldp', 'pgrep', 'rsyslogd'], log_err=False),
         ]
         mock_run_cmd_output.assert_has_calls(expected_calls, any_order=False)
 
@@ -967,8 +967,8 @@ class TestDeviceMetaCfgLoad(TestCase):
 
         expected_calls = [
             call(['docker', 'exec', 'lldp', 'readlink', '/etc/localtime']),
-            call(['docker', 'exec', 'lldp', 'pgrep', 'rsyslogd']),
-            call(['docker', 'exec', 'lldp', 'supervisorctl', 'status', 'dependent-startup']),
+            call(['docker', 'exec', 'lldp', 'pgrep', 'rsyslogd'], log_err=False),
+            call(['docker', 'exec', 'lldp', 'supervisorctl', 'status', 'dependent-startup'], log_err=False),
         ]
         mock_run_cmd_output.assert_has_calls(expected_calls, any_order=False)
 
