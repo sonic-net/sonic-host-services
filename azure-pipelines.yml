@@ -84,8 +84,10 @@ stages:
     - script: |
         set -ex
         # Install .NET CORE
-        curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-        sudo apt-add-repository https://packages.microsoft.com/debian/12/prod
+        # trixie has no apt-key; Microsoft's debian/13 repository has no dotnet-sdk-8.0
+        curl -sSL https://packages.microsoft.com/keys/microsoft.asc -o /tmp/microsoft.asc
+        sudo install -m 644 /tmp/microsoft.asc /etc/apt/keyrings/microsoft.asc
+        echo "deb [signed-by=/etc/apt/keyrings/microsoft.asc] https://packages.microsoft.com/debian/12/prod/ bookworm main" | sudo tee /etc/apt/sources.list.d/microsoft.list
         sudo apt-get update
         sudo apt-get install -y dotnet-sdk-8.0
       displayName: "Install .NET CORE"
