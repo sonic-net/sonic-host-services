@@ -107,7 +107,7 @@ stages:
       displayName: 'Publish Python 3 test results'
 
     - script: |
-        sudo apt-get install -y python3-diff-cover
+        sudo apt-get install -y diff-cover
       displayName: 'Pre-install diff-cover for pipeline decorator'
 
     - task: PublishCodeCoverageResults@1
