@@ -105,7 +105,7 @@ class DebugArtifactCollector(host_service.HostModule):
     board_type = ""
     try:
       # Connect to CONFIG_DB
-      db = swsscommon.SonicV2Connector()
+      db = swsscommon.SonicV2Connector(use_unix_socket_path=True)
       db.connect(db.CONFIG_DB)
       # Get device metadata
       metadata = db.get_all(db.CONFIG_DB, 'DEVICE_METADATA|localhost')
@@ -125,7 +125,7 @@ class DebugArtifactCollector(host_service.HostModule):
     COUNTER_CMDS = [
         "top -b -n 1 -w 500 > {}/top.txt",
         ('docker exec -i database '
-        'redis-dump -H 127.0.0.1 -p 6379 -d 2 -y > {}/counter_db.json'),
+        'sonic-db-dump -t unix_socket -n COUNTERS_DB -y > {}/counter_db.json'),
     ]
     counter_artifact_dir = os.path.join(
         directory,
@@ -270,13 +270,13 @@ class DebugArtifactCollector(host_service.HostModule):
     ]
     DB_CMDS = [
         ('docker exec -i database '
-        'redis-dump -H 127.0.0.1 -p 6379 -d 0 -y > {}/appl_db.json'),
+        'sonic-db-dump -t unix_socket -n APPL_DB -y > {}/appl_db.json'),
         ('docker exec -i database '
-        'redis-dump -H 127.0.0.1 -p 6379 -d 1 -y > {}/asic_db.json'),
+        'sonic-db-dump -t unix_socket -n ASIC_DB -y > {}/asic_db.json'),
         ('docker exec -i database '
-        'redis-dump -H 127.0.0.1 -p 6379 -d 4 -y > {}/config_db.json'),
+        'sonic-db-dump -t unix_socket -n CONFIG_DB -y > {}/config_db.json'),
         ('docker exec -i database '
-        'redis-cli -n 1 hgetall VIDTORID > {}/vidtorid.txt'),
+        'redis-cli -s /var/run/redis/redis.sock -n 1 hgetall VIDTORID > {}/vidtorid.txt'),
     ]
     try:
       request = json.loads(req)
