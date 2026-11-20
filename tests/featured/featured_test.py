@@ -1784,10 +1784,10 @@ class NsMockDBConnector(MockDBConnector):
     fail_appl_db_ns = set()
     dead_ns = set()
 
-    def __init__(self, db, val, tcpFlag=False, name=None):
+    def __init__(self, db, val, tcpFlag=False, name=None, authenticate=False):
         if db == featured.APPL_DB and name in NsMockDBConnector.fail_appl_db_ns:
             raise RuntimeError("simulated APPL_DB connect failure for {}".format(name))
-        super().__init__(db, val, tcpFlag, name)
+        super().__init__(db, val, tcpFlag, name, authenticate)
         self.ns = name or ''
 
 
@@ -1905,10 +1905,10 @@ class TestFeatureDaemonMultiAsic(TestCase):
             self._daemon()
 
         self.assertEqual(connector.call_args_list, [
-            call(use_unix_socket_path=True),
-            call(use_unix_socket_path=True, namespace='asic0'),
-            call(use_unix_socket_path=True, namespace='asic1'),
-            call(use_unix_socket_path=True, namespace='asic2'),
+            call(use_unix_socket_path=True, authenticate=True),
+            call(use_unix_socket_path=True, authenticate=True, namespace='asic0'),
+            call(use_unix_socket_path=True, authenticate=True, namespace='asic1'),
+            call(use_unix_socket_path=True, authenticate=True, namespace='asic2'),
         ])
 
     @staticmethod

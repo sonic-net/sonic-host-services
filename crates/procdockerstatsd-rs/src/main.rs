@@ -44,7 +44,7 @@ struct ProcDockerStats {
 }
 
 fn create_state_db_connector() -> Result<SonicV2Connector, Box<dyn std::error::Error>> {
-    Ok(SonicV2Connector::new(true, None)?)
+    Ok(SonicV2Connector::new_with_auth(true, None, true)?)
 }
 
 fn run_command(cmd: &[&str]) -> Option<String> {

@@ -26,7 +26,7 @@ class ProcDockerStats(daemon_base.DaemonBase):
 
     def __init__(self, log_identifier):
         super(ProcDockerStats, self).__init__(log_identifier)
-        self.state_db = swsscommon.SonicV2Connector(use_unix_socket_path=True)
+        self.state_db = swsscommon.SonicV2Connector(use_unix_socket_path=True, authenticate=True)
         self.state_db.connect("STATE_DB")
 
     def run_command(self, cmd):
