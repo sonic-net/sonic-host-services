@@ -64,7 +64,7 @@ stages:
     - script: |
         set -xe
         sudo apt-get -y purge libnl-3-dev libnl-route-3-dev || true
-        sudo apt-get install ./libnl-3-200_*.deb ./libnl-genl-3-200_*.deb ./libnl-route-3-200_*.deb ./libnl-nf-3-200_*.deb ./libyang3_*.deb ./libswsscommon_1.0.0_amd64.deb ./libswsscommon-dev_1.0.0_amd64.deb ./python3-swsscommon_1.0.0_amd64.deb
+        sudo apt-get -y install ./libnl-3-200_*.deb ./libnl-genl-3-200_*.deb ./libnl-route-3-200_*.deb ./libnl-nf-3-200_*.deb ./libyang3_*.deb ./libswsscommon_1.0.0_amd64.deb ./libswsscommon-dev_1.0.0_amd64.deb ./python3-swsscommon_1.0.0_amd64.deb
       workingDirectory: $(Pipeline.Workspace)/target/debs/trixie/
       displayName: 'Install Debian dependencies'
 
