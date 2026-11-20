@@ -95,7 +95,7 @@ stages:
     - script: |
         pip3 install ".[testing]"
         pip3 uninstall --yes sonic-host-services
-        pytest
+        python3 -m pytest
       displayName: 'Test Python 3'
 
     - task: PublishTestResults@2
@@ -105,6 +105,10 @@ stages:
         failTaskOnFailedTests: true
       condition: succeededOrFailed()
       displayName: 'Publish Python 3 test results'
+
+    - script: |
+        sudo apt-get install -y python3-diff-cover
+      displayName: 'Pre-install diff-cover for pipeline decorator'
 
     - task: PublishCodeCoverageResults@1
       inputs:
