@@ -163,7 +163,7 @@ impl ProcDockerStats {
 
         Ok(ProcDockerStats {
             state_db,
-            system: System::new_all(),
+            system: System::new_all()?,
             process_cache: HashMap::new(),
         })
     }
