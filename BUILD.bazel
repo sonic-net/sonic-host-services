@@ -1,0 +1,235 @@
+"""Direct installation of the current Make Python distribution."""
+
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("@rules_python//python:defs.bzl", "py_test")
+load("@sonic_build_infra//oci:runtime_packages.bzl", "runtime_packages", "runtime_packages_group")
+load("@sonic_build_infra//python:site_packages.bzl", "site_packages")
+load("@sonic_build_infra//tar:sonic_deploy_tar.bzl", "sonic_deploy_tar")
+load("@tar.bzl", "tar")
+
+package(default_visibility = ["//visibility:public"])
+
+site_packages(
+    name = "sonic-host-services.runtime",
+    author = "SONiC Team",
+    author_email = "linuxnetdev@microsoft.com",
+    classifiers = [
+        "Development Status :: 3 - Alpha",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Intended Audience :: System Administrators",
+        "License :: OSI Approved :: Apache Software License",
+        "Natural Language :: English",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python :: 3.7",
+        "Topic :: System",
+    ],
+    data_prefix = "/usr/local",
+    distribution = "sonic-host-services",
+    executable_files = ["sonic_host_services-1.0.data/scripts/" + script for script in [
+        "caclmgrd",
+        "hostcfgd",
+        "featured",
+        "aaastatsd",
+        "procdockerstatsd",
+        "determine-reboot-cause",
+        "process-reboot-cause",
+        "gnoi_shutdown_daemon.py",
+        "sonic-host-server",
+        "ldap.py",
+        "console-monitor",
+    ]],
+    extra_requires = {"testing": [
+        "parameterized",
+        "pytest",
+        "pyfakefs",
+        "sonic-py-common",
+        "deepdiff>=6.2.2",
+    ]},
+    files = {p: p for p in glob([
+        "host_modules/*.py",
+        "utils/*.py",
+    ])} | {
+        "scripts/caclmgrd": "sonic_host_services-1.0.data/scripts/caclmgrd",
+        "scripts/hostcfgd": "sonic_host_services-1.0.data/scripts/hostcfgd",
+        "scripts/featured": "sonic_host_services-1.0.data/scripts/featured",
+        "scripts/aaastatsd": "sonic_host_services-1.0.data/scripts/aaastatsd",
+        "scripts/procdockerstatsd": "sonic_host_services-1.0.data/scripts/procdockerstatsd",
+        "scripts/determine-reboot-cause": "sonic_host_services-1.0.data/scripts/determine-reboot-cause",
+        "scripts/process-reboot-cause": "sonic_host_services-1.0.data/scripts/process-reboot-cause",
+        "scripts/gnoi_shutdown_daemon.py": "sonic_host_services-1.0.data/scripts/gnoi_shutdown_daemon.py",
+        "scripts/sonic-host-server": "sonic_host_services-1.0.data/scripts/sonic-host-server",
+        "scripts/ldap.py": "sonic_host_services-1.0.data/scripts/ldap.py",
+        "scripts/console-monitor": "sonic_host_services-1.0.data/scripts/console-monitor",
+    },
+    headers = "/usr/local/include",
+    homepage = "https://github.com/Azure/sonic-buildimage",
+    interpreter = "/usr/bin/python3",
+    keywords = "sonic SONiC host services",
+    license = "Apache 2.0",
+    maintainer = "Joe LeVeque",
+    maintainer_email = "jolevequ@microsoft.com",
+    normalize_scripts = True,
+    python_tag = "py3",
+    regular_file_mode = "0644",
+    requires = [
+        "dbus-python",
+        "systemd-python",
+        "Jinja2>=2.10",
+        "PyGObject",
+        "pycairo==1.26.1",
+        "psutil",
+        "sonic-py-common",
+        "sonic-utilities",
+    ],
+    scripts = "/usr/local/bin",
+    site_packages = "/usr/local/lib/python3.13/dist-packages",
+    summary = "Python services which run in the SONiC host OS",
+    version = "1.0",
+)
+
+filegroup(
+    name = "sonic-host-services.runtime_metadata",
+    srcs = [":sonic-host-services.runtime"],
+    output_group = "metadata",
+)
+
+# Original data/debian/rules names; default rules/config enables host service.
+_DATA_SYSTEMD_NAMES = [
+    "caclmgrd",
+    "hostcfgd",
+    "featured",
+    "aaastatsd",
+    "procdockerstatsd",
+    "determine-reboot-cause",
+    "process-reboot-cause",
+    "gnoi-shutdown",
+    "console-monitor-dce",
+    "console-monitor-dte",
+    "console-monitor-proxy@",
+    "console-monitor-pty-bridge@",
+    "sonic-hostservice",
+]
+
+_DATA_UNIT_FILES = glob(
+    ["data/debian/sonic-host-services-data." + name + "." + kind for name in _DATA_SYSTEMD_NAMES for kind in [
+        "service",
+        "timer",
+    ]],
+    allow_empty = True,
+)
+
+tar(
+    name = "sonic-host-services-data.runtime",
+    srcs = glob(["data/templates/*.j2"]) + ["data/org.sonic.hostservice.conf"] + _DATA_UNIT_FILES,
+    mtree = ["./usr/share/sonic/templates/" + p.split("/")[-1] + " uid=0 gid=0 mode=0644 time=0 type=file content=$(location " + p + ")" for p in glob(["data/templates/*.j2"])] + ["./etc/dbus-1/system.d/org.sonic.hostservice.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location data/org.sonic.hostservice.conf)"] + ["./usr/lib/systemd/system/" + p.split("/")[-1][len("sonic-host-services-data."):] + " uid=0 gid=0 mode=0644 time=0 type=file content=$(location " + p + ")" for p in _DATA_UNIT_FILES],
+)
+
+# Only sonic-hostservice's automatic enablement is conditional in data/debian/rules.
+bool_flag(
+    name = "enable_host_service_on_start",
+    build_setting_default = True,
+)
+
+config_setting(
+    name = "host_service_disabled",
+    flag_values = {":enable_host_service_on_start": "false"},
+)
+
+runtime_packages(
+    name = "data_enabled_metadata",
+    changelog = "data/debian/changelog",
+    control = "data/debian/control",
+    control_file_helpers = [[
+        "dh_installsystemd",
+        "--no-start",
+        "--name=" + name,
+    ] for name in _DATA_SYSTEMD_NAMES] + [["dh_installdeb"]],
+    debian_files = {"compat": "data/debian/compat"} | {p.split("/")[-1]: p for p in _DATA_UNIT_FILES},
+    packages = {"sonic-host-services-data": ":sonic-host-services-data.runtime"},
+)
+
+runtime_packages(
+    name = "data_disabled_metadata",
+    changelog = "data/debian/changelog",
+    control = "data/debian/control",
+    control_file_helpers = [[
+        "dh_installsystemd",
+        "--no-start",
+        "--name=" + name,
+    ] for name in _DATA_SYSTEMD_NAMES[:-1]] + [
+        [
+            "dh_installsystemd",
+            "--no-start",
+            "--no-enable",
+            "--name=sonic-hostservice",
+        ],
+        ["dh_installdeb"],
+    ],
+    debian_files = {"compat": "data/debian/compat"} | {p.split("/")[-1]: p for p in _DATA_UNIT_FILES},
+    packages = {"sonic-host-services-data": ":sonic-host-services-data.runtime"},
+)
+
+runtime_packages_group(
+    name = "sonic-host-services-data.runtime_metadata",
+    packages = select({
+        ":host_service_disabled": [":data_disabled_metadata"],
+        "//conditions:default": [":data_enabled_metadata"],
+    }),
+)
+
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])
+
+sonic_deploy_tar(
+    name = "sonic-host-services-rs.runtime",
+    binaries = {"usr/bin/procdockerstatsd-rs uid=0 gid=0 mode=0755 type=file": "//crates/procdockerstatsd-rs:procdockerstatsd-rs"},
+    force_debug_build = True,
+)
+
+runtime_packages(
+    name = "sonic-host-services-rs.runtime_metadata",
+    changelog = "debian/changelog",
+    control = "debian/control",
+    control_file_helpers = [["dh_installdeb"]],
+    debian_files = {"compat": "debian/compat"},
+    dependencies = ["@sonic_swss_common//:runtime_packages.json"],
+    packages = {"sonic-host-services-rs": ":sonic-host-services-rs.runtime"},
+)
+
+filegroup(
+    name = "packaging_source_inputs",
+    srcs = ["setup.py"] + glob([
+        "host_modules/*.py",
+        "utils/*.py",
+        "scripts/*",
+        "data/templates/*.j2",
+        "data/debian/*",
+        "data/org.sonic.hostservice.conf",
+    ]),
+)
+
+py_test(
+    name = "installation_test",
+    srcs = ["tests/bazel_installation_contract.py"],
+    args = [
+        "$(location :sonic-host-services.runtime)",
+        "$(location :sonic-host-services-data.runtime)",
+        "$(location :sonic-host-services-rs.runtime)",
+        "$(location :sonic-host-services-rs.runtime.debug_symbols)",
+        "$(location setup.py)",
+    ],
+    data = [
+        "setup.py",
+        ":packaging_source_inputs",
+        ":sonic-host-services.runtime",
+        ":sonic-host-services-data.runtime",
+        ":sonic-host-services-rs.runtime",
+        ":sonic-host-services-rs.runtime.debug_symbols",
+    ],
+    legacy_create_init = False,
+    main = "tests/bazel_installation_contract.py",
+)
