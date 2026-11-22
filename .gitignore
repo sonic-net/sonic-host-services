@@ -20,3 +20,10 @@ test-results.xml
 
 # Unit test scratchpad
 tests/hostcfgd/output/*
+
+# Bazel local configuration and generated outputs.
+bazel-*
+MODULE.bazel.lock
+.bazelrc.user
+/ci-artifacts/
+__pycache__/

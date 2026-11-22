@@ -1,0 +1,70 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("@sonic_build_infra//cc:runtime_test.bzl", "native_runtime_test")
+load("@sonic_build_infra//rust:release.bzl", "cargo_release_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+rust_binary(
+    name = "daemon_binary",
+    srcs = ["src/main.rs"],
+    crate_name = "procdockerstatsd_rs",
+    crate_root = "src/main.rs",
+    edition = "2021",
+    experimental_use_cc_common_link = 0,
+    rustc_flags = [
+        "-Cdebuginfo=2",
+        "-Cstrip=none",
+    ],
+    version = "1.0.0",
+    deps = ["@sonic_swss_common//crates/swss-common:swss_common"] + ["@sonic_rust_deps//:" + name for name in [
+        "sysinfo",
+        "regex",
+        "daemonize",
+        "chrono",
+        "libc",
+        "psutil",
+        "procfs",
+        "tracing",
+        "tracing-subscriber",
+        "syslog-tracing",
+        "serde",
+        "serde_json",
+    ]],
+)
+
+cargo_release_binary(
+    name = "procdockerstatsd-rs",
+    src = ":daemon_binary",
+)
+
+# Check the public Common C ABI and the shared Serde crate identity.
+rust_binary(
+    name = "locked_ffi_binary",
+    testonly = True,
+    srcs = ["tests/locked_ffi.rs"],
+    crate_root = "tests/locked_ffi.rs",
+    edition = "2021",
+    experimental_use_cc_common_link = 0,
+    deps = [
+        "@sonic_swss_common//crates/swss-common:swss_common",
+        "@sonic_rust_deps//:serde",
+        "@sonic_rust_deps//:serde_json",
+    ],
+)
+
+cargo_release_binary(
+    name = "locked_ffi_release",
+    testonly = True,
+    src = ":locked_ffi_binary",
+)
+
+native_runtime_test(
+    name = "locked_ffi_test",
+    binary = ":locked_ffi_release",
+    runtime_payloads = [
+        "@sonic_swss_common//dist:libswsscommon_pkg",
+        "@sonic_swss_common//tools/bazel/runtime:test_runtime",
+    ],
+)
