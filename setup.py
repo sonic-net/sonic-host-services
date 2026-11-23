@@ -78,7 +78,7 @@ setup(
         'PyYAML',
         'redis>=3.5.3',
         'pydantic==2.13.4',
-        'regex==2024.11.6',
+        'regex>=2024.11.6',
     ] + sonic_dependencies,
     setup_requires = [
         'pytest-runner',

@@ -1,3 +1,4 @@
+import fcntl
 import json
 import subprocess
 import sys
@@ -33,29 +34,40 @@ def test_real_command_drains_both_streams_with_bounded_capture_memory():
     assert peak < 4 * 1024 * 1024
 
 
-@pytest.mark.parametrize("parent_exits", [False, True], ids=["running", "exited"])
-def test_real_command_timeout_cleans_up_descendants(tmp_path, parent_exits):
-    marker = tmp_path / "child-survived"
-    child = (
-        "import pathlib, time; time.sleep(0.6); "
-        "pathlib.Path({!r}).touch()".format(str(marker))
-    )
-    script = (
-        "import subprocess, sys, time; "
-        "subprocess.Popen([sys.executable, '-c', {!r}]); "
-        "print('started', flush=True); "
-        "print('diagnostic', file=sys.stderr, flush=True); time.sleep({})".format(
-            child, 0 if parent_exits else 5
-        )
-    )
-    started = time.monotonic()
+@pytest.mark.parametrize("parent_mode", ["running", "exited"])
+def test_real_command_timeout_cleans_up_descendants(tmp_path, parent_mode):
+    lock_path = tmp_path / "descendant.lock"
+    script = """
+import fcntl, os, sys, time
+
+with open(sys.argv[1], "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    if os.fork() == 0:
+        time.sleep(20)
+        os._exit(0)
+    print("started", flush=True)
+    print("diagnostic", file=sys.stderr, flush=True)
+    if sys.argv[2] == "running":
+        time.sleep(20)
+"""
     with pytest.raises(subprocess.TimeoutExpired) as error:
-        run_shell_free([sys.executable, "-c", script], timeout=0.2)
+        run_shell_free(
+            [sys.executable, "-c", script, str(lock_path), parent_mode], timeout=2
+        )
     assert error.value.stdout == b"started\n"
     assert error.value.stderr == b"diagnostic\n"
-    assert time.monotonic() - started < 2
-    time.sleep(0.8)
-    assert not marker.exists()
+
+    # The descendant inherits the lock and releases it when killed.
+    deadline = time.monotonic() + 2
+    with lock_path.open("r+") as lock:
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    pytest.fail("descendant still holds the lock after timeout")
+                time.sleep(0.02)
 
 
 @pytest.mark.parametrize("action_type", ["cli", "i2c"])
