@@ -27,7 +27,7 @@ and build the three metadata targets above. The original Azure pytest pipeline
 remains the source Python test suite.
 
 Formal consumption uses sonic-build-infra
-`0.0.39-81476192bf2cdb70bb646e85935c5d698b6de8a0`, Common
+`0.0.44-35726399908a3beb947174e9359f902077928289`, Common
 `0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61`, and sonic-rust-deps
 `0.0.5-5bf69bc0a7d9ea9f4a5606264be592867cd29d1e`.
 Normal registry consumption selects these public sources without a local Common
