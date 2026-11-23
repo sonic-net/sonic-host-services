@@ -89,3 +89,39 @@ class TestCaclmgrdRulePriority(TestCase):
         ])
         caclmgrd_daemon.log_error.assert_any_call(
             "rule_props for rule_id RULE_BAD has a non-integer PRIORITY 'high'!")
+
+    @patchfs
+    def test_caclmgrd_rule_duplicate_priority_warns(self, fs):
+        if not os.path.exists(DBCONFIG_PATH):
+            fs.create_file(DBCONFIG_PATH)  # fake database_config.json
+
+        caclmgrd_daemon = self.create_daemon({
+            "ACL_TABLE": {
+                "SSH_ONLY": {
+                    "stage": "ingress",
+                    "type": "CTRLPLANE",
+                    "services": ["SSH"]
+                }
+            },
+            "ACL_RULE": {
+                "SSH_ONLY|RULE_1": {
+                    "PACKET_ACTION": "ACCEPT",
+                    "PRIORITY": "100",
+                    "SRC_IP": "10.0.0.1/32"
+                },
+                "SSH_ONLY|RULE_2": {
+                    "PACKET_ACTION": "DROP",
+                    "PRIORITY": "100",
+                    "SRC_IP": "10.0.0.2/32"
+                },
+            },
+            "DEVICE_METADATA": {"localhost": {}},
+            "FEATURE": {},
+        })
+        caclmgrd_daemon.log_warning = mock.MagicMock()
+
+        self.assertEqual(self.get_acl_rule_commands(caclmgrd_daemon), [
+            ['iptables', '-A', 'INPUT', '-p', 'tcp', '-s', '10.0.0.2/32', '--dport', '22', '-j', 'DROP'],
+        ])
+        caclmgrd_daemon.log_warning.assert_any_call(
+            "ACL table 'SSH_ONLY': rule RULE_2 has the same PRIORITY 100 as rule RULE_1 and replaces it")

@@ -850,6 +850,7 @@ class ControlPlaneAclManager(logger.Logger):
                     dst_ports = []
 
                 acl_rules = {}
+                acl_rule_ids = {}
 
                 for ((rule_table_name, rule_id), rule_props) in self._rules_db_info.items():
                     rule_props = {k.upper(): v for k,v in rule_props.items()}
@@ -871,7 +872,12 @@ class ControlPlaneAclManager(logger.Logger):
                                            .format(rule_id, rule_props["PRIORITY"]))
                             continue
 
+                        if priority in acl_rules:
+                            self.log_warning("ACL table '{}': rule {} has the same PRIORITY {} as rule {} "
+                                             "and replaces it"
+                                             .format(table_name, rule_id, priority, acl_rule_ids[priority]))
                         acl_rules[priority] = rule_props
+                        acl_rule_ids[priority] = rule_id
 
                         # If we haven't determined the IP version for this ACL table yet,
                         # try to do it now. We attempt to determine heuristically based on
