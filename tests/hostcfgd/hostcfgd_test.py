@@ -118,6 +118,51 @@ class TesNtpCfgd(TestCase):
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
 
+    def test_ntp_load(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.return_value':
+                     ('c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf', '')
+                     }
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            ntpcfgd = hostcfgd.NtpCfg()
+            ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
+                         MockConfigDb.CONFIG_DB['NTP_SERVER'],
+                         MockConfigDb.CONFIG_DB['NTP_KEY'])
+            mocked_subprocess.check_output.assert_has_calls([
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], log_err=False)
+            ])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['/usr/bin/chrony-config.sh'])
+            ])
+            assert call(['systemctl', 'restart', 'chrony'], True, True) not in mocked_subprocess.check_call.mock_calls
+
+    def test_ntp_load_with_diff(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            attrs = {'communicate.side_effect': [
+                     ('c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf', ''),
+                     ('d396efe1804e806b402e6273f13212f72026fc609e59f68b2288b83fe9149a9c  chrony.conf', ''),
+                     ]
+                     }
+            popen_mock.configure_mock(**attrs)
+            mocked_subprocess.Popen.return_value = popen_mock
+
+            ntpcfgd = hostcfgd.NtpCfg()
+            ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
+                         MockConfigDb.CONFIG_DB['NTP_SERVER'],
+                         MockConfigDb.CONFIG_DB['NTP_KEY'])
+            mocked_subprocess.check_output.assert_has_calls([
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], log_err=False)
+            ])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['/usr/bin/chrony-config.sh']),
+                call(['systemctl', 'reset-failed', 'chrony']),
+                call(['systemctl', 'restart', 'chrony'])
+            ])
+
     def test_ntp_update_ntp_keys(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
             popen_mock = mock.Mock()
@@ -129,12 +174,14 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({}, MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
@@ -149,12 +196,14 @@ class TesNtpCfgd(TestCase):
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({'0.debian.pool.ntp.org': {}}, {})
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
@@ -190,6 +239,7 @@ class TesNtpCfgd(TestCase):
 
             ntpcfgd.handle_ntp_source_intf_chg('eth0')
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
