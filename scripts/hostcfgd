@@ -1639,6 +1639,7 @@ class NtpCfg(object):
 
         # Restarting the service
         try:
+            run_cmd(self.CHRONY_RESET_FAILED, True, True)
             run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart chrony'
@@ -1680,6 +1681,7 @@ class NtpCfg(object):
 
         # Restarting the service
         try:
+            run_cmd(self.CHRONY_RESET_FAILED, True, True)
             run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart '

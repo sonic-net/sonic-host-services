@@ -132,7 +132,7 @@ class TesNtpCfgd(TestCase):
                          MockConfigDb.CONFIG_DB['NTP_SERVER'],
                          MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.check_output.assert_has_calls([
-                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], log_err=False)
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'])
             ])
             mocked_subprocess.check_call.assert_has_calls([
                 call(['/usr/bin/chrony-config.sh'])
@@ -155,7 +155,7 @@ class TesNtpCfgd(TestCase):
                          MockConfigDb.CONFIG_DB['NTP_SERVER'],
                          MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.check_output.assert_has_calls([
-                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], log_err=False)
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'])
             ])
             mocked_subprocess.check_call.assert_has_calls([
                 call(['/usr/bin/chrony-config.sh']),
