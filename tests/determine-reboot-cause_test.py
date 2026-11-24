@@ -235,6 +235,76 @@ class TestDetermineRebootCause(object):
                     assert previous_reboot_cause == EXPECTED_FIND_SOFTWARE_KERNEL_PANIC
                     assert additional_info == "N/A"
 
+    @pytest.mark.parametrize(
+        "hardware_cause,software_cause,expected_cause,expected_additional",
+        [
+            (
+                ("Power down request from BMC", "rail off"),
+                "graceful shutdown from BMC",
+                "graceful shutdown from BMC",
+                "Power down request from BMC (rail off)",
+            ),
+            (
+                ("Power down request from BMC", None),
+                REBOOT_CAUSE_USER,
+                "Power down request from BMC",
+                REBOOT_CAUSE_USER,
+            ),
+            (
+                ("Power down request from BMC", None),
+                "graceful shutdown from BMC (retry)",
+                "Power down request from BMC",
+                "graceful shutdown from BMC (retry)",
+            ),
+            (
+                ("Power Loss", None),
+                "graceful shutdown from BMC",
+                "Power Loss",
+                "graceful shutdown from BMC",
+            ),
+            (
+                (REBOOT_CAUSE_NON_HARDWARE, None),
+                "graceful shutdown from BMC",
+                "graceful shutdown from BMC",
+                "N/A",
+            ),
+        ],
+        ids=[
+            "graceful-bmc-cut", "forced-bmc-cut", "graceful-superstring",
+            "other-power-loss", "non-hardware",
+        ],
+    )
+    def test_determine_reboot_cause_graceful_bmc_display_rule(
+            self, hardware_cause, software_cause, expected_cause, expected_additional):
+        with (
+            mock.patch(
+                "determine_reboot_cause.get_reboot_cause_from_platform",
+                return_value=hardware_cause,
+            ),
+            mock.patch(
+                "determine_reboot_cause.find_software_reboot_cause",
+                return_value=software_cause,
+            ),
+            mock.patch(
+                "determine_reboot_cause.find_proc_cmdline_reboot_cause",
+                return_value=None,
+            ),
+        ):
+            previous_reboot_cause, additional_info = (
+                determine_reboot_cause.determine_reboot_cause()
+            )
+
+        assert previous_reboot_cause == expected_cause
+        assert additional_info == expected_additional
+
+    def test_bmc_power_down_cause_matches_chassis_base(self):
+        from sonic_platform_base.chassis_base import ChassisBase
+
+        assert (
+            determine_reboot_cause.REBOOT_CAUSE_POWER_DOWN_REQUEST_FROM_BMC ==
+            ChassisBase.REBOOT_CAUSE_POWER_DOWN_REQUEST_FROM_BMC
+        )
+
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_DIR', os.path.join(os.getcwd(), REBOOT_CAUSE_DIR))
     @mock.patch('determine_reboot_cause.REBOOT_CAUSE_HISTORY_DIR', os.path.join(os.getcwd(), 'host/reboot-cause/history/'))
     @mock.patch('determine_reboot_cause.PREVIOUS_REBOOT_CAUSE_FILE', os.path.join(os.getcwd(), 'host/reboot-cause/previous-reboot-cause.json'))

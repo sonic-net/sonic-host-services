@@ -13,7 +13,7 @@ override_dh_auto_install:
 	# do nothing
 
 override_dh_auto_build:
-	cargo build --release --all
+	cargo build --release --all --locked
 
 override_dh_auto_clean:
 	cargo clean --release

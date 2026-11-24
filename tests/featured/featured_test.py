@@ -1,7 +1,9 @@
 import os
+import subprocess
 import sys
 import time
 import copy
+import socket
 import swsscommon as swsscommon_package
 from sonic_py_common import device_info
 from swsscommon import swsscommon
@@ -35,6 +37,38 @@ swsscommon.RestartWaiter = MockRestartWaiter
 
 def syslog_side_effect(pri, msg): 
     print(f"{pri}: {msg}")
+
+class TestRunCmd(TestCase):
+    """Tests for command failure logging."""
+
+    @mock.patch("featured.syslog.syslog")
+    def test_nonzero_exit_logs_stdout_and_stderr(self, mock_syslog):
+        cmd = ["systemctl", "stop", "teamd.service"]
+        command_error = subprocess.CalledProcessError(returncode=1, cmd=cmd, output="", stderr="stop failed")
+
+        with mock.patch("featured.subprocess.run", side_effect=command_error):
+            featured.run_cmd(cmd)
+
+        log_message = mock_syslog.call_args.args[1]
+        assert str(cmd) in log_message
+        assert "return code - 1" in log_message
+        assert "stdout:\n" in log_message
+        assert "stderr:\nstop failed" in log_message
+
+    @mock.patch("featured.syslog.syslog")
+    def test_unexpected_error_logging_preserves_original_exception(self, mock_syslog):
+        cmd = ["missing-systemctl", "stop", "teamd.service"]
+        command_error = FileNotFoundError(2, "No such file or directory", cmd[0])
+
+        with mock.patch("featured.subprocess.run", side_effect=command_error):
+            with self.assertRaises(FileNotFoundError) as raised_error:
+                featured.run_cmd(cmd, raise_exception=True)
+
+        assert raised_error.exception is command_error
+        log_message = mock_syslog.call_args.args[1]
+        assert str(cmd) in log_message
+        assert str(command_error) in log_message
+
 
 class TestFeatureHandler(TestCase):
     """Test methods of `FeatureHandler` class.
@@ -429,6 +463,34 @@ class TestFeatureHandler(TestCase):
             feature_handler.update_systemd_config(feature)
             mock_reload.assert_called_once()
 
+    def test_update_systemd_config_logs_requested_and_written_restart(self):
+        """Verify the log shows how auto_restart maps to the written systemd value."""
+        test_cases = [
+            ('teamd', 'FixedSwitch', 'enabled', 'always'),
+            ('syncd', 'SpineRouter', 'enabled', 'no'),
+        ]
+
+        for feature_name, device_type, auto_restart, written_restart in test_cases:
+            with self.subTest(feature_name=feature_name, device_type=device_type):
+                device_config = {'DEVICE_METADATA': {'localhost': {'type': device_type}}}
+                feature_handler = featured.FeatureHandler(mock.MagicMock(), mock.MagicMock(),
+                                                          device_config, False)
+                feature = featured.Feature(feature_name, {
+                    'state': 'enabled',
+                    'auto_restart': auto_restart,
+                })
+                expected_log = (f"Updated auto-restart config for {feature_name}.service: "
+                                f"auto_restart={auto_restart} -> Restart={written_restart}")
+
+                with mock.patch.object(feature_handler, 'get_multiasic_feature_instances',
+                                       return_value=([feature_name], ['service'])), \
+                     mock.patch('featured.os.path.exists', return_value=True), \
+                     mock.patch('builtins.open', mock.mock_open()), \
+                     mock.patch('featured.syslog.syslog') as mock_syslog:
+                    feature_handler.update_systemd_config(feature, reload=False)
+
+                mock_syslog.assert_any_call(featured.syslog.LOG_INFO, expected_log)
+
     def test_sync_state_field_empty_table(self):
         """With no features, daemon-reload still fires and no services are started."""
         mock_db = mock.MagicMock()
@@ -443,7 +505,8 @@ class TestFeatureHandler(TestCase):
         mock_reload.assert_called_once()
         mock_state.assert_not_called()
 
-    def test_port_init_done_twice(self):
+    @mock.patch("sonic_py_common.device_info.is_multi_npu", return_value=False)
+    def test_port_init_done_twice(self, mock_is_multi_npu):
         """There could be multiple "PortInitDone" event in case of swss
         restart(either due to crash or due to manual operation). swss
         restarting would cause all services that depend on it to be stopped.
@@ -457,6 +520,105 @@ class TestFeatureHandler(TestCase):
         assert feature_handler.is_delayed_enabled
         
         feature_handler.enable_delayed_services = mock.MagicMock()
+        feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
+        feature_handler.enable_delayed_services.assert_called_once()
+
+    @staticmethod
+    def _make_multi_asic_handler(quorum):
+        """Multi-ASIC FeatureHandler built without __init__ (no live DB connections)."""
+        fh = featured.FeatureHandler.__new__(featured.FeatureHandler)
+        fh.is_multi_npu = True
+        fh.is_delayed_enabled = False
+        fh._cached_config = {}
+        fh.port_init_quorum_ns = set(quorum)
+        fh.pending_port_init_ns = set(quorum)
+        return fh
+
+    @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+    def test_port_init_quorum_multi_asic(self, mock_syslog):
+        """Multi-ASIC releases only after every namespace reported PortInitDone."""
+        fh = self._make_multi_asic_handler(['asic0', 'asic1', 'asic2', 'asic3'])
+        fh.enable_delayed_services = mock.MagicMock()
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic0')
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic2')
+        fh.enable_delayed_services.assert_not_called()   # quorum not complete yet
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic3')
+        fh.enable_delayed_services.assert_called_once()   # all ASICs reported
+
+    @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+    def test_port_init_requorum_after_swss_restart_multi_asic(self, mock_syslog):
+        """After the first release, DEL then SET on one ASIC (swss restart) re-enables on its own."""
+        fh = self._make_multi_asic_handler(['asic0', 'asic1'])
+        fh.enable_delayed_services = mock.MagicMock(side_effect=lambda: setattr(fh, 'is_delayed_enabled', True))
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic0')
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')   # release #1
+        fh.port_listener('PortInitDone', 'DEL', None, namespace='asic1')   # swss@1 stop
+        self.assertEqual(fh.pending_port_init_ns, {'asic1'})
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')   # swss@1 back
+        self.assertEqual(fh.enable_delayed_services.call_count, 2)
+        self.assertEqual(fh.pending_port_init_ns, set())
+
+    @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+    def test_port_init_withdrawn_marker_blocks_release(self, mock_syslog):
+        """A marker withdrawn before the first release counts as not ready until republished."""
+        fh = self._make_multi_asic_handler(['asic0', 'asic1', 'asic2'])
+        fh.enable_delayed_services = mock.MagicMock()
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic0')
+        fh.port_listener('PortInitDone', 'DEL', None, namespace='asic0')   # asic0 swss restarts
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic2')
+        fh.enable_delayed_services.assert_not_called()                     # asic0 not ready
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic0')
+        fh.enable_delayed_services.assert_called_once()
+
+    @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+    def test_port_init_overlapping_swss_restarts(self, mock_syslog):
+        """After the first release an ASIC that never returns cannot hold up the others."""
+        fh = self._make_multi_asic_handler(['asic0', 'asic1'])
+        fh.enable_delayed_services = mock.MagicMock(side_effect=lambda: setattr(fh, 'is_delayed_enabled', True))
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic0')
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')   # release #1
+        fh.port_listener('PortInitDone', 'DEL', None, namespace='asic0')   # asic0 down for good
+        fh.port_listener('PortInitDone', 'DEL', None, namespace='asic1')
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')   # asic1 back
+        self.assertEqual(fh.enable_delayed_services.call_count, 2)
+        self.assertEqual(fh.pending_port_init_ns, {'asic0'})
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')   # replay/no-op: not pending
+        self.assertEqual(fh.enable_delayed_services.call_count, 2)
+
+    @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+    def test_port_init_extra_namespace_does_not_release_early(self, mock_syslog):
+        """A PortInitDone from a namespace outside the quorum must not release early."""
+        fh = self._make_multi_asic_handler(['asic0', 'asic1'])
+        fh.enable_delayed_services = mock.MagicMock()
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic9')   # not in quorum
+        fh.enable_delayed_services.assert_not_called()
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic0')
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic1')
+        fh.enable_delayed_services.assert_called_once()
+
+    @mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+    def test_port_init_ignores_other_keys_and_ops(self, mock_syslog):
+        """Only PortInitDone SET/DEL matter; other keys and ops leave the quorum alone."""
+        fh = self._make_multi_asic_handler(['asic0'])
+        fh.enable_delayed_services = mock.MagicMock()
+        fh.port_listener('Ethernet0', 'SET', None, namespace='asic0')
+        fh.port_listener('Ethernet0', 'DEL', None, namespace='asic0')
+        fh.port_listener('PortInitDone', 'HSET', None, namespace='asic0')
+        fh.port_listener('', 'SET', None, namespace='asic0')
+        fh.enable_delayed_services.assert_not_called()
+        self.assertEqual(fh.pending_port_init_ns, {'asic0'})
+        fh.port_listener('PortInitDone', 'SET', None, namespace='asic0')
+        fh.enable_delayed_services.assert_called_once()
+
+    @mock.patch("sonic_py_common.device_info.is_multi_npu", return_value=False)
+    def test_port_init_done_del_ignored_single_asic(self, mock_is_multi_npu):
+        """Single-ASIC keeps the stateless behavior: a DEL never enables anything."""
+        feature_handler = featured.FeatureHandler(None, None, {}, False)
+        feature_handler.enable_delayed_services = mock.MagicMock()
+        feature_handler.port_listener(key='PortInitDone', op='DEL', data=None)
+        feature_handler.enable_delayed_services.assert_not_called()
         feature_handler.port_listener(key='PortInitDone', op='SET', data=None)
         feature_handler.enable_delayed_services.assert_called_once()
 
@@ -876,6 +1038,24 @@ class TestFeatureDaemon(TestCase):
                         call(['sudo', 'systemctl', 'start', 'mux.service'], capture_output=True, check=True, text=True)]
             mocked_subprocess.run.assert_has_calls(expected, any_order=True)
 
+    def test_portinit_timeout_with_busy_port_table(self, mock_syslog, get_runtime):
+        """Single-ASIC: a selector kept busy by PORT_TABLE traffic must not postpone the fallback."""
+        MockConfigDb.CONFIG_DB['PORT_TABLE'] = {'Ethernet{}'.format(i): {'admin_status': 'up'} for i in range(8)}
+        MockSelect.set_event_queue([('PORT_TABLE', 'Ethernet{}'.format(i)) for i in range(8)])
+        with mock.patch('featured.subprocess') as mocked_subprocess:
+            popen_mock = mock.Mock()
+            popen_mock.configure_mock(**{'communicate.return_value': ('output', 'error')})
+            mocked_subprocess.Popen.return_value = popen_mock
+            daemon = featured.FeatureDaemon()
+            daemon.render_all_feature_states()
+            daemon.register_callbacks()
+            assert not daemon.feature_handler.is_delayed_enabled
+            try:
+                daemon.start(0.0)   # deadline long past, but select never returns TIMEOUT
+            except TimeoutError:
+                pass
+            assert daemon.feature_handler.is_delayed_enabled
+
     def test_systemctl_command_failure(self, mock_syslog, get_runtime):
         """Test that when systemctl commands fail:
         1. The feature state is not cached
@@ -925,6 +1105,46 @@ class TestFeatureDaemon(TestCase):
 
                 # Verify the feature state was not enabled in the cache
                 assert feature_handler._cached_config[feature.name].state != 'enabled'
+
+    @staticmethod
+    def _make_bare_daemon(is_multi_npu, ns_appl_db_conn=None):
+        """FeatureDaemon built without __init__ (no live DB connections) for register_callbacks tests."""
+        daemon = featured.FeatureDaemon.__new__(featured.FeatureDaemon)
+        daemon.feature_handler = featured.FeatureHandler.__new__(featured.FeatureHandler)
+        daemon.feature_handler.is_multi_npu = is_multi_npu
+        daemon.cfg_db_conn = mock.MagicMock(name='cfg_db_conn')
+        daemon.appl_db_conn = mock.MagicMock(name='host_appl_db_conn')
+        daemon.ns_appl_db_conn = ns_appl_db_conn or {}
+        daemon.subscribe = mock.MagicMock()
+        return daemon
+
+    def test_register_callbacks_multi_asic_subscribes_per_namespace(self, mock_syslog, get_runtime):
+        """Multi-ASIC subscribes each namespace's PORT_TABLE and never the host APPL_DB."""
+        conn0, conn1 = mock.MagicMock(name='asic0'), mock.MagicMock(name='asic1')
+        daemon = self._make_bare_daemon(True, {'asic0': conn0, 'asic1': conn1})
+
+        daemon.register_callbacks()
+
+        port_calls = [c for c in daemon.subscribe.call_args_list if c.args[1] == featured.PORT_TBL]
+        # One PORT_TABLE subscription per namespace, each on its own connector.
+        self.assertEqual({c.kwargs.get('namespace'): c.args[0] for c in port_calls},
+                         {'asic0': conn0, 'asic1': conn1})
+        # The host APPL_DB must never be subscribed for ports on multi-ASIC.
+        self.assertNotIn(daemon.appl_db_conn, [c.args[0] for c in port_calls])
+        # FEATURE table is still subscribed exactly once, on the host config DB.
+        feat_calls = [c for c in daemon.subscribe.call_args_list if c.args[1] == featured.FEATURE_TBL]
+        self.assertEqual(len(feat_calls), 1)
+        self.assertIs(feat_calls[0].args[0], daemon.cfg_db_conn)
+
+    def test_register_callbacks_single_asic_subscribes_host(self, mock_syslog, get_runtime):
+        """On single-ASIC, register_callbacks subscribes the host APPL_DB PORT_TABLE."""
+        daemon = self._make_bare_daemon(False)
+
+        daemon.register_callbacks()
+
+        port_calls = [c for c in daemon.subscribe.call_args_list if c.args[1] == featured.PORT_TBL]
+        self.assertEqual(len(port_calls), 1)
+        self.assertIs(port_calls[0].args[0], daemon.appl_db_conn)
 
 
 class TestWaitForServiceStable(TestCase):
@@ -1053,6 +1273,419 @@ class TestWaitForServiceStable(TestCase):
             assert "stop" in call_order[1][1]
 
 
+class TestAbsentFeature(TestCase):
+    """Disabled features may be absent regardless of platform or scope defaults."""
+
+    def setUp(self):
+        self.patch('sonic_py_common.device_info.is_multi_npu', return_value=False)
+        self.patch('sonic_py_common.device_info.get_num_dpus', return_value=0)
+        self.patch('sonic_py_common.device_info.get_device_runtime_metadata', return_value={})
+        self.is_bmc = self.patch('sonic_py_common.device_info.is_switch_bmc', return_value=False)
+        self.log = self.patch('featured.syslog.syslog')
+        self.run = self.patch('featured.subprocess.run')
+        self.popen = self.patch('featured.subprocess.Popen', side_effect=self.systemd_show)
+        self.wait = self.patch('featured.FeatureHandler.wait_for_service_stable')
+        self.config = {
+            'state': 'disabled',
+            'auto_restart': 'enabled',
+        }
+        self.load_state = 'not-found'
+        self.load_rc = 0
+        self.db = mock.Mock()
+        self.db.get_entry.side_effect = lambda *args: self.config.copy()
+        self.state_table = mock.Mock()
+        self.handler = featured.FeatureHandler(self.db, self.state_table, {}, False)
+
+    def patch(self, target, **kwargs):
+        patcher = mock.patch(target, **kwargs)
+        result = patcher.start()
+        self.addCleanup(patcher.stop)
+        return result
+
+    def systemd_show(self, cmd, **kwargs):
+        prop = cmd[-1]
+        self.assertIn(prop, ('LoadState', 'UnitFileState'))
+        value = self.load_state if prop == 'LoadState' else ''
+        return mock.Mock(
+            returncode=self.load_rc if prop == 'LoadState' else 0,
+            communicate=mock.Mock(return_value=(
+                '{}={}\n'.format(prop, value).encode(), b'')))
+
+    @parameterized.expand([
+        ('startup', 'swss'),
+        ('startup', 'radv'),
+        ('startup', 'restapi'),
+        ('startup', 'sflow'),
+        ('startup', 'syncd'),
+        ('startup', 'teamd'),
+        ('startup', 'snmp'),
+        ('startup', 'eventd'),
+        ('startup', 'bmp'),
+        ('change', 'swss'),
+        ('change', 'restapi'),
+        ('change', 'snmp'),
+        ('change', 'teamd'),
+        ('change', 'eventd'),
+        ('change', 'radv'),
+        ('change', 'bmp'),
+        ('auto_restart', 'swss'),
+        ('auto_restart', 'bmp'),
+        ('delayed', 'snmp'),
+        ('delayed', 'bmp'),
+        ('always_disabled', 'swss'),
+        ('always_disabled', 'bmp'),
+    ])
+    @patchfs
+    def test_absent_unit_reconciliation(self, path, name, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.assertTrue(featured.Feature(name, self.config).has_global_scope)
+        if path == 'always_disabled':
+            self.config['state'] = 'always_disabled'
+        if path == 'delayed':
+            self.config['delayed'] = 'True'
+        if path == 'change':
+            self.handler._cached_config[name] = featured.Feature(name, {'state': 'enabled'})
+            self.handler.handler(name, 'SET', self.config)
+        elif path == 'auto_restart':
+            self.handler._cached_config[name] = featured.Feature(
+                name, dict(self.config, auto_restart='disabled'))
+            self.handler.handler(name, 'SET', self.config)
+        else:
+            self.handler.sync_state_field({name: self.config})
+        if path == 'delayed':
+            self.state_table.set.assert_not_called()
+            self.handler.handle_port_table_timeout()
+
+        if path == 'auto_restart':
+            self.state_table.set.assert_not_called()
+        else:
+            self.state_table.set.assert_called_with(name, [('state', 'disabled')])
+        self.wait.assert_not_called()
+        self.assertFalse(os.path.exists(
+            self.handler.SYSTEMD_SERVICE_CONF_DIR.format(name)))
+        self.popen.assert_any_call(
+            ['sudo', 'systemctl', 'show', '{}.service'.format(name), '--property', 'LoadState'],
+            stdout=featured.subprocess.PIPE, stderr=featured.subprocess.PIPE)
+        self.assertTrue(self.run.called)  # The normal daemon-reload still runs.
+        for invocation in self.run.call_args_list:
+            self.assertEqual(invocation.args[0], ['sudo', 'systemctl', 'daemon-reload'])
+        self.assertFalse(any(c.args[0] == featured.syslog.LOG_ERR
+                             for c in self.log.call_args_list))
+
+    @parameterized.expand([
+        ('no_scope', {'has_global_scope': 'False'}),
+        ('global_scope', {'has_global_scope': 'True'}),
+        ('asic_scope', {'has_per_asic_scope': 'True'}),
+        ('dpu_scope', {'has_per_dpu_scope': 'True'}),
+    ])
+    def test_explicit_scope_does_not_prevent_absent_unit_skip(self, name, overrides):
+        self.config.update(overrides)
+
+        self.assertTrue(self.handler.disable_feature(featured.Feature('swss', self.config)))
+
+        self.run.assert_not_called()
+        self.wait.assert_not_called()
+        self.state_table.set.assert_called_once_with('swss', [('state', 'disabled')])
+
+    @parameterized.expand([
+        ('switch_disabled', False, 'disabled'),
+        ('switch_always_disabled', False, 'always_disabled'),
+        ('bmc_disabled', True, 'disabled'),
+        ('bmc_always_disabled', True, 'always_disabled'),
+    ])
+    def test_absent_disabled_unit_skipped_on_any_platform(self, name, is_bmc, state):
+        self.is_bmc.return_value = is_bmc
+        self.config['state'] = state
+
+        self.assertTrue(self.handler.disable_feature(featured.Feature('swss', self.config)))
+
+        self.run.assert_not_called()
+        self.wait.assert_not_called()
+        self.is_bmc.assert_not_called()
+        self.state_table.set.assert_called_once_with('swss', [('state', 'disabled')])
+
+    @parameterized.expand([
+        ('loaded', 'loaded', 0),
+        ('bad_setting', 'bad-setting', 0),
+        ('query_failure', 'not-found', 1),
+        ('empty_load_state', '', 0),
+    ])
+    def test_systemd_failures_are_not_skipped(self, name, load_state, rc):
+        self.load_state, self.load_rc = load_state, rc
+        stop = ['sudo', 'systemctl', 'stop', 'swss.service']
+        self.run.side_effect = subprocess.CalledProcessError(5, stop, output='stop failed')
+
+        result = self.handler.disable_feature(featured.Feature('swss', self.config))
+
+        self.assertFalse(result)
+        self.wait.assert_called_once_with('swss.service')
+        self.run.assert_called_once_with(stop, capture_output=True, check=True, text=True)
+        self.state_table.set.assert_called_once_with('swss', [('state', 'failed')])
+        self.assertTrue(any('return code - 5' in c.args[1]
+                            for c in self.log.call_args_list))
+        self.assertTrue(any('failed to be stopped and disabled' in c.args[1]
+                            for c in self.log.call_args_list))
+
+    @parameterized.expand([('enabled',), ('always_enabled',)])
+    def test_enabled_absent_unit_still_fails(self, state):
+        self.config['state'] = state
+        self.run.side_effect = subprocess.CalledProcessError(
+            5, ['sudo', 'systemctl', 'unmask', 'swss.service'])
+
+        self.assertFalse(self.handler.enable_feature(featured.Feature('swss', self.config)))
+
+        self.state_table.set.assert_called_once_with('swss', [('state', 'failed')])
+        self.assertTrue(any('failed to be enabled and started' in c.args[1]
+                            for c in self.log.call_args_list))
+
+    @parameterized.expand([('swss',), ('bmp',)])
+    @patchfs
+    def test_loaded_unit_keeps_config_and_stop_actions(self, name, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.load_state = 'loaded'
+
+        self.handler.sync_state_field({name: self.config})
+
+        self.assertTrue(os.path.exists(os.path.join(
+            self.handler.SYSTEMD_SERVICE_CONF_DIR.format(name), 'auto_restart.conf')))
+        self.wait.assert_called_once_with('{}.service'.format(name))
+        self.run.assert_any_call(['sudo', 'systemctl', 'stop', '{}.service'.format(name)],
+                                 capture_output=True, check=True, text=True)
+        self.state_table.set.assert_called_with(name, [('state', 'disabled')])
+
+    @parameterized.expand([('enabled',), ('always_enabled',)])
+    @patchfs
+    def test_packaged_bmp_still_starts(self, state, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.load_state = 'loaded'
+        self.config['state'] = state
+
+        self.handler.sync_state_field({'bmp': self.config})
+
+        config_path = os.path.join(
+            self.handler.SYSTEMD_SERVICE_CONF_DIR.format('bmp'), 'auto_restart.conf')
+        with open(config_path) as config_file:
+            self.assertEqual(config_file.read(), '[Service]\nRestart=always\n')
+        self.assertEqual([c.args[0] for c in self.run.call_args_list], [
+            ['sudo', 'systemctl', 'daemon-reload'],
+            ['sudo', 'systemctl', 'unmask', 'bmp.service'],
+            ['sudo', 'systemctl', 'enable', 'bmp.service'],
+            ['sudo', 'systemctl', 'start', 'bmp.service'],
+        ])
+        self.state_table.set.assert_called_with('bmp', [('state', 'enabled')])
+        self.assertNotIn('bmp', self.handler._features_pending_config)
+        self.assertNotIn('bmp', self.handler._features_pending_update)
+
+    @parameterized.expand([('disabled',), ('always_disabled',)])
+    @patchfs
+    def test_absent_bmp_repeated_sync_does_not_create_unit(self, state, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.config['state'] = state
+
+        for _ in range(2):
+            self.handler.sync_state_field({'bmp': self.config})
+
+        self.assertEqual(os.listdir(self.handler.SYSTEMD_SYSTEM_DIR), [])
+        self.assertEqual([c.args[0] for c in self.run.call_args_list], [
+            ['sudo', 'systemctl', 'daemon-reload'],
+            ['sudo', 'systemctl', 'daemon-reload'],
+        ])
+        self.wait.assert_not_called()
+        self.state_table.set.assert_called_with('bmp', [('state', 'disabled')])
+        self.assertIn('bmp', self.handler._features_pending_config)
+        self.assertNotIn('bmp', self.handler._features_pending_update)
+
+    def test_missing_load_property_is_not_absence(self):
+        self.popen.side_effect = None
+        self.popen.return_value = mock.Mock(
+            returncode=0, communicate=mock.Mock(return_value=(b'', b'')))
+
+        self.assertFalse(self.handler.is_intentionally_absent_unit(
+            featured.Feature('swss', self.config), 'swss.service'))
+
+        self.log.assert_called_once_with(
+            featured.syslog.LOG_ERR, 'Missing LoadState in status of swss.service')
+
+    def test_pending_disable_clears_when_unit_is_absent(self):
+        feature = featured.Feature('swss', self.config)
+        self.handler._cached_config['swss'] = feature
+        self.handler._features_pending_update.add('swss')
+
+        self.handler.handler('swss', 'SET', self.config)
+
+        self.assertNotIn('swss', self.handler._features_pending_update)
+        self.state_table.set.assert_called_once_with('swss', [('state', 'disabled')])
+        self.run.assert_not_called()
+        self.wait.assert_not_called()
+
+    @parameterized.expand([
+        (path, auto_restart)
+        for path in ('startup', 'auto_restart', 'delayed', 'retry')
+        for auto_restart in ('enabled', 'disabled')
+    ])
+    @patchfs
+    def test_skipped_config_applied_before_enable(self, path, auto_restart, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.config['auto_restart'] = auto_restart
+        if path == 'delayed':
+            self.config['delayed'] = 'True'
+        if path == 'auto_restart':
+            previous = 'disabled' if auto_restart == 'enabled' else 'enabled'
+            self.handler._cached_config['swss'] = featured.Feature(
+                'swss', dict(self.config, auto_restart=previous))
+            self.handler.handler('swss', 'SET', self.config)
+        else:
+            self.handler.sync_state_field({'swss': self.config})
+        config_path = os.path.join(
+            self.handler.SYSTEMD_SERVICE_CONF_DIR.format('swss'), 'auto_restart.conf')
+        self.assertFalse(os.path.exists(config_path))
+        self.assertEqual(self.handler._cached_config['swss'].auto_restart, auto_restart)
+        self.run.reset_mock()
+        observed_configs = []
+        fail_start = path == 'retry'
+
+        def run_systemctl(cmd, **kwargs):
+            nonlocal fail_start
+            if cmd[2] in ('daemon-reload', 'start'):
+                content = None
+                if os.path.exists(config_path):
+                    with open(config_path) as config_file:
+                        content = config_file.read()
+                observed_configs.append((cmd[2], content))
+            if fail_start and cmd[2] == 'start':
+                fail_start = False
+                raise subprocess.CalledProcessError(1, cmd, stderr='start failed')
+            return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+        self.run.side_effect = run_systemctl
+        self.load_state = 'loaded'
+        self.config['state'] = 'enabled'
+        self.handler.handler('swss', 'SET', self.config)
+        if path == 'delayed':
+            self.run.assert_not_called()
+            self.handler.handle_port_table_timeout()
+        if path == 'retry':
+            self.assertIn('swss', self.handler._features_pending_update)
+            self.handler.handler('swss', 'SET', self.config)
+
+        expected_config = '[Service]\nRestart={}\n'.format(
+            'always' if auto_restart == 'enabled' else 'no')
+        expected = [('daemon-reload', expected_config), ('start', expected_config)]
+        if path == 'retry':
+            expected.append(('start', expected_config))
+        self.assertEqual(observed_configs, expected)
+        self.assertNotIn('swss', self.handler._features_pending_update)
+        self.assertNotIn('swss', self.handler._features_pending_config)
+        self.state_table.set.assert_called_with('swss', [('state', 'enabled')])
+
+    @parameterized.expand([('write',), ('reload',)])
+    @patchfs
+    def test_skipped_config_failure_blocks_start_until_retry(self, failure, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.handler.sync_state_field({'swss': self.config})
+        self.run.reset_mock()
+        self.load_state = 'loaded'
+        self.config['state'] = 'enabled'
+        if failure == 'write':
+            with mock.patch('featured.open', side_effect=OSError('write failed')):
+                self.handler.handler('swss', 'SET', self.config)
+            self.run.assert_not_called()
+        else:
+            self.run.side_effect = subprocess.CalledProcessError(
+                1, ['sudo', 'systemctl', 'daemon-reload'], stderr='reload failed')
+            self.handler.handler('swss', 'SET', self.config)
+            self.run.assert_called_once_with(
+                ['sudo', 'systemctl', 'daemon-reload'],
+                capture_output=True, check=True, text=True)
+
+        self.assertIn('swss', self.handler._features_pending_config)
+        self.assertIn('swss', self.handler._features_pending_update)
+        self.state_table.set.assert_called_with('swss', [('state', 'failed')])
+        self.assertTrue(any(c.args[0] == featured.syslog.LOG_ERR
+                            for c in self.log.call_args_list))
+
+        self.run.side_effect = None
+        self.run.reset_mock()
+        self.handler.handler('swss', 'SET', self.config)
+
+        commands = [invocation.args[0][2] for invocation in self.run.call_args_list]
+        self.assertEqual(commands, ['daemon-reload', 'unmask', 'enable', 'start'])
+        self.assertNotIn('swss', self.handler._features_pending_config)
+        self.assertNotIn('swss', self.handler._features_pending_update)
+        self.state_table.set.assert_called_with('swss', [('state', 'enabled')])
+
+    @parameterized.expand([('success', False), ('failure', True)])
+    @patchfs
+    def test_skipped_config_cleared_only_after_batch_reload(self, name, fail_reload, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.handler.sync_state_field({'swss': self.config})
+        self.assertIn('swss', self.handler._features_pending_config)
+        self.load_state = 'loaded'
+        self.run.reset_mock()
+
+        def run_systemctl(cmd, **kwargs):
+            if fail_reload and cmd[2] == 'daemon-reload':
+                raise subprocess.CalledProcessError(1, cmd, stderr='reload failed')
+            return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+        self.run.side_effect = run_systemctl
+        self.handler.sync_state_field({'swss': self.config})
+
+        self.assertEqual('swss' in self.handler._features_pending_config, fail_reload)
+        reloads = [c for c in self.run.call_args_list if c.args[0][2] == 'daemon-reload']
+        self.assertEqual(len(reloads), 1)
+
+    @patchfs
+    def test_partial_instance_config_is_applied_before_enable(self, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        units = ['swss@0', 'swss@1']
+        config_paths = [os.path.join(self.handler.SYSTEMD_SERVICE_CONF_DIR.format(unit),
+                                    'auto_restart.conf') for unit in units]
+        systemd_show = self.systemd_show
+
+        def show_instance(cmd, **kwargs):
+            self.load_state = 'not-found' if cmd[3] == 'swss@0.service' else 'loaded'
+            return systemd_show(cmd, **kwargs)
+
+        self.popen.side_effect = show_instance
+        observed_configs = []
+
+        def run_systemctl(cmd, **kwargs):
+            if cmd[2] in ('daemon-reload', 'start'):
+                observed_configs.append((cmd[2], [os.path.exists(p) for p in config_paths]))
+            return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+        with mock.patch.object(self.handler, 'get_multiasic_feature_instances',
+                               return_value=(units, ['service'])):
+            self.handler.sync_state_field({'swss': self.config})
+            self.assertFalse(os.path.exists(config_paths[0]))
+            self.assertTrue(os.path.exists(config_paths[1]))
+            self.assertIn('swss', self.handler._features_pending_config)
+            self.popen.side_effect = systemd_show
+            self.load_state = 'loaded'
+            self.config['state'] = 'enabled'
+            self.run.side_effect = run_systemctl
+
+            self.handler.handler('swss', 'SET', self.config)
+
+        self.assertEqual(observed_configs, [
+            ('daemon-reload', [True, True]),
+            ('start', [True, True]),
+            ('start', [True, True]),
+        ])
+        self.assertNotIn('swss', self.handler._features_pending_config)
+
+    @patchfs
+    def test_deregister_clears_skipped_config(self, fs):
+        fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        self.handler.sync_state_field({'swss': self.config})
+        self.assertIn('swss', self.handler._features_pending_config)
+
+        self.handler.handler('swss', 'DEL', {})
+
+        self.assertNotIn('swss', self.handler._features_pending_config)
+
+
 class TestEnableFeatureGeneratedUnit(TestCase):
     """Tests that enable_feature() skips 'systemctl enable' for generated units.
 
@@ -1103,6 +1736,26 @@ class TestEnableFeatureGeneratedUnit(TestCase):
                         ["sudo", "systemctl", "start", "bgp.service"]]
         mocked_set_state.assert_called_once_with(mock.ANY, featured.FeatureHandler.FEATURE_STATE_ENABLED)
 
+    def test_enable_feature_rechecks_generated_unit_after_unmask(self):
+        """A masked generated unit is not enabled after unmask exposes its real state."""
+        handler = self._create_handler()
+        feature = featured.Feature("bgp", {"state": "enabled", "auto_restart": "enabled"})
+        cmds = []
+
+        with mock.patch.object(handler, "get_multiasic_feature_instances",
+                               return_value=(["bgp"], ["service"])), \
+             mock.patch.object(handler, "get_systemd_unit_state",
+                               side_effect=["masked", "generated"]), \
+             mock.patch("featured.run_cmd", side_effect=lambda cmd, **kwargs: cmds.append(cmd)), \
+             mock.patch.object(handler, "set_feature_state") as mocked_set_state:
+
+            result = handler.enable_feature(feature)
+
+        assert result is True
+        assert cmds == [["sudo", "systemctl", "unmask", "bgp.service"],
+                        ["sudo", "systemctl", "start", "bgp.service"]]
+        mocked_set_state.assert_called_once_with(mock.ANY, featured.FeatureHandler.FEATURE_STATE_ENABLED)
+
     def test_enable_feature_skips_enable_for_generated_timer_unit(self):
         """A generated feature with a .timer unit still unmasks both units and skips enable."""
         result, cmds, _ = self._run_enable_feature("generated",
@@ -1124,3 +1777,576 @@ class TestEnableFeatureGeneratedUnit(TestCase):
         assert not any("enable" in cmd for cmd in cmds)
         assert ["sudo", "systemctl", "start", "bgp@0.service"] in cmds
         assert ["sudo", "systemctl", "start", "bgp@1.service"] in cmds
+
+
+class NsMockDBConnector(MockDBConnector):
+    """MockDBConnector that knows its namespace; can fail to connect or be declared dead."""
+    fail_appl_db_ns = set()
+    dead_ns = set()
+
+    def __init__(self, db, val, tcpFlag=False, name=None):
+        if db == featured.APPL_DB and name in NsMockDBConnector.fail_appl_db_ns:
+            raise RuntimeError("simulated APPL_DB connect failure for {}".format(name))
+        super().__init__(db, val, tcpFlag, name)
+        self.ns = name or ''
+
+
+class NsMockSubscriberStateTable:
+    """SubscriberStateTable mock keyed by (namespace, table)."""
+    _fd = 0
+    instances = []
+
+    def __init__(self, conn, table, pop=None, pri=None):
+        NsMockSubscriberStateTable._fd += 1
+        self.fd, self.conn, self.table = NsMockSubscriberStateTable._fd, conn, table
+        self.key = (conn.ns, table)
+        self.next = None
+        NsMockSubscriberStateTable.instances.append(self)
+
+    def getFd(self):
+        return self.fd
+
+    def pop(self):
+        key, op = self.next
+        if self.table == featured.PORT_TBL:
+            return key, op, {'lanes': '0'}
+        return key, op, MockConfigDb.CONFIG_DB[self.table][key]
+
+
+class NsMockSelect:
+    """Select mock fed from a queue of (namespace, table, key, op) events or 'TIMEOUT'/'ERROR'
+    markers; a subscriber on a dead redis yields ERROR until it is removed, and an empty
+    queue ends the daemon loop with TimeoutError like MockSelect."""
+    OBJECT, TIMEOUT, ERROR = 'OBJECT', 'TIMEOUT', 'ERROR'
+    queue = []
+
+    def __init__(self):
+        self.subs = {}
+
+    def addSelectable(self, s):
+        self.subs[s.key] = s
+
+    def removeSelectable(self, s):
+        del self.subs[s.key]
+
+    def select(self, timeout):
+        if not NsMockSelect.queue:
+            raise TimeoutError
+        if any(s.conn.ns in NsMockDBConnector.dead_ns for s in self.subs.values()):
+            return self.ERROR, None                     # closed subscription: ERROR until it is removed
+        event = NsMockSelect.queue.pop(0)
+        if event in (self.TIMEOUT, self.ERROR):
+            return event, None
+        ns, table, key, op = event
+        s = self.subs[(ns, table)]
+        s.next = (key, op)
+        return self.OBJECT, s
+
+
+MULTI_ASIC_DAEMON_CFG_DB = {
+    'DEVICE_METADATA': {'localhost': {'type': 'LeafRouter'}},
+    'FEATURE': {
+        'lldp': {'state': 'enabled', 'delayed': 'True', 'auto_restart': 'enabled',
+                 'has_global_scope': 'True', 'has_per_asic_scope': 'True'},
+        'swss': {'state': 'enabled', 'delayed': 'False', 'auto_restart': 'enabled',
+                 'has_global_scope': 'False', 'has_per_asic_scope': 'True'},
+    },
+}
+NS = ['asic0', 'asic1', 'asic2']
+
+
+def port_event(ns, key='PortInitDone', op='SET'):
+    return (ns, featured.PORT_TBL, key, op)
+
+
+@mock.patch("syslog.syslog", side_effect=syslog_side_effect)
+@mock.patch('sonic_py_common.device_info.get_device_runtime_metadata',
+            return_value={'DEVICE_RUNTIME_METADATA': {'ETHERNET_PORTS_PRESENT': True}})
+@mock.patch('sonic_py_common.device_info.get_namespaces', return_value=NS)
+@mock.patch('sonic_py_common.device_info.get_num_npus', return_value=3)
+@mock.patch('sonic_py_common.device_info.is_multi_npu', return_value=True)
+@mock.patch('sonic_py_common.device_info.get_num_dpus', return_value=0)
+class TestFeatureDaemonMultiAsic(TestCase):
+    """End-to-end multi-ASIC path: namespace discovery, per-namespace connectors,
+    register_callbacks and start() dispatching by (namespace, table)."""
+
+    def setUp(self):
+        self.patcher = Patcher()
+        self.patcher.setUp()
+        self.addCleanup(self.patcher.tearDown)
+        self.patcher.fs.create_dir(featured.FeatureHandler.SYSTEMD_SYSTEM_DIR)
+        MockConfigDb.CONFIG_DB = copy.deepcopy(MULTI_ASIC_DAEMON_CFG_DB)
+        self.addCleanup(MockConfigDb.CONFIG_DB.clear)
+        MockRestartWaiter.advancedReboot = False
+        NsMockSelect.queue = []
+        NsMockSubscriberStateTable.instances = []
+        NsMockDBConnector.fail_appl_db_ns, NsMockDBConnector.dead_ns = set(), set()
+        closed = lambda fd: any(s.getFd() == fd and s.conn.ns in NsMockDBConnector.dead_ns
+                                for s in NsMockSubscriberStateTable.instances)
+        for target, attr, value in ((featured.FeatureDaemon, 'subscription_closed', staticmethod(closed)),
+                                    (featured, 'DBConnector', NsMockDBConnector),
+                                    (featured, 'SonicDBConfig', mock.Mock()),
+                                    (swsscommon, 'Select', NsMockSelect),
+                                    (swsscommon, 'SubscriberStateTable', NsMockSubscriberStateTable)):
+            p = mock.patch.object(target, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _daemon(self):
+        with mock.patch.object(featured, 'run_cmd'), \
+             mock.patch.object(featured.FeatureHandler, 'get_systemd_unit_state', return_value='disabled'):
+            daemon = featured.FeatureDaemon()
+            daemon.render_all_feature_states()
+            daemon.register_callbacks()
+        return daemon
+
+    def test_config_db_connections_use_unix_sockets(self, *_):
+        with mock.patch.object(featured, 'ConfigDBConnector', wraps=MockConfigDb) as connector:
+            self._daemon()
+
+        self.assertEqual(connector.call_args_list, [
+            call(use_unix_socket_path=True),
+            call(use_unix_socket_path=True, namespace='asic0'),
+            call(use_unix_socket_path=True, namespace='asic1'),
+            call(use_unix_socket_path=True, namespace='asic2'),
+        ])
+
+    @staticmethod
+    def _run(daemon, init_time=None):
+        """Drive start() until the event queue is empty; return (release mock, systemctl cmds)."""
+        with mock.patch.object(daemon.feature_handler, 'enable_delayed_services',
+                               wraps=daemon.feature_handler.enable_delayed_services) as release, \
+             mock.patch.object(featured.FeatureHandler, 'get_systemd_unit_state', return_value='static'), \
+             mock.patch.object(featured, 'run_cmd') as run_cmd, \
+             mock.patch.object(featured.time, 'sleep'):
+            try:
+                daemon.start(init_time if init_time is not None else time.time())
+            except TimeoutError:
+                pass
+        return release, [c.args[0] for c in run_cmd.call_args_list]
+
+    def test_quorum_is_every_namespace_and_host_port_table_not_subscribed(self, *_):
+        daemon = self._daemon()
+        self.assertEqual(daemon.feature_handler.port_init_quorum_ns, set(NS))
+        self.assertEqual(set(daemon.ns_appl_db_conn), set(NS))
+        subscribed = {sub_key for (_, sub_key, _) in daemon.subscriber_map.values()}
+        self.assertEqual(subscribed, {('', featured.FEATURE_TBL)} | {(ns, featured.PORT_TBL) for ns in NS})
+        self.assertFalse(daemon.feature_handler.is_delayed_enabled)
+
+    def test_release_after_all_namespaces_then_requorum_on_swss_restart(self, *_):
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event('asic0', 'Ethernet0'), port_event('asic0'), port_event('asic1')]
+        release, cmds = self._run(daemon)
+        release.assert_not_called()
+        self.assertFalse(daemon.feature_handler.is_delayed_enabled)
+        self.assertEqual(cmds, [])
+
+        NsMockSelect.queue = [port_event('asic2')]
+        release, cmds = self._run(daemon)
+        release.assert_called_once()
+        self.assertTrue(daemon.feature_handler.is_delayed_enabled)
+        # only the delayed feature (lldp: host + one instance per ASIC) is started
+        self.assertEqual([c[3] for c in cmds if c[2] == 'start'],
+                         ['lldp.service', 'lldp@0.service', 'lldp@1.service', 'lldp@2.service'])
+
+        # swss@1 restart: DEL starts nothing, SET re-enables without the other ASICs reporting again
+        NsMockSelect.queue = [port_event('asic1', op='DEL')]
+        release, cmds = self._run(daemon)
+        release.assert_not_called()
+        self.assertEqual(cmds, [])
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic1'})
+        NsMockSelect.queue = [port_event('asic1')]
+        release, cmds = self._run(daemon)
+        release.assert_called_once()
+        self.assertIn(['sudo', 'systemctl', 'start', 'lldp@1.service'], cmds)
+        self.assertFalse(any(c[2] in ('stop', 'disable', 'mask') for c in cmds))
+
+    def test_failed_connector_keeps_namespace_pending_until_timeout(self, *_):
+        NsMockDBConnector.fail_appl_db_ns = {'asic1'}
+        daemon = self._daemon()
+        self.assertEqual(set(daemon.ns_appl_db_conn), {'asic0', 'asic2'})
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, set(NS))
+        NsMockSelect.queue = [port_event('asic0'), port_event('asic2')]
+        release, _ = self._run(daemon)
+        release.assert_not_called()                      # asic1 cannot be observed -> no early release
+        NsMockSelect.queue = [NsMockSelect.TIMEOUT]
+        release, _ = self._run(daemon, init_time=time.time() - featured.PORT_INIT_TIMEOUT_SEC - 1)
+        release.assert_called_once()                      # ...the timeout backstop releases
+
+    def test_timeout_fires_while_selector_is_busy(self, *_):
+        """Continuous PORT_TABLE traffic (no idle select) must not postpone the fallback."""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event('asic0', 'Ethernet{}'.format(i)) for i in range(20)]
+        release, _ = self._run(daemon, init_time=time.time() - featured.PORT_INIT_TIMEOUT_SEC - 1)
+        release.assert_called_once()
+        self.assertTrue(daemon.feature_handler.is_delayed_enabled)
+
+    def test_swss_restart_after_timeout_release_still_reenables(self, *_):
+        """After the fallback release, an swss restart on a healthy ASIC must still re-enable."""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event('asic0'), port_event('asic1')]
+        release, _ = self._run(daemon)
+        release.assert_not_called()
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic2'})
+        NsMockSelect.queue = [NsMockSelect.TIMEOUT]
+        release, _ = self._run(daemon, init_time=time.time() - featured.PORT_INIT_TIMEOUT_SEC - 1)
+        release.assert_called_once()
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, set())   # asic2 given up on
+        NsMockSelect.queue = [port_event('asic0', op='DEL'), port_event('asic0')]
+        release, cmds = self._run(daemon)
+        release.assert_called_once()
+        self.assertIn(['sudo', 'systemctl', 'start', 'lldp@0.service'], cmds)
+
+    def test_failed_instance_does_not_block_other_instances(self, *_):
+        """A failing lldp@0 must not keep lldp@1 from starting; the feature is reported failed."""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event(ns) for ns in NS]
+        self._run(daemon)
+        NsMockSelect.queue = [port_event('asic0', op='DEL'), port_event('asic1', op='DEL'), port_event('asic1')]
+        def run_cmd(cmd, log_err=True, raise_exception=False):
+            if cmd[2:] == ['start', 'lldp@0.service']:
+                raise Exception('lldp@0 start failed')
+        states = []
+        with mock.patch.object(featured.FeatureHandler, 'get_systemd_unit_state', return_value='static'), \
+             mock.patch.object(featured, 'run_cmd', side_effect=run_cmd) as run_cmd_mock, \
+             mock.patch.object(daemon.feature_handler, 'set_feature_state', side_effect=lambda f, s: states.append(s)):
+            try:
+                daemon.start(time.time())
+            except TimeoutError:
+                pass
+        starts = [c.args[0][3] for c in run_cmd_mock.call_args_list if c.args[0][2] == 'start']
+        self.assertIn('lldp@1.service', starts)
+        self.assertIn('lldp@2.service', starts)
+        self.assertEqual(states[-1], featured.FeatureHandler.FEATURE_STATE_FAILED)
+
+    def test_replayed_markers_release_immediately(self, *_):
+        """Markers present at subscription time are replayed as SETs and release at once."""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event(ns) for ns in NS]
+        release, _ = self._run(daemon, init_time=time.time())
+        release.assert_called_once()
+
+    def test_warm_boot_release_then_quorum_events_are_harmless(self, *_):
+        MockRestartWaiter.advancedReboot = True
+        daemon = self._daemon()
+        self.assertTrue(daemon.feature_handler.is_delayed_enabled)
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, set())
+        NsMockSelect.queue = [port_event(ns) for ns in NS]                       # replayed markers
+        release, cmds = self._run(daemon)
+        release.assert_not_called()                                              # nothing to do
+        NsMockSelect.queue = [port_event('asic1', op='DEL'), port_event('asic1')]   # swss@1 restart
+        release, cmds = self._run(daemon)
+        release.assert_called_once()
+        self.assertFalse(any(c[2] in ('stop', 'disable', 'mask') for c in cmds))
+
+    def test_dead_namespace_redis_is_dropped_and_dispatch_continues(self, *_):
+        """A dead namespace redis: its subscriber is dropped, other tables are served again
+        and the namespace stays pending. (Writes to that namespace's own DBs would still
+        fail, as in the base; not modelled here.)"""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event('asic0'), port_event('asic1')]
+        self._run(daemon)
+        NsMockDBConnector.dead_ns = {'asic2'}
+        MockConfigDb.CONFIG_DB['FEATURE']['swss']['state'] = 'disabled'   # a user disables a feature
+        NsMockSelect.queue = [('', featured.FEATURE_TBL, 'swss', 'SET')]
+        with mock.patch.object(featured.FeatureHandler, 'wait_for_service_stable', return_value='active'):
+            release, cmds = self._run(daemon)
+        self.assertNotIn(('asic2', featured.PORT_TBL), {sk for (_, sk, _) in daemon.subscriber_map.values()})
+        self.assertNotIn(('asic2', featured.PORT_TBL), daemon.callbacks)
+        self.assertIn(['sudo', 'systemctl', 'stop', 'swss@0.service'], cmds)   # FEATURE event was served
+        release.assert_not_called()
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic2'})
+
+    def test_dead_redis_of_ready_namespace_before_release_is_pending_again(self, *_):
+        """A ready namespace whose redis dies before the release is pending again."""
+        daemon = self._daemon()
+        NsMockSelect.queue = [port_event('asic0')]
+        self._run(daemon)
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic1', 'asic2'})
+        NsMockDBConnector.dead_ns = {'asic0'}
+        NsMockSelect.queue = [port_event('asic1'), port_event('asic2')]
+        release, _ = self._run(daemon)
+        release.assert_not_called()
+        self.assertEqual(daemon.feature_handler.pending_port_init_ns, {'asic0'})
+        NsMockSelect.queue = [NsMockSelect.TIMEOUT]
+        release, _ = self._run(daemon, init_time=time.time() - featured.PORT_INIT_TIMEOUT_SEC - 1)
+        release.assert_called_once()
+
+    def test_select_error_without_dead_subscriber_backs_off(self, *_):
+        daemon = self._daemon()
+        NsMockSelect.queue = [NsMockSelect.ERROR, NsMockSelect.ERROR]
+        with mock.patch.object(featured.time, 'sleep') as sleep, \
+             mock.patch.object(featured, 'run_cmd'):
+            try:
+                daemon.start(time.time())
+            except TimeoutError:
+                pass
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(len(daemon.subscriber_map), 4)  # nothing dropped
+
+    def test_all_subscriptions_lost_exits(self, *_):
+        """With every subscription gone, featured logs once and exits instead of looping."""
+        daemon = self._daemon()
+        NsMockDBConnector.dead_ns = {''} | set(NS)
+        NsMockSelect.queue = [NsMockSelect.ERROR]
+        with mock.patch.object(featured.time, 'sleep') as sleep, \
+             mock.patch.object(featured, 'run_cmd'), self.assertRaises(SystemExit):
+            daemon.start(time.time())
+        self.assertEqual(daemon.subscriber_map, {})
+        sleep.assert_not_called()
+
+
+class TestSubscriptionClosed(TestCase):
+    """The socket probe behind drop_dead_subscribers(), against real sockets."""
+
+    def setUp(self):
+        self.sock, self.peer = socket.socketpair()
+        self.addCleanup(self.sock.close)
+        self.addCleanup(self.peer.close)
+
+    def test_idle_connection_is_open(self):
+        self.assertFalse(featured.FeatureDaemon.subscription_closed(self.sock.fileno()))
+
+    def test_pending_data_is_open_and_left_unread(self):
+        self.peer.send(b'x')
+        self.assertFalse(featured.FeatureDaemon.subscription_closed(self.sock.fileno()))
+        self.assertEqual(self.sock.recv(1), b'x')
+
+    def test_peer_closed_is_closed(self):
+        self.peer.close()
+        self.assertTrue(featured.FeatureDaemon.subscription_closed(self.sock.fileno()))
+
+    def test_unusable_fd_is_closed_without_raising(self):
+        fd = os.dup(self.sock.fileno())
+        os.close(fd)
+        self.assertTrue(featured.FeatureDaemon.subscription_closed(fd))
+
+
+class TestPendingFeatureUpdates(TestCase):
+    """Exercise real initialization/SET/release paths with failing systemd commands."""
+
+    def setUp(self):
+        for name, value in [('is_multi_npu', False), ('get_num_npus', 1),
+                            ('get_num_dpus', 0), ('get_device_runtime_metadata', {})]:
+            patcher = mock.patch.object(device_info, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.config = {'FEATURE': {}}
+        MockConfigDb.set_config_db(self.config)
+        self.state_table = mock.Mock()
+        self.handler = featured.FeatureHandler(MockConfigDb(), self.state_table, {}, False)
+        self.unit_states = {'teamd.service': 'disabled'}
+        self.commands = []
+        self.failure = None
+        self.fail_after_effect = False
+        for name in ['update_systemd_config', 'reload_systemd_config', 'wait_for_service_stable']:
+            patcher = mock.patch.object(self.handler, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(self.handler, 'get_systemd_unit_state',
+                                    side_effect=lambda unit, property_name='UnitFileState':
+                                    'loaded' if property_name == 'LoadState' else self.unit_states[unit])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Keep run_cmd real, including its intentional tolerance of enable errors.
+        patcher = mock.patch('featured.subprocess.run', side_effect=self.run_systemctl)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_systemctl(self, cmd, **kwargs):
+        action, unit = cmd[2:]
+        self.commands.append((action, unit))
+        fail = self.failure == (action, unit)
+        if not fail or self.fail_after_effect:
+            if action == 'unmask' and self.unit_states[unit] == 'masked':
+                self.unit_states[unit] = 'disabled'
+            elif action in ('enable', 'disable', 'mask'):
+                self.unit_states[unit] = {'enable': 'enabled', 'disable': 'disabled',
+                                          'mask': 'masked'}[action]
+        if fail:
+            self.failure = None
+            raise subprocess.CalledProcessError(1, cmd, output='', stderr='injected failure')
+        return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+    def initialize(self, state, delayed=False):
+        cfg = {'state': state, 'delayed': str(delayed), 'auto_restart': 'enabled',
+               'has_global_scope': 'True', 'has_per_asic_scope': 'False',
+               'has_per_dpu_scope': 'False'}
+        self.config['FEATURE']['teamd'] = cfg.copy()
+        self.handler.sync_state_field({'teamd': cfg})
+        return cfg
+
+    def send_set(self, cfg):
+        self.config['FEATURE']['teamd'] = cfg.copy()
+        self.handler.handler('teamd', 'SET', cfg)
+
+    @parameterized.expand([
+        (state, delayed) for state in ('enabled', 'always_enabled', 'disabled', 'always_disabled')
+        for delayed in (False, True)
+    ])
+    def test_initial_or_delayed_failure_retries_same_set(self, state, delayed):
+        enabling = state in ('enabled', 'always_enabled')
+        operation = 'start' if enabling else 'mask'
+        self.unit_states['teamd.service'] = 'disabled' if enabling else 'enabled'
+        self.failure = (operation, 'teamd.service')
+        cfg = self.initialize(state, delayed)
+        cached = self.handler._cached_config['teamd']
+        assert cached.state == state
+        assert cached.delayed == delayed
+        assert cached.auto_restart == 'enabled'
+        assert cached.has_global_scope is True
+        assert cached.has_per_asic_scope is False
+        if delayed:
+            assert self.commands == []
+            self.send_set(cfg)
+            assert self.commands == []
+            self.handler.port_listener('PortInitDone', 'SET', {})
+        assert self.commands.count((operation, 'teamd.service')) == 1
+        self.state_table.set.assert_called_with('teamd', [('state', 'failed')])
+        commands_before_retry = len(self.commands)
+        self.send_set(cfg)
+        if enabling:
+            assert self.commands[commands_before_retry:] == [('start', 'teamd.service')]
+        assert self.commands.count((operation, 'teamd.service')) == 2
+        self.state_table.set.assert_called_with(
+            'teamd', [('state', 'enabled' if enabling else 'disabled')])
+        assert 'teamd' not in self.handler._features_pending_update
+        completed_commands = self.commands.copy()
+        self.send_set(cfg)
+        assert self.commands == completed_commands
+
+    @parameterized.expand([
+        ('unmask', 'enabled', 'masked', False),
+        ('stop', 'disabled', 'enabled', False),
+        ('disable', 'disabled', 'enabled', False),
+        ('disable', 'disabled', 'enabled', True),
+        ('mask', 'disabled', 'enabled', False),
+        ('mask', 'disabled', 'enabled', True),
+    ])
+    def test_partial_service_operation_is_retried(self, action, state, unit_state, after_effect):
+        self.unit_states['teamd.service'] = unit_state
+        self.failure = (action, 'teamd.service')
+        self.fail_after_effect = after_effect
+        cfg = self.initialize(state)
+        assert self.commands.count((action, 'teamd.service')) == 1
+        self.send_set(cfg)
+        assert self.commands.count((action, 'teamd.service')) == 2
+        assert self.commands[-1] == ('start' if state == 'enabled' else 'mask', 'teamd.service')
+        self.state_table.set.assert_called_with('teamd', [('state', state)])
+
+    def test_del_clears_pending_before_reregistration(self):
+        self.failure = ('start', 'teamd.service')
+        cfg = self.initialize('enabled')
+        assert 'teamd' in self.handler._features_pending_update
+        self.handler.handler('teamd', 'DEL', {})
+        assert 'teamd' not in self.handler._features_pending_update
+        assert 'teamd' not in self.handler._cached_config
+        self.state_table._del.assert_called_once_with('teamd')
+        commands = self.commands.copy()
+        self.send_set(cfg)
+        # DEL removed the retry intent; enabled units follow the original fast path.
+        assert self.commands == commands
+
+    @parameterized.expand([('enabled', 'start'), ('disabled', 'stop')])
+    def test_failed_instance_does_not_block_others_or_clear_pending(self, state, action):
+        cfg = {'state': state, 'has_global_scope': 'False', 'has_per_asic_scope': 'True'}
+        self.config['FEATURE']['teamd'] = cfg.copy()
+        self.handler.is_multi_npu = True
+        units = ['teamd@0.service', 'teamd@1.service']
+        self.unit_states.update({unit: 'disabled' if state == 'enabled' else 'enabled'
+                                 for unit in units})
+        self.unit_states['teamd.service'] = 'masked'
+        with mock.patch.object(device_info, 'get_num_npus', return_value=2):
+            self.failure = (action, units[0])
+            self.handler.sync_state_field({'teamd': cfg})
+            assert (action, units[1]) in self.commands
+            self.state_table.set.assert_called_with('teamd', [('state', 'failed')])
+            assert 'teamd' in self.handler._features_pending_update
+            # A second failure must leave pending set, even after another instance succeeds.
+            self.failure = (action, units[0])
+            self.send_set(cfg)
+            assert self.commands.count((action, units[0])) == 2
+            assert 'teamd' in self.handler._features_pending_update
+            self.send_set(cfg)
+        assert self.commands.count((action, units[0])) == 3
+        assert 'teamd' not in self.handler._features_pending_update
+        self.state_table.set.assert_called_with('teamd', [('state', state)])
+
+    @parameterized.expand([('enabled', 'start'), ('disabled', 'mask')])
+    def test_pending_does_not_bypass_immutable_restrictions(self, state, action):
+        self.unit_states['teamd.service'] = 'disabled' if state == 'enabled' else 'enabled'
+        self.failure = (action, 'teamd.service')
+        cfg = self.initialize('always_' + state)
+        commands = self.commands.copy()
+        self.send_set(dict(cfg, state=state))
+        assert self.commands == commands
+        assert self.config['FEATURE']['teamd']['state'] == 'always_' + state
+        assert 'teamd' in self.handler._features_pending_update
+        # Switching between the two immutable states remains allowed.
+        other = 'always_disabled' if state == 'enabled' else 'always_enabled'
+        self.send_set(dict(cfg, state=other))
+        assert self.handler._cached_config['teamd'].state == other
+        assert 'teamd' not in self.handler._features_pending_update
+
+    @parameterized.expand([('port',), ('timeout',), ('advanced_boot',)])
+    def test_delayed_release_retries_pending_operation(self, release):
+        self.failure = ('start', 'teamd.service')
+        cfg = self.initialize('enabled')
+        # A subsequent SET defers the unfinished operation until an existing release event.
+        self.send_set(dict(cfg, delayed='True'))
+        assert self.commands.count(('start', 'teamd.service')) == 1
+        assert 'teamd' in self.handler._features_pending_update
+        if release == 'port':
+            self.handler.port_listener('PortInitDone', 'SET', {})
+        elif release == 'timeout':
+            self.handler.handle_port_table_timeout()
+        else:
+            self.handler.is_advanced_boot = True
+            self.handler.handle_adv_boot()
+        assert self.commands.count(('start', 'teamd.service')) == 2
+        assert 'teamd' not in self.handler._features_pending_update
+
+    def test_generated_unit_retry_does_not_enable_unit(self):
+        self.unit_states['teamd.service'] = 'generated'
+        self.failure = ('start', 'teamd.service')
+        cfg = self.initialize('enabled')
+        self.send_set(cfg)
+        assert self.commands.count(('start', 'teamd.service')) == 2
+        assert ('enable', 'teamd.service') not in self.commands
+        assert 'teamd' not in self.handler._features_pending_update
+
+    @parameterized.expand([('enabled', 'start'), ('disabled', 'mask')])
+    def test_failed_state_change_retries_same_set(self, target_state, action):
+        cfg = self.initialize('disabled' if target_state == 'enabled' else 'enabled')
+        self.commands.clear()
+        self.failure = (action, 'teamd.service')
+        target_cfg = dict(cfg, state=target_state)
+        self.send_set(target_cfg)
+        self.state_table.set.assert_called_with('teamd', [('state', 'failed')])
+        self.send_set(target_cfg)
+        assert self.commands.count((action, 'teamd.service')) == 2
+        self.state_table.set.assert_called_with('teamd', [('state', target_state)])
+        commands = self.commands.copy()
+        self.send_set(target_cfg)
+        assert self.commands == commands
+
+    def test_tolerated_enable_error_does_not_leave_pending(self):
+        # Units copied into /run may reject enable; a successful start is sufficient.
+        self.failure = ('enable', 'teamd.service')
+        cfg = self.initialize('enabled')
+        assert self.commands == [('unmask', 'teamd.service'),
+                                 ('enable', 'teamd.service'), ('start', 'teamd.service')]
+        self.state_table.set.assert_called_with('teamd', [('state', 'enabled')])
+        assert 'teamd' not in self.handler._features_pending_update
+        commands = self.commands.copy()
+        self.send_set(cfg)
+        assert self.commands == commands
+
+    @parameterized.expand([('enabled',), ('disabled',)])
+    def test_excluded_feature_does_not_leave_retry_pending(self, state):
+        cfg = {'state': state}
+        self.config['FEATURE']['telemetry'] = cfg.copy()
+        self.unit_states['telemetry.service'] = 'enabled'
+        self.handler.sync_state_field({'telemetry': cfg})
+        assert self.commands == []
+        assert 'telemetry' not in self.handler._features_pending_update

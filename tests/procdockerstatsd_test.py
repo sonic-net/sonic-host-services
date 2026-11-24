@@ -78,6 +78,12 @@ class MockProcess:
 
 
 class TestProcDockerStatsDaemon(object):
+    def test_state_db_connector_uses_unix_socket(self):
+        pdstatsd = procdockerstatsd.ProcDockerStats(procdockerstatsd.SYSLOG_IDENTIFIER)
+
+        assert pdstatsd.state_db.init_args == ()
+        assert pdstatsd.state_db.init_kwargs == {"use_unix_socket_path": True}
+
     def test_convert_to_bytes(self):
         test_data = [
             ('1B', 1),

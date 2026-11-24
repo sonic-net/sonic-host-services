@@ -2,6 +2,7 @@
 
 import ast
 import os
+import socket
 import sys
 import subprocess
 import syslog
@@ -33,8 +34,13 @@ def run_cmd(cmd, log_err=True, raise_exception=False):
                       .format(result.stdout, result.stderr))
     except Exception as err:
         if log_err:
-            syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
-                  .format(err.cmd, err.returncode, err.output))
+            error_cmd = getattr(err, 'cmd', cmd)
+            return_code = getattr(err, 'returncode', None)
+            stdout = getattr(err, 'stdout', getattr(err, 'output', None))
+            stderr = getattr(err, 'stderr', None)
+            error_message = (f"{error_cmd} - failed: return code - {return_code}, "
+                             f"stdout:\n{stdout}, stderr:\n{stderr}, error: {err}")
+            syslog.syslog(syslog.LOG_ERR, error_message)
         if raise_exception:
             raise
 
@@ -139,6 +145,10 @@ class FeatureHandler(object):
         self._feature_state_table = feature_state_table
         self._device_config = device_config
         self._cached_config = {}
+        # Service operations that must be retried on a later SET or delayed release.
+        self._features_pending_update = set()
+        # Restart policies skipped for absent units must be applied before enabling.
+        self._features_pending_config = set()
         self.is_multi_npu = device_info.is_multi_npu()
         self.is_delayed_enabled = False
         self.is_advanced_boot = is_advanced_boot
@@ -146,6 +156,9 @@ class FeatureHandler(object):
         self.ns_cfg_db = {}
         self.ns_feature_state_tbl = {}
         self.num_dpus = device_info.get_num_dpus()
+        # Multi-ASIC: PortInitDone is per-namespace; release once no namespace is pending.
+        self.port_init_quorum_ns = set()
+        self.pending_port_init_ns = set()
 
         # Initlaize Global config that loads all database*.json
         if self.is_multi_npu:
@@ -153,12 +166,19 @@ class FeatureHandler(object):
             namespaces = device_info.get_namespaces()
             for ns in namespaces:
                 #Connect to ConfigDB in each namespace
-                self.ns_cfg_db[ns] = ConfigDBConnector(namespace=ns)
+                self.ns_cfg_db[ns] = ConfigDBConnector(use_unix_socket_path=True, namespace=ns)
                 self.ns_cfg_db[ns].connect(wait_for_init=True, retry_on=True)
 
                 #Connect to stateDB in each namespace
                 db_conn = DBConnector(STATE_DB, 0, False, ns)
                 self.ns_feature_state_tbl[ns] = Table(db_conn, FEATURE_TBL)
+
+            # A namespace that never publishes (e.g. a fabric ASIC without portsyncd)
+            # leaves the release to the PORT_INIT_TIMEOUT_SEC fallback, as before.
+            self.port_init_quorum_ns = set(namespaces)
+            self.pending_port_init_ns = set(namespaces)
+            syslog.syslog(syslog.LOG_INFO,
+                          "PortInitDone quorum namespaces: {}".format(sorted(self.port_init_quorum_ns)))
 
     def enable_delayed_services(self):
         self.is_delayed_enabled = True
@@ -169,24 +189,61 @@ class FeatureHandler(object):
     def handle_adv_boot(self):
         if self.is_advanced_boot:
             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after warm/fast boot")
+            self.pending_port_init_ns.clear()
             self.enable_delayed_services()
 
     def handle_port_table_timeout(self):
         if not self.is_delayed_enabled:
             syslog.syslog(syslog.LOG_INFO, "Updating delayed features after timeout")
+            self.pending_port_init_ns.clear()   # give up on the namespaces that never reported
             self.enable_delayed_services()
 
-    def port_listener(self, key, op, data):
-        if not key:
-            return 
-        if op == 'SET' and key == 'PortInitDone':
-            syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
+    def port_listener(self, key, op, data, namespace=''):
+        if key != 'PortInitDone':
+            return
+
+        # Single-ASIC: every SET re-enables (an swss restart republishes the marker).
+        if not self.is_multi_npu:
+            if op == 'SET':
+                syslog.syslog(syslog.LOG_INFO, "Updating delayed features after port initialization")
+                self.enable_delayed_services()
+            return
+
+        # Multi-ASIC: SET takes the namespace off the pending set, DEL (swss stop) puts it
+        # back. The first release needs every namespace; afterwards each republishing
+        # namespace re-enables on its own.
+        if namespace not in self.port_init_quorum_ns:
+            return
+        if op == 'DEL':
+            self.pending_port_init_ns.add(namespace)
+            syslog.syslog(syslog.LOG_INFO,
+                          "PortInitDone cleared for namespace '{}'; still pending: {}"
+                          .format(namespace, sorted(self.pending_port_init_ns)))
+            return
+        if op != 'SET':
+            return
+        was_pending = namespace in self.pending_port_init_ns
+        self.pending_port_init_ns.discard(namespace)
+        syslog.syslog(syslog.LOG_INFO,
+                      "PortInitDone received for namespace '{}'; still pending: {}"
+                      .format(namespace, sorted(self.pending_port_init_ns)))
+        if not self.is_delayed_enabled:
+            if not self.pending_port_init_ns:
+                syslog.syslog(syslog.LOG_INFO,
+                              "Updating delayed features after port initialization (all ASICs)")
+                self.enable_delayed_services()
+        elif was_pending:
+            syslog.syslog(syslog.LOG_INFO,
+                          "Updating delayed features after port re-initialization of namespace '{}'"
+                          .format(namespace))
             self.enable_delayed_services()
 
     def handler(self, feature_name, op, feature_cfg):
         if not feature_cfg:
             syslog.syslog(syslog.LOG_INFO, "Deregistering feature {}".format(feature_name))
             self._cached_config.pop(feature_name, None)
+            self._features_pending_update.discard(feature_name)
+            self._features_pending_config.discard(feature_name)
             self._feature_state_table._del(feature_name)
 
             # Clean up feature from namespace CONFIG_DBs and STATE_DBs
@@ -215,8 +272,9 @@ class FeatureHandler(object):
             self.update_systemd_config(feature)
             self._cached_config[feature_name].auto_restart = feature.auto_restart
 
-        # Enable/disable the container service if the feature state was changed from its previous state.
-        if self._cached_config[feature_name].state != feature.state:
+        # Retry incomplete service operations even when the requested state is unchanged.
+        if (self._cached_config[feature_name].state != feature.state or
+                feature_name in self._features_pending_update):
             if self.update_feature_state(feature):
                 self.sync_feature_scope(feature)
                 # Resync namespaces on (re-)registration.
@@ -238,6 +296,7 @@ class FeatureHandler(object):
         """
         # Phase 1: Write all systemd configs and cache features
         syslog.syslog(syslog.LOG_INFO, "Writing systemd configs")
+        configured_features = set()
         for feature_name in feature_table.keys():
             if not feature_name:
                 syslog.syslog(syslog.LOG_WARNING, "Feature is None")
@@ -249,10 +308,12 @@ class FeatureHandler(object):
             feature = Feature(feature_name, feature_table[feature_name], device_config)
 
             self._cached_config.setdefault(feature_name, feature)
-            self.update_systemd_config(feature, reload=False)
+            if self.update_systemd_config(feature, reload=False):
+                configured_features.add(feature_name)
 
         # Perform daemon-reload after all configs are written
-        self.reload_systemd_config()
+        if self.reload_systemd_config():
+            self._features_pending_config.difference_update(configured_features)
 
         # Phase 2: Start/stop services without daemon-reloads
         syslog.syslog(syslog.LOG_INFO, "Restarting services")
@@ -307,14 +368,17 @@ class FeatureHandler(object):
 
         if enable:
             if not self.enable_feature(feature):
+                self._features_pending_update.add(feature.name)
                 return False
             syslog.syslog(syslog.LOG_INFO, "Feature {} is enabled and started".format(feature.name))
 
         if disable:
             if not self.disable_feature(feature):
+                self._features_pending_update.add(feature.name)
                 return False
             syslog.syslog(syslog.LOG_INFO, "Feature {} is stopped and disabled".format(feature.name))
 
+        self._features_pending_update.discard(feature.name)
         return True
 
     @staticmethod
@@ -353,7 +417,10 @@ class FeatureHandler(object):
         """
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config, True)
         for feature_name in feature_names:
-            unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
+            unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_unit(feature_config, unit):
+                continue
+            unit_file_state = self.get_systemd_unit_state(unit)
             if not unit_file_state:
                 continue
             if not self.is_multi_npu:
@@ -404,7 +471,8 @@ class FeatureHandler(object):
             Set to False when batching multiple config updates.
 
         Returns:
-            None.
+            True if all instance configs were written and any requested reload
+            succeeded; False if a unit was skipped or the reload failed.
         """
         # As per the current code(due to various dependencies) SWSS service stop/start also stops/starts the dependent services(syncd, teamd, bgpd etc)
         # There is an issue seen of syncd service getting stopped twice upon a critical process crash in syncd service due to above reason.
@@ -422,33 +490,45 @@ class FeatureHandler(object):
 
         feature_systemd_config = "[Service]\nRestart={}\n".format(restart_field_str)
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature_config)
+        configured = True
 
         # On multi-ASIC device, creates systemd configuration file for each feature instance
         # residing in difference namespace.
         for feature_name in feature_names:
-            syslog.syslog(syslog.LOG_INFO, "Updating feature '{}' systemd config file related to auto-restart ..."
-                          .format(feature_name))
             feature_systemd_config_dir_path = self.SYSTEMD_SERVICE_CONF_DIR.format(feature_name)
             feature_systemd_config_file_path = os.path.join(feature_systemd_config_dir_path, 'auto_restart.conf')
 
+            unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_unit(feature_config, unit):
+                self._features_pending_config.add(feature_config.name)
+                configured = False
+                continue
             if not os.path.exists(feature_systemd_config_dir_path):
                 os.mkdir(feature_systemd_config_dir_path)
             with open(feature_systemd_config_file_path, 'w') as feature_systemd_config_file_handler:
                 feature_systemd_config_file_handler.write(feature_systemd_config)
 
-            syslog.syslog(syslog.LOG_INFO, "Feature '{}' systemd config file related to auto-restart is updated!"
-                          .format(feature_name))
+            update_message = (f"Updated auto-restart config for {feature_name}.service: "
+                              f"auto_restart={feature_config.auto_restart} -> Restart={restart_field_str}")
+            syslog.syslog(syslog.LOG_INFO, update_message)
 
         if reload:
-            self.reload_systemd_config()
+            if not self.reload_systemd_config():
+                return False
+            if configured:
+                self._features_pending_config.discard(feature_config.name)
+        return configured
 
     def reload_systemd_config(self):
+        """Reload systemd configuration and report whether it succeeded."""
         try:
             syslog.syslog(syslog.LOG_INFO, "Reloading systemd configuration files ...")
             run_cmd(["sudo", "systemctl", "daemon-reload"], raise_exception=True)
             syslog.syslog(syslog.LOG_INFO, "Systemd configuration files are reloaded!")
+            return True
         except Exception as err:
             syslog.syslog(syslog.LOG_ERR, "Failed to reload systemd configuration files!")
+            return False
 
     def get_multiasic_feature_instances(self, feature, all_instance=False):
         # Create feature name suffix depending feature is running in host or namespace or in both
@@ -493,10 +573,10 @@ class FeatureHandler(object):
                       "Timed out waiting for '{}' to leave activating state".format(unit))
         return "activating"
 
-    def get_systemd_unit_state(self, unit):
-        """ Returns service configuration """
+    def get_systemd_unit_state(self, unit, property_name="UnitFileState"):
+        """Return a systemd state property, or 'invalid' if the query fails."""
 
-        cmd = ["sudo", "systemctl", "show", unit, "--property", "UnitFileState"]
+        cmd = ["sudo", "systemctl", "show", unit, "--property", property_name]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
@@ -504,7 +584,26 @@ class FeatureHandler(object):
             return 'invalid'  # same as systemd's "invalid indicates that it could not be determined whether the unit file is enabled".
 
         props = dict([line.split("=") for line in stdout.decode().strip().splitlines()])
-        return props["UnitFileState"]
+        if property_name not in props:
+            syslog.syslog(syslog.LOG_ERR, "Missing {} in status of {}".format(property_name, unit))
+            return 'invalid'
+        return props[property_name]
+
+    def is_intentionally_absent_unit(self, feature, unit):
+        """Recognize disabled features whose units are not packaged.
+
+        Platform defaults can retain disabled features without their service
+        units. Scope is not a packaging signal: omitted fields default to global.
+        Only a successful LoadState=not-found query permits skipping the unit.
+        """
+        if feature.state not in ("disabled", "always_disabled"):
+            return False
+        if self.get_systemd_unit_state(unit, "LoadState") != "not-found":
+            return False
+        syslog.syslog(syslog.LOG_INFO,
+                      "Skipping absent unit '{}' for disabled feature '{}'"
+                      .format(unit, feature.name))
+        return True
 
     def is_exclusion_listed(self, feature_name):
         """Return True if the feature is in the exclusion list."""
@@ -513,29 +612,51 @@ class FeatureHandler(object):
     def enable_feature(self, feature):
         if self.is_exclusion_listed(feature.name):
             syslog.syslog(syslog.LOG_INFO, f"ExclusionList: skip enabling '{feature.name}'")
-            return
+            return True
+
+        if feature.name in self._features_pending_config:
+            try:
+                configured = self.update_systemd_config(feature)
+            except OSError as err:
+                syslog.syslog(syslog.LOG_ERR,
+                              "Failed to apply pending auto-restart config for feature '{}': {}"
+                              .format(feature.name, err))
+                configured = False
+            if not configured:
+                self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
+                return False
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
+        failed_instances = []
         for feature_name in feature_names:
-            # Check if it is already enabled, if yes skip the system call
+            # UnitFileState does not prove that an earlier start completed.
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state == "enabled":
+            if unit_file_state == "enabled" and feature.name not in self._features_pending_update:
                 continue
             cmds = []
-            for suffix in feature_suffixes:
-                cmds.append(["sudo", "systemctl", "unmask", "{}.{}".format(feature_name, suffix)])
+            # An enabled unit only needs its unfinished start retried.
+            if unit_file_state != "enabled":
+                for suffix in feature_suffixes:
+                    cmds.append(["sudo", "systemctl", "unmask", "{}.{}".format(feature_name, suffix)])
 
-            # If feature has timer associated with it, start/enable corresponding systemd .timer unit
-            # otherwise, start/enable corresponding systemd .service unit
-            if unit_file_state != "generated":
-                # if UnitFileState of service file is generated, enable it will generate error
-                cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
+                # If feature has timer associated with it, start/enable corresponding systemd .timer unit
+                # otherwise, start/enable corresponding systemd .service unit
+                if unit_file_state != "generated":
+                    # if UnitFileState of service file is generated, enable it will generate error
+                    cmds.append(["sudo", "systemctl", "enable", "{}.{}".format(feature_name, feature_suffixes[-1])])
             cmds.append(["sudo", "systemctl", "start", "{}.{}".format(feature_name, feature_suffixes[-1])])
 
             for cmd in cmds:
                 syslog.syslog(syslog.LOG_INFO, "Running cmd: '{}'".format(cmd))
                 try:
                     if "enable" in cmd:
+                        # Unmasking can expose a generated or transient unit even
+                        # when its original UnitFileState was masked.
+                        current_unit_file_state = self.get_systemd_unit_state(
+                            "{}.{}".format(feature_name, feature_suffixes[-1])
+                        )
+                        if current_unit_file_state in ("generated", "transient"):
+                            continue
                         # If we are running an enable command, then ignore any errors that might come
                         # from the service file being defined only in the /run folder. This is because
                         # it doesn't make sense to enable generated services. In Trixie, because of
@@ -552,28 +673,35 @@ class FeatureHandler(object):
                         run_cmd(cmd, raise_exception=True)
                 except Exception as err:
                     syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be enabled and started"
-                                  .format(feature.name, feature_suffixes[-1]))
-                    self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return False
+                                  .format(feature_name, feature_suffixes[-1]))
+                    # Keep starting the other instances.
+                    failed_instances.append(feature_name)
+                    break
 
+        if failed_instances:
+            self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
+            return False
         self.set_feature_state(feature, self.FEATURE_STATE_ENABLED)
         return True
 
     def disable_feature(self, feature):
         if self.is_exclusion_listed(feature.name):
             syslog.syslog(syslog.LOG_INFO, f"ExclusionList: skip disabling '{feature.name}'")
-            return
+            return True
 
         feature_names, feature_suffixes = self.get_multiasic_feature_instances(feature)
+        failed_instances = []
         for feature_name in feature_names:
-            # Check if it is already disabled, if yes skip the system call
+            # Retry pending stop/disable/mask even if the unit file already changed.
             unit_file_state = self.get_systemd_unit_state("{}.{}".format(feature_name, feature_suffixes[-1]))
-            if unit_file_state in ("disabled", "masked"):
+            if unit_file_state in ("disabled", "masked") and feature.name not in self._features_pending_update:
                 continue
             # Wait for the service to leave 'activating' state before stopping it.
             # Stopping during ExecStartPre kills the startup script without running
             # ExecStop, leaving Docker containers orphaned (see issue #24875).
             service_unit = "{}.{}".format(feature_name, feature_suffixes[-1])
+            if self.is_intentionally_absent_unit(feature, service_unit):
+                continue
             self.wait_for_service_stable(service_unit)
             cmds = []
             for suffix in reversed(feature_suffixes):
@@ -586,10 +714,14 @@ class FeatureHandler(object):
                     run_cmd(cmd, raise_exception=True)
                 except Exception as err:
                     syslog.syslog(syslog.LOG_ERR, "Feature '{}.{}' failed to be stopped and disabled"
-                                  .format(feature.name, feature_suffixes[-1]))
-                    self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
-                    return False
+                                  .format(feature_name, feature_suffixes[-1]))
+                    # Keep stopping the other instances.
+                    failed_instances.append(feature_name)
+                    break
 
+        if failed_instances:
+            self.set_feature_state(feature, self.FEATURE_STATE_FAILED)
+            return False
         self.set_feature_state(feature, self.FEATURE_STATE_DISABLED)
         return True
 
@@ -666,7 +798,7 @@ class FeatureDaemon:
         if swsscommon.RestartWaiter.isAdvancedBootInProgress(self.state_db_conn):
             self.advanced_boot = True
             swsscommon.RestartWaiter.waitAdvancedBootDone()
-        self.config_db = ConfigDBConnector()
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         self.selector = swsscommon.Select()
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
@@ -682,29 +814,84 @@ class FeatureDaemon:
         self.feature_handler = FeatureHandler(self.config_db, feature_state_table, self.device_config, self.advanced_boot)
         self.feature_handler.handle_adv_boot()
 
-    def subscribe(self, dbconn, table, callback, pri):
+        # Per-namespace APPL_DB connectors for the PortInitDone listener (after FeatureHandler
+        # initialized the global DB config). A namespace whose connector fails stays pending.
+        self.ns_appl_db_conn = {}
+        for ns in sorted(self.feature_handler.port_init_quorum_ns):
+            try:
+                self.ns_appl_db_conn[ns] = DBConnector(APPL_DB, 0, False, ns)
+            except Exception as err:
+                syslog.syslog(syslog.LOG_ERR,
+                              "Failed to connect APPL_DB for namespace '{}': {}; its PortInitDone "
+                              "cannot be observed, the {}s fallback applies".format(ns, err, PORT_INIT_TIMEOUT_SEC))
+
+    def subscribe(self, dbconn, table, callback, pri, namespace=''):
         try:
-            if table not in self.callbacks:
-                self.callbacks[table] = []
+            sub_key = (namespace, table)
+            if sub_key not in self.callbacks:
+                self.callbacks[sub_key] = []
                 subscriber = swsscommon.SubscriberStateTable(dbconn, table, swsscommon.TableConsumable.DEFAULT_POP_BATCH_SIZE, pri)
                 self.selector.addSelectable(subscriber) # Add to the Selector
-                self.subscriber_map[subscriber.getFd()] = (subscriber, table) # Maintain a mapping b/w subscriber & fd
+                self.subscriber_map[subscriber.getFd()] = (subscriber, sub_key, table) # Maintain a mapping b/w subscriber & fd
 
-            self.callbacks[table].append(callback)
+            self.callbacks[sub_key].append(callback)
         except Exception as err:
-            syslog.syslog(syslog.LOG_ERR, "Subscribe to table {} failed with error {}".format(table, err))
+            syslog.syslog(syslog.LOG_ERR, "Subscribe to table {} (ns='{}') failed with error {}".format(table, namespace, err))
+
+    @staticmethod
+    def subscription_closed(fd):
+        """True when the fd's redis connection is closed: a peek reads EOF or fails, or the fd
+        cannot be probed at all. Never raises (this runs in the select() error recovery)."""
+        try:
+            with socket.socket(fileno=os.dup(fd)) as sock:
+                return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b''
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
+    def drop_dead_subscribers(self):
+        """Drop subscribers whose redis connection is gone; select() would otherwise return
+        ERROR on every call and starve the other tables. A dropped PORT_TABLE namespace can
+        no longer be observed: before the first release it is pending again (fallback applies).
+        Nothing re-subscribes it. Returns the number of subscribers dropped."""
+        dropped = 0
+        for fd, (subscriber, sub_key, table) in list(self.subscriber_map.items()):
+            if not self.subscription_closed(fd):
+                continue
+            syslog.syslog(syslog.LOG_CRIT if table == FEATURE_TBL else syslog.LOG_ERR,
+                          "Dropping subscriber for table {} (ns='{}'): its redis connection is closed"
+                          .format(table, sub_key[0]))
+            try:
+                self.selector.removeSelectable(subscriber)
+            except Exception as err:
+                syslog.syslog(syslog.LOG_ERR, "removeSelectable failed for table {} (ns='{}'): {}"
+                              .format(table, sub_key[0], err))
+            del self.subscriber_map[fd]
+            self.callbacks.pop(sub_key, None)
+            if table == PORT_TBL and not self.feature_handler.is_delayed_enabled:
+                self.feature_handler.pending_port_init_ns.add(sub_key[0])
+            dropped += 1
+        return dropped
 
     def register_callbacks(self):
-        def make_callback(func):
+        def make_callback(func, **kwargs):
             def callback(table, key, op, data):
-                return func(key, op, data)
+                return func(key, op, data, **kwargs)
             return callback
 
         self.subscribe(self.cfg_db_conn, FEATURE_TBL,
                        make_callback(self.feature_handler.handler), HOSTCFGD_MAX_PRI)
 
-        self.subscribe(self.appl_db_conn, PORT_TBL,
-                       make_callback(self.feature_handler.port_listener), HOSTCFGD_MAX_PRI-1)
+        if self.feature_handler.is_multi_npu:
+            for ns, conn in self.ns_appl_db_conn.items():
+                self.subscribe(conn, PORT_TBL,
+                               make_callback(self.feature_handler.port_listener, namespace=ns),
+                               HOSTCFGD_MAX_PRI-1, namespace=ns)
+        else:
+            self.subscribe(self.appl_db_conn, PORT_TBL,
+                           make_callback(self.feature_handler.port_listener),
+                           HOSTCFGD_MAX_PRI-1)
 
     def render_all_feature_states(self):
         features = self.config_db.get_table(FEATURE_TBL)
@@ -714,26 +901,36 @@ class FeatureDaemon:
         while True:
             state, selectable_ = self.selector.select(DEFAULT_SELECT_TIMEOUT)
 
+            # if the delayed services are not enabled until PORT_INIT_TIMEOUT_SEC, enable them.
+            # Checked on every wake-up so a busy PORT_TABLE cannot postpone it.
+            if int(time.time() - init_time) > PORT_INIT_TIMEOUT_SEC:
+                self.feature_handler.handle_port_table_timeout()
+
             if state == self.selector.TIMEOUT:
-                if int(time.time() - init_time) > PORT_INIT_TIMEOUT_SEC:
-                    # if the delayed services are not enabled until PORT_INIT_TIMEOUT_SEC, enable them
-                    self.feature_handler.handle_port_table_timeout()
                 continue
             elif state == self.selector.ERROR:
                 syslog.syslog(syslog.LOG_ERR, "error returned by select")
+                dropped = self.drop_dead_subscribers()
+                if not self.subscriber_map:
+                    # Nothing left to serve; only a restart helps.
+                    syslog.syslog(syslog.LOG_CRIT, "All subscriptions lost (redis unreachable); exiting")
+                    sys.exit(1)
+                if not dropped:
+                    # Nothing to drop: back off instead of spinning.
+                    time.sleep(DEFAULT_SELECT_TIMEOUT / 1000)
                 continue
 
             fd = selectable_.getFd()
-            # Get the Corresponding subscriber & table
-            subscriber, table = self.subscriber_map.get(fd, (None, ""))
+            # Get the Corresponding subscriber, subscription key & table
+            subscriber, sub_key, table = self.subscriber_map.get(fd, (None, None, ""))
             if not subscriber:
                 syslog.syslog(syslog.LOG_ERR,
                         "No Subscriber object found for fd: {}, subscriber map: {}".format(fd, self.subscriber_map))
                 continue
             key, op, fvs = subscriber.pop()
             # Get the registered callback
-            cbs = self.callbacks.get(table, None)
-            for callback in cbs:
+            cbs = self.callbacks.get(sub_key, None)
+            for callback in (cbs or []):
                 callback(table, key, op, dict(fvs))
 
 
