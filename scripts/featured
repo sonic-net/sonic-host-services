@@ -152,7 +152,8 @@ class FeatureHandler(object):
         self.is_multi_npu = device_info.is_multi_npu()
         self.is_delayed_enabled = False
         self.is_advanced_boot = is_advanced_boot
-        self._device_running_config = device_info.get_device_runtime_metadata()
+        hwsku = device_config.get('DEVICE_METADATA', {}).get('localhost', {}).get('hwsku')
+        self._device_running_config = device_info.get_device_runtime_metadata(hwsku=hwsku)
         self.ns_cfg_db = {}
         self.ns_feature_state_tbl = {}
         self.num_dpus = device_info.get_num_dpus()
