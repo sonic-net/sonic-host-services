@@ -28,7 +28,7 @@ remains the source Python test suite.
 
 Formal consumption uses sonic-build-infra
 `0.0.44-35726399908a3beb947174e9359f902077928289`, Common
-`0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61`, and sonic-rust-deps
+`0.0.8-2a4ddd070edb719f2e969a880a5cfff711e64e72`, and sonic-rust-deps
 `0.0.5-5bf69bc0a7d9ea9f4a5606264be592867cd29d1e`.
 Normal registry consumption selects these public sources without a local Common
 or infrastructure override. Hosted CI remains a separate publication gate.
