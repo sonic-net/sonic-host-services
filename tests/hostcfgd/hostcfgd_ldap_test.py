@@ -68,6 +68,8 @@ class TestHostcfgdLDAP(TestCase):
         hostcfgd.NSS_CONF = op_path + "/nsswitch.conf"
         hostcfgd.NSLCD_CONF = op_path + "/nslcd.conf"
         hostcfgd.NSLCD_CONF_TEMPLATE = t_path + "/nslcd.conf.j2"
+        hostcfgd.LDAP_CONF = op_path + "/ldap.conf"
+        hostcfgd.LDAP_CONF_TEMPLATE = t_path + "/ldap.conf.j2"
         hostcfgd.ETC_PAMD_SSHD = op_path + "/sshd"
         hostcfgd.ETC_PAMD_LOGIN = op_path + "/login"
         hostcfgd.RADIUS_PAM_AUTH_CONF_DIR = op_path + "/"
@@ -96,7 +98,7 @@ class TestHostcfgdLDAP(TestCase):
         host_config_daemon.aaacfg.load(aaa,[],[],[] ,[] , ldap_global, ldap_server)
 
         diff_output = ""
-        files_to_compare = ['common-auth-sonic', 'nslcd.conf']
+        files_to_compare = ['common-auth-sonic', 'nslcd.conf', 'ldap.conf']
 
         # check output files exists
         for name in files_to_compare:
@@ -114,3 +116,24 @@ class TestHostcfgdLDAP(TestCase):
                     op_path + "/" + name).decode('utf-8')
 
         self.assertTrue(len(diff_output) == 0, diff_output)
+
+    def test_ldap_cfg_timeout(self):
+        """
+            Test LdapCfg reads the search timeout from the 'timeout' leaf
+        """
+        LdapCfg = hostcfgd.ldap.LdapCfg
+        for value in ['1', '30', '60']:
+            self.assertEqual(LdapCfg.cfg_timeout([{'timeout': value}]), value)
+        self.assertEqual(LdapCfg.cfg_timeout([{}]), LdapCfg.TIMEOUT_SEARCH)
+        self.assertEqual(LdapCfg.cfg_timeout([]), LdapCfg.TIMEOUT_SEARCH)
+        self.assertEqual(LdapCfg.cfg_timeout([{'search_timeout': '42'}]), LdapCfg.TIMEOUT_SEARCH)
+
+    def test_ldap_cfg_timeout_and_bind_timeout_are_independent(self):
+        """
+            Test LdapCfg search timeout and bind timeout do not affect each other
+        """
+        LdapCfg = hostcfgd.ldap.LdapCfg
+        conf = [{'timeout': '60', 'bind_timeout': '25'}]
+        self.assertEqual(LdapCfg.cfg_timeout(conf), '60')
+        self.assertEqual(LdapCfg.cfg_bind_timeout(conf), '25')
+

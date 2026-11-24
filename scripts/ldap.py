@@ -73,8 +73,9 @@ class LdapCfg:
 
     @staticmethod
     def cfg_timeout(_ldapsrvs_conf):
-        return LdapCfg._do_cfg(_ldapsrvs_conf, LdapCfg.TIMEOUT_SEARCH, 'search_timeout')
+        return LdapCfg._do_cfg(_ldapsrvs_conf, LdapCfg.TIMEOUT_SEARCH, 'timeout')
 
     @staticmethod
     def cfg_bind_timeout(_ldapsrvs_conf):
         return LdapCfg._do_cfg(_ldapsrvs_conf, LdapCfg.TIMEOUT_BIND, 'bind_timeout')
+
