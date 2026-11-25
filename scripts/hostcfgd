@@ -1584,8 +1584,17 @@ class DeviceMetaCfg(object):
                         syslog.syslog(syslog.LOG_INFO, f'DeviceMetaCfg: Changing timezone of {container} to {new_tz}')
                         run_cmd(['docker', 'exec', container, 'ln', '-sf',
                                  f'/usr/share/zoneinfo/{new_tz}', '/etc/localtime'])
-                        run_cmd(['docker', 'exec', container, 'supervisorctl',
-                                 'restart', 'rsyslogd'])
+                        is_rsyslog_running = run_cmd_output(['docker', 'exec', container, 'pgrep', 'rsyslogd'],
+                                                            log_err=False)
+                        if is_rsyslog_running:
+                            is_starting = run_cmd_output(['docker', 'exec', container,
+                                                          'supervisorctl', 'status', 'dependent-startup'],
+                                                         log_err=False)
+                            if "RUNNING" in is_starting.decode():
+                                # Wait for dependent-startup to finish running.
+                                time.sleep(5)
+                            run_cmd(['docker', 'exec', container, 'supervisorctl',
+                                     'restart', 'rsyslogd'])
                     else:
                         syslog.syslog(syslog.LOG_DEBUG, f'DeviceMetaCfg: No change in timezone for {container}')
                 except Exception as e:
