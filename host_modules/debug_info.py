@@ -168,6 +168,18 @@ class DebugArtifactCollector(host_service.HostModule):
       logger.warning(f"Failed to collect Portchannel data: {e}")
 
   @staticmethod
+  def _dir_size(path: str) -> int:
+    """Return the total size in bytes of the files under path, 0 if missing."""
+    total = 0
+    for root, _, files in os.walk(path):
+      for name in files:
+        try:
+          total += os.path.getsize(os.path.join(root, name))
+        except OSError:
+          pass
+    return total
+
+  @staticmethod
   def _save_persistent_storage(artifact_name: str) -> None:
     if os.path.isfile(NONVOLATILE_TMP_FLAG):
       logger.warning(
@@ -182,21 +194,25 @@ class DebugArtifactCollector(host_service.HostModule):
       return
 
     host_artifact_name = ARTIFACT_DIR + "/" + artifact_name
-    shutil.rmtree(NONVOLATILE_ARTIFACT_DIR, ignore_errors=True)
     try:
       artifact_size = os.path.getsize(host_artifact_name)
     except OSError:
       logger.warning(f"path {host_artifact_name} did not exist")
       return
 
+    # Check before removing the previous persistent artifact, so that a save
+    # that cannot happen does not lose it. The previous artifact is removed to
+    # make room for the new one, so its space counts as free.
     _, _, free = shutil.disk_usage(NONVOLATILE_PARTITION)
+    free += DebugArtifactCollector._dir_size(NONVOLATILE_ARTIFACT_DIR)
     if free < NONVOLATILE_STORAGE_REQUIRED + artifact_size:
       logger.warning(
           f"free space remaining on {NONVOLATILE_PARTITION}, "
           f"is less than {NONVOLATILE_STORAGE_REQUIRED + artifact_size}:{free}. "
           f"Not saving artifacts to persistent storage")
       return
-    
+
+    shutil.rmtree(NONVOLATILE_ARTIFACT_DIR, ignore_errors=True)
     os.makedirs(NONVOLATILE_ARTIFACT_DIR, exist_ok=True)
 
     try:
