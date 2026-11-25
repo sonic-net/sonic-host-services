@@ -104,11 +104,12 @@ class TestAaaServerFields(TestCase):
         self.assertEqual([server['ip'] for server in ldap_servers], ['192.0.2.32'])
 
 
-class TesNtpCfgd(TestCase):
+class TestNtpCfgd(TestCase):
     """
         Test hostcfd daemon - NtpCfgd
     """
     def setUp(self):
+        MockConfigDb.CONFIG_DB = {}
         MockConfigDb.CONFIG_DB['NTP'] = {
             'global': {'vrf': 'mgmt', 'src_intf': 'eth0'}
         }
@@ -120,12 +121,12 @@ class TesNtpCfgd(TestCase):
 
     def test_ntp_load(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value':
-                     ('c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf', '')
-                     }
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            check_output = mock.Mock()
+            check_output.return_value = 'c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf'
+            mocked_subprocess.check_output = check_output
+            check_call = mock.Mock()
+            check_call.return_value = 0
+            mocked_subprocess.check_call = check_call
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
@@ -141,14 +142,15 @@ class TesNtpCfgd(TestCase):
 
     def test_ntp_load_with_diff(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.side_effect': [
-                     ('c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf', ''),
-                     ('d396efe1804e806b402e6273f13212f72026fc609e59f68b2288b83fe9149a9c  chrony.conf', ''),
-                     ]
-                     }
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            check_output = mock.Mock()
+            check_output.side_effect = [
+                    'c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf',
+                    'd396efe1804e806b402e6273f13212f72026fc609e59f68b2288b83fe9149a9c  chrony.conf',
+                    ]
+            mocked_subprocess.check_output = check_output
+            check_call = mock.Mock()
+            check_call.return_value = 0
+            mocked_subprocess.check_call = check_call
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
@@ -165,10 +167,9 @@ class TesNtpCfgd(TestCase):
 
     def test_ntp_update_ntp_keys(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            check_call = mock.Mock()
+            check_call.return_value = 0
+            mocked_subprocess.check_call = check_call
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.ntp_global_update(
@@ -187,10 +188,9 @@ class TesNtpCfgd(TestCase):
 
     def test_ntp_global_update_ntp_servers(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            check_call = mock.Mock()
+            check_call.return_value = 0
+            mocked_subprocess.check_call = check_call
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.ntp_global_update(
@@ -209,10 +209,9 @@ class TesNtpCfgd(TestCase):
 
     def test_ntp_is_caching_config(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            check_call = mock.Mock()
+            check_call.return_value = 0
+            mocked_subprocess.check_call = check_call
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.cache['global'] = MockConfigDb.CONFIG_DB['NTP']['global']
@@ -228,10 +227,9 @@ class TesNtpCfgd(TestCase):
 
     def test_loopback_update(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            check_call = mock.Mock()
+            check_call.return_value = 0
+            mocked_subprocess.check_call = check_call
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.cache['global'] = MockConfigDb.CONFIG_DB['NTP']['global']
