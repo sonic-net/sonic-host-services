@@ -159,6 +159,8 @@ class TestDebugArtifactCollector:
         fake_flag = os.path.join(self.base_path, "nv.tmp")
         with mock.patch("debug_info.NONVOLATILE_TMP_FLAG", fake_flag), \
              mock.patch("debug_info.ARTIFACT_DIR", self.base_path), \
+             mock.patch("debug_info.NONVOLATILE_ARTIFACT_DIR",
+                        os.path.join(self.base_path, "var_log_dump")), \
              mock.patch("os.path.getsize", side_effect=OSError):
             DebugArtifactCollector._save_persistent_storage("artifact.tar")
 
@@ -170,6 +172,8 @@ class TestDebugArtifactCollector:
 
         with mock.patch("debug_info.NONVOLATILE_TMP_FLAG", fake_flag), \
              mock.patch("debug_info.ARTIFACT_DIR", self.base_path), \
+             mock.patch("debug_info.NONVOLATILE_ARTIFACT_DIR",
+                        os.path.join(self.base_path, "var_log_dump")), \
              mock.patch("os.path.getsize", return_value=100), \
              mock.patch("shutil.disk_usage", return_value=(0, 0, 0)):
             DebugArtifactCollector._save_persistent_storage("artifact.tar")
@@ -183,11 +187,94 @@ class TestDebugArtifactCollector:
 
         with mock.patch("debug_info.NONVOLATILE_TMP_FLAG", fake_flag), \
              mock.patch("debug_info.ARTIFACT_DIR", self.base_path), \
+             mock.patch("debug_info.NONVOLATILE_ARTIFACT_DIR",
+                        os.path.join(self.base_path, "var_log_dump")), \
              mock.patch("os.path.getsize", return_value=100), \
              mock.patch("shutil.disk_usage", return_value=(0, 1000, 1000)), \
              mock.patch("debug_info.DebugArtifactCollector._run_command", return_value=(0, "", "")):
             DebugArtifactCollector._save_persistent_storage("artifact.tar")
         assert os.path.exists(fake_flag)
+
+    def _make_persistent_layout(self):
+        """Create volatile and persistent artifact dirs, with a previous
+        persistent artifact already saved."""
+        volatile_dir = os.path.join(self.base_path, "tmp_dump")
+        persistent_dir = os.path.join(self.base_path, "var_log_dump")
+        os.makedirs(volatile_dir)
+        os.makedirs(persistent_dir)
+        previous = os.path.join(persistent_dir, "previous.tar.gz")
+        with open(previous, "w") as f:
+            f.write("previous artifact")
+        return volatile_dir, persistent_dir, previous
+
+    @staticmethod
+    def _disk_usage_model(free_with_previous, previous):
+        """Stand-in for shutil.disk_usage: removing the previous artifact
+        frees its size, as it would on a real filesystem."""
+        previous_size = os.path.getsize(previous)
+
+        def disk_usage(path):
+            free = free_with_previous
+            if not os.path.exists(previous):
+                free += previous_size
+            return (0, 0, free)
+        return disk_usage
+
+    def _patch_persistent(self, volatile_dir, persistent_dir):
+        return mock.patch.multiple(
+            "debug_info",
+            NONVOLATILE_TMP_FLAG=os.path.join(self.base_path, "nv.tmp"),
+            ARTIFACT_DIR=volatile_dir,
+            NONVOLATILE_ARTIFACT_DIR=persistent_dir,
+            NONVOLATILE_STORAGE_REQUIRED=10)
+
+    def test_save_persistent_missing_artifact_keeps_previous(self):
+        # No guard flag (e.g. aged out of /tmp) and the new artifact is
+        # missing: the previous persistent artifact must not be deleted.
+        volatile_dir, persistent_dir, previous = self._make_persistent_layout()
+        with self._patch_persistent(volatile_dir, persistent_dir), \
+             mock.patch("debug_info.shutil.disk_usage",
+                        self._disk_usage_model(1000, previous)):
+            DebugArtifactCollector._save_persistent_storage("new.tar.gz")
+        assert os.path.isfile(previous)
+
+    def test_save_persistent_not_enough_space_keeps_previous(self):
+        volatile_dir, persistent_dir, previous = self._make_persistent_layout()
+        with open(os.path.join(volatile_dir, "new.tar.gz"), "w") as f:
+            f.write("new artifact" * 100)
+        # Not enough space for the new artifact even after the previous
+        # one is removed, so nothing must change.
+        with self._patch_persistent(volatile_dir, persistent_dir), \
+             mock.patch("debug_info.shutil.disk_usage",
+                        self._disk_usage_model(0, previous)):
+            DebugArtifactCollector._save_persistent_storage("new.tar.gz")
+        assert os.path.isfile(previous)
+        assert not os.path.exists(os.path.join(persistent_dir, "new.tar.gz"))
+
+    def test_save_persistent_replaces_previous(self):
+        volatile_dir, persistent_dir, previous = self._make_persistent_layout()
+        with open(os.path.join(volatile_dir, "new.tar.gz"), "w") as f:
+            f.write("new artifact")
+        with self._patch_persistent(volatile_dir, persistent_dir), \
+             mock.patch("debug_info.shutil.disk_usage",
+                        self._disk_usage_model(1000, previous)):
+            DebugArtifactCollector._save_persistent_storage("new.tar.gz")
+        assert not os.path.exists(previous)
+        with open(os.path.join(persistent_dir, "new.tar.gz")) as f:
+            assert f.read() == "new artifact"
+
+    def test_save_persistent_counts_previous_artifact_as_free(self):
+        # The previous artifact is removed to make room for the new one, so
+        # its size counts as free space: 5 free + 17 previous >= 10 + 12.
+        volatile_dir, persistent_dir, previous = self._make_persistent_layout()
+        with open(os.path.join(volatile_dir, "new.tar.gz"), "w") as f:
+            f.write("new artifact")
+        with self._patch_persistent(volatile_dir, persistent_dir), \
+             mock.patch("debug_info.shutil.disk_usage",
+                        self._disk_usage_model(5, previous)):
+            DebugArtifactCollector._save_persistent_storage("new.tar.gz")
+        assert not os.path.exists(previous)
+        assert os.path.isfile(os.path.join(persistent_dir, "new.tar.gz"))
 
     def test_collect_teamdctl_get_portchannels_fails(self):
         with mock.patch("debug_info.SonicDbUtils.get_portchannels",
