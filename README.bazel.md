@@ -16,8 +16,8 @@ Python scripts retain their original bodies and install as executable files with
 the original requirements and testing extra. No intermediate wheel is created.
 
 The original Cargo.toml and Cargo.lock remain unchanged for Cargo builds. Bazel
-uses the shared sonic-rust-deps graph and its generated lock. The public Common
-Rust target follows buildimage's Make-selected source revision 334389eae54a;
+uses the shared sonic-rust-deps graph and its generated lock. The daemon selects the shared sysinfo 0.40.3 and procfs 0.18.0 targets to match Cargo.lock.
+The public Common Rust target provides the application's Redis bindings;
 Common owns its generated bindings and shared C++ runtime. The shared release
 transition applies Cargo's opt-level 3 and codegen-units 16 throughout the
 dependency graph. The FFI test checks the Common C ABI and shared Serde identity.
@@ -28,7 +28,7 @@ remains the source Python test suite.
 
 Formal consumption uses sonic-build-infra
 `0.0.44-35726399908a3beb947174e9359f902077928289`, Common
-`0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61`, and sonic-rust-deps
-`0.0.5-5bf69bc0a7d9ea9f4a5606264be592867cd29d1e`.
+`0.0.8-2a4ddd070edb719f2e969a880a5cfff711e64e72`, and sonic-rust-deps
+`0.0.5-4064a814e8530300a7acbad4a9aff0621e2fb98e`.
 Normal registry consumption selects these public sources without a local Common
 or infrastructure override. Hosted CI remains a separate publication gate.
