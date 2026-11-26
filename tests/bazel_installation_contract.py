@@ -67,6 +67,7 @@ class InstallationTest(unittest.TestCase):
         for path in (source/'data/templates').glob('*.j2'):
             expected['usr/share/sonic/templates/'+path.name] = path
         expected['etc/dbus-1/system.d/org.sonic.hostservice.conf'] = source/'data/org.sonic.hostservice.conf'
+        expected['usr/bin/switch_platform_init.py'] = source/'scripts/switch_platform_init.py'
         for path in (source/'data/debian').glob('sonic-host-services-data.*'):
             if path.suffix in ('.service', '.timer'):
                 expected['usr/lib/systemd/system/'+path.name.removeprefix('sonic-host-services-data.')] = path
@@ -74,7 +75,7 @@ class InstallationTest(unittest.TestCase):
         for name, path in expected.items():
             member, raw = payload[name]
             self.assertEqual(raw, path.read_bytes())
-            self.assertEqual((member.mode, member.uid, member.gid), (0o644, 0, 0))
+            self.assertEqual((member.mode, member.uid, member.gid), (0o755 if name == "usr/bin/switch_platform_init.py" else 0o644, 0, 0))
 
     def test_native_runtime_and_split_debug(self):
         runtime = archive(RUNTIME)
