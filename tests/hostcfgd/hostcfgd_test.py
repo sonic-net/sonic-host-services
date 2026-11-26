@@ -5,7 +5,7 @@ import signal
 import psutil
 import pytest
 import swsscommon as swsscommon_package
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, CompletedProcess, PIPE
 from sonic_py_common import device_info
 from swsscommon import swsscommon
 from parameterized import parameterized
@@ -121,16 +121,17 @@ class TestNtpCfgd(TestCase):
 
     def test_ntp_load(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            mocked_subprocess.check_output.return_value = \
-                    'c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf'
+            mocked_subprocess.run.return_value = \
+                    CompletedProcess(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], 0,
+                                     stdout='c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bccac  chrony.conf')
             mocked_subprocess.check_call.return_value = 0
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
                          MockConfigDb.CONFIG_DB['NTP_SERVER'],
                          MockConfigDb.CONFIG_DB['NTP_KEY'])
-            mocked_subprocess.check_output.assert_has_calls([
-                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'])
+            mocked_subprocess.run.assert_has_calls([
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=PIPE, check=False)
             ])
             mocked_subprocess.check_call.assert_has_calls([
                 call(['/usr/bin/chrony-config.sh'])
@@ -139,9 +140,11 @@ class TestNtpCfgd(TestCase):
 
     def test_ntp_load_with_diff(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            mocked_subprocess.check_output.side_effect = [
-                    'c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bcca4d983c94062c  chrony.conf',
-                    'd396efe1804e806b402e6273f13212f72026fc609e59f68b2288b83fe9149a9c  chrony.conf',
+            mocked_subprocess.run.side_effect = [
+                    CompletedProcess(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], 0,
+                                     stdout='c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bccac  chrony.conf'),
+                    CompletedProcess(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], 0,
+                                     stdout='d396efe1804e806b402e6273f13212f72026fc609e59f68b2288b  chrony.conf'),
                     ]
             mocked_subprocess.check_call.return_value = 0
 
@@ -149,8 +152,8 @@ class TestNtpCfgd(TestCase):
             ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
                          MockConfigDb.CONFIG_DB['NTP_SERVER'],
                          MockConfigDb.CONFIG_DB['NTP_KEY'])
-            mocked_subprocess.check_output.assert_has_calls([
-                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'])
+            mocked_subprocess.run.assert_has_calls([
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=PIPE, check=False)
             ])
             mocked_subprocess.check_call.assert_has_calls([
                 call(['/usr/bin/chrony-config.sh']),
@@ -645,7 +648,7 @@ class TestRunCmd:
     @mock.patch('hostcfgd.syslog.syslog')
     def test_run_cmd_output_missing_binary_does_not_raise(self, mock_syslog):
         exc = FileNotFoundError(2, 'No such file or directory', 'ip')
-        with mock.patch('hostcfgd.subprocess.check_output', side_effect=exc):
+        with mock.patch('hostcfgd.subprocess.run', side_effect=exc):
             out = hostcfgd.run_cmd_output(['ip', 'addr'])
         assert out == ''
         msg = self._last_msg(mock_syslog)
