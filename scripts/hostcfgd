@@ -222,7 +222,7 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
 def run_cmd_output(cmd, log_err=True, raise_exception=False):
     output = ''
     try:
-        output = subprocess.run(cmd, stdout=subprocess.PIPE, check=raise_exception).output
+        output = subprocess.run(cmd, stdout=subprocess.PIPE, check=raise_exception).stdout
     except Exception as err:
         if log_err:
             syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}, err: {}"
