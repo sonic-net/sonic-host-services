@@ -36,6 +36,7 @@ site_packages(
         "determine-reboot-cause",
         "process-reboot-cause",
         "gnoi_shutdown_daemon.py",
+        "switch_platform_init.py",
         "sonic-host-server",
         "ldap.py",
         "console-monitor",
@@ -59,6 +60,7 @@ site_packages(
         "scripts/determine-reboot-cause": "sonic_host_services-1.0.data/scripts/determine-reboot-cause",
         "scripts/process-reboot-cause": "sonic_host_services-1.0.data/scripts/process-reboot-cause",
         "scripts/gnoi_shutdown_daemon.py": "sonic_host_services-1.0.data/scripts/gnoi_shutdown_daemon.py",
+        "scripts/switch_platform_init.py": "sonic_host_services-1.0.data/scripts/switch_platform_init.py",
         "scripts/sonic-host-server": "sonic_host_services-1.0.data/scripts/sonic-host-server",
         "scripts/ldap.py": "sonic_host_services-1.0.data/scripts/ldap.py",
         "scripts/console-monitor": "sonic_host_services-1.0.data/scripts/console-monitor",
@@ -109,6 +111,7 @@ _DATA_SYSTEMD_NAMES = [
     "console-monitor-dte",
     "console-monitor-proxy@",
     "console-monitor-pty-bridge@",
+    "switch-platform-init",
     "sonic-hostservice",
 ]
 
@@ -122,8 +125,8 @@ _DATA_UNIT_FILES = glob(
 
 tar(
     name = "sonic-host-services-data.runtime",
-    srcs = glob(["data/templates/*.j2"]) + ["data/org.sonic.hostservice.conf"] + _DATA_UNIT_FILES,
-    mtree = ["./usr/share/sonic/templates/" + p.split("/")[-1] + " uid=0 gid=0 mode=0644 time=0 type=file content=$(location " + p + ")" for p in glob(["data/templates/*.j2"])] + ["./etc/dbus-1/system.d/org.sonic.hostservice.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location data/org.sonic.hostservice.conf)"] + ["./usr/lib/systemd/system/" + p.split("/")[-1][len("sonic-host-services-data."):] + " uid=0 gid=0 mode=0644 time=0 type=file content=$(location " + p + ")" for p in _DATA_UNIT_FILES],
+    srcs = glob(["data/templates/*.j2"]) + ["data/org.sonic.hostservice.conf", "scripts/switch_platform_init.py"] + _DATA_UNIT_FILES,
+    mtree = ["./usr/share/sonic/templates/" + p.split("/")[-1] + " uid=0 gid=0 mode=0644 time=0 type=file content=$(location " + p + ")" for p in glob(["data/templates/*.j2"])] + ["./usr/bin/switch_platform_init.py uid=0 gid=0 mode=0755 time=0 type=file content=$(location scripts/switch_platform_init.py)"] + ["./etc/dbus-1/system.d/org.sonic.hostservice.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location data/org.sonic.hostservice.conf)"] + ["./usr/lib/systemd/system/" + p.split("/")[-1][len("sonic-host-services-data."):] + " uid=0 gid=0 mode=0644 time=0 type=file content=$(location " + p + ")" for p in _DATA_UNIT_FILES],
 )
 
 # Only sonic-hostservice's automatic enablement is conditional in data/debian/rules.

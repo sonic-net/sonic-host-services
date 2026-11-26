@@ -91,6 +91,7 @@ LIMITS_CONF = "/etc/security/limits.conf"
 TACPLUS_SERVER_PASSKEY_DEFAULT = ""
 TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
 TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+TACPLUS_TRACEID_AUTHORIZATION_DEFAULT = False
 
 # RADIUS
 RADIUS_SERVER_AUTH_PORT_DEFAULT = "1812"
@@ -100,6 +101,26 @@ RADIUS_SERVER_TIMEOUT_DEFAULT = "5"
 RADIUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
 RADIUS_PAM_AUTH_CONF_DIR = "/etc/pam_radius_auth.d/"
 RADIUS_SERVER_SKIP_MSG_AUTH = False
+
+
+TACPLUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'tcp_port', 'passkey', 'auth_type', 'timeout', 'vrf', 'src_ip'))
+RADIUS_CONFIG_TOKEN_FIELDS = frozenset(
+    ('ip', 'auth_port', 'passkey', 'auth_type', 'retransmit', 'timeout',
+     'nas_ip', 'nas_id', 'src_ip', 'vrf'))
+
+
+def aaa_server_fields_safe(server, token_fields=(), token_delimiters=''):
+    """Reject line controls and separators in values rendered as config tokens."""
+    for field, value in server.items():
+        if not isinstance(value, str):
+            continue
+        if re.search(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]', value):
+            return False
+        if field in token_fields and (any(char.isspace() for char in value) or
+                                      any(char in value for char in token_delimiters)):
+            return False
+    return True
 
 
 def _radius_host_valid(host):
@@ -158,7 +179,7 @@ def radius_server_entry_valid(server):
 # FIPS
 FIPS_CONFIG_FILE = '/etc/sonic/fips.json'
 OPENSSL_FIPS_CONFIG_FILE = '/etc/fips/fips_enable'
-DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'restapi']
+DEFAULT_FIPS_RESTART_SERVICES = ['ssh', 'telemetry.service', 'gnmi.service', 'restapi']
 
 # MISC Constants
 CFG_DB = "CONFIG_DB"
@@ -441,7 +462,8 @@ class AaaCfg(object):
         self.tacplus_global_default = {
             'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
             'timeout': TACPLUS_SERVER_TIMEOUT_DEFAULT,
-            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT
+            'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT,
+            'traceid_authorization': TACPLUS_TRACEID_AUTHORIZATION_DEFAULT
         }
         self.tacplus_global = {}
         self.tacplus_servers = {}
@@ -542,6 +564,8 @@ class AaaCfg(object):
     def tacacs_global_update(self, key, data, modify_conf=True):
         if key == 'global':
             self.tacplus_global = data
+            if 'traceid_authorization' in self.tacplus_global:
+                self.tacplus_global['traceid_authorization'] = is_true(self.tacplus_global['traceid_authorization'])
             if modify_conf:
                 self.modify_conf_file()
 
@@ -725,10 +749,12 @@ class AaaCfg(object):
         ldap_global = self.ldap_global_default.copy()
         ldap_global.update(self.ldap_global)
 
-        if 'src_ip' in tacplus_global:
-            src_ip = tacplus_global['src_ip']
-        else:
-            src_ip = None
+        if 'src_ip' in tacplus_global and not aaa_server_fields_safe(
+                {'src_ip': tacplus_global['src_ip']}, TACPLUS_CONFIG_TOKEN_FIELDS,
+                token_delimiters=','):
+            syslog.syslog(syslog.LOG_ERR, "TACPLUS: invalid source address; ignoring")
+            tacplus_global.pop('src_ip')
+        src_ip = tacplus_global.get('src_ip')
 
         servers_conf = []
         if self.tacplus_servers:
@@ -736,6 +762,10 @@ class AaaCfg(object):
                 server = tacplus_global.copy()
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
+                if not aaa_server_fields_safe(
+                        server, TACPLUS_CONFIG_TOKEN_FIELDS, token_delimiters=','):
+                    syslog.syslog(syslog.LOG_ERR, "TACPLUS_SERVER: invalid field; ignoring entry")
+                    continue
                 servers_conf.append(server)
             servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -774,6 +804,9 @@ class AaaCfg(object):
             "RADIUS_SERVER|{}: src_intf has no usable IP addr.".format(addr))
                         del server['src_ip']
 
+                if not aaa_server_fields_safe(server, RADIUS_CONFIG_TOKEN_FIELDS):
+                    syslog.syslog(syslog.LOG_ERR, "RADIUS_SERVER: invalid field; ignoring entry")
+                    continue
                 if not radius_server_entry_valid(server):
                     continue
                 radsrvs_conf.append(server)
@@ -786,6 +819,9 @@ class AaaCfg(object):
                 server = ldap_global.copy()
                 server['ip'] = addr
                 server.update(self.ldap_servers[addr])
+                if not aaa_server_fields_safe(server):
+                    syslog.syslog(syslog.LOG_ERR, "LDAP_SERVER: invalid field; ignoring entry")
+                    continue
                 ldapsrvs_conf.append(server)
             ldapsrvs_conf = sorted(ldapsrvs_conf, key=lambda t: int(t['priority']), reverse=True)
 
@@ -885,7 +921,8 @@ class AaaCfg(object):
                                         local_accounting=local_accounting_conf,
                                         tacacs_accounting=tacacs_accounting_conf,
                                         local_authorization=local_authorization_conf,
-                                        tacacs_authorization=tacacs_authorization_conf)
+                                        tacacs_authorization=tacacs_authorization_conf,
+                                        traceid_authorization=tacplus_global['traceid_authorization'])
         with open(NSS_TACPLUS_CONF, 'w') as f:
             f.write(nss_tacplus_conf)
 
@@ -968,6 +1005,20 @@ class PasswHardening(object):
         if data == {}:
             self.passw_policies = {}
         else:
+            if key == 'POLICIES':
+                data = data.copy()
+                # history_cnt=0 is the existing way to disable password history.
+                for field, minimum, maximum in (('len_min', 1, 32),
+                                                ('history_cnt', 0, 100)):
+                    if field in data:
+                        value = str(data[field])
+                        if (not re.fullmatch(r'[0-9]+', value, re.ASCII) or
+                                len(value) > 10 or not minimum <= int(value) <= maximum):
+                            syslog.syslog(syslog.LOG_ERR,
+                                          'PASSW_HARDENING: invalid {} value; ignoring policy update'
+                                          .format(field))
+                            return
+                        data[field] = str(int(value))
             if 'reject_user_passw_match' in data:
                 data['reject_user_passw_match'] = is_true(data['reject_user_passw_match'])
             if 'lower_class' in data:
@@ -1524,9 +1575,9 @@ class NtpCfg(object):
         # NTP config should be taken at boot-time by chrony
         # services.
         self.cache = {
-            'global': ntp_global_conf.get('global', {}),
-            'servers': ntp_server_conf,
-            'keys': ntp_key_conf
+            'global': copy.deepcopy(ntp_global_conf.get('global', {})),
+            'servers': copy.deepcopy(ntp_server_conf),
+            'keys': copy.deepcopy(ntp_key_conf)
         }
 
     def handle_ntp_source_intf_chg(self, intf_name):
@@ -1581,7 +1632,7 @@ class NtpCfg(object):
             return
 
         # Update the Local Cache
-        self.cache[key] = data
+        self.cache[key] = copy.deepcopy(data)
 
     def ntp_srv_key_update(self, ntp_servers: dict, ntp_keys: dict):
         """Update NTP server/key configuration
@@ -1622,8 +1673,8 @@ class NtpCfg(object):
             return
 
         # Updating the cache
-        self.cache['servers'] = ntp_servers
-        self.cache['keys'] = ntp_keys
+        self.cache['servers'] = copy.deepcopy(ntp_servers)
+        self.cache['keys'] = copy.deepcopy(ntp_keys)
 
 class PamLimitsCfg(object):
     """
@@ -2383,7 +2434,7 @@ class HostConfigDaemon:
             swsscommon.RestartWaiter.waitAdvancedBootDone()
         # Just a sanity check to verify if the CONFIG_DB has been initialized
         # before moving forward
-        self.config_db = ConfigDBConnector()
+        self.config_db = ConfigDBConnector(use_unix_socket_path=True)
         self.config_db.connect(wait_for_init=True, retry_on=True)
         syslog.syslog(syslog.LOG_INFO, 'ConfigDB connect success')
 
