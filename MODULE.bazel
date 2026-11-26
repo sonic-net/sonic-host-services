@@ -6,18 +6,11 @@ module(
 bazel_dep(name = "rules_python", version = "1.9.0.sonic.2")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.2")
-bazel_dep(name = "sonic-build-infra", version = "0.0.44-35726399908a3beb947174e9359f902077928289", repo_name = "sonic_build_infra")
-bazel_dep(name = "sonic-rust-deps", version = "0.0.5-2510c15a401970f362465171d0228e69db5259be", repo_name = "sonic_rust_deps")
+bazel_dep(name = "sonic-build-infra", version = "0.0.45-77ef625a4ddafc8cdc15f3cc6aee31eabac8a5de", repo_name = "sonic_build_infra")
+bazel_dep(name = "sonic-rust-deps", version = "0.0.5-4064a814e8530300a7acbad4a9aff0621e2fb98e", repo_name = "sonic_rust_deps")
 bazel_dep(name = "sonic-swss-common", version = "0.0.8-2a4ddd070edb719f2e969a880a5cfff711e64e72", repo_name = "sonic_swss_common")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.26")
-
-# Common still requests the older 5bf69bc snapshot, which sorts above 2510c15.
-# Select the source revision that provides Host Services' process APIs.
-single_version_override(
-    module_name = "sonic-rust-deps",
-    version = "0.0.5-2510c15a401970f362465171d0228e69db5259be",
-)
 
 bazel_dep(name = "libnl3", version = "3.7.0.sonic.10", dev_dependency = True)
 bazel_dep(name = "libyang", version = "3.12.2.sonic.9", dev_dependency = True)
