@@ -1,0 +1,49 @@
+name: Native Bazel host services
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  native-amd64:
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie-20260918
+    steps:
+      - name: Install host build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates git python3 tar
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+      - name: Verify the native SDK
+        run: |
+          test "$(bazel --version)" = "bazel 8.5.1"
+          test "$(uname -m)" = x86_64
+      - name: Verify installation and Common FFI interfaces
+        run: |
+          mkdir -p ci-artifacts
+          bazel test --jobs=4 --build_event_json_file=ci-artifacts/bazel.bep.json \
+            //:installation_test //crates/procdockerstatsd-rs:locked_ffi_test \
+            //:sonic-host-services.runtime_metadata \
+            //:sonic-host-services-data.runtime_metadata \
+            //:sonic-host-services-rs.runtime_metadata
+          bazel build --jobs=4 --//:enable_host_service_on_start=false \
+            //:sonic-host-services-data.runtime_metadata
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: host-services-native-amd64
+          path: |
+            ci-artifacts/
+            bazel-testlogs/installation_test/
+            bazel-testlogs/crates/procdockerstatsd-rs/locked_ffi_test/

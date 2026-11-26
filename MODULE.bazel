@@ -1,0 +1,49 @@
+module(
+    name = "sonic-host-services",
+    version = "1.0.0",
+)
+
+bazel_dep(name = "rules_python", version = "1.9.0.sonic.2")
+bazel_dep(name = "rules_rs", version = "0.1.0")
+bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.2")
+bazel_dep(name = "sonic-build-infra", version = "0.0.45-77ef625a4ddafc8cdc15f3cc6aee31eabac8a5de", repo_name = "sonic_build_infra")
+bazel_dep(name = "sonic-rust-deps", version = "0.0.5-4064a814e8530300a7acbad4a9aff0621e2fb98e", repo_name = "sonic_rust_deps")
+bazel_dep(name = "sonic-swss-common", version = "0.0.8-2a4ddd070edb719f2e969a880a5cfff711e64e72", repo_name = "sonic_swss_common")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.26")
+
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.10", dev_dependency = True)
+bazel_dep(name = "libyang", version = "3.12.2.sonic.9", dev_dependency = True)
+
+register_toolchains(
+    "@sonic_build_infra//tools/build_tools:apt_bsdtar_amd64_toolchain",
+    "@sonic_build_infra//tools/build_tools:apt_bsdtar_arm64_toolchain",
+)
+
+rust = use_extension("@rules_rs//rs:rules_rust_reexported_extensions.bzl", "rust", dev_dependency = True)
+rust.toolchain(
+    edition = "2021",
+    extra_target_triples = [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    ],
+    versions = ["1.90.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains(
+    "@rust_toolchains//:all",
+    dev_dependency = True,
+)
+
+# Rust dependencies and their generated lock are owned by sonic-rust-deps.
+# Common follows the buildimage Make gitlink, not the application Cargo.lock.
+
+# Common's public bindings producer requires the existing standalone bindgen toolchain.
+bindgen = use_extension("@rules_rs//rs:rules_rust_bindgen.bzl", "rules_rust_bindgen", dev_dependency = True)
+use_repo(bindgen, "rules_rust_bindgen")
+
+register_toolchains(
+    "@rules_rust_bindgen//:all",
+    dev_dependency = True,
+)
