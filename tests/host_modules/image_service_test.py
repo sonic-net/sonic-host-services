@@ -412,6 +412,87 @@ class TestImageService(object):
     @mock.patch("dbus.SystemBus")
     @mock.patch("dbus.service.BusName")
     @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_default_success(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_default` method successfully sets the default boot image.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "sonic_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = 0
+        mock_result.stderr = b""
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_default(image)
+
+        # Assert
+        assert rc == 0, "wrong return value"
+        assert image in msg, "message should contain the name of the new image"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-default", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_default_fail_not_exists_generic_rc(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_default` method returns errno.ENOENT when the image does not exist, even if
+        sonic-installer returns a generic error code.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        image = "nonexistent_image"
+        mock_result = mock.Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = b"Error: Image does not exist"
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_default(image)
+
+        # Assert
+        assert rc == errno.ENOENT, "wrong return value"
+        assert (
+            "not" in msg.lower() and ("exist" in msg.lower() or "found" in msg.lower())
+        ), "message should contain 'not' and 'exist' or 'found'"
+        mock_run.assert_called_once_with(
+            ["/usr/local/bin/sonic-installer", "set-default", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
+    @mock.patch("subprocess.run")
+    def test_image_set_default_fail_other_error(self, mock_run, MockInit, MockBusName, MockSystemBus):
+        """
+        Test that the `set_default` method passes through other sonic-installer failures.
+        """
+        # Arrange
+        image_service = ImageService(mod_name="image_service")
+        mock_result = mock.Mock()
+        mock_result.returncode = 2
+        mock_result.stderr = b"Error: permission denied"
+        mock_run.return_value = mock_result
+
+        # Act
+        rc, msg = image_service.set_default("sonic_image")
+
+        # Assert
+        assert rc == 2, "wrong return value"
+        assert "permission denied" in msg
+
+    @mock.patch("dbus.SystemBus")
+    @mock.patch("dbus.service.BusName")
+    @mock.patch("dbus.service.Object.__init__")
     def test_gnoi_install_os_valid_json(self, MockInit, MockBusName, MockSystemBus):
         """
         Test that gnoi_install_os handles valid JSON input and returns ERROR_UNIMPLEMENTED.
