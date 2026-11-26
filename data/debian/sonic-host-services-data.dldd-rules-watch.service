@@ -1,0 +1,7 @@
+[Unit]
+Description=Check for a stable DLDD rules update
+PartOf=dldd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dldd-rules-watch

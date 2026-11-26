@@ -1,0 +1,8 @@
+[Unit]
+Description=Check the DLDD rules inbox every five minutes
+PartOf=dldd.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=dldd-rules-watch.service

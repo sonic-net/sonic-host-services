@@ -127,6 +127,19 @@ stages:
       displayName: 'Publish Python 3 test results'
 
     - script: |
+        set -xe
+        make -C tests/dldd integration PYTHON=python3
+      displayName: 'Test DLDD runtime integration'
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '$(System.DefaultWorkingDirectory)/dldd-integration-results.xml'
+        testRunTitle: DLDD runtime integration
+        failTaskOnFailedTests: true
+      condition: succeededOrFailed()
+      displayName: 'Publish DLDD runtime integration results'
+
+    - script: |
         sudo pip3 install --quiet --break-system-packages --ignore-installed diff-cover
       displayName: 'Pre-install diff-cover for pipeline decorator'
 

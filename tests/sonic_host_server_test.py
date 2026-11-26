@@ -31,6 +31,7 @@ def server_environment(monkeypatch):
     dbus = mock.MagicMock()
     gi = mock.MagicMock()
     modules = mock.MagicMock()
+    healthz = mock.MagicMock()
     systemd = mock.MagicMock()
     for name, module in {
         'dbus': dbus,
@@ -40,6 +41,7 @@ def server_environment(monkeypatch):
         'gi': gi,
         'gi.repository': gi.repository,
         'host_modules': modules,
+        'host_modules.healthz': healthz,
         'systemd': systemd,
         'systemd.daemon': systemd.daemon,
     }.items():
@@ -56,7 +58,7 @@ def server_environment(monkeypatch):
 
     return SimpleNamespace(
         run=run, modules=modules, dbus=dbus,
-        gobject=gi.repository.GObject, systemd=systemd,
+        gobject=gi.repository.GObject, systemd=systemd, healthz=healthz,
     )
 
 
@@ -65,13 +67,16 @@ def assert_other_handlers_registered(environment, handlers):
         constructor = getattr(getattr(environment.modules, module_name), class_name)
         constructor.assert_called_once_with(handler_name)
         assert handlers[handler_name] is constructor.return_value
+    environment.healthz.Healthz.assert_called_once_with('healthz')
+    assert handlers['healthz'] is environment.healthz.Healthz.return_value
+    environment.healthz.Healthz.return_value.shutdown.assert_called_once_with()
 
 
 def test_default_does_not_construct_debug_executor(server_environment):
     server = server_environment.run([])
 
     server_environment.modules.debug_service.DebugExecutor.assert_not_called()
-    assert set(server['handlers']) == {entry[2] for entry in HANDLERS}
+    assert set(server['handlers']) == {entry[2] for entry in HANDLERS} | {'healthz'}
     assert_other_handlers_registered(server_environment, server['handlers'])
     assert server_environment.systemd.daemon.notify.call_args_list == [
         mock.call('READY=1'), mock.call('STOPPING=1'),
@@ -84,7 +89,7 @@ def test_explicit_opt_in_registers_debug_executor(server_environment, capsys):
     constructor = server_environment.modules.debug_service.DebugExecutor
     constructor.assert_called_once_with('DebugExecutor')
     assert set(server['handlers']) == {entry[2] for entry in HANDLERS} | {
-        'debug_service',
+        'debug_service', 'healthz',
     }
     assert server['handlers']['debug_service'] is constructor.return_value
     assert_other_handlers_registered(server_environment, server['handlers'])
