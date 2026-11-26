@@ -5,6 +5,7 @@ import json
 import shutil
 import os
 import sys
+import subprocess
 from swsscommon import swsscommon
 
 from parameterized import parameterized
@@ -65,7 +66,7 @@ class TestHostcfgdFIPS(TestCase):
 
     @mock.patch('sonic_installer.bootloader.get_bootloader', side_effect=[MockBootloader()])
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
+    @mock.patch('subprocess.run', side_effect=[subprocess.CompletedProcess([], 0, stdout=json.dumps(running_services))])
     @mock.patch('subprocess.check_call')
     def test_hostcfgd_fips_enable(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:
@@ -82,7 +83,7 @@ class TestHostcfgdFIPS(TestCase):
 
     @mock.patch('sonic_installer.bootloader.get_bootloader', side_effect=[MockBootloader()])
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
+    @mock.patch('subprocess.run', side_effect=[subprocess.CompletedProcess([], 0, stdout=json.dumps(running_services))])
     @mock.patch('subprocess.check_call')
     def test_hostcfgd_fips_disable(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:
@@ -101,7 +102,7 @@ class TestHostcfgdFIPS(TestCase):
 
     @mock.patch('sonic_installer.bootloader.get_bootloader', return_value=MockBootloader())
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
+    @mock.patch('subprocess.run', side_effect=[subprocess.CompletedProcess([], 0, stdout=json.dumps(running_services))])
     @mock.patch('subprocess.check_call')
     def test_hostcfgd_fips_enforce(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:
@@ -118,7 +119,7 @@ class TestHostcfgdFIPS(TestCase):
 
     @mock.patch('sonic_installer.bootloader.get_bootloader', return_value=MockBootloader(True))
     @mock.patch('syslog.syslog')
-    @mock.patch('subprocess.check_output', side_effect=[json.dumps(running_services)])
+    @mock.patch('subprocess.run', side_effect=[subprocess.CompletedProcess([], 0, stdout=json.dumps(running_services))])
     @mock.patch('subprocess.check_call')
     def test_hostcfgd_fips_enforce_reconf(self, mock_check_call, mock_check_output, mock_syslog, mock_get_bootloader):
         with open(hostcfgd.PROC_CMDLINE, 'w') as f:

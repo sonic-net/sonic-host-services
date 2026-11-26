@@ -5,7 +5,7 @@ import signal
 import psutil
 import pytest
 import swsscommon as swsscommon_package
-from subprocess import CalledProcessError, CompletedProcess, PIPE
+from subprocess import CalledProcessError, CompletedProcess
 from sonic_py_common import device_info
 from swsscommon import swsscommon
 from parameterized import parameterized
@@ -131,7 +131,7 @@ class TestNtpCfgd(TestCase):
                          MockConfigDb.CONFIG_DB['NTP_SERVER'],
                          MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.run.assert_has_calls([
-                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=PIPE, check=False)
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=mocked_subprocess.PIPE, check=False)
             ])
             mocked_subprocess.check_call.assert_has_calls([
                 call(['/usr/bin/chrony-config.sh'])
@@ -153,7 +153,7 @@ class TestNtpCfgd(TestCase):
                          MockConfigDb.CONFIG_DB['NTP_SERVER'],
                          MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.run.assert_has_calls([
-                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=PIPE, check=False)
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=mocked_subprocess.PIPE, check=False)
             ])
             mocked_subprocess.check_call.assert_has_calls([
                 call(['/usr/bin/chrony-config.sh']),
