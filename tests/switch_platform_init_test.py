@@ -24,7 +24,7 @@ class TestSwitchPlatformInit(unittest.TestCase):
   def test_init_uses_three_explicit_native_socket_connections(self):
     ppi.SwitchPlatformInit()
     self.assertEqual(self.connector.call_args_list, [
-        mock.call(name, 0, False)
+        mock.call(name, 0, False, "", True)
         for name in ['CONFIG_DB', 'STATE_DB', 'APPL_STATE_DB']
     ])
 
@@ -33,7 +33,7 @@ class TestSwitchPlatformInit(unittest.TestCase):
     with self.assertRaises(SystemExit) as result:
       ppi.SwitchPlatformInit()
     self.assertEqual(result.exception.code, 1)
-    self.connector.assert_called_once_with('CONFIG_DB', 0, False)
+    self.connector.assert_called_once_with('CONFIG_DB', 0, False, "", True)
 
   def test_primary_version_dict(self):
     platform = ppi.SwitchPlatformInit()
