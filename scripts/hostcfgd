@@ -222,7 +222,7 @@ def run_cmd_pipe(cmd0, cmd1, cmd2, log_err=True, raise_exception=False):
 def run_cmd_output(cmd, log_err=True, raise_exception=False):
     output = ''
     try:
-        output = subprocess.check_output(cmd)
+        output = subprocess.run(cmd, stdout=subprocess.PIPE, check=raise_exception).stdout
     except Exception as err:
         if log_err:
             syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}, err: {}"
@@ -1548,6 +1548,7 @@ class NtpCfg(object):
     3) Purpose of this daemon is to propagate runtime config changes in
        NTP, NTP_SERVER, NTP_KEY, and LOOPBACK_INTERFACE
     """
+    CHRONY_RESET_FAILED = ['systemctl', 'reset-failed', 'chrony']
     CHRONY_RESTART = ['systemctl', 'restart', 'chrony']
 
     def __init__(self):
@@ -1580,6 +1581,18 @@ class NtpCfg(object):
             'keys': copy.deepcopy(ntp_key_conf)
         }
 
+        current_config_hash = run_cmd_output(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], log_err=False)
+        run_cmd(['/usr/bin/chrony-config.sh'])
+        new_config_hash = run_cmd_output(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], log_err=False)
+        if current_config_hash.strip() != new_config_hash.strip():
+            # There's some config diff, restart Chrony
+            try:
+                run_cmd(self.CHRONY_RESET_FAILED, True, True)
+                run_cmd(self.CHRONY_RESTART, True, True)
+            except Exception:
+                syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
+                                              'chrony service')
+
     def handle_ntp_source_intf_chg(self, intf_name):
         # If no ntp server configured, do nothing. Source interface will be
         # taken once any server will be configured.
@@ -1593,6 +1606,7 @@ class NtpCfg(object):
 
         # Just restart chrony
         try:
+            run_cmd(self.CHRONY_RESET_FAILED, True, True)
             run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
@@ -1625,6 +1639,7 @@ class NtpCfg(object):
 
         # Restarting the service
         try:
+            run_cmd(self.CHRONY_RESET_FAILED, True, True)
             run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
             syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart chrony'
@@ -1666,9 +1681,10 @@ class NtpCfg(object):
 
         # Restarting the service
         try:
+            run_cmd(self.CHRONY_RESET_FAILED, True, True)
             run_cmd(self.CHRONY_RESTART, True, True)
         except Exception:
-            syslog.syslog(syslog.LOG_ERR, f'NtpCfg: Failed to restart '
+            syslog.syslog(syslog.LOG_ERR, 'NtpCfg: Failed to restart '
                                           'chrony service')
             return
 
@@ -1983,6 +1999,17 @@ class RSyslogCfg(object):
         syslog.syslog(syslog.LOG_INFO,
                       f'RSyslogCfg: Initial config: {self.cache}')
 
+        # Restarting rsyslog to make sure that there were no config
+        # changes between when it started and when we got here
+        try:
+            run_cmd(['systemctl', 'reset-failed', 'rsyslog-config',
+                     'rsyslog'], log_err=True, raise_exception=True)
+            run_cmd(['systemctl', 'restart', 'rsyslog-config'],
+                    log_err=True, raise_exception=True)
+        except Exception:
+            syslog.syslog(syslog.LOG_ERR,
+                          'RSyslogCfg: Failed to force-restart rsyslog service')
+
     def update_rsyslog_config(self, rsyslog_config, rsyslog_servers):
         """Apply remote syslog configuration
 
@@ -2006,7 +2033,7 @@ class RSyslogCfg(object):
                         log_err=True, raise_exception=True)
             except Exception:
                 syslog.syslog(syslog.LOG_ERR,
-                              f'RSyslogCfg: Failed to restart rsyslog service')
+                              'RSyslogCfg: Failed to restart rsyslog service')
                 return
 
         # Updating the cache

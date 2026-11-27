@@ -5,7 +5,7 @@ import signal
 import psutil
 import pytest
 import swsscommon as swsscommon_package
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, CompletedProcess
 from sonic_py_common import device_info
 from swsscommon import swsscommon
 from parameterized import parameterized
@@ -104,11 +104,12 @@ class TestAaaServerFields(TestCase):
         self.assertEqual([server['ip'] for server in ldap_servers], ['192.0.2.32'])
 
 
-class TesNtpCfgd(TestCase):
+class TestNtpCfgd(TestCase):
     """
         Test hostcfd daemon - NtpCfgd
     """
     def setUp(self):
+        MockConfigDb.CONFIG_DB = {}
         MockConfigDb.CONFIG_DB['NTP'] = {
             'global': {'vrf': 'mgmt', 'src_intf': 'eth0'}
         }
@@ -118,52 +119,89 @@ class TesNtpCfgd(TestCase):
     def tearDown(self):
         MockConfigDb.CONFIG_DB = {}
 
+    def test_ntp_load(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            mocked_subprocess.run.return_value = \
+                    CompletedProcess(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], 0,
+                                     stdout='c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bccac  chrony.conf')
+            mocked_subprocess.check_call.return_value = 0
+
+            ntpcfgd = hostcfgd.NtpCfg()
+            ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
+                         MockConfigDb.CONFIG_DB['NTP_SERVER'],
+                         MockConfigDb.CONFIG_DB['NTP_KEY'])
+            mocked_subprocess.run.assert_has_calls([
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=mocked_subprocess.PIPE, check=False)
+            ])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['/usr/bin/chrony-config.sh'])
+            ])
+            assert call(['systemctl', 'restart', 'chrony'], True, True) not in mocked_subprocess.check_call.mock_calls
+
+    def test_ntp_load_with_diff(self):
+        with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
+            mocked_subprocess.run.side_effect = [
+                    CompletedProcess(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], 0,
+                                     stdout='c9ed0944553681d698f4a35fa3abce54a56ee2826a930012bccac  chrony.conf'),
+                    CompletedProcess(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], 0,
+                                     stdout='d396efe1804e806b402e6273f13212f72026fc609e59f68b2288b  chrony.conf'),
+                    ]
+            mocked_subprocess.check_call.return_value = 0
+
+            ntpcfgd = hostcfgd.NtpCfg()
+            ntpcfgd.load(MockConfigDb.CONFIG_DB['NTP']['global'],
+                         MockConfigDb.CONFIG_DB['NTP_SERVER'],
+                         MockConfigDb.CONFIG_DB['NTP_KEY'])
+            mocked_subprocess.run.assert_has_calls([
+                call(['sha256sum', '/etc/chrony/chrony.conf', '/etc/chrony/chrony.keys'], stdout=mocked_subprocess.PIPE, check=False)
+            ])
+            mocked_subprocess.check_call.assert_has_calls([
+                call(['/usr/bin/chrony-config.sh']),
+                call(['systemctl', 'reset-failed', 'chrony']),
+                call(['systemctl', 'restart', 'chrony'])
+            ])
+
     def test_ntp_update_ntp_keys(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            mocked_subprocess.check_call.return_value = 0
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({}, MockConfigDb.CONFIG_DB['NTP_KEY'])
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
     def test_ntp_global_update_ntp_servers(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            mocked_subprocess.check_call.return_value = 0
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.ntp_global_update(
                 'global', MockConfigDb.CONFIG_DB['NTP']['global'])
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
             mocked_subprocess.check_call.reset_mock()
             ntpcfgd.ntp_srv_key_update({'0.debian.pool.ntp.org': {}}, {})
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
     def test_ntp_is_caching_config(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            mocked_subprocess.check_call.return_value = 0
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.cache['global'] = MockConfigDb.CONFIG_DB['NTP']['global']
@@ -179,10 +217,7 @@ class TesNtpCfgd(TestCase):
 
     def test_loopback_update(self):
         with mock.patch('hostcfgd.subprocess') as mocked_subprocess:
-            popen_mock = mock.Mock()
-            attrs = {'communicate.return_value': ('output', 'error')}
-            popen_mock.configure_mock(**attrs)
-            mocked_subprocess.Popen.return_value = popen_mock
+            mocked_subprocess.check_call.return_value = 0
 
             ntpcfgd = hostcfgd.NtpCfg()
             ntpcfgd.cache['global'] = MockConfigDb.CONFIG_DB['NTP']['global']
@@ -190,6 +225,7 @@ class TesNtpCfgd(TestCase):
 
             ntpcfgd.handle_ntp_source_intf_chg('eth0')
             mocked_subprocess.check_call.assert_has_calls([
+                call(['systemctl', 'reset-failed', 'chrony']),
                 call(['systemctl', 'restart', 'chrony'])
             ])
 
@@ -612,7 +648,7 @@ class TestRunCmd:
     @mock.patch('hostcfgd.syslog.syslog')
     def test_run_cmd_output_missing_binary_does_not_raise(self, mock_syslog):
         exc = FileNotFoundError(2, 'No such file or directory', 'ip')
-        with mock.patch('hostcfgd.subprocess.check_output', side_effect=exc):
+        with mock.patch('hostcfgd.subprocess.run', side_effect=exc):
             out = hostcfgd.run_cmd_output(['ip', 'addr'])
         assert out == ''
         msg = self._last_msg(mock_syslog)
