@@ -850,6 +850,7 @@ class ControlPlaneAclManager(logger.Logger):
                     dst_ports = []
 
                 acl_rules = {}
+                acl_rule_ids = {}
 
                 for ((rule_table_name, rule_id), rule_props) in self._rules_db_info.items():
                     rule_props = {k.upper(): v for k,v in rule_props.items()}
@@ -858,11 +859,25 @@ class ControlPlaneAclManager(logger.Logger):
                             self.log_warning("rule_props for rule_id {} empty or null!".format(rule_id))
                             continue
 
+                        # PRIORITY is a string in Config DB. Key the rules
+                        # by its integer value so that they sort
+                        # numerically, not lexically (10000 > 9999).
                         try:
-                            acl_rules[rule_props["PRIORITY"]] = rule_props
+                            priority = int(rule_props["PRIORITY"])
                         except KeyError:
                             self.log_error("rule_props for rule_id {} does not have key 'PRIORITY'!".format(rule_id))
                             continue
+                        except ValueError:
+                            self.log_error("rule_props for rule_id {} has a non-integer PRIORITY '{}'!"
+                                           .format(rule_id, rule_props["PRIORITY"]))
+                            continue
+
+                        if priority in acl_rules:
+                            self.log_warning("ACL table '{}': rule {} has the same PRIORITY {} as rule {} "
+                                             "and replaces it"
+                                             .format(table_name, rule_id, priority, acl_rule_ids[priority]))
+                        acl_rules[priority] = rule_props
+                        acl_rule_ids[priority] = rule_id
 
                         # If we haven't determined the IP version for this ACL table yet,
                         # try to do it now. We attempt to determine heuristically based on
@@ -889,11 +904,11 @@ class ControlPlaneAclManager(logger.Logger):
                         if (self.is_rule_ipv6(rule_props) and (table_ip_version == 4)):
                             self.log_error("CtrlPlane ACL table {} is a IPv4 based table and rule {} is a IPV6 rule! Ignoring rule."
                                            .format(table_name, rule_id))
-                            acl_rules.pop(rule_props["PRIORITY"])
+                            acl_rules.pop(priority)
                         elif (self.is_rule_ipv4(rule_props) and (table_ip_version == 6)):
                             self.log_error("CtrlPlane ACL table {} is a IPv6 based table and rule {} is a IPV4 rule! Ignroing rule."
                                            .format(table_name, rule_id))
-                            acl_rules.pop(rule_props["PRIORITY"])
+                            acl_rules.pop(priority)
 
                 # If we were unable to determine whether this ACL table contains
                 # IPv4 or IPv6 rules, log a message and skip processing this table.
