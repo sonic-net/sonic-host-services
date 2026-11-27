@@ -251,9 +251,30 @@ class SwitchPlatformInit:
     """
     self.state_db.hset(SW_COMP_INFO_BOOTLOADER, NAME, BOOT_LOADER_LC)
     self.state_db.hset(SW_COMP_INFO_BOOTLOADER, PARENT, CHASSIS)
-    bios_version = self.run_command(["cat", BIOS_VERSION_FILE])
-    self.state_db.hset(SW_COMP_INFO_BOOTLOADER, SOFTWARE_VERSION, bios_version)
+    self.state_db.hset(
+        SW_COMP_INFO_BOOTLOADER, SOFTWARE_VERSION, self.get_bios_version()
+    )
     self.state_db.hset(SW_COMP_INFO_BOOTLOADER, TYPE, BOOT_LOADER_UC)
+
+  def get_bios_version(self) -> str:
+    """Gets the BIOS version exposed by the kernel DMI interface.
+
+    Not every platform exposes DMI data: when the firmware does not populate
+    the SMBIOS tables, the kernel does not create the DMI sysfs entries and
+    BIOS_VERSION_FILE does not exist.
+
+    Returns:
+      The BIOS version, or NOT_APPLICABLE if it is not available.
+    """
+    try:
+      with open(BIOS_VERSION_FILE, "r") as f:
+        bios_version = f.read().strip()
+    except (OSError, ValueError) as error:
+      logger.warning(
+          "Unable to read BIOS version from %s: %s", BIOS_VERSION_FILE, error
+      )
+      return NOT_APPLICABLE
+    return bios_version or NOT_APPLICABLE
 
   def populate_active_network_stack(self) -> None:
     """Write SW comp info elements to STATE_DB: SW_COMP_INFO|network_stack0
