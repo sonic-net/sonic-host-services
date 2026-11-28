@@ -12,7 +12,7 @@ class SonicDbUtils:
     Returns:
         List[str]: List of Portchannel names
     """
-    db = swsscommon.SonicV2Connector()
+    db = swsscommon.SonicV2Connector(use_unix_socket_path=True)
     try:
       db.connect(db.APPL_DB)
       keys = db.keys(db.APPL_DB, "PORTCHANNEL|*")
